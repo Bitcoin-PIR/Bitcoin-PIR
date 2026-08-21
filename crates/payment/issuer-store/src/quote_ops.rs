@@ -64,7 +64,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_delegation_head(&transaction, self, &input.payee_pubkey)? {
             match compare_delegation(&existing, input)? {
@@ -98,7 +97,6 @@ impl IssuerStore {
         let sequence = committed_identity.commit_seq;
         write_delegation_head(&transaction, self, input, sequence)?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let head = self.delegation_head(&input.payee_pubkey)?.ok_or_else(|| {
             StoreError::SchemaMismatch("committed delegation head missing".to_owned())
         })?;
@@ -115,7 +113,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_delegation_head(&connection, self, payee_pubkey)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Reserves quote/idempotency/backend-label state before calling the
@@ -146,7 +144,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let creation_digest =
             creation_idempotency_digest(self, &reservation.creation_idempotency_key);
@@ -280,7 +277,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = self
             .quote(&reservation.quote_id)?
             .ok_or_else(|| StoreError::SchemaMismatch("committed quote missing".to_owned()))?;
@@ -317,7 +313,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_quote_by_creation_digest_for_protocol(
             &transaction,
@@ -491,7 +486,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = self.bat_v2_quote(&reservation.quote_id)?.ok_or_else(|| {
             StoreError::SchemaMismatch("committed BAT V2 quote missing".to_owned())
         })?;
@@ -525,7 +519,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing =
             read_quote_for_protocol(&transaction, self, &finalization.quote_id, quote_protocol)?
                 .ok_or(StoreError::QuoteMissing)?;
@@ -616,7 +609,6 @@ impl IssuerStore {
             return Err(StoreError::InvalidQuoteState);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record =
             read_committed_quote_for_protocol(self, &finalization.quote_id, quote_protocol)?
                 .ok_or_else(|| {
@@ -652,7 +644,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing =
             read_quote_for_protocol(&transaction, self, &expiry.quote_id, quote_protocol)?
                 .ok_or(StoreError::QuoteMissing)?;
@@ -736,7 +727,6 @@ impl IssuerStore {
             return Err(StoreError::InvalidQuoteState);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = read_committed_quote_for_protocol(self, &expiry.quote_id, quote_protocol)?
             .ok_or_else(|| {
                 StoreError::SchemaMismatch("committed expiry observation missing".to_owned())
@@ -771,7 +761,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing =
             read_quote_for_protocol(&transaction, self, &settlement.quote_id, quote_protocol)?
                 .ok_or(StoreError::QuoteMissing)?;
@@ -895,7 +884,6 @@ impl IssuerStore {
             return Err(StoreError::InvalidQuoteState);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = read_committed_quote_for_protocol(self, &settlement.quote_id, quote_protocol)?
             .ok_or_else(|| StoreError::SchemaMismatch("committed settlement missing".to_owned()))?;
         Ok(DurableWrite {
@@ -922,7 +910,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let claim_idempotency_digest = claim_idempotency_digest(self, &claim.claim_idempotency_key);
         if let Some(existing) =
@@ -1061,7 +1048,6 @@ impl IssuerStore {
             return Err(StoreError::QuoteNotSettled);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = self
             .claim(&claim.quote_id)?
             .ok_or_else(|| StoreError::SchemaMismatch("committed claim missing".to_owned()))?;
@@ -1092,7 +1078,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let quote = read_quote_for_protocol(&transaction, self, &quote_id, QUOTE_PROTOCOL_BAT_V2)?
             .ok_or(StoreError::QuoteMissing)?;
         validate_bat_v2_envelope_for_quote(self, &quote, &envelope)?;
@@ -1282,7 +1267,6 @@ impl IssuerStore {
             return Err(StoreError::QuoteNotSettled);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let record = self.bat_v2_claim(&quote_id)?.ok_or_else(|| {
             StoreError::SchemaMismatch("committed BAT V2 claim missing".to_owned())
         })?;
@@ -1302,7 +1286,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_quote(&connection, self, quote_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Issuer-internal exact-create recovery lookup. The raw key is hashed in
@@ -1319,7 +1303,7 @@ impl IssuerStore {
         let connection = self.open_checked(false)?;
         let digest = creation_idempotency_digest(self, idempotency_key);
         let value = read_quote_by_creation_digest(&connection, self, &digest)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Issuer-internal Lightning-backend reconciliation lookup. Backend labels
@@ -1331,7 +1315,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_quote_by_label(&connection, self, label)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Enumerate a bounded deterministic page of quotes whose Lightning
@@ -1407,7 +1391,7 @@ impl IssuerStore {
             });
         }
         drop(statement);
-        self.confirm_anchored_read(&connection, candidates)
+        Ok(candidates)
     }
 
     pub fn bat_v2_quote(&self, quote_id: &[u8; 32]) -> StoreResult<Option<QuoteRecord>> {
@@ -1416,7 +1400,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_quote_for_protocol(&connection, self, quote_id, QUOTE_PROTOCOL_BAT_V2)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn bat_v2_quote_by_creation_idempotency_key(
@@ -1436,7 +1420,7 @@ impl IssuerStore {
             &digest,
             QUOTE_PROTOCOL_BAT_V2,
         )?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn bat_v2_quote_by_backend_label(&self, label: &str) -> StoreResult<Option<QuoteRecord>> {
@@ -1446,7 +1430,7 @@ impl IssuerStore {
         let connection = self.open_checked(false)?;
         let value =
             read_quote_by_label_for_protocol(&connection, self, label, QUOTE_PROTOCOL_BAT_V2)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn bat_v2_quote_reconciliation_candidates_after(
@@ -1512,7 +1496,7 @@ impl IssuerStore {
             });
         }
         drop(statement);
-        self.confirm_anchored_read(&connection, candidates)
+        Ok(candidates)
     }
 
     /// Enumerate BAT key epochs needed for one fresh acquisition from a live
@@ -1657,15 +1641,15 @@ impl IssuerStore {
                 bat_key_id: class.bat_key_id,
             });
         }
-        self.confirm_anchored_read(&connection, requirements)
+        Ok(requirements)
     }
 
     /// Authenticates and atomically consumes a fresh private quote-status
     /// request before returning issuer-confidential invoice/status data.
     ///
     /// `verifier` must be a reviewed BIP340 implementation. The SQLite nonce
-    /// commit is anchored in the independently durable rollback authority
-    /// before this method releases either the status value or its marker.
+    /// commit is durable before this method releases either the status value
+    /// or its marker.
     pub fn consume_quote_status_request(
         &self,
         request: &Bolt11QuoteStatusRequestV1,
@@ -1727,13 +1711,11 @@ impl IssuerStore {
             verifier,
             quote_protocol,
         )?;
-        self.confirm_anchored_read(&preliminary_connection, ())?;
         drop(preliminary_connection);
 
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         if now_unix < previous_identity.status_time_floor {
             return Err(StoreError::StatusTimeRollback);
         }
@@ -1827,7 +1809,6 @@ impl IssuerStore {
             return Err(StoreError::StatusTimeRollback);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         Ok(DurableWrite {
             disposition: WriteDisposition::Committed,
             commit: marker(self, sequence),
@@ -1844,7 +1825,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_claim(&connection, self, quote_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Issuer-internal diagnostic lookup; knowledge of an idempotency key alone
@@ -1861,7 +1842,7 @@ impl IssuerStore {
         let connection = self.open_checked(false)?;
         let digest = claim_idempotency_digest(self, idempotency_key);
         let value = read_claim_by_idempotency_digest(&connection, self, &digest)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Issuer-internal BAT V2 exact-response recovery lookup. The quote
@@ -1879,7 +1860,7 @@ impl IssuerStore {
             quote_id,
             QUOTE_PROTOCOL_BAT_V2,
         )?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Issuer-internal BAT V2 diagnostic recovery lookup. The raw key is
@@ -1903,7 +1884,7 @@ impl IssuerStore {
             &digest,
             QUOTE_PROTOCOL_BAT_V2,
         )?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 }
 
@@ -3187,8 +3168,7 @@ fn read_committed_quote_for_protocol(
     quote_protocol: i64,
 ) -> StoreResult<Option<QuoteRecord>> {
     let connection = store.open_checked(false)?;
-    let value = read_quote_for_protocol(&connection, store, quote_id, quote_protocol)?;
-    store.confirm_anchored_read(&connection, value)
+    read_quote_for_protocol(&connection, store, quote_id, quote_protocol)
 }
 
 fn read_quote_by_creation_digest(

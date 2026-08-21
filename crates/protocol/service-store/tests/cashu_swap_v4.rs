@@ -1,85 +1,21 @@
 use pir_service_store::{
     CashuCustodyExposureLimitsV1, CashuCustodySealedBlobV1, CashuSwapIntentStateV1,
     CashuSwapSealedRecoveryV1, NewCashuCustodyLotV1, NewCashuSwapIntentV1, ProviderStore,
-    RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1, StoreError,
+    StoreError,
     StoreOptions, SCHEMA_VERSION,
 };
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 use tempfile::{Builder, TempDir};
 
 const PROVIDER: [u8; 32] = [0x91; 32];
 const STORE_INSTANCE: [u8; 16] = [0x92; 16];
 const WORKERS: usize = 8;
 
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthority {
-    floor: Mutex<Option<RollbackFloorV1>>,
-    /// If non-zero, durably apply this generation and then lose its response.
-    lose_response_at_generation: AtomicU64,
-}
-
-impl MemoryRollbackAuthority {
-    fn floor(&self) -> RollbackFloorV1 {
-        self.floor.lock().unwrap().unwrap()
-    }
-
-    fn lose_response_at(&self, generation: u64) {
-        self.lose_response_at_generation
-            .store(generation, Ordering::SeqCst);
-    }
-}
-
-impl RollbackFloorAuthorityV1 for MemoryRollbackAuthority {
-    fn load(
-        &self,
-        _provider_id: &[u8; 32],
-    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().unwrap())
-    }
-
-    fn initialize(
-        &self,
-        initial: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        Ok(floor.unwrap())
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &RollbackFloorV1,
-        next: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        let current = floor
-            .ok_or_else(|| RollbackFloorAuthorityErrorV1::new("rollback floor disappeared"))?;
-        if next.store_generation != 0
-            && self
-                .lose_response_at_generation
-                .compare_exchange(next.store_generation, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            return Err(RollbackFloorAuthorityErrorV1::new(
-                "injected lost CAS response",
-            ));
-        }
-        Ok(current)
-    }
-}
-
 struct TestPath {
     _directory: TempDir,
     database: PathBuf,
-    backup: PathBuf,
 }
 
 impl TestPath {
@@ -96,21 +32,13 @@ impl TestPath {
         }
         Self {
             database: directory.path().join("provider.sqlite3"),
-            backup: directory.path().join("provider-backup.sqlite3"),
             _directory: directory,
         }
     }
 }
 
-fn create_store(path: &Path, authority: Arc<MemoryRollbackAuthority>) -> ProviderStore {
-    ProviderStore::create(
-        path,
-        STORE_INSTANCE,
-        PROVIDER,
-        StoreOptions::default(),
-        authority,
-    )
-    .unwrap()
+fn create_store(path: &Path) -> ProviderStore {
+    ProviderStore::create(path, STORE_INSTANCE, PROVIDER, StoreOptions::default()).unwrap()
 }
 
 fn intent() -> NewCashuSwapIntentV1 {
@@ -177,33 +105,10 @@ fn replacement_recovery() -> CashuSwapSealedRecoveryV1 {
     }
 }
 
-fn copy_database_without_wal(source: &Path, destination: &Path) {
-    let connection = Connection::open(source).unwrap();
-    let (busy, log_frames, checkpointed_frames): (i64, i64, i64) = connection
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-        })
-        .unwrap();
-    assert_eq!(busy, 0);
-    assert_eq!(log_frames, checkpointed_frames);
-    drop(connection);
-    std::fs::copy(source, destination).unwrap();
-}
-
-fn remove_sqlite_sidecars(path: &Path) {
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
-        if sidecar.exists() {
-            std::fs::remove_file(sidecar).unwrap();
-        }
-    }
-}
-
 #[test]
 fn schema_v7_exact_replay_is_idempotent_and_conflicts_fail_closed() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
+    let store = create_store(&path.database);
     assert_eq!(SCHEMA_VERSION, 7);
 
     let proposed = intent();
@@ -287,7 +192,6 @@ fn schema_v7_exact_replay_is_idempotent_and_conflicts_fail_closed() {
         Err(StoreError::CashuSwapIntentConflict)
     ));
     assert_eq!(store.identity().unwrap().store_generation, 1);
-    assert_eq!(authority.floor().store_generation, 1);
 
     let connection = Connection::open(&path.database).unwrap();
     let columns = connection
@@ -334,8 +238,7 @@ fn schema_v7_exact_replay_is_idempotent_and_conflicts_fail_closed() {
 #[test]
 fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
+    let store = create_store(&path.database);
     let proposed = intent();
     store
         .insert_cashu_swap_intent_v1(&proposed, limits())
@@ -368,7 +271,6 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
         &path.database,
         PROVIDER,
         StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
     let submitted = reopened
@@ -425,15 +327,12 @@ fn dfa_is_monotonic_across_restart_and_grant_is_claimed_once() {
         .unwrap();
     assert_eq!(granted.state, CashuSwapIntentStateV1::GrantIssued);
     assert_eq!(granted.sealed_recovery, replacement);
-    assert_eq!(authority.floor().store_generation, 5);
-    assert_eq!(authority.floor().spend_commit_seq, 1);
 }
 
 #[test]
 fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = Arc::new(create_store(&path.database, Arc::clone(&authority)));
+    let store = Arc::new(create_store(&path.database));
     let proposed = Arc::new(intent());
 
     let barrier = Arc::new(Barrier::new(WORKERS));
@@ -506,10 +405,8 @@ fn concurrent_prepare_submit_and_grant_each_have_one_winner() {
 fn exact_cashu_grants_from_equal_predecessors_have_distinct_commitments() {
     let first_path = TestPath::new();
     let second_path = TestPath::new();
-    let first_authority = Arc::new(MemoryRollbackAuthority::default());
-    let second_authority = Arc::new(MemoryRollbackAuthority::default());
-    let first = create_store(&first_path.database, first_authority);
-    let second = create_store(&second_path.database, second_authority);
+    let first = create_store(&first_path.database);
+    let second = create_store(&second_path.database);
     let proposed = intent();
     let recovery = replacement_recovery();
 
@@ -563,8 +460,7 @@ fn exact_cashu_grants_from_equal_predecessors_have_distinct_commitments() {
 #[test]
 fn grant_nonce_failure_rolls_back_cashu_custody_and_state() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let proposed = intent();
     store
         .insert_cashu_swap_intent_v1(&proposed, limits())
@@ -604,83 +500,9 @@ fn grant_nonce_failure_rolls_back_cashu_custody_and_state() {
 }
 
 #[test]
-fn lost_submit_cas_response_recovers_as_submitted_without_new_generation() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
-    let proposed = intent();
-    store
-        .insert_cashu_swap_intent_v1(&proposed, limits())
-        .unwrap();
-    authority.lose_response_at(2);
-
-    assert!(matches!(
-        store.begin_cashu_swap_submission_v1(&proposed.intent_id, 101),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 2,
-            ..
-        })
-    ));
-    assert_eq!(authority.floor().store_generation, 2);
-    drop(store);
-
-    let reopened = ProviderStore::open_existing(
-        &path.database,
-        PROVIDER,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    let recovered = reopened
-        .cashu_swap_intent_by_input_v1(&proposed.mint_id, &proposed.input_set_digest)
-        .unwrap()
-        .unwrap();
-    assert_eq!(recovered.state, CashuSwapIntentStateV1::Submitted);
-    assert!(!reopened
-        .begin_cashu_swap_submission_v1(&proposed.intent_id, 102)
-        .unwrap());
-    assert_eq!(reopened.identity().unwrap().store_generation, 2);
-}
-
-#[test]
-fn stale_prepared_backup_cannot_reenable_nut03_or_grant() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
-    let proposed = intent();
-    store
-        .insert_cashu_swap_intent_v1(&proposed, limits())
-        .unwrap();
-    copy_database_without_wal(&path.database, &path.backup);
-
-    store
-        .begin_cashu_swap_submission_v1(&proposed.intent_id, 101)
-        .unwrap();
-    store
-        .commit_cashu_swap_wallet_v1(&proposed.intent_id, &replacement_recovery(), 102)
-        .unwrap();
-    store
-        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &custody_lot(), 103)
-        .unwrap();
-    assert_eq!(authority.floor().store_generation, 4);
-    drop(store);
-
-    remove_sqlite_sidecars(&path.database);
-    std::fs::copy(&path.backup, &path.database).unwrap();
-    assert!(matches!(
-        ProviderStore::open_existing(&path.database, PROVIDER, StoreOptions::default(), authority,),
-        Err(StoreError::RollbackDetected {
-            database_generation: 1,
-            authority_generation: 4,
-        })
-    ));
-}
-
-#[test]
 fn prior_v6_schema_is_strictly_rejected_without_automatic_migration() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
+    let store = create_store(&path.database);
     drop(store);
     let connection = Connection::open(&path.database).unwrap();
     connection.pragma_update(None, "user_version", 6).unwrap();
@@ -694,7 +516,6 @@ fn prior_v6_schema_is_strictly_rejected_without_automatic_migration() {
             &path.database,
             PROVIDER,
             StoreOptions::default(),
-            authority,
         ),
         Err(StoreError::SchemaMismatch(message)) if message == "user_version is unsupported"
     ));
@@ -710,8 +531,7 @@ fn prior_v6_schema_is_strictly_rejected_without_automatic_migration() {
 #[test]
 fn prior_v5_schema_is_strictly_rejected_without_automatic_migration() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
+    let store = create_store(&path.database);
     drop(store);
     let connection = Connection::open(&path.database).unwrap();
     connection.pragma_update(None, "user_version", 5).unwrap();
@@ -728,7 +548,6 @@ fn prior_v5_schema_is_strictly_rejected_without_automatic_migration() {
             &path.database,
             PROVIDER,
             StoreOptions::default(),
-            authority,
         ),
         Err(StoreError::SchemaMismatch(message)) if message == "user_version is unsupported"
     ));

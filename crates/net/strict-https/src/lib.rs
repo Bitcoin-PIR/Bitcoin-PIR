@@ -877,7 +877,7 @@ fn parse_http_response_v1(
             return Err(HttpsPostErrorV1::InvalidResponse);
         }
     }
-    // The payment and rollback-authority protocols all define HTTP 200 as the
+    // The payment protocols all define HTTP 200 as the
     // sole transport success status. Treating another 2xx as success would let
     // an edge or intermediary silently change the protocol contract.
     let expected_content_type = if status == 200 {

@@ -3,7 +3,6 @@ use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
-    IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
     StoreOptions,
 };
 use pir_lightning_backend::{
@@ -19,91 +18,13 @@ use pir_service_protocol::{
 };
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 use tempfile::{Builder, TempDir};
 
 const NOW: u64 = 1_700_000_000;
 const STORE_INSTANCE: [u8; 16] = [0x31; 16];
 const EXACT_AMOUNT_MSAT: u64 = 100_000;
-
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthority {
-    floor: Mutex<Option<IssuerRollbackFloorV1>>,
-    unavailable: AtomicBool,
-    reject_next_advance: AtomicBool,
-}
-
-impl MemoryRollbackAuthority {
-    fn set_unavailable(&self, value: bool) {
-        self.unavailable.store(value, Ordering::SeqCst);
-    }
-
-    fn reject_next_advance(&self) {
-        self.reject_next_advance.store(true, Ordering::SeqCst);
-    }
-
-    fn ensure_available(&self) -> Result<(), IssuerRollbackFloorAuthorityErrorV1> {
-        if self.unavailable.load(Ordering::SeqCst) {
-            Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected authority outage",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl IssuerRollbackFloorAuthorityV1 for MemoryRollbackAuthority {
-    fn load(
-        &self,
-        _issuer_id: &[u8; 32],
-        _network: LightningNetworkV1,
-    ) -> Result<Option<IssuerRollbackFloorV1>, IssuerRollbackFloorAuthorityErrorV1> {
-        self.ensure_available()?;
-        Ok(*self.floor.lock().expect("rollback floor mutex"))
-    }
-
-    fn initialize(
-        &self,
-        initial: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        self.ensure_available()?;
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        floor.ok_or_else(|| IssuerRollbackFloorAuthorityErrorV1::new("missing floor"))
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &IssuerRollbackFloorV1,
-        next: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        self.ensure_available()?;
-        if self.reject_next_advance.swap(false, Ordering::SeqCst) {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected advance outage",
-            ));
-        }
-        if next.store_generation != expected.store_generation.saturating_add(1)
-            || next.store_instance_id != expected.store_instance_id
-            || next.issuer_id != expected.issuer_id
-            || next.network != expected.network
-            || next.schema_version != expected.schema_version
-        {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "invalid floor transition",
-            ));
-        }
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        floor.ok_or_else(|| IssuerRollbackFloorAuthorityErrorV1::new("missing floor"))
-    }
-}
 
 #[derive(Debug)]
 struct SequentialQuoteIds {
@@ -442,7 +363,6 @@ type TestCore = Bolt11IssuerCoreV1<RecordingBackend, SequentialQuoteIds>;
 struct Harness {
     _directory: TempDir,
     database: PathBuf,
-    authority: Arc<MemoryRollbackAuthority>,
     backend: Arc<RecordingBackend>,
     quote_ids: Arc<SequentialQuoteIds>,
     fixture: QuoteFixture,
@@ -463,7 +383,6 @@ impl Harness {
                 .expect("restrict temporary directory permissions");
         }
         let database = directory.path().join("issuer.sqlite3");
-        let authority = Arc::new(MemoryRollbackAuthority::default());
         let backend = Arc::new(RecordingBackend::new(node_time));
         let fixture = QuoteFixture::new(backend.payee_pubkey(), 0x44, 4, 0x45);
         let store = IssuerStore::create(
@@ -472,7 +391,6 @@ impl Harness {
             fixture.issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            authority.clone(),
         )
         .expect("create issuer store");
         let quote_ids = Arc::new(SequentialQuoteIds::new(0x51));
@@ -484,7 +402,6 @@ impl Harness {
         Self {
             _directory: directory,
             database,
-            authority,
             backend,
             quote_ids,
             fixture,
@@ -499,7 +416,6 @@ impl Harness {
             self.fixture.issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            self.authority.clone(),
         )
         .expect("reopen issuer store");
         Arc::new(Bolt11IssuerCoreV1::new(
@@ -1061,31 +977,6 @@ fn wrong_signer_and_conflicting_verified_delegation_fail_before_rebinding() {
         IssuerCoreErrorV1::PermanentMismatch
     );
     assert_eq!(harness.record().delegation_epoch, 4);
-}
-
-#[test]
-fn rollback_authority_failure_is_distinct_and_never_acknowledged() {
-    let harness = Harness::new(NOW);
-    harness.authority.reject_next_advance();
-    assert_eq!(
-        expect_core_error(harness.core.create_or_recover_quote(
-            &harness.fixture.verified_intent(NOW),
-            &harness.fixture.quote_key,
-            NOW,
-        )),
-        IssuerCoreErrorV1::StoreUnanchored
-    );
-
-    let fresh = Harness::new(NOW);
-    fresh.authority.set_unavailable(true);
-    assert_eq!(
-        expect_core_error(fresh.core.create_or_recover_quote(
-            &fresh.fixture.verified_intent(NOW),
-            &fresh.fixture.quote_key,
-            NOW,
-        )),
-        IssuerCoreErrorV1::StoreUnanchored
-    );
 }
 
 #[test]

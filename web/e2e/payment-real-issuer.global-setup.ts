@@ -131,17 +131,12 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     }
 
     const storeParent = join(runtimeRoot, 'store');
-    const floorParent = join(runtimeRoot, 'floor');
     await mkdir(storeParent, { mode: 0o700 });
-    await mkdir(floorParent, { mode: 0o700 });
     const store = join(storeParent, 'issuer.sqlite');
-    const rollbackAuthority = join(floorParent, 'rollback.sqlite');
     runChecked(cargoDebugBinary('payment-issuer'), [
       'init-store',
       '--store',
       store,
-      '--rollback-authority',
-      rollbackAuthority,
       '--issuer-id-hex',
       provider.issuer_id,
       '--network',
@@ -158,8 +153,6 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       webOrigin,
       '--store',
       store,
-      '--rollback-authority',
-      rollbackAuthority,
       '--quote-delegation',
       quoteDelegation,
       '--quote-signing-key',

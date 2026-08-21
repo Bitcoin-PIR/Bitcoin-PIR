@@ -12,19 +12,6 @@ pub enum StoreError {
     StoreInstanceMismatch,
     IssuerMismatch,
     NetworkMismatch,
-    RollbackFloorMissing,
-    RollbackFloorIdentityMismatch,
-    RollbackDetected {
-        database_generation: u64,
-        authority_generation: u64,
-    },
-    RollbackFork,
-    RollbackAuthorityProtocol(String),
-    RollbackAuthorityUnavailable(String),
-    UnanchoredCommit {
-        store_generation: u64,
-        authority_error: String,
-    },
     QuoteMissing,
     QuoteProtocolMismatch,
     QuoteConflict,
@@ -115,36 +102,6 @@ impl fmt::Display for StoreError {
             Self::StoreInstanceMismatch => write!(f, "issuer store instance identity mismatch"),
             Self::IssuerMismatch => write!(f, "issuer database identity mismatch"),
             Self::NetworkMismatch => write!(f, "issuer database Lightning network mismatch"),
-            Self::RollbackFloorMissing => {
-                write!(f, "independently durable issuer rollback floor is missing")
-            }
-            Self::RollbackFloorIdentityMismatch => {
-                write!(f, "issuer rollback floor belongs to a different store identity")
-            }
-            Self::RollbackDetected {
-                database_generation,
-                authority_generation,
-            } => write!(
-                f,
-                "issuer database rollback detected (database generation {database_generation}, authority floor {authority_generation})"
-            ),
-            Self::RollbackFork => write!(
-                f,
-                "issuer database and rollback authority conflict at one generation"
-            ),
-            Self::RollbackAuthorityProtocol(reason) => {
-                write!(f, "issuer rollback authority contract violation: {reason}")
-            }
-            Self::RollbackAuthorityUnavailable(reason) => {
-                write!(f, "issuer rollback authority unavailable: {reason}")
-            }
-            Self::UnanchoredCommit {
-                store_generation,
-                authority_error,
-            } => write!(
-                f,
-                "issuer-store generation {store_generation} committed but is not externally anchored: {authority_error}"
-            ),
             Self::QuoteMissing => write!(f, "quote is missing"),
             Self::QuoteProtocolMismatch => {
                 write!(f, "quote or claim belongs to a different acquisition protocol")

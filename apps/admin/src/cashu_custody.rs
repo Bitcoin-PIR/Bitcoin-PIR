@@ -28,8 +28,7 @@ use pir_service_store::{
     CashuCustodyRetirementCheckableSnapshotV1, CashuCustodyRetirementCompletedSnapshotV1,
     CashuCustodyRetirementNoteCheckV1, CashuCustodyRetirementNoteStateV1,
     CashuCustodyRetirementSnapshotRequestV1, CashuCustodyRetirementSnapshotV1,
-    CashuCustodySpentConfirmationRequestV1, NewCashuCustodyExportV1, ProviderStore,
-    RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    CashuCustodySpentConfirmationRequestV1, NewCashuCustodyExportV1, ProviderStore, StoreOptions,
     MAX_CASHU_CUSTODY_EXPORT_LOTS_V1,
 };
 use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
@@ -40,7 +39,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -109,9 +107,6 @@ struct ProviderStoreArgs {
     /// Existing owner-only provider admission/custody SQLite file.
     #[arg(long)]
     store: PathBuf,
-    /// Existing separate local SQLite rollback floor file.
-    #[arg(long)]
-    rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     busy_timeout_ms: u64,
@@ -1365,26 +1360,12 @@ fn open_provider_store(args: &ProviderStoreArgs) -> Result<(ProviderStore, [u8; 
         "provider store",
     )?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
-    let authority_path = crate::service_store_init::validate_existing_private_file_path(
-        &args.rollback_authority,
-        "provider rollback authority",
-    )?;
-    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
-        return Err(
-            "provider store and rollback authority resolve to the same file/inode".to_owned(),
-        );
-    }
-    let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
-        SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-            .map_err(|error| format!("open provider rollback authority: {error}"))?,
-    );
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
         StoreOptions {
             busy_timeout: timeout,
         },
-        authority,
     )
     .map_err(|error| format!("open provider store: {error}"))?;
     Ok((store, provider_id))
@@ -2195,8 +2176,6 @@ mod tests {
             &provider_id,
             "--store",
             "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
             "--export-id-hex",
             &export_id,
             "--artifact-digest-hex",
@@ -2207,20 +2186,6 @@ mod tests {
             panic!("wrong subcommand");
         };
         assert!(!args.confirm_external_wallet_took_custody_not_settlement);
-
-        assert!(TestCli::try_parse_from([
-            "cashu-custody",
-            "acknowledge",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-            "--export-id-hex",
-            &export_id,
-            "--artifact-digest-hex",
-            &artifact_digest,
-        ])
-        .is_err());
         let parsed = TestCli::try_parse_from([
             "cashu-custody",
             "spent-confirm",
@@ -2228,8 +2193,6 @@ mod tests {
             &provider_id,
             "--store",
             "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
             "--export-id-hex",
             &export_id,
         ])
@@ -2597,24 +2560,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let store_parent = root.join("provider-store");
-        let floor_parent = root.join("provider-floor");
         fs::create_dir(&store_parent).unwrap();
-        fs::create_dir(&floor_parent).unwrap();
         fs::set_permissions(&store_parent, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::set_permissions(&floor_parent, fs::Permissions::from_mode(0o700)).unwrap();
         let store = store_parent.join("admission.sqlite3");
-        let rollback_authority = floor_parent.join("floor.sqlite3");
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode(provider_id),
             store: store.clone(),
-            rollback_authority: rollback_authority.clone(),
             busy_timeout_ms: 1_000,
         })
         .unwrap();
         let args = ProviderStoreArgs {
             provider_id_hex: hex::encode(provider_id),
             store,
-            rollback_authority,
             busy_timeout_ms: 1_000,
         };
         let opened = open_provider_store(&args).unwrap().0;

@@ -16,7 +16,7 @@ use pir_service_protocol::{
     TrustedCatalogResolutionV1, VerificationMode, VerifiedServiceOfferV1, WorkloadId,
 };
 use pir_service_store::{
-    ProviderStore, RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1,
+    ProviderStore,
     StoreOptions,
 };
 
@@ -26,80 +26,11 @@ use crate::dto::{
     CashuProofStateEntryJsonV1,
 };
 
-#[derive(Debug, Default)]
-struct ProviderStoreTestAuthorityV1 {
-    floor: Mutex<Option<RollbackFloorV1>>,
-    lose_response_at_generation: AtomicU64,
-}
-
-impl ProviderStoreTestAuthorityV1 {
-    fn lose_response_at(&self, generation: u64) {
-        self.lose_response_at_generation
-            .store(generation, Ordering::SeqCst);
-    }
-
-    fn floor(&self) -> RollbackFloorV1 {
-        self.floor.lock().unwrap().unwrap()
-    }
-}
-
-impl RollbackFloorAuthorityV1 for ProviderStoreTestAuthorityV1 {
-    fn load(
-        &self,
-        _provider_id: &[u8; 32],
-    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().unwrap())
-    }
-
-    fn initialize(
-        &self,
-        initial: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        Ok(floor.unwrap())
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &RollbackFloorV1,
-        next: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        let current = floor
-            .ok_or_else(|| RollbackFloorAuthorityErrorV1::new("rollback floor disappeared"))?;
-        if next.store_generation != 0
-            && self
-                .lose_response_at_generation
-                .compare_exchange(next.store_generation, 0, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
-        {
-            return Err(RollbackFloorAuthorityErrorV1::new(
-                "injected lost CAS response",
-            ));
-        }
-        Ok(current)
-    }
-}
-
 fn create_provider_store_for_fixture(
     path: &std::path::Path,
     provider_id: [u8; 32],
-    authority: Arc<ProviderStoreTestAuthorityV1>,
 ) -> ProviderStore {
-    ProviderStore::create(
-        path,
-        [0xd1; 16],
-        provider_id,
-        StoreOptions::default(),
-        authority,
-    )
-    .unwrap()
+    ProviderStore::create(path, [0xd1; 16], provider_id, StoreOptions::default()).unwrap()
 }
 
 fn private_provider_store_tempdir_v1() -> tempfile::TempDir {
@@ -1330,7 +1261,6 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
     let fixture = fixture(3);
     let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
-    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
     let mint = FakeMintTransportV1::new(
         SwapReply::Normal,
         RestoreReply::Stored,
@@ -1338,11 +1268,8 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
     );
     let cipher = TestRecoveryCipherV1::default();
     {
-        let store = create_provider_store_for_fixture(
-            &path,
-            fixture.policy.provider_id,
-            Arc::clone(&authority),
-        );
+        let store =
+            create_provider_store_for_fixture(&path, fixture.policy.provider_id);
         let progress = client(&store, &mint, &cipher)
             .start_swap(
                 &fixture.spend,
@@ -1363,7 +1290,6 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
         &path,
         fixture.policy.provider_id,
         StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
     let replay = client(&reopened, &mint, &cipher)
@@ -1378,8 +1304,6 @@ fn production_provider_store_adapter_completes_once_and_survives_restart() {
         .unwrap();
     assert!(matches!(replay, CashuSwapProgressV1::AlreadyGranted { .. }));
     assert_eq!(mint.calls(), (1, 0, 0));
-    assert_eq!(authority.floor().store_generation, 4);
-    assert_eq!(authority.floor().spend_commit_seq, 1);
 }
 
 #[test]
@@ -1413,12 +1337,7 @@ fn runtime_admission_committer_consumes_a_bound_standard_cashu_attempt_once() {
 
     let directory = private_provider_store_tempdir_v1();
     let path = directory.path().join("provider.sqlite3");
-    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
-    let store = create_provider_store_for_fixture(
-        &path,
-        fixture.policy.provider_id,
-        Arc::clone(&authority),
-    );
+    let store = create_provider_store_for_fixture(&path, fixture.policy.provider_id);
     let mint = FakeMintTransportV1::new(
         SwapReply::Normal,
         RestoreReply::Stored,
@@ -1465,190 +1384,6 @@ fn runtime_admission_committer_consumes_a_bound_standard_cashu_attempt_once() {
         AuthResultV1::Rejected(rejected) if rejected.code == AuthRejectCode::InvalidOrSpent
     ));
     assert_eq!(mint.calls(), (1, 0, 0));
-}
-
-#[test]
-fn lost_submit_anchor_response_never_causes_nut03_side_effect_or_retry() {
-    let fixture = fixture(1);
-    let directory = private_provider_store_tempdir_v1();
-    let path = directory.path().join("provider.sqlite3");
-    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
-    let mint = FakeMintTransportV1::new(
-        SwapReply::Normal,
-        RestoreReply::Empty,
-        CheckReply::Uniform(CashuProofStateJsonV1::Unspent),
-    );
-    let cipher = TestRecoveryCipherV1::default();
-    {
-        let store = create_provider_store_for_fixture(
-            &path,
-            fixture.policy.provider_id,
-            Arc::clone(&authority),
-        );
-        // PREPARED is generation 1. The authority durably accepts generation
-        // 2 (SUBMITTED) but the caller loses that CAS response. The adapter
-        // must treat the error as a hard prohibition on sending NUT-03.
-        authority.lose_response_at(2);
-        assert_eq!(
-            client(&store, &mint, &cipher).start_swap(
-                &fixture.spend,
-                &fixture.checked,
-                &fixture.verified_offer(),
-                &fixture.manifest,
-                output_materials(1, 0),
-                100,
-            ),
-            Err(CashuClientErrorV1::StoreUnavailable)
-        );
-        assert_eq!(mint.calls(), (0, 0, 0));
-        assert_eq!(authority.floor().store_generation, 2);
-    }
-
-    let reopened = ProviderStore::open_existing(
-        &path,
-        fixture.policy.provider_id,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    let progress = client(&reopened, &mint, &cipher)
-        .start_swap(
-            &fixture.spend,
-            &fixture.checked,
-            &fixture.verified_offer(),
-            &fixture.manifest,
-            output_materials(1, 40),
-            200,
-        )
-        .unwrap();
-    assert!(matches!(
-        progress,
-        CashuSwapProgressV1::RecoveryPending {
-            observation: CashuRecoveryObservationV1::InputsUnspentObserved,
-            ..
-        }
-    ));
-    // Recovery uses only NUT-09 then NUT-07. NUT-03 stays at zero forever.
-    assert_eq!(mint.calls(), (0, 1, 1));
-    assert_eq!(reopened.identity().unwrap().store_generation, 2);
-}
-
-#[test]
-fn lost_wallet_commit_anchor_response_recovers_notes_without_second_nut03() {
-    let fixture = fixture(1);
-    let directory = private_provider_store_tempdir_v1();
-    let path = directory.path().join("provider.sqlite3");
-    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
-    let mint = FakeMintTransportV1::new(
-        SwapReply::Normal,
-        RestoreReply::Stored,
-        CheckReply::Uniform(CashuProofStateJsonV1::Spent),
-    );
-    let cipher = TestRecoveryCipherV1::default();
-    {
-        let store = create_provider_store_for_fixture(
-            &path,
-            fixture.policy.provider_id,
-            Arc::clone(&authority),
-        );
-        // Generation 3 stores the fully verified/unblinded provider notes.
-        authority.lose_response_at(3);
-        assert_eq!(
-            client(&store, &mint, &cipher).start_swap(
-                &fixture.spend,
-                &fixture.checked,
-                &fixture.verified_offer(),
-                &fixture.manifest,
-                output_materials(1, 0),
-                100,
-            ),
-            Err(CashuClientErrorV1::StoreUnavailable)
-        );
-        assert_eq!(mint.calls(), (1, 0, 0));
-        assert_eq!(authority.floor().store_generation, 3);
-    }
-
-    let reopened = ProviderStore::open_existing(
-        &path,
-        fixture.policy.provider_id,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    let progress = client(&reopened, &mint, &cipher)
-        .resume_swap(
-            &fixture.spend,
-            &fixture.checked,
-            &fixture.verified_offer(),
-            &fixture.manifest,
-            200,
-        )
-        .unwrap();
-    assert!(matches!(progress, CashuSwapProgressV1::Grant(_)));
-    assert_eq!(mint.calls(), (1, 0, 0));
-    let identity = reopened.identity().unwrap();
-    assert_eq!(identity.store_generation, 4);
-    assert_eq!(identity.spend_commit_seq, 1);
-}
-
-#[test]
-fn lost_grant_claim_anchor_response_never_reissues_grant_or_nut03() {
-    let fixture = fixture(1);
-    let directory = private_provider_store_tempdir_v1();
-    let path = directory.path().join("provider.sqlite3");
-    let authority = Arc::new(ProviderStoreTestAuthorityV1::default());
-    let mint = FakeMintTransportV1::new(
-        SwapReply::Normal,
-        RestoreReply::Stored,
-        CheckReply::Uniform(CashuProofStateJsonV1::Spent),
-    );
-    let cipher = TestRecoveryCipherV1::default();
-    {
-        let store = create_provider_store_for_fixture(
-            &path,
-            fixture.policy.provider_id,
-            Arc::clone(&authority),
-        );
-        // The grant claim is generation 4 and the only Cashu mutation which
-        // also advances spend_commit_seq. A lost response must return no grant.
-        authority.lose_response_at(4);
-        assert_eq!(
-            client(&store, &mint, &cipher).start_swap(
-                &fixture.spend,
-                &fixture.checked,
-                &fixture.verified_offer(),
-                &fixture.manifest,
-                output_materials(1, 0),
-                100,
-            ),
-            Err(CashuClientErrorV1::StoreUnavailable)
-        );
-        assert_eq!(mint.calls(), (1, 0, 0));
-        assert_eq!(authority.floor().store_generation, 4);
-        assert_eq!(authority.floor().spend_commit_seq, 1);
-    }
-
-    let reopened = ProviderStore::open_existing(
-        &path,
-        fixture.policy.provider_id,
-        StoreOptions::default(),
-        Arc::clone(&authority) as Arc<dyn RollbackFloorAuthorityV1>,
-    )
-    .unwrap();
-    let replay = client(&reopened, &mint, &cipher)
-        .resume_swap(
-            &fixture.spend,
-            &fixture.checked,
-            &fixture.verified_offer(),
-            &fixture.manifest,
-            200,
-        )
-        .unwrap();
-    assert!(matches!(replay, CashuSwapProgressV1::AlreadyGranted { .. }));
-    assert_eq!(mint.calls(), (1, 0, 0));
-    let identity = reopened.identity().unwrap();
-    assert_eq!(identity.store_generation, 4);
-    assert_eq!(identity.spend_commit_seq, 1);
 }
 
 #[test]

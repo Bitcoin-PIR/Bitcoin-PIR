@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use zeroize::Zeroize;
 
@@ -46,7 +45,7 @@ pub struct StoreIdentity {
     pub spend_commit_seq: u64,
     /// Previous generation's rolling commitment. Zero only at generation 0.
     pub rollback_parent_commitment: [u8; 32],
-    /// Rolling commitment anchored by an independent rollback-floor authority.
+    /// Rolling commitment maintained as internal same-database bookkeeping.
     pub rollback_commitment: [u8; 32],
     pub schema_version: u32,
 }
@@ -828,5 +827,4 @@ pub(crate) struct StoreHandle {
     pub path: PathBuf,
     pub expected_provider_id: [u8; 32],
     pub options: StoreOptions,
-    pub rollback_authority: Option<Arc<dyn crate::RollbackFloorAuthorityV1>>,
 }

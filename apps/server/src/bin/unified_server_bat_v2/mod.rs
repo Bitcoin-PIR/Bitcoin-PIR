@@ -1,7 +1,7 @@
 //! Closed, payment-storeless BAT V2 configuration module for `unified_server`.
 //!
-//! This module deliberately has no `ProviderStore`, rollback authority,
-//! idempotency key, or V1 shared-issuer adapter.  The current policy, every
+//! This module deliberately has no `ProviderStore`, idempotency key, or V1
+//! shared-issuer adapter.  The current policy, every
 //! retained policy, and every issuer class are immutable release inputs with
 //! explicit digest pins.
 

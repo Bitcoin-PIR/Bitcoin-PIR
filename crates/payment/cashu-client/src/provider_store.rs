@@ -198,11 +198,7 @@ fn map_provider_store_error(error: StoreError) -> CashuSwapStoreErrorV1 {
         StoreError::SchemaMismatch(_)
         | StoreError::IntegrityCheckFailed(_)
         | StoreError::ProviderMismatch
-        | StoreError::RollbackFloorMissing
-        | StoreError::RollbackFloorIdentityMismatch
-        | StoreError::RollbackDetected { .. }
-        | StoreError::RollbackFork
-        | StoreError::RollbackAuthorityProtocol(_) => CashuSwapStoreErrorV1::Corrupt,
+        | StoreError::RollbackFork => CashuSwapStoreErrorV1::Corrupt,
         _ => CashuSwapStoreErrorV1::Unavailable,
     }
 }

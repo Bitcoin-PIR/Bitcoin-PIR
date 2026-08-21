@@ -4,8 +4,7 @@ use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
     BatKeyLineageRegistration, BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimWrite,
     BatV2ClearingEpochReservationV2, BatV2QuoteReservation, ClaimCryptographicVerificationInput,
-    ClaimWrite, DelegationAdvance, IssuerRollbackFloorAuthorityErrorV1,
-    IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1, IssuerStore,
+    ClaimWrite, DelegationAdvance, IssuerStore,
     ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
     QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
     SettlementKeyLineageRegistration, StoreError, StoreOptions, WriteDisposition, SCHEMA_VERSION,
@@ -32,152 +31,15 @@ use pir_service_protocol::{
     VerifiedBatV2RedeemCommitV2, WorkloadId, BOLT11_QUOTE_SIGNATURE_DOMAIN,
 };
 use rusqlite::Connection;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
 use tempfile::{Builder, TempDir};
 
 const STORE_INSTANCE: [u8; 16] = [0x11; 16];
 
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthority {
-    floor: Mutex<Option<IssuerRollbackFloorV1>>,
-    unavailable: AtomicBool,
-    lose_next_advance_response: AtomicBool,
-    reject_next_advance: AtomicBool,
-    load_calls: AtomicUsize,
-    fail_on_load_call: AtomicUsize,
-    compare_and_advance_calls: AtomicUsize,
-}
-
-impl MemoryRollbackAuthority {
-    fn floor(&self) -> Option<IssuerRollbackFloorV1> {
-        *self.floor.lock().expect("rollback floor mutex")
-    }
-
-    fn set_floor(&self, floor: IssuerRollbackFloorV1) {
-        *self.floor.lock().expect("rollback floor mutex") = Some(floor);
-    }
-
-    fn set_unavailable(&self, unavailable: bool) {
-        self.unavailable.store(unavailable, Ordering::SeqCst);
-    }
-
-    fn lose_next_advance_response(&self) {
-        self.lose_next_advance_response
-            .store(true, Ordering::SeqCst);
-    }
-
-    fn reject_next_advance(&self) {
-        self.reject_next_advance.store(true, Ordering::SeqCst);
-    }
-
-    fn compare_and_advance_calls(&self) -> usize {
-        self.compare_and_advance_calls.load(Ordering::SeqCst)
-    }
-
-    fn fail_load_after(&self, successful_loads: usize) {
-        let target = self
-            .load_calls
-            .load(Ordering::SeqCst)
-            .checked_add(successful_loads)
-            .and_then(|value| value.checked_add(1))
-            .expect("load-call target");
-        self.fail_on_load_call.store(target, Ordering::SeqCst);
-    }
-
-    fn check_available(&self) -> Result<(), IssuerRollbackFloorAuthorityErrorV1> {
-        if self.unavailable.load(Ordering::SeqCst) {
-            Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected authority outage",
-            ))
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl IssuerRollbackFloorAuthorityV1 for MemoryRollbackAuthority {
-    fn load(
-        &self,
-        _issuer_id: &[u8; 32],
-        _network: LightningNetworkV1,
-    ) -> Result<Option<IssuerRollbackFloorV1>, IssuerRollbackFloorAuthorityErrorV1> {
-        self.check_available()?;
-        let call = self.load_calls.fetch_add(1, Ordering::SeqCst) + 1;
-        if self
-            .fail_on_load_call
-            .compare_exchange(call, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected load failure",
-            ));
-        }
-        Ok(self.floor())
-    }
-
-    fn initialize(
-        &self,
-        initial: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        self.check_available()?;
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        floor.ok_or_else(|| {
-            IssuerRollbackFloorAuthorityErrorV1::new("floor disappeared during initialize")
-        })
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &IssuerRollbackFloorV1,
-        next: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        self.check_available()?;
-        self.compare_and_advance_calls
-            .fetch_add(1, Ordering::SeqCst);
-        if self.reject_next_advance.swap(false, Ordering::SeqCst) {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected pre-advance CAS failure",
-            ));
-        }
-        if next.store_generation != expected.store_generation.saturating_add(1)
-            || next.store_instance_id != expected.store_instance_id
-            || next.issuer_id != expected.issuer_id
-            || next.network != expected.network
-            || next.schema_version != expected.schema_version
-        {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "invalid authority CAS transition",
-            ));
-        }
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        let current = floor.ok_or_else(|| {
-            IssuerRollbackFloorAuthorityErrorV1::new("floor disappeared during CAS")
-        })?;
-        if self
-            .lose_next_advance_response
-            .swap(false, Ordering::SeqCst)
-        {
-            return Err(IssuerRollbackFloorAuthorityErrorV1::new(
-                "injected lost CAS response",
-            ));
-        }
-        Ok(current)
-    }
-}
-
 struct TestPath {
     _directory: TempDir,
     database: PathBuf,
-    backup: PathBuf,
-    authority: Arc<MemoryRollbackAuthority>,
 }
 
 impl TestPath {
@@ -194,8 +56,6 @@ impl TestPath {
         }
         let database = directory.path().join("issuer.sqlite3");
         Self {
-            backup: directory.path().join("issuer-backup.sqlite3"),
-            authority: Arc::new(MemoryRollbackAuthority::default()),
             _directory: directory,
             database,
         }
@@ -614,7 +474,6 @@ fn create_store(path: &TestPath) -> IssuerStore {
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        path.authority.clone(),
     )
     .expect("create issuer store")
 }
@@ -625,26 +484,7 @@ fn open_store(path: &TestPath) -> Result<IssuerStore, StoreError> {
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        path.authority.clone(),
     )
-}
-
-fn copy_database_without_wal(source: &Path, destination: &Path) {
-    let connection = Connection::open(source).expect("open backup source");
-    connection
-        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_row| Ok(()))
-        .expect("checkpoint backup source");
-    drop(connection);
-    std::fs::copy(source, destination).expect("copy database");
-}
-
-fn remove_sqlite_sidecars(path: &Path) {
-    for suffix in ["-wal", "-shm"] {
-        let sidecar = PathBuf::from(format!("{}{}", path.display(), suffix));
-        if sidecar.exists() {
-            std::fs::remove_file(sidecar).expect("remove SQLite sidecar");
-        }
-    }
 }
 
 fn delegation(epoch: u64, quote_key_byte: u8) -> Bolt11QuoteKeyDelegationV1 {
@@ -1558,12 +1398,6 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
     assert_eq!(inventory.bat_v2_class_member_rows, 0);
     assert_eq!(inventory.redemption_rows, 0);
     assert_eq!(inventory.payout_rows, 0);
-    let floor = test_path.authority.floor().unwrap();
-    assert_eq!(floor.store_instance_id, identity.store_instance_id);
-    assert_eq!(floor.issuer_id, identity.issuer_id);
-    assert_eq!(floor.network, identity.network);
-    assert_eq!(floor.store_generation, identity.commit_seq);
-    assert_eq!(floor.rollback_commitment, identity.rollback_commitment);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1583,7 +1417,6 @@ fn explicit_create_open_identity_schema_and_privacy_boundary() {
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        test_path.authority.clone(),
     )
     .is_err());
 
@@ -1989,248 +1822,6 @@ fn authenticated_status_nonce_window_is_bounded_per_quote_and_recovers_after_exp
 }
 
 #[test]
-fn stale_backup_restore_is_rejected_by_the_independent_authority() {
-    let live = TestPath::new();
-    let store = create_store(&live);
-    let reservation = reservation(0x3a, 0x87, &delegation(1, 0x22));
-    let _ = store.reserve_quote(&reservation).unwrap();
-    copy_database_without_wal(&live.database, &live.backup);
-
-    let _ = store
-        .finalize_quote(&finalization(0x3a, 0x4a, reservation.intent_digest))
-        .unwrap();
-    assert_eq!(live.authority.floor().unwrap().store_generation, 2);
-    drop(store);
-
-    remove_sqlite_sidecars(&live.database);
-    std::fs::copy(&live.backup, &live.database).unwrap();
-    assert!(matches!(
-        open_store(&live),
-        Err(StoreError::RollbackDetected {
-            database_generation: 1,
-            authority_generation: 2,
-        })
-    ));
-}
-
-#[test]
-fn backup_at_the_exact_issuer_generation_restores_normally() {
-    let live = TestPath::new();
-    let store = create_store(&live);
-    let reservation = reservation(0x4f, 0x97, &delegation(1, 0x22));
-    let _ = store.reserve_quote(&reservation).unwrap();
-    copy_database_without_wal(&live.database, &live.backup);
-    assert_eq!(live.authority.floor().unwrap().store_generation, 1);
-    drop(store);
-
-    remove_sqlite_sidecars(&live.database);
-    std::fs::copy(&live.backup, &live.database).unwrap();
-    let restored = open_store(&live).unwrap();
-    assert_eq!(restored.identity().unwrap().commit_seq, 1);
-    let inventory = restored.operational_inventory().unwrap();
-    assert_eq!(inventory.observed_commit_seq, 1);
-    assert_eq!(inventory.quote_rows, 1);
-    assert_eq!(
-        restored
-            .quote(&reservation.quote_id)
-            .unwrap()
-            .unwrap()
-            .intent_digest,
-        reservation.intent_digest
-    );
-}
-
-#[test]
-fn missing_or_wrong_external_floor_fails_closed() {
-    let path = TestPath::new();
-    let store = create_store(&path);
-    drop(store);
-
-    let missing = Arc::new(MemoryRollbackAuthority::default());
-    assert!(matches!(
-        IssuerStore::open_existing(
-            &path.database,
-            issuer_id(),
-            LightningNetworkV1::Regtest,
-            StoreOptions::default(),
-            missing,
-        ),
-        Err(StoreError::RollbackFloorMissing)
-    ));
-
-    let wrong = Arc::new(MemoryRollbackAuthority::default());
-    wrong.set_floor(IssuerRollbackFloorV1 {
-        store_instance_id: [0x99; 16],
-        issuer_id: issuer_id(),
-        network: LightningNetworkV1::Regtest,
-        store_generation: 0,
-        rollback_commitment: [0x88; 32],
-        schema_version: SCHEMA_VERSION,
-    });
-    assert!(matches!(
-        IssuerStore::open_existing(
-            &path.database,
-            issuer_id(),
-            LightningNetworkV1::Regtest,
-            StoreOptions::default(),
-            wrong,
-        ),
-        Err(StoreError::RollbackFloorIdentityMismatch)
-    ));
-}
-
-#[test]
-fn committed_but_unanchored_write_recovers_once_and_replays_without_advancing() {
-    let path = TestPath::new();
-    let store = create_store(&path);
-    let reservation = reservation(0x3d, 0x8b, &delegation(1, 0x22));
-    path.authority.reject_next_advance();
-
-    assert!(matches!(
-        store.reserve_quote(&reservation),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 1,
-            ..
-        })
-    ));
-    assert_eq!(path.authority.floor().unwrap().store_generation, 0);
-    let database_generation: i64 = Connection::open(&path.database)
-        .unwrap()
-        .query_row("SELECT commit_seq FROM store_identity", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(database_generation, 1);
-    assert_eq!(path.authority.compare_and_advance_calls(), 1);
-    drop(store);
-
-    let recovered = open_store(&path).unwrap();
-    assert_eq!(recovered.identity().unwrap().commit_seq, 1);
-    assert_eq!(path.authority.floor().unwrap().store_generation, 1);
-    assert_eq!(path.authority.compare_and_advance_calls(), 2);
-    let replay = recovered.reserve_quote(&reservation).unwrap();
-    assert_eq!(replay.disposition, WriteDisposition::ExactReplay);
-    assert_eq!(recovered.identity().unwrap().commit_seq, 1);
-    assert_eq!(path.authority.compare_and_advance_calls(), 2);
-}
-
-#[test]
-fn lost_cas_response_recovers_without_a_second_generation() {
-    let path = TestPath::new();
-    let store = create_store(&path);
-    let reservation = reservation(0x3e, 0x8c, &delegation(1, 0x22));
-    path.authority.lose_next_advance_response();
-
-    assert!(matches!(
-        store.reserve_quote(&reservation),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 1,
-            ..
-        })
-    ));
-    assert_eq!(path.authority.floor().unwrap().store_generation, 1);
-    assert_eq!(path.authority.compare_and_advance_calls(), 1);
-    drop(store);
-
-    let recovered = open_store(&path).unwrap();
-    assert_eq!(recovered.identity().unwrap().commit_seq, 1);
-    assert_eq!(path.authority.compare_and_advance_calls(), 1);
-    assert_eq!(
-        recovered.reserve_quote(&reservation).unwrap().disposition,
-        WriteDisposition::ExactReplay
-    );
-    assert_eq!(recovered.identity().unwrap().commit_seq, 1);
-}
-
-#[test]
-fn same_generation_fork_and_two_step_unanchored_advance_are_rejected() {
-    let same_generation = TestPath::new();
-    let store = create_store(&same_generation);
-    let _ = store
-        .reserve_quote(&reservation(0x3f, 0x8d, &delegation(1, 0x22)))
-        .unwrap();
-    drop(store);
-    Connection::open(&same_generation.database)
-        .unwrap()
-        .execute(
-            "UPDATE store_identity SET rollback_commitment = ?1 WHERE singleton = 1",
-            [[0xa5_u8; 32].as_slice()],
-        )
-        .unwrap();
-    assert!(matches!(
-        open_store(&same_generation),
-        Err(StoreError::RollbackFork)
-    ));
-
-    let two_step = TestPath::new();
-    let store = create_store(&two_step);
-    drop(store);
-    let initial = two_step.authority.floor().unwrap();
-    Connection::open(&two_step.database)
-        .unwrap()
-        .execute(
-            "UPDATE store_identity SET commit_seq = 2, rollback_parent_commitment = ?1, \
-             rollback_commitment = ?2 WHERE singleton = 1",
-            rusqlite::params![
-                initial.rollback_commitment.as_slice(),
-                [0xa6_u8; 32].as_slice()
-            ],
-        )
-        .unwrap();
-    assert!(matches!(
-        open_store(&two_step),
-        Err(StoreError::RollbackFork)
-    ));
-    assert_eq!(two_step.authority.floor().unwrap(), initial);
-}
-
-#[test]
-fn authority_outage_blocks_open_writes_reads_and_exact_replay() {
-    let path = TestPath::new();
-    let store = create_store(&path);
-    let reservation = reservation(0x40, 0x8e, &delegation(1, 0x22));
-    let _ = store.reserve_quote(&reservation).unwrap();
-    let generation = store.identity().unwrap().commit_seq;
-
-    path.authority.set_unavailable(true);
-    assert!(matches!(
-        open_store(&path),
-        Err(StoreError::RollbackAuthorityUnavailable(_))
-    ));
-    assert!(matches!(
-        store.quote(&reservation.quote_id),
-        Err(StoreError::RollbackAuthorityUnavailable(_))
-    ));
-    assert!(matches!(
-        store.reserve_quote(&reservation),
-        Err(StoreError::RollbackAuthorityUnavailable(_))
-    ));
-    path.authority.set_unavailable(false);
-    assert_eq!(store.identity().unwrap().commit_seq, generation);
-    assert_eq!(
-        store.reserve_quote(&reservation).unwrap().disposition,
-        WriteDisposition::ExactReplay
-    );
-}
-
-#[test]
-fn read_result_is_discarded_when_the_post_read_authority_check_fails() {
-    let path = TestPath::new();
-    let store = create_store(&path);
-    let reservation = reservation(0x49, 0x8f, &delegation(1, 0x22));
-    let _ = store.reserve_quote(&reservation).unwrap();
-
-    // A quote read performs two authority loads before its SELECT and two
-    // more before returning. Fail the first post-SELECT load.
-    path.authority.fail_load_after(2);
-    assert!(matches!(
-        store.quote(&reservation.quote_id),
-        Err(StoreError::RollbackAuthorityUnavailable(_))
-    ));
-    assert!(store.quote(&reservation.quote_id).unwrap().is_some());
-}
-
-#[test]
 fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink() {
     let missing = TestPath::new();
     assert!(matches!(
@@ -2239,7 +1830,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
             issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            missing.authority.clone(),
         ),
         Err(StoreError::MissingDatabase(_))
     ));
@@ -2252,7 +1842,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        corrupt.authority.clone(),
     )
     .is_err());
 
@@ -2264,7 +1853,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
             [0x99; 32],
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            wrong.authority.clone(),
         ),
         Err(StoreError::IssuerMismatch)
     ));
@@ -2274,7 +1862,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
             issuer_id(),
             LightningNetworkV1::Bitcoin,
             StoreOptions::default(),
-            wrong.authority.clone(),
         ),
         Err(StoreError::NetworkMismatch)
     ));
@@ -2291,7 +1878,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
             issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            schema.authority.clone(),
         ),
         Err(StoreError::SchemaMismatch(_))
     ));
@@ -2309,7 +1895,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
                 issuer_id(),
                 LightningNetworkV1::Regtest,
                 StoreOptions::default(),
-                target.authority.clone(),
             ),
             Err(StoreError::NotRegularDatabase(_))
         ));
@@ -2322,7 +1907,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
                 issuer_id(),
                 LightningNetworkV1::Regtest,
                 StoreOptions::default(),
-                target.authority.clone(),
             ),
             Err(StoreError::NotRegularDatabase(_))
         ));
@@ -2332,7 +1916,6 @@ fn serve_mode_rejects_missing_corrupt_wrong_identity_network_schema_and_symlink(
                 issuer_id(),
                 LightningNetworkV1::Regtest,
                 StoreOptions::default(),
-                target.authority.clone(),
             ),
             Err(StoreError::NotRegularDatabase(_))
         ));
@@ -2422,7 +2005,6 @@ fn quote_claim_exact_replay_state_versions_and_no_raw_idempotency_persistence() 
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        test_path.authority.clone(),
     )
     .unwrap();
     let mut late_replay = claim.clone();
@@ -2563,7 +2145,6 @@ fn signed_quote_corruption_is_rejected_on_restart_integrity_check() {
             issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            test_path.authority.clone(),
         ),
         Err(StoreError::SignedQuoteMismatch)
     ));
@@ -2729,7 +2310,6 @@ fn delegation_guard_rejects_rollback_and_same_epoch_fork_across_restart() {
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        test_path.authority.clone(),
     )
     .unwrap();
     assert_eq!(
@@ -2784,15 +2364,6 @@ fn concurrent_exact_quote_reservation_commits_once() {
         THREADS - 1
     );
     assert_eq!(store.identity().unwrap().commit_seq, 1);
-    assert_eq!(test_path.authority.floor().unwrap().store_generation, 1);
-    // A replaying thread may observe the committed SQLite generation before
-    // the committing thread anchors it and legitimately help complete that
-    // same CAS. The original writer then performs an idempotent CAS, so both
-    // one and two authority calls preserve a single durable generation.
-    assert!(matches!(
-        test_path.authority.compare_and_advance_calls(),
-        1 | 2
-    ));
 }
 
 #[test]
@@ -2901,7 +2472,6 @@ fn bat_and_settlement_key_lineages_are_immutable_and_survive_restart() {
         issuer_id(),
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        test_path.authority.clone(),
     )
     .unwrap();
     assert_eq!(
@@ -3369,7 +2939,6 @@ fn schema_extension_and_semantic_backend_label_corruption_fail_closed() {
             issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            extra.authority.clone(),
         ),
         Err(StoreError::SchemaMismatch(_))
     ));
@@ -3391,7 +2960,6 @@ fn schema_extension_and_semantic_backend_label_corruption_fail_closed() {
             issuer_id(),
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            semantic.authority.clone(),
         ),
         Err(StoreError::SchemaMismatch(_))
     ));

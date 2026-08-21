@@ -237,7 +237,7 @@ impl From<StoreError> for ServicePolicyActivationErrorV1 {
 }
 
 /// In-memory policy state produced only by [`activate_service_policy_v1`].
-/// The durable store remains authoritative for rollback floors; these cached
+/// The durable store remains authoritative for epoch floors; these cached
 /// values are an immutable snapshot for the lifetime of this server process.
 #[derive(Clone, Debug)]
 pub struct ActivatedServicePolicyV1 {
@@ -455,7 +455,7 @@ pub fn activate_retained_service_policy_v1(
 }
 
 /// Activate one exact, signed, provider-local Free proof-of-work policy without
-/// opening a ProviderStore or rollback authority.
+/// opening a ProviderStore.
 ///
 /// This deliberately narrow mode exists for measured, immutable deployments
 /// whose command line pins the exact canonical policy digest. The digest pin is
@@ -858,54 +858,10 @@ mod tests {
         DeploymentStatus, EntitlementLimitsV1, FreeModeV1, PriceV1, PrivacyLeakageV1,
         ServiceOfferV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
     };
-    use pir_service_store::{
-        RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1, StoreOptions,
-    };
+    use pir_service_store::StoreOptions;
     use tempfile::{tempdir, TempDir};
 
     use super::*;
-
-    #[derive(Debug, Default)]
-    struct MemoryFloor(Mutex<Option<RollbackFloorV1>>);
-
-    impl RollbackFloorAuthorityV1 for MemoryFloor {
-        fn initialize(
-            &self,
-            initial: &RollbackFloorV1,
-        ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-            let mut guard = self.0.lock().unwrap();
-            match *guard {
-                Some(current) if current != *initial => Err(RollbackFloorAuthorityErrorV1::new(
-                    "conflicting initial floor",
-                )),
-                Some(current) => Ok(current),
-                None => {
-                    *guard = Some(*initial);
-                    Ok(*initial)
-                }
-            }
-        }
-
-        fn load(
-            &self,
-            _provider_id: &[u8; 32],
-        ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-            Ok(*self.0.lock().unwrap())
-        }
-
-        fn compare_and_advance(
-            &self,
-            expected: &RollbackFloorV1,
-            next: &RollbackFloorV1,
-        ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-            let mut guard = self.0.lock().unwrap();
-            if guard.as_ref() != Some(expected) {
-                return Err(RollbackFloorAuthorityErrorV1::new("floor CAS conflict"));
-            }
-            *guard = Some(*next);
-            Ok(*next)
-        }
-    }
 
     fn private_tempdir() -> TempDir {
         let directory = tempdir().unwrap();
@@ -1141,7 +1097,6 @@ mod tests {
     fn activation_persists_head_and_rejects_rollback_or_noncanonical_bytes() {
         let dir = private_tempdir();
         let provider_id = [9; 32];
-        let authority = Arc::new(MemoryFloor::default());
         let store = ProviderStore::create(
             dir.path().join("provider.sqlite"),
             [1; 16],
@@ -1149,7 +1104,6 @@ mod tests {
             StoreOptions {
                 busy_timeout: Duration::from_secs(1),
             },
-            authority,
         )
         .unwrap();
         let signing = SigningKey::from_bytes(&[3; 32]);
@@ -1539,7 +1493,6 @@ mod tests {
     fn retained_activation_is_exact_redemption_only_and_restart_safe() {
         let dir = private_tempdir();
         let provider_id = [9; 32];
-        let authority = Arc::new(MemoryFloor::default());
         let store_path = dir.path().join("provider.sqlite");
         let options = StoreOptions {
             busy_timeout: Duration::from_secs(1),
@@ -1549,7 +1502,6 @@ mod tests {
             [1; 16],
             provider_id,
             options,
-            authority.clone(),
         )
         .unwrap();
         let signing = SigningKey::from_bytes(&[3; 32]);
@@ -1611,7 +1563,7 @@ mod tests {
 
         drop(store);
         let reopened =
-            ProviderStore::open_existing(&store_path, provider_id, options, authority).unwrap();
+            ProviderStore::open_existing(&store_path, provider_id, options).unwrap();
         let current_after_restart = activate_service_policy_v1(
             &current_bytes,
             provider_id,
@@ -1637,7 +1589,6 @@ mod tests {
             StoreOptions {
                 busy_timeout: Duration::from_secs(1),
             },
-            Arc::new(MemoryFloor::default()),
         )
         .unwrap();
         let signing = SigningKey::from_bytes(&[3; 32]);

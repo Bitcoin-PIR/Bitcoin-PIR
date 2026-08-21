@@ -135,7 +135,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) =
             read_intent_by_input(&transaction, &proposed.mint_id, &proposed.input_set_digest)?
@@ -191,7 +190,7 @@ impl ProviderStore {
             ],
         )?;
         let digest = intent_insert_digest(proposed);
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -200,7 +199,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuSwapIntentInsertV1 {
             inserted: true,
             intent: CashuSwapIntentV1 {
@@ -322,7 +320,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let intent = read_intent_by_id(&transaction, intent_id)?
             .ok_or(StoreError::CashuSwapIntentMissing)?;
 
@@ -426,7 +423,7 @@ impl ProviderStore {
 
         let digest =
             custody_grant_digest(&intent, proposed_lot, &note_fingerprints, updated_bucket);
-        let committed_identity = advance_grant_generation(
+        let _committed_identity = advance_grant_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -434,7 +431,6 @@ impl ProviderStore {
             &digest,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuSwapGrantClaimV1 {
             issued: true,
             lot: CashuCustodyLotV1 {
@@ -477,7 +473,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing = read_intent_by_id(&transaction, intent_id)?
             .ok_or(StoreError::CashuSwapIntentMissing)?;
 
@@ -534,7 +529,7 @@ impl ProviderStore {
             replacement_recovery,
             updated_bucket,
         );
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -543,7 +538,6 @@ impl ProviderStore {
             increment_spend_sequence,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -559,7 +553,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_custody_export(&transaction, &proposed.export_id)? {
             if existing.mint_id != proposed.mint_id
@@ -739,7 +732,7 @@ impl ProviderStore {
             settlement_value,
             note_count,
         );
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -748,7 +741,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuCustodyExportReservationV1 {
             reserved: true,
             batch: CashuCustodyExportBatchV1 {
@@ -785,7 +777,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing = read_custody_export(&transaction, export_id)?
             .ok_or(StoreError::CashuCustodyExportMissing)?;
         validate_export_batch_members(&transaction, &existing)?;
@@ -819,7 +810,7 @@ impl ProviderStore {
             return Err(StoreError::CashuCustodyStateConflict);
         }
         let digest = custody_export_artifact_digest(&existing, &artifact_digest, artifact);
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -828,7 +819,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         let mut batch = existing;
         batch.state = CashuCustodyExportStateV1::ArtifactStored;
         batch.artifact = Some(CashuCustodyExportArtifactV1 {
@@ -858,7 +848,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing = read_custody_export(&transaction, export_id)?
             .ok_or(StoreError::CashuCustodyExportMissing)?;
         validate_export_batch_members(&transaction, &existing)?;
@@ -900,7 +889,7 @@ impl ProviderStore {
             return Err(StoreError::CashuCustodyStateConflict);
         }
         let digest = custody_export_ack_digest(&existing, artifact_digest);
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -909,7 +898,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -930,7 +918,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let export = read_custody_export(&transaction, &request.export_id)?
             .ok_or(StoreError::CashuCustodyExportMissing)?;
         validate_export_batch_members(&transaction, &export)?;
@@ -1017,7 +1004,6 @@ impl ProviderStore {
         };
         insert_retirement_evidence(&transaction, &evidence)?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(CashuCustodySpentConfirmationV1 {
             confirmed: true,
             evidence,
@@ -1093,7 +1079,6 @@ impl ProviderStore {
         if checked_identity.store_instance_id != request.store_instance_id {
             return Err(StoreError::CashuCustodyRetirementFloorMismatch);
         }
-        let _ = self.require_exact_rollback_floor(&checked_identity)?;
 
         let mut batch_guard = RetirementBatchGuardV1(Some(
             read_custody_export(&transaction, &request.export_id)?
@@ -1175,7 +1160,6 @@ impl ProviderStore {
         // snapshot stale. Rechecking before return fails closed if the external
         // authority has already advanced; later mutations are caught by the
         // confirmation request's exact precondition.
-        let _ = self.require_exact_rollback_floor(&checked_identity)?;
         transaction.commit()?;
         Ok(snapshot)
     }

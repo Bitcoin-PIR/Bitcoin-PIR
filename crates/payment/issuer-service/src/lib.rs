@@ -2585,9 +2585,7 @@ fn map_store_error(error: StoreError) -> IssuerServiceErrorV1 {
         | StoreError::PayoutOutboxUnavailable
         | StoreError::QuoteCapacityExceeded
         | StoreError::StatusNonceCapacityExceeded => IssuerServiceErrorV1::RetryableUnavailable,
-        StoreError::CommitOutcomeUnknown(_) | StoreError::UnanchoredCommit { .. } => {
-            IssuerServiceErrorV1::OutcomeUnknown
-        }
+        StoreError::CommitOutcomeUnknown(_) => IssuerServiceErrorV1::OutcomeUnknown,
         StoreError::InvalidInput(_) | StoreError::Protocol(_) => {
             IssuerServiceErrorV1::InvalidRequest
         }

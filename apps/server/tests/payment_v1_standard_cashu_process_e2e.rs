@@ -39,7 +39,7 @@ use pir_service_protocol::{
     ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, StandardCashuMintManifestV1,
     StandardCashuProofV1, StandardCashuSpendV1, VerificationMode, WorkloadId,
 };
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{ProviderStore, StoreOptions};
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
@@ -96,7 +96,6 @@ struct ProviderFixture {
     policy_verifying_key: VerifyingKey,
     policy_path: PathBuf,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     recovery_key_path: Option<PathBuf>,
     custody_key_path: Option<PathBuf>,
     scope_id: [u8; 32],
@@ -901,20 +900,14 @@ fn build_real_cdk_provider(
 
     let provider_root = root.join(format!("provider-{index}"));
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
     let recovery_key_path = provider_root.join("cashu-recovery.key");
     let custody_key_path = provider_root.join("cashu-custody.key");
     write_private_file(&recovery_key_path, &[0x91u8.wrapping_add(index); 32]);
     write_private_file(&custody_key_path, &[0xa1u8.wrapping_add(index); 32]);
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let rollback =
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
     let store = ProviderStore::create(
         &store_path,
         [0xc1u8.wrapping_add(index); 16],
@@ -922,12 +915,10 @@ fn build_real_cdk_provider(
         StoreOptions {
             busy_timeout: Duration::from_secs(1),
         },
-        Arc::new(rollback),
     )
     .unwrap();
     drop(store);
     chmod(&store_path, 0o600);
-    chmod(&rollback_path, 0o600);
 
     ProviderFixture {
         index,
@@ -936,7 +927,6 @@ fn build_real_cdk_provider(
         policy_verifying_key,
         policy_path,
         store_path,
-        rollback_path,
         recovery_key_path: Some(recovery_key_path),
         custody_key_path: Some(custody_key_path),
         scope_id,
@@ -957,12 +947,9 @@ fn build_provider(
 ) -> ProviderFixture {
     let provider_root = root.join(format!("provider-{index}"));
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let operator_key = SigningKey::from_bytes(&[0x10u8.wrapping_add(index); 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x30u8.wrapping_add(index); 32]);
@@ -1116,9 +1103,6 @@ fn build_provider(
     chmod(&policy_path, 0o644);
 
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let rollback =
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
     let store = ProviderStore::create(
         &store_path,
         [0xb1u8.wrapping_add(index); 16],
@@ -1126,12 +1110,10 @@ fn build_provider(
         StoreOptions {
             busy_timeout: Duration::from_secs(1),
         },
-        Arc::new(rollback),
     )
     .unwrap();
     drop(store);
     chmod(&store_path, 0o600);
-    chmod(&rollback_path, 0o600);
 
     ProviderFixture {
         index,
@@ -1140,7 +1122,6 @@ fn build_provider(
         policy_verifying_key: policy_signing_key.verifying_key(),
         policy_path,
         store_path,
-        rollback_path,
         recovery_key_path,
         custody_key_path,
         scope_id,
@@ -1205,8 +1186,6 @@ fn spawn_server(
         hex::encode(fixture.policy_verifying_key.to_bytes()),
         "--service-store".to_owned(),
         fixture.store_path.to_str().unwrap().to_owned(),
-        "--service-rollback-authority".to_owned(),
-        fixture.rollback_path.to_str().unwrap().to_owned(),
         "--max-connections".to_owned(),
         "24".to_owned(),
         "--service-max-concurrent-auth".to_owned(),

@@ -2,7 +2,6 @@ use super::*;
 use pir_arc_adapter::{ArcSecretKeyV1, ArcSecretKeyringV1, ARC_SECRET_KEY_LEN_V1};
 use pir_issuer_store::{
     issuer_payout_outbox_command_id_v1, verify_shared_issuer_redeem_v1, BatKeyLineageRegistration,
-    IssuerRollbackFloorAuthorityErrorV1, IssuerRollbackFloorAuthorityV1, IssuerRollbackFloorV1,
     IssuerStore, ProviderSettlementRegistrationWriteV1, SettlementKeyLineageRegistration,
     StoreError, StoreOptions, VerifiedRedeemCommitV1, WriteDisposition,
 };
@@ -44,48 +43,9 @@ const PROVIDER_ID: [u8; 32] = [0x31; 32];
 const SCOPE_ID: [u8; 32] = [0x32; 32];
 const ACCOUNT_ID: [u8; 32] = [0x33; 32];
 
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthorityV1 {
-    floor: Mutex<Option<IssuerRollbackFloorV1>>,
-}
-
-impl IssuerRollbackFloorAuthorityV1 for MemoryRollbackAuthorityV1 {
-    fn load(
-        &self,
-        _issuer_id: &[u8; 32],
-        _network: LightningNetworkV1,
-    ) -> Result<Option<IssuerRollbackFloorV1>, IssuerRollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().expect("rollback floor mutex"))
-    }
-
-    fn initialize(
-        &self,
-        initial: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        floor.ok_or_else(|| IssuerRollbackFloorAuthorityErrorV1::new("missing test floor"))
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &IssuerRollbackFloorV1,
-        next: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().expect("rollback floor mutex");
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        floor.ok_or_else(|| IssuerRollbackFloorAuthorityErrorV1::new("missing test floor"))
-    }
-}
-
 struct Fixture {
     _directory: TempDir,
     database: PathBuf,
-    rollback: Arc<MemoryRollbackAuthorityV1>,
     store: IssuerStore,
     issuer_root: SigningKey,
     operator: SigningKey,
@@ -110,7 +70,6 @@ impl Fixture {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
             .expect("restrict test directory permissions");
         let database = directory.path().join("issuer.sqlite3");
-        let rollback = Arc::new(MemoryRollbackAuthorityV1::default());
         let issuer_root = SigningKey::from_bytes(&[0x21; 32]);
         let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
         let store = IssuerStore::create(
@@ -119,7 +78,6 @@ impl Fixture {
             issuer_id,
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            rollback.clone(),
         )
         .expect("create issuer store");
 
@@ -246,7 +204,6 @@ impl Fixture {
         Self {
             _directory: directory,
             database,
-            rollback,
             store,
             issuer_root,
             operator,
@@ -616,7 +573,6 @@ fn bat_ledger_redeem_is_atomic_idempotent_and_restart_safe() {
         fixture.binding.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        fixture.rollback.clone(),
     )
     .expect("reopen issuer store");
     assert_eq!(
@@ -950,7 +906,6 @@ fn payout_reservation_outbox_restart_and_success_are_atomic() {
         fixture.binding.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        fixture.rollback.clone(),
     )
     .expect("reopen issuer before outbox claim");
     let first_claim = reopened
@@ -1649,7 +1604,6 @@ fn ambiguous_submission_is_only_reconciled_and_never_submitted_twice() {
         fixture.binding.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        fixture.rollback.clone(),
     )
     .expect("reopen issuer after ambiguous submission");
     let recovery_executor = ScriptedPayoutExecutorV1::ready(
@@ -1937,7 +1891,6 @@ fn terminal_clock_deferral_recovers_by_reconciliation_without_resubmit() {
         fixture.binding.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        fixture.rollback.clone(),
     )
     .expect("reopen terminal-deferral store");
     let executor = ScriptedPayoutExecutorV1::ready(
@@ -2191,7 +2144,6 @@ fn crash_after_in_flight_commit_restarts_in_reconcile_only_mode() {
         fixture.binding.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        fixture.rollback.clone(),
     )
     .expect("reopen after simulated worker crash");
     // A submit outcome is deliberately configured, so the assertion proves
@@ -2345,7 +2297,6 @@ fn two_concurrent_workers_submit_at_most_once() {
     let mut joins = Vec::new();
     for worker_byte in [0xb3, 0xb4] {
         let database = fixture.database.clone();
-        let rollback = fixture.rollback.clone();
         let issuer_id = fixture.binding.issuer_id;
         let barrier = barrier.clone();
         let submit_calls = submit_calls.clone();
@@ -2357,7 +2308,6 @@ fn two_concurrent_workers_submit_at_most_once() {
                 issuer_id,
                 LightningNetworkV1::Regtest,
                 StoreOptions::default(),
-                rollback,
             )
             .expect("open concurrent worker store");
             let signing_key = SigningKey::from_bytes(&[0x25; 32]);

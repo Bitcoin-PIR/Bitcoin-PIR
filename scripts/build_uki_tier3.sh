@@ -129,7 +129,7 @@ export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
 # The public signed policy is part of the measured production identity.  It is
 # not a credential key or issuer secret.  Requiring an explicit input prevents
 # a release from silently falling back to an older mutable-rootfs policy whose
-# epoch has already been superseded by the rollback authority.
+# epoch has already been superseded by a newer accepted epoch.
 [ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ] || {
     echo "error: BPIR_TIER3_SERVICE_POLICY is required for a production Tier 3 UKI" >&2
     exit 1

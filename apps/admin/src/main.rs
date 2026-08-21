@@ -19,8 +19,7 @@
 //! - `service-keygen`, `payment-artifact`, and `service-policy` — offline
 //!   Payment V1 key generation, canonical artifact construction, and policy
 //!   signing without a listener or Lightning backend.
-//! - `service-store-init` — explicitly create a provider admission store and
-//!   its independently configured rollback-floor authority.
+//! - `service-store-init` — explicitly create a provider admission store.
 //! - `service-store-check` — run the serving-equivalent provider-store open
 //!   and report aggregate startup/SLO counters without starting a listener.
 //! - `cashu-custody` — owner-only standard-Cashu custody inventory, export,
@@ -104,11 +103,10 @@ enum Command {
     /// Generate a role-labelled service/payment key without printing secrets.
     #[command(name = "service-keygen")]
     ServiceKeygen(service_keygen::ServiceKeygenArgs),
-    /// Create a provider store with exactly one local-dev or remote authority.
+    /// Explicitly create a provider admission store.
     #[command(name = "service-store-init")]
     ServiceStoreInit(service_store_init::ServiceStoreInitArgs),
-    /// Fail-closed provider store/selected rollback-floor startup and SLO check.
-    /// May reconcile one legitimate unanchored successor, like serving startup.
+    /// Fail-closed provider-store startup and SLO check without a listener.
     #[command(name = "service-store-check")]
     ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
     /// Owner-only standard-Cashu custody operations. Only explicit
@@ -330,8 +328,6 @@ mod cli_tests {
             &provider_id,
             "--store",
             "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreInit(_)));
@@ -341,8 +337,6 @@ mod cli_tests {
             "service-store-init",
             "--provider-id-hex",
             &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
         ])
         .is_err());
     }
@@ -357,8 +351,6 @@ mod cli_tests {
             &provider_id,
             "--store",
             "/private/provider.sqlite3",
-            "--rollback-authority",
-            "/independent/floor.sqlite3",
         ])
         .unwrap();
         assert!(matches!(parsed.command, Command::ServiceStoreCheck(_)));
@@ -368,8 +360,6 @@ mod cli_tests {
             "service-store-check",
             "--provider-id-hex",
             &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
         ])
         .is_err());
     }

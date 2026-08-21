@@ -182,7 +182,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) =
             read_provider_registration(&transaction, self, &candidate.provider_id)?
@@ -287,7 +286,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .provider_settlement_registration(&candidate.provider_id)?
             .ok_or_else(|| {
@@ -309,7 +307,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_provider_registration(&connection, self, provider_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Reads one retained provider registration by its canonical digest.
@@ -335,7 +333,7 @@ impl IssuerStore {
             provider_id,
             registration_digest,
         )?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Persists the operator authorization and issuer countersignature. An
@@ -367,7 +365,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) =
             read_clearing_authorization(&transaction, self, &authorization_digest)?
@@ -454,7 +451,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .clearing_authorization(&authorization_digest)?
             .ok_or_else(|| {
@@ -478,7 +474,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_clearing_authorization(&connection, self, authorization_digest)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Read-before-live-verification path for exact HTTP recovery. A reused
@@ -500,7 +496,7 @@ impl IssuerStore {
                 return Err(StoreError::RedeemIdempotencyConflict);
             }
         }
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Atomically marks the credential globally spent, writes a balanced
@@ -533,7 +529,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_redeem(&transaction, self, &idempotency_digest)? {
             if existing.request_digest == request_digest
@@ -655,7 +650,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .redeem_by_idempotency(request)?
             .ok_or_else(|| StoreError::SchemaMismatch("committed redeem missing".to_owned()))?;
@@ -675,7 +669,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_provider_balance(&connection, self, provider_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn settlement_deposit_by_idempotency(
@@ -695,7 +689,7 @@ impl IssuerStore {
                 return Err(StoreError::SettlementDepositIdempotencyConflict);
             }
         }
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Atomically consumes every verified blind settlement note and transfers
@@ -738,7 +732,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_settlement_deposit(&transaction, self, &idempotency_digest)? {
             if existing.request_digest == request_digest
@@ -866,7 +859,6 @@ impl IssuerStore {
             )?;
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .settlement_deposit_by_idempotency(request)?
             .ok_or_else(|| {

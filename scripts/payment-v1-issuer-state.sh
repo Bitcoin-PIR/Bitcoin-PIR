@@ -2,7 +2,7 @@
 # Thin offline wrapper around payment-issuer state initialization and checks.
 set -euo pipefail
 usage() { cat <<'EOF'
-usage: scripts/payment-v1-issuer-state.sh <init|check> --store PATH --issuer-id-hex HEX --network NETWORK --rollback-authority PATH [--dry-run]
+usage: scripts/payment-v1-issuer-state.sh <init|check> --store PATH --issuer-id-hex HEX --network NETWORK [--dry-run]
 
 NETWORK is bitcoin, testnet, signet, or regtest.  `init` creates fresh issuer
 state; `check` runs the startup-equivalent check.  --dry-run validates only the
@@ -36,7 +36,7 @@ require_one_value() {
     fi
   done
 }
-for required in --store --issuer-id-hex --network --rollback-authority; do require_one_value "$required"; done
+for required in --store --issuer-id-hex --network; do require_one_value "$required"; done
 cmd_name=$([[ "$action" == init ]] && echo init-store || echo check-store)
 cmd=(cargo run --locked --offline -p payment-issuer -- "$cmd_name" "${args[@]}")
 if ((dry_run)); then

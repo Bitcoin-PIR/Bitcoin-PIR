@@ -14,7 +14,6 @@ mod error;
 mod offer_namespace;
 mod rollback;
 mod schema;
-mod sqlite_rollback;
 mod types;
 
 pub use admission::{
@@ -31,11 +30,6 @@ pub use offer_namespace::{
     OFFER_NAMESPACE_BINDING_DIGEST_DOMAIN_V1, OFFER_NAMESPACE_ID_DOMAIN_V1,
     OFFER_NAMESPACE_LINEAGE_DIGEST_DOMAIN_V1,
 };
-pub use rollback::{
-    RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1,
-    ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1, ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1,
-};
-pub use sqlite_rollback::SqliteRollbackFloorAuthorityV1;
 pub use types::{
     CashuCustodyExportArtifactPersistV1, CashuCustodyExportArtifactV1, CashuCustodyExportBatchV1,
     CashuCustodyExportReservationV1, CashuCustodyExportStateV1, CashuCustodyExposureLimitsV1,
@@ -67,7 +61,6 @@ use std::convert::TryFrom;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
-use std::sync::Arc;
 
 const MAX_BUSY_TIMEOUT_MILLIS: u128 = 60_000;
 const MAX_KEY_ID_BYTES: usize = 66;
@@ -100,28 +93,15 @@ impl ProviderStore {
     /// the exact same store identity may retry; the authority record is never
     /// silently rebound or lowered. If failure occurs after file creation, the
     /// incomplete file remains for explicit operator inspection.
+    /// Explicitly creates a new provider store and refuses an existing path.
+    ///
+    /// If failure occurs after file creation, the incomplete file remains for
+    /// explicit operator inspection.
     pub fn create(
         path: impl AsRef<Path>,
         store_instance_id: [u8; 16],
         provider_id: [u8; 32],
         options: StoreOptions,
-        rollback_authority: Arc<dyn RollbackFloorAuthorityV1>,
-    ) -> StoreResult<Self> {
-        Self::create_internal(
-            path,
-            store_instance_id,
-            provider_id,
-            options,
-            Some(rollback_authority),
-        )
-    }
-
-    fn create_internal(
-        path: impl AsRef<Path>,
-        store_instance_id: [u8; 16],
-        provider_id: [u8; 32],
-        options: StoreOptions,
-        rollback_authority: Option<Arc<dyn RollbackFloorAuthorityV1>>,
     ) -> StoreResult<Self> {
         validate_options(options)?;
         if is_zero(&store_instance_id) {
@@ -136,25 +116,11 @@ impl ProviderStore {
         }
 
         let initial_commitment = rollback::initial_commitment(&store_instance_id, &provider_id);
-        if let Some(authority) = rollback_authority.as_ref() {
-            if path.exists() {
-                return Err(StoreError::Io(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "provider database path already exists",
-                )));
-            }
-            let expected = RollbackFloorV1 {
-                store_instance_id,
-                provider_id,
-                store_generation: 0,
-                spend_commit_seq: 0,
-                rollback_commitment: initial_commitment,
-                schema_version: SCHEMA_VERSION,
-            };
-            let initialized = authority
-                .initialize(&expected)
-                .map_err(|error| StoreError::RollbackAuthorityUnavailable(error.to_string()))?;
-            validate_exact_floor(&initialized, &expected)?;
+        if path.exists() {
+            return Err(StoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "provider database path already exists",
+            )));
         }
 
         let file = pir_private_files::create_new_private_file_v1(&path, "provider database")
@@ -167,7 +133,6 @@ impl ProviderStore {
             path,
             expected_provider_id: provider_id,
             options,
-            rollback_authority,
         };
         let mut connection = open_raw_existing(&handle.path)?;
         configure_connection(&connection, options)?;
@@ -214,25 +179,12 @@ impl ProviderStore {
     /// Opens and fully validates an existing store. It never creates a file or
     /// performs a schema migration. A missing authority record is fatal and is
     /// never reconstructed from this database.
+    /// Opens and fully validates an existing store. It never creates a file
+    /// or performs a schema migration.
     pub fn open_existing(
         path: impl AsRef<Path>,
         expected_provider_id: [u8; 32],
         options: StoreOptions,
-        rollback_authority: Arc<dyn RollbackFloorAuthorityV1>,
-    ) -> StoreResult<Self> {
-        Self::open_existing_internal(
-            path,
-            expected_provider_id,
-            options,
-            Some(rollback_authority),
-        )
-    }
-
-    fn open_existing_internal(
-        path: impl AsRef<Path>,
-        expected_provider_id: [u8; 32],
-        options: StoreOptions,
-        rollback_authority: Option<Arc<dyn RollbackFloorAuthorityV1>>,
     ) -> StoreResult<Self> {
         validate_options(options)?;
         if is_zero(&expected_provider_id) {
@@ -243,30 +195,10 @@ impl ProviderStore {
                 path: path.as_ref().to_path_buf(),
                 expected_provider_id,
                 options,
-                rollback_authority,
             },
         };
         let _ = store.open_checked(true)?;
         Ok(store)
-    }
-
-    #[cfg(test)]
-    fn create_unprotected_for_tests(
-        path: impl AsRef<Path>,
-        store_instance_id: [u8; 16],
-        provider_id: [u8; 32],
-        options: StoreOptions,
-    ) -> StoreResult<Self> {
-        Self::create_internal(path, store_instance_id, provider_id, options, None)
-    }
-
-    #[cfg(test)]
-    fn open_existing_unprotected_for_tests(
-        path: impl AsRef<Path>,
-        expected_provider_id: [u8; 32],
-        options: StoreOptions,
-    ) -> StoreResult<Self> {
-        Self::open_existing_internal(path, expected_provider_id, options, None)
     }
 
     pub fn path(&self) -> &Path {
@@ -278,9 +210,9 @@ impl ProviderStore {
         read_identity(&connection)
     }
 
-    /// Returns aggregate row counts after rechecking the independent rollback
-    /// authority. This supports startup SLO/capacity observation without
-    /// exposing spend keys, subjects, namespaces, or protocol transcripts.
+    /// Returns aggregate row counts. This supports startup SLO/capacity
+    /// observation without exposing spend keys, subjects, namespaces, or
+    /// protocol transcripts.
     pub fn operational_inventory(&self) -> StoreResult<ProviderStoreOperationalInventoryV1> {
         let connection = self.open_checked(false)?;
         let raw: (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = connection.query_row(
@@ -328,7 +260,6 @@ impl ProviderStore {
                 "negative Cashu custody retirement evidence row count",
             )?,
         };
-        self.reconcile_rollback_floor(&connection)?;
         Ok(inventory)
     }
 
@@ -392,7 +323,6 @@ impl ProviderStore {
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
 
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_namespace(&transaction, &namespace.namespace_id)? {
             if existing.scheme != namespace.scheme
@@ -520,7 +450,7 @@ impl ProviderStore {
                 &lineage_digest,
             ],
         );
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -529,7 +459,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(NamespaceInstallOutcome::Installed)
     }
 
@@ -542,7 +471,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let namespace =
             read_namespace(&transaction, namespace_id)?.ok_or(StoreError::NamespaceMissing)?;
         if namespace.status == NamespaceStatus::Closed {
@@ -553,7 +481,7 @@ impl ProviderStore {
             params![NamespaceStatus::Closed as i64, namespace_id.as_slice()],
         )?;
         let digest = mutation_digest(b"close-namespace-v1", &[namespace_id]);
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -562,7 +490,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(NamespaceCloseOutcome::Closed)
     }
 
@@ -639,7 +566,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let (status, not_after): (i64, i64) = transaction
             .query_row(
@@ -702,8 +628,6 @@ impl ProviderStore {
             });
         }
 
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
-
         Ok(SpendCommit {
             spend_commit_seq: committed_identity.spend_commit_seq,
         })
@@ -735,7 +659,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let highest_now: i64 = transaction.query_row(
             "SELECT highest_now FROM free_ip_rate_limit_clock WHERE singleton = 1",
             [],
@@ -825,7 +748,7 @@ impl ProviderStore {
                 &next_count.to_le_bytes(),
             ],
         );
-        let committed_identity = advance_grant_generation(
+        let _committed_identity = advance_grant_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -833,7 +756,7 @@ impl ProviderStore {
             &digest,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)
+        Ok(())
     }
 
     /// Checks the provider-global spend key. Namespace is deliberately not part
@@ -874,7 +797,6 @@ impl ProviderStore {
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         verify_expected_provider(&transaction, &self.handle.expected_provider_id)?;
         let previous_identity = read_identity(&transaction)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let current = read_policy_head(&transaction, &self.handle.expected_provider_id)?;
         let outcome = match &current {
@@ -996,7 +918,7 @@ impl ProviderStore {
             )?;
         }
         let digest = policy_update_mutation_digest(update);
-        let committed_identity = advance_store_generation(
+        let _committed_identity = advance_store_generation(
             &transaction,
             &self.handle.expected_provider_id,
             &previous_identity,
@@ -1005,7 +927,6 @@ impl ProviderStore {
             false,
         )?;
         transaction.commit()?;
-        self.anchor_committed_identity(&connection, &previous_floor, &committed_identity)?;
         Ok(outcome)
     }
 
@@ -1150,7 +1071,6 @@ impl ProviderStore {
         configure_connection(&connection, self.handle.options)?;
         validate_schema(&connection)?;
         verify_expected_provider(&connection, &self.handle.expected_provider_id)?;
-        self.reconcile_rollback_floor(&connection)?;
         if run_integrity_check {
             let result: String =
                 connection.query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
@@ -1167,172 +1087,6 @@ impl ProviderStore {
         Ok(connection)
     }
 
-    fn reconcile_rollback_floor(&self, connection: &Connection) -> StoreResult<()> {
-        let Some(authority) = self.handle.rollback_authority.as_ref() else {
-            return Ok(());
-        };
-        // Double-collect the external record around the SQLite read. Without
-        // this, a healthy concurrent writer can commit and anchor between a
-        // stale DB read and the authority read, which resembles a rollback.
-        for _ in 0..8 {
-            let authority_before = authority
-                .load(&self.handle.expected_provider_id)
-                .map_err(|error| StoreError::RollbackAuthorityUnavailable(error.to_string()))?
-                .ok_or(StoreError::RollbackFloorMissing)?;
-            let identity = read_identity(connection)?;
-            let database_floor = RollbackFloorV1::from_identity(&identity);
-            let authority_after = authority
-                .load(&self.handle.expected_provider_id)
-                .map_err(|error| StoreError::RollbackAuthorityUnavailable(error.to_string()))?
-                .ok_or(StoreError::RollbackFloorMissing)?;
-            if authority_before != authority_after {
-                continue;
-            }
-            let authority_floor = authority_after;
-            authority_floor.validate()?;
-            validate_floor_identity(&authority_floor, &database_floor)?;
-
-            return match database_floor
-                .store_generation
-                .cmp(&authority_floor.store_generation)
-            {
-                std::cmp::Ordering::Less => Err(StoreError::RollbackDetected {
-                    database_generation: database_floor.store_generation,
-                    authority_generation: authority_floor.store_generation,
-                }),
-                std::cmp::Ordering::Equal => {
-                    validate_exact_floor(&authority_floor, &database_floor)
-                }
-                std::cmp::Ordering::Greater => {
-                    if database_floor.store_generation
-                        != authority_floor.store_generation.saturating_add(1)
-                        || identity.rollback_parent_commitment
-                            != authority_floor.rollback_commitment
-                        || database_floor.spend_commit_seq < authority_floor.spend_commit_seq
-                    {
-                        return Err(StoreError::RollbackFork);
-                    }
-                    let current = authority
-                        .compare_and_advance(&authority_floor, &database_floor)
-                        .map_err(|error| {
-                            StoreError::RollbackAuthorityUnavailable(error.to_string())
-                        })?;
-                    validate_exact_floor(&current, &database_floor)
-                }
-            };
-        }
-        Err(StoreError::RollbackAuthorityUnavailable(
-            "rollback floor changed continuously during checked open".to_owned(),
-        ))
-    }
-
-    /// Must run while the SQLite `BEGIN IMMEDIATE` write lock is held. This
-    /// closes the race between the checked open and a concurrent writer.
-    fn require_exact_rollback_floor(
-        &self,
-        identity: &StoreIdentity,
-    ) -> StoreResult<RollbackFloorV1> {
-        let database_floor = RollbackFloorV1::from_identity(identity);
-        let Some(authority) = self.handle.rollback_authority.as_ref() else {
-            return Ok(database_floor);
-        };
-        let current = authority
-            .load(&self.handle.expected_provider_id)
-            .map_err(|error| StoreError::RollbackAuthorityUnavailable(error.to_string()))?
-            .ok_or(StoreError::RollbackFloorMissing)?;
-        validate_floor_identity(&current, &database_floor)?;
-        if current == database_floor {
-            return Ok(current);
-        }
-        if database_floor.store_generation == current.store_generation.saturating_add(1)
-            && identity.rollback_parent_commitment == current.rollback_commitment
-            && database_floor.spend_commit_seq >= current.spend_commit_seq
-        {
-            let anchored = authority
-                .compare_and_advance(&current, &database_floor)
-                .map_err(|error| StoreError::RollbackAuthorityUnavailable(error.to_string()))?;
-            validate_exact_floor(&anchored, &database_floor)?;
-            return Ok(database_floor);
-        }
-        validate_exact_floor(&current, &database_floor)?;
-        Ok(current)
-    }
-
-    fn anchor_committed_identity(
-        &self,
-        connection: &Connection,
-        expected: &RollbackFloorV1,
-        committed: &StoreIdentity,
-    ) -> StoreResult<()> {
-        let Some(authority) = self.handle.rollback_authority.as_ref() else {
-            return Ok(());
-        };
-        let next = RollbackFloorV1::from_identity(committed);
-        let current = authority
-            .compare_and_advance(expected, &next)
-            .map_err(|error| StoreError::UnanchoredCommit {
-                store_generation: next.store_generation,
-                authority_error: error.to_string(),
-            })?;
-        if current == next {
-            return Ok(());
-        }
-        validate_floor_identity(&current, &next).map_err(|error| StoreError::UnanchoredCommit {
-            store_generation: next.store_generation,
-            authority_error: error.to_string(),
-        })?;
-
-        // A later writer on this exact SQLite file may reconcile and advance
-        // the linearizable floor after our COMMIT but before our CAS response.
-        // Confirm that superseding floor against the same still-open
-        // connection which committed `next`. Accepting an arbitrary higher
-        // authority floor would be unsafe: a cloned fork could have won and
-        // advanced instead.
-        if current.store_generation > next.store_generation
-            && current.spend_commit_seq >= next.spend_commit_seq
-        {
-            return self.reconcile_rollback_floor(connection).map_err(|error| {
-                StoreError::UnanchoredCommit {
-                    store_generation: next.store_generation,
-                    authority_error: error.to_string(),
-                }
-            });
-        }
-
-        validate_exact_floor(&current, &next).map_err(|error| StoreError::UnanchoredCommit {
-            store_generation: next.store_generation,
-            authority_error: error.to_string(),
-        })
-    }
-}
-
-fn validate_floor_identity(
-    actual: &RollbackFloorV1,
-    expected: &RollbackFloorV1,
-) -> StoreResult<()> {
-    actual.validate()?;
-    expected.validate()?;
-    if actual.provider_id != expected.provider_id
-        || actual.store_instance_id != expected.store_instance_id
-        || actual.schema_version != expected.schema_version
-    {
-        return Err(StoreError::RollbackFloorIdentityMismatch);
-    }
-    Ok(())
-}
-
-fn validate_exact_floor(actual: &RollbackFloorV1, expected: &RollbackFloorV1) -> StoreResult<()> {
-    validate_floor_identity(actual, expected)?;
-    if actual == expected {
-        return Ok(());
-    }
-    if actual.store_generation > expected.store_generation {
-        return Err(StoreError::RollbackDetected {
-            database_generation: expected.store_generation,
-            authority_generation: actual.store_generation,
-        });
-    }
-    Err(StoreError::RollbackFork)
 }
 
 fn open_raw_existing(path: &Path) -> StoreResult<Connection> {
@@ -1847,9 +1601,8 @@ fn grant_transition_nonce_unavailable() -> StoreError {
 }
 
 /// Advances a transition which directly authorizes service work. The fresh
-/// nonce makes the logical next rollback floor distinct across cloned SQLite
-/// files, so an exact mutation on two forks cannot both be confirmed by one
-/// linearizable authority CAS.
+/// nonce makes the next commit-chain entry distinct across cloned SQLite
+/// files, so forked copies produce diverging commitment lineages.
 fn advance_grant_generation(
     transaction: &rusqlite::Transaction<'_>,
     expected_provider_id: &[u8; 32],
@@ -2008,11 +1761,6 @@ mod low_level_store_tests {
 #[cfg(test)]
 mod verified_offer_namespace_tests {
     include!("../tests/verified_offer_namespace.rs");
-}
-
-#[cfg(test)]
-mod rollback_floor_tests {
-    include!("../tests/rollback_floor.rs");
 }
 
 #[cfg(test)]

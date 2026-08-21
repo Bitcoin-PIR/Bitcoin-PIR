@@ -8,10 +8,9 @@
 //! two independently minted notes through the real provider. This test keeps
 //! the second note for the native custody lifecycle, while independently
 //! validating Chromium's canonical first spend against the same policy. It
-//! then routes only the second spend through the real admission gate, standard-Cashu committer,
-//! production ProviderStore adapter/schema, and a test-only SQLite rollback
-//! floor. The floor is durable across reopen but is not an independent
-//! production rollback boundary. It proves replay rejection, consumed NUT-03
+//! then routes only the second spend through the real admission gate,
+//! standard-Cashu committer, and production ProviderStore adapter/schema.
+//! It proves replay rejection, consumed NUT-03
 //! inputs are `SPENT`, newly committed provider custody notes are `UNSPENT`,
 //! and a second independent BitcoinPIR
 //! client can spend that custody through another real NUT-03 swap without
@@ -25,8 +24,6 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 use ed25519_dalek::VerifyingKey;
 use pir_cashu_client::{
@@ -46,9 +43,7 @@ use pir_service_protocol::{
     OperationStartV1, PolicyRollbackGuardV1, ServicePolicyEpochFloorsV1, ServicePolicyV1,
     StandardCashuProofV1, StandardCashuSpendV1, TrustedCatalogResolutionV1,
 };
-use pir_service_store::{
-    ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
-};
+use pir_service_store::{ProviderStore, StoreOptions};
 use serde::{Deserialize, Deserializer, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -283,16 +278,11 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
             .expect("make native custody fixture root owner-only");
     }
     let store_path = directory.path().join("provider-store.sqlite");
-    let rollback_path = directory.path().join("provider-rollback.sqlite");
-    let rollback = Arc::new(
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap(),
-    );
     let store = ProviderStore::create(
         &store_path,
         [0x61; 16],
         expected_provider_id,
         StoreOptions::default(),
-        Arc::clone(&rollback) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
     let transport = CurlLoopbackTransportV1::new(actual_endpoint, signed_endpoint);
@@ -387,7 +377,6 @@ fn real_cdk_nut03_swap_verifies_dleq_and_commits_custody() {
         &store_path,
         expected_provider_id,
         StoreOptions::default(),
-        Arc::clone(&rollback) as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .unwrap();
     {

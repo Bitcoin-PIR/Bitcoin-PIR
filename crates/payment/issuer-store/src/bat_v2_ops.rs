@@ -70,7 +70,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let head: Option<(i64, Vec<u8>, Vec<u8>)> = transaction
             .query_row(
@@ -224,7 +223,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .bat_acceptance_class_v2(&artifact.class_id, artifact.key_epoch)?
             .ok_or_else(|| {
@@ -246,7 +244,7 @@ impl IssuerStore {
     ) -> StoreResult<Option<BatAcceptanceClassRecordV2>> {
         let connection = self.open_checked(false)?;
         let value = read_bat_acceptance_class_v2(&connection, self, class_id, key_epoch)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Reads the issuer-authoritative current key epoch for one stable class
@@ -278,7 +276,7 @@ impl IssuerStore {
                 })
             })
             .transpose()?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 }
 

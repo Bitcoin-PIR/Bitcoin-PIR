@@ -4,7 +4,7 @@ use pir_service_store::{
     CashuCustodyRetirementSnapshotRequestV1, CashuCustodyRetirementSnapshotV1,
     CashuCustodySealedBlobV1, CashuCustodySpentConfirmationRequestV1, CashuSwapSealedRecoveryV1,
     NewCashuCustodyExportV1, NewCashuCustodyLotV1, NewCashuSwapIntentV1, ProviderStore,
-    RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1, RollbackFloorV1, StoreError,
+    StoreError,
     StoreOptions, MAX_CASHU_CUSTODY_EXPORT_ARTIFACT_BYTES_V1,
     MAX_CASHU_CUSTODY_EXPORT_KEYSET_GROUPS_V1, MAX_CASHU_CUSTODY_EXPORT_NOTES_V1,
     MAX_CASHU_CUSTODY_NOTES_PER_LOT_V1,
@@ -12,68 +12,11 @@ use pir_service_store::{
 use rusqlite::Connection;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Barrier};
 use tempfile::{Builder, TempDir};
 
 const PROVIDER: [u8; 32] = [0xd1; 32];
 const STORE_INSTANCE: [u8; 16] = [0xd2; 16];
-
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthority {
-    floor: Mutex<Option<RollbackFloorV1>>,
-    lose_response_at_generation: AtomicU64,
-}
-
-impl MemoryRollbackAuthority {
-    fn lose_response_at(&self, generation: u64) {
-        self.lose_response_at_generation
-            .store(generation, Ordering::SeqCst);
-    }
-}
-
-impl RollbackFloorAuthorityV1 for MemoryRollbackAuthority {
-    fn load(
-        &self,
-        _provider_id: &[u8; 32],
-    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().unwrap())
-    }
-
-    fn initialize(
-        &self,
-        initial: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        Ok(floor.unwrap())
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &RollbackFloorV1,
-        next: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        let current = floor
-            .ok_or_else(|| RollbackFloorAuthorityErrorV1::new("rollback floor disappeared"))?;
-        if self
-            .lose_response_at_generation
-            .compare_exchange(next.store_generation, 0, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            return Err(RollbackFloorAuthorityErrorV1::new(
-                "injected lost CAS response",
-            ));
-        }
-        Ok(current)
-    }
-}
 
 struct TestPath {
     _directory: TempDir,
@@ -99,13 +42,12 @@ impl TestPath {
     }
 }
 
-fn create_store(path: &Path, authority: Arc<MemoryRollbackAuthority>) -> ProviderStore {
+fn create_store(path: &Path) -> ProviderStore {
     ProviderStore::create(
         path,
         STORE_INSTANCE,
         PROVIDER,
         StoreOptions::default(),
-        authority,
     )
     .unwrap()
 }
@@ -314,8 +256,7 @@ fn deliver_single_export(
 #[test]
 fn exposure_moves_from_intent_to_lot_and_only_spent_confirmation_releases_it() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let first = intent(0x11);
     let second = intent(0x21);
     store
@@ -410,8 +351,7 @@ fn exposure_moves_from_intent_to_lot_and_only_spent_confirmation_releases_it() {
 #[test]
 fn concurrent_prepares_cannot_cross_the_exposure_limit() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = Arc::new(create_store(&path.database, authority));
+    let store = Arc::new(create_store(&path.database));
     let barrier = Arc::new(Barrier::new(2));
     let workers = [intent(0x11), intent(0x21)]
         .into_iter()
@@ -441,8 +381,7 @@ fn concurrent_prepares_cannot_cross_the_exposure_limit() {
 #[test]
 fn exposure_limits_reject_zero_and_non_sqlite_values_before_new_or_replay() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let proposed = intent(0x11);
     let invalid_limits = [
         limits(0, 1),
@@ -476,8 +415,7 @@ fn exposure_limits_reject_zero_and_non_sqlite_values_before_new_or_replay() {
 #[test]
 fn grant_and_note_uniqueness_are_atomic_and_exact_replay_returns_first_lot() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let first = intent(0x11);
     let first_lot = lot(0x31, 0x41, 0x42);
     insert_and_grant(&store, &first, &first_lot);
@@ -529,8 +467,7 @@ fn grant_and_note_uniqueness_are_atomic_and_exact_replay_returns_first_lot() {
 #[test]
 fn export_reservation_artifact_and_acknowledgement_are_exact_and_monotonic() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     insert_and_grant(&store, &intent(0x11), &lot(0x31, 0x41, 0x42));
     insert_and_grant(&store, &intent(0x21), &lot(0x32, 0x51, 0x52));
 
@@ -653,8 +590,7 @@ fn export_reservation_artifact_and_acknowledgement_are_exact_and_monotonic() {
 #[test]
 fn spent_confirmation_is_atomic_exact_idempotent_and_survives_restart() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
+    let store = create_store(&path.database);
     let custody_lot = lot(0x31, 0x41, 0x42);
     let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
     let request = spent_confirmation(
@@ -718,7 +654,7 @@ fn spent_confirmation_is_atomic_exact_idempotent_and_survives_restart() {
     drop(store);
 
     let reopened =
-        ProviderStore::open_existing(&path.database, PROVIDER, StoreOptions::default(), authority)
+        ProviderStore::open_existing(&path.database, PROVIDER, StoreOptions::default())
             .unwrap();
     let replay_after_restart = reopened
         .confirm_cashu_custody_export_spent_v1(&request)
@@ -736,8 +672,7 @@ fn spent_confirmation_is_atomic_exact_idempotent_and_survives_restart() {
 #[test]
 fn owner_retirement_snapshot_is_exact_and_terminal_state_never_releases_secrets() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let proposed_intent = intent(0x11);
     let mut custody_lot = lot(0x31, 0x41, 0x42);
     insert_and_grant(&store, &proposed_intent, &custody_lot);
@@ -832,8 +767,7 @@ fn owner_retirement_snapshot_is_exact_and_terminal_state_never_releases_secrets(
 #[test]
 fn owner_retirement_snapshot_rejects_wrong_store_and_noncanonical_member_order() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let custody_lot = lot(0x31, 0x41, 0x42);
     let (export, _) = deliver_single_export(&store, 0x11, &custody_lot);
 
@@ -869,8 +803,7 @@ fn owner_retirement_snapshot_rejects_wrong_store_and_noncanonical_member_order()
 #[test]
 fn artifact_stored_snapshot_rejects_cross_table_tamper() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let proposed_intent = intent(0x11);
     let custody_lot = lot(0x31, 0x41, 0x42);
     insert_and_grant(&store, &proposed_intent, &custody_lot);
@@ -904,91 +837,9 @@ fn artifact_stored_snapshot_rejects_cross_table_tamper() {
 }
 
 #[test]
-fn old_snapshot_floor_is_stale_after_intervening_mutation_and_fresh_rebind_succeeds() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
-    let custody_lot = lot(0x31, 0x41, 0x42);
-    let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
-    let snapshot_request = retirement_snapshot_request(&store, export.export_id);
-    let snapshot = store
-        .cashu_custody_retirement_snapshot_owner_v1(&snapshot_request)
-        .unwrap();
-    let CashuCustodyRetirementSnapshotV1::Checkable(snapshot) = snapshot else {
-        panic!("delivery-acknowledged export did not return a checkable snapshot");
-    };
-    let old_identity = snapshot.checked_identity;
-    drop(snapshot);
-
-    let intervening = intent(0x21);
-    store
-        .insert_cashu_swap_intent_v1(&intervening, limits(1_000, 100))
-        .unwrap();
-    let stale = CashuCustodySpentConfirmationRequestV1 {
-        provider_id: old_identity.provider_id,
-        store_instance_id: old_identity.store_instance_id,
-        precondition_store_generation: old_identity.store_generation,
-        precondition_spend_commit_seq: old_identity.spend_commit_seq,
-        precondition_rollback_commitment: old_identity.rollback_commitment,
-        export_id: export.export_id,
-        artifact_digest,
-        member_lot_ids: vec![custody_lot.lot_id],
-        note_checks: custody_lot
-            .note_ys
-            .iter()
-            .map(|y| CashuCustodyRetirementNoteCheckV1 {
-                y: *y,
-                state: CashuCustodyRetirementNoteStateV1::Spent,
-            })
-            .collect(),
-        nut07_response_digest: [0xa7; 32],
-    };
-    assert!(matches!(
-        store.confirm_cashu_custody_export_spent_v1(&stale),
-        Err(StoreError::CashuCustodyRetirementFloorMismatch)
-    ));
-
-    let fresh_snapshot = store
-        .cashu_custody_retirement_snapshot_owner_v1(&snapshot_request)
-        .unwrap();
-    let CashuCustodyRetirementSnapshotV1::Checkable(fresh_snapshot) = fresh_snapshot else {
-        panic!("unretired export did not return a fresh checkable snapshot");
-    };
-    assert!(fresh_snapshot.checked_identity.store_generation > old_identity.store_generation);
-    let fresh_identity = fresh_snapshot.checked_identity;
-    drop(fresh_snapshot);
-    let rebound = CashuCustodySpentConfirmationRequestV1 {
-        provider_id: fresh_identity.provider_id,
-        store_instance_id: fresh_identity.store_instance_id,
-        precondition_store_generation: fresh_identity.store_generation,
-        precondition_spend_commit_seq: fresh_identity.spend_commit_seq,
-        precondition_rollback_commitment: fresh_identity.rollback_commitment,
-        export_id: export.export_id,
-        artifact_digest,
-        member_lot_ids: vec![custody_lot.lot_id],
-        note_checks: custody_lot
-            .note_ys
-            .iter()
-            .map(|y| CashuCustodyRetirementNoteCheckV1 {
-                y: *y,
-                state: CashuCustodyRetirementNoteStateV1::Spent,
-            })
-            .collect(),
-        nut07_response_digest: [0xa7; 32],
-    };
-    assert!(
-        store
-            .confirm_cashu_custody_export_spent_v1(&rebound)
-            .unwrap()
-            .confirmed
-    );
-}
-
-#[test]
 fn nonspent_missing_malformed_and_stale_checks_never_retire_custody() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let custody_lot = lot(0x31, 0x41, 0x42);
     let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
     let generation_before = store.identity().unwrap().store_generation;
@@ -1091,8 +942,7 @@ fn nonspent_missing_malformed_and_stale_checks_never_retire_custody() {
 #[test]
 fn concurrent_spent_confirmation_has_one_commit_and_one_exact_replay() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = Arc::new(create_store(&path.database, authority));
+    let store = Arc::new(create_store(&path.database));
     let custody_lot = lot(0x31, 0x41, 0x42);
     let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
     let requests = (0..2)
@@ -1139,48 +989,9 @@ fn concurrent_spent_confirmation_has_one_commit_and_one_exact_replay() {
 }
 
 #[test]
-fn lost_retirement_anchor_response_recovers_as_exact_idempotent_replay() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
-    let mut custody_lot = lot(0x31, 0x41, 0x42);
-    let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
-    let request = spent_confirmation(
-        &store,
-        export.export_id,
-        artifact_digest,
-        vec![custody_lot.lot_id],
-        std::mem::take(&mut custody_lot.note_ys),
-    );
-    let next_generation = store.identity().unwrap().store_generation + 1;
-    authority.lose_response_at(next_generation);
-    assert!(matches!(
-        store.confirm_cashu_custody_export_spent_v1(&request),
-        Err(StoreError::UnanchoredCommit {
-            store_generation,
-            ..
-        }) if store_generation == next_generation
-    ));
-    drop(store);
-
-    let reopened =
-        ProviderStore::open_existing(&path.database, PROVIDER, StoreOptions::default(), authority)
-            .unwrap();
-    let recovered = reopened
-        .confirm_cashu_custody_export_spent_v1(&request)
-        .unwrap();
-    assert!(!recovered.confirmed);
-    assert_eq!(
-        recovered.evidence.confirmed_store_generation,
-        next_generation
-    );
-}
-
-#[test]
 fn export_reservation_caps_notes_and_leaves_overflow_lots_available() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let lots_at_note_cap = MAX_CASHU_CUSTODY_EXPORT_NOTES_V1 / MAX_CASHU_CUSTODY_NOTES_PER_LOT_V1;
     assert_eq!(lots_at_note_cap * MAX_CASHU_CUSTODY_NOTES_PER_LOT_V1, 512);
 
@@ -1234,8 +1045,7 @@ fn export_reservation_caps_notes_and_leaves_overflow_lots_available() {
 #[test]
 fn export_reservation_caps_distinct_keysets_and_leaves_the_seventeenth_available() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let lot_count = MAX_CASHU_CUSTODY_EXPORT_KEYSET_GROUPS_V1 + 1;
 
     for index in 0..lot_count {
@@ -1277,109 +1087,9 @@ fn export_reservation_caps_distinct_keysets_and_leaves_the_seventeenth_available
 }
 
 #[test]
-fn lost_grant_anchor_response_recovers_grant_and_lot_as_one_generation() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
-    let proposed = intent(0x11);
-    store
-        .insert_cashu_swap_intent_v1(&proposed, limits(100, 10))
-        .unwrap();
-    advance_to_wallet(&store, &proposed);
-    let proposed_lot = lot(0x31, 0x41, 0x42);
-    authority.lose_response_at(4);
-    assert!(matches!(
-        store.claim_cashu_swap_grant_once_v1(&proposed.intent_id, &proposed_lot, 503),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 4,
-            ..
-        })
-    ));
-    drop(store);
-
-    let reopened =
-        ProviderStore::open_existing(&path.database, PROVIDER, StoreOptions::default(), authority)
-            .unwrap();
-    let recovered = reopened
-        .claim_cashu_swap_grant_once_v1(&proposed.intent_id, &proposed_lot, 503)
-        .unwrap();
-    assert!(!recovered.issued);
-    assert_eq!(recovered.lot.state, CashuCustodyLotStateV1::Available);
-    assert_eq!(reopened.identity().unwrap().store_generation, 4);
-    assert_eq!(reopened.identity().unwrap().spend_commit_seq, 1);
-}
-
-#[test]
-fn lost_export_anchor_responses_recover_each_exact_transition() {
-    let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, Arc::clone(&authority));
-    insert_and_grant(&store, &intent(0x11), &lot(0x31, 0x41, 0x42));
-    let export = NewCashuCustodyExportV1 {
-        export_id: [0x71; 16],
-        mint_id: [0xe1; 32],
-        unit: "sat".to_owned(),
-        recipient_key_id: [0x73; 32],
-        max_lots: 1,
-    };
-
-    authority.lose_response_at(5);
-    assert!(matches!(
-        store.reserve_cashu_custody_export_v1(&export),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 5,
-            ..
-        })
-    ));
-    let mut wrong_recipient_after_lost_response = export.clone();
-    wrong_recipient_after_lost_response.recipient_key_id[0] ^= 1;
-    assert!(matches!(
-        store.reserve_cashu_custody_export_v1(&wrong_recipient_after_lost_response),
-        Err(StoreError::CashuCustodyExportConflict)
-    ));
-    let recovered_reservation = store.reserve_cashu_custody_export_v1(&export).unwrap();
-    assert!(!recovered_reservation.reserved);
-    assert_eq!(recovered_reservation.sealed_lots.len(), 1);
-
-    let artifact = b"recipient-sealed-export-after-lost-response";
-    authority.lose_response_at(6);
-    assert!(matches!(
-        store.persist_cashu_custody_export_artifact_v1(&export.export_id, artifact),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 6,
-            ..
-        })
-    ));
-    let recovered_artifact = store
-        .persist_cashu_custody_export_artifact_v1(&export.export_id, artifact)
-        .unwrap();
-    assert!(!recovered_artifact.persisted);
-    let artifact_digest = recovered_artifact.batch.artifact.unwrap().digest;
-
-    authority.lose_response_at(7);
-    assert!(matches!(
-        store.acknowledge_cashu_custody_export_v1(&export.export_id, &artifact_digest),
-        Err(StoreError::UnanchoredCommit {
-            store_generation: 7,
-            ..
-        })
-    ));
-    assert!(!store
-        .acknowledge_cashu_custody_export_v1(&export.export_id, &artifact_digest)
-        .unwrap());
-    assert_eq!(store.identity().unwrap().store_generation, 7);
-    let inventory = store
-        .cashu_custody_inventory_v1(&export.mint_id, "sat")
-        .unwrap();
-    assert_eq!(inventory.acknowledged_lot_count, 1);
-    assert_eq!(inventory.reserved_value, 0);
-}
-
-#[test]
 fn custody_schema_stores_only_digests_opaque_ciphertext_and_coarse_public_fields() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     drop(store);
     let connection = Connection::open(&path.database).unwrap();
     let table_columns = |table: &str| {
@@ -1425,8 +1135,7 @@ fn custody_schema_stores_only_digests_opaque_ciphertext_and_coarse_public_fields
 #[test]
 fn sqlite_rejects_zero_sentinels_and_custody_capacity_overflow() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     insert_and_grant(&store, &intent(0x11), &lot(0x31, 0x41, 0x42));
     let export = NewCashuCustodyExportV1 {
         export_id: [0xd3; 16],
@@ -1536,8 +1245,7 @@ fn custody_ciphertext_debug_output_is_redacted() {
 #[test]
 fn custody_cross_table_and_artifact_tamper_fail_closed() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     insert_and_grant(&store, &intent(0x11), &lot(0x31, 0x41, 0x42));
     let connection = Connection::open(&path.database).unwrap();
     connection
@@ -1553,8 +1261,7 @@ fn custody_cross_table_and_artifact_tamper_fail_closed() {
     ));
 
     let second_path = TestPath::new();
-    let second_authority = Arc::new(MemoryRollbackAuthority::default());
-    let second_store = create_store(&second_path.database, second_authority);
+    let second_store = create_store(&second_path.database);
     insert_and_grant(&second_store, &intent(0x11), &lot(0x31, 0x41, 0x42));
     let export = NewCashuCustodyExportV1 {
         export_id: [0x81; 16],
@@ -1590,8 +1297,7 @@ fn custody_cross_table_and_artifact_tamper_fail_closed() {
 #[test]
 fn missing_or_tampered_retirement_evidence_fails_closed() {
     let path = TestPath::new();
-    let authority = Arc::new(MemoryRollbackAuthority::default());
-    let store = create_store(&path.database, authority);
+    let store = create_store(&path.database);
     let mut custody_lot = lot(0x31, 0x41, 0x42);
     let (export, artifact_digest) = deliver_single_export(&store, 0x11, &custody_lot);
     let request = spent_confirmation(
@@ -1620,8 +1326,7 @@ fn missing_or_tampered_retirement_evidence_fails_closed() {
     ));
 
     let missing_path = TestPath::new();
-    let missing_authority = Arc::new(MemoryRollbackAuthority::default());
-    let missing_store = create_store(&missing_path.database, missing_authority);
+    let missing_store = create_store(&missing_path.database);
     let mut missing_lot = lot(0x32, 0x51, 0x52);
     let (missing_export, missing_artifact_digest) =
         deliver_single_export(&missing_store, 0x12, &missing_lot);

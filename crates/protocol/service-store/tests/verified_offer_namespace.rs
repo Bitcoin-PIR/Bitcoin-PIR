@@ -174,7 +174,7 @@ impl TestPath {
 }
 
 fn create_store(path: &Path, instance_byte: u8) -> ProviderStore {
-    ProviderStore::create_unprotected_for_tests(
+    ProviderStore::create(
         path,
         [instance_byte; 16],
         PROVIDER,
@@ -1259,7 +1259,7 @@ fn derived_namespace_is_deterministic_across_independent_stores_and_restart() {
     assert_eq!(first_namespace, second_namespace);
     drop(first_store);
 
-    let reopened = ProviderStore::open_existing_unprotected_for_tests(
+    let reopened = ProviderStore::open_existing(
         &first_path.database,
         PROVIDER,
         StoreOptions::default(),

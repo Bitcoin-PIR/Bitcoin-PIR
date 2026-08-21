@@ -51,7 +51,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let existing_head = read_policy_head(&transaction, self, &provider_id)?;
         if let Some(head) = &existing_head {
             if head.policy_verifying_key != policy_verifying_key_bytes {
@@ -156,7 +155,6 @@ impl IssuerStore {
         )?;
         write_policy_floors(&transaction, &provider_id, &updated_floors, sequence)?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .service_policy(&provider_id, &policy_digest)?
             .ok_or_else(|| {
@@ -179,7 +177,7 @@ impl IssuerStore {
     ) -> StoreResult<Option<IssuerServicePolicyRecordV1>> {
         let connection = self.open_checked(false)?;
         let value = read_policy_by_digest(&connection, self, provider_id, policy_digest)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn current_service_policy(
@@ -188,7 +186,7 @@ impl IssuerStore {
     ) -> StoreResult<Option<IssuerServicePolicyRecordV1>> {
         let connection = self.open_checked(false)?;
         let value = read_policy_head(&connection, self, provider_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Loads the exact policies whose issuer credential private material is
@@ -324,7 +322,7 @@ impl IssuerStore {
                     })?,
             );
         }
-        self.confirm_anchored_read(&connection, policies)
+        Ok(policies)
     }
 
     /// Returns every quote delegation digest whose private signing key is
@@ -462,7 +460,7 @@ impl IssuerStore {
                 required.insert(delegation_digest);
             }
         }
-        self.confirm_anchored_read(&connection, required.into_iter().collect())
+        Ok(required.into_iter().collect())
     }
 
     /// Resolves every settlement-rule binding in one current clearing
@@ -662,7 +660,7 @@ impl IssuerStore {
             }
             resolved.push(binding.clone());
         }
-        self.confirm_anchored_read(&connection, resolved)
+        Ok(resolved)
     }
 }
 

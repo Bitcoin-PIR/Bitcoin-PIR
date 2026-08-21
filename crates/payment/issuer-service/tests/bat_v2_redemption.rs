@@ -6,7 +6,7 @@ use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_service::{BatV2IssuerRedemptionServiceV2, IssuerServiceErrorV1};
 use pir_issuer_store::{
-    BatV2ClearingEpochReservationV2, IssuerStore, SqliteIssuerRollbackFloorAuthorityV1,
+    BatV2ClearingEpochReservationV2, IssuerStore,
     StoreOptions,
 };
 use pir_payment_crypto::{
@@ -32,7 +32,6 @@ const BAT_KEY_MULTIPLIER: u64 = 101;
 struct TestPath {
     _directory: TempDir,
     database: PathBuf,
-    rollback_authority: Arc<SqliteIssuerRollbackFloorAuthorityV1>,
 }
 
 impl TestPath {
@@ -47,17 +46,8 @@ impl TestPath {
             std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
                 .expect("restrict task-specific temporary directory permissions");
         }
-        let options = StoreOptions::default();
-        let rollback_authority = Arc::new(
-            SqliteIssuerRollbackFloorAuthorityV1::create(
-                directory.path().join("rollback.sqlite3"),
-                options.busy_timeout,
-            )
-            .expect("create rollback authority"),
-        );
         Self {
             database: directory.path().join("issuer.sqlite3"),
-            rollback_authority,
             _directory: directory,
         }
     }
@@ -69,7 +59,6 @@ impl TestPath {
             issuer_id,
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            self.rollback_authority.clone(),
         )
         .expect("create issuer store")
     }
@@ -80,7 +69,6 @@ impl TestPath {
             issuer_id,
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            self.rollback_authority.clone(),
         )
         .expect("reopen issuer store")
     }

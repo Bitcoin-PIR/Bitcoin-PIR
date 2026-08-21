@@ -77,9 +77,9 @@ export const REVIEWED_PREPARATION_HASHES = Object.freeze({
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in":
     "1421b2615ed4e5bdfd773bf4c6cd9100c25426d393504135ad1e5c9b22218130",
   "deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in":
-    "dad1ac7230151e81af3d58ac3672a7d6e10f4fd7e67e5379b4a2c0780a131518",
+    "a944961540cf17c84c31ac681b413bbce764c364b3d3e5bbe3a0f98814e30920",
   "deploy/payment-v1/systemd/hetzner-payment-issuer.service.in":
-    "b541a5338eb9041a4e03c516ac927f32f8a91b195dfa9cefd4d698af83a6885b",
+    "952fe1bcf82df74d7b033735a2a476999081d68cfd0ebc60871184412144535e",
   "deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in":
     "5a5927d344c5750da8882af981b67916bd2801551e3de2a62d03f6a99955e6d1",
   "deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in":
@@ -735,7 +735,6 @@ function validateHetznerProvider(
       ["--service-provider-id-hex", "@HETZNER_PROVIDER_ID_HEX@"],
       ["--service-policy-key-hex", "@HETZNER_POLICY_PUBKEY_HEX@"],
       ["--service-store", `/var/lib/${stateDirectory}/provider.sqlite3`],
-      ["--service-rollback-authority", `/var/lib/${stateDirectory}/rollback.sqlite3`],
       ...(!direct ? [["--service-bat-key", `${configRoot}/cashu-bat.key`]] : []),
       ...(!noStandardCashu ? [
         ["--service-cashu-recovery-key", `1=${configRoot}/cashu-recovery-epoch-1.key`],
@@ -861,7 +860,6 @@ function validateHetznerIssuer(text) {
       ["--max-total-quotes", "16384"],
       ["--allow-origin", "@BITCOINPIR_WEB_ORIGIN@"],
       ["--store", "/var/lib/bitcoinpir-payment-issuer/issuer.sqlite3"],
-      ["--rollback-authority", "/var/lib/bitcoinpir-payment-issuer/rollback.sqlite3"],
       ["--quote-delegation", "/etc/bitcoinpir/payment-v1/issuer/quote-delegation.bin"],
       ["--quote-signing-key", "/etc/bitcoinpir/payment-v1/issuer/quote-signing.key"],
       ["--credential-derivation-key", "/etc/bitcoinpir/payment-v1/issuer/credential-derivation.key"],
@@ -2414,7 +2412,6 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ["--service-provider-id-hex", "public-hex"],
     ["--service-policy-key-hex", "public-hex"],
     ["--service-store", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/provider.sqlite3`],
-    ["--service-rollback-authority", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/rollback.sqlite3`],
     ["--service-shared-authorization", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-authorization.bin`],
     ["--service-shared-issuer-approval", `${VPSBG_PREMIUM_FREE_POW_STATE_ROOT}/shared-clearing-approval.bin`],
     ["--service-shared-operator-key-hex", "public-hex"],
@@ -2523,7 +2520,6 @@ function validateVpsbgPremiumFreePowBeta(text, mode) {
       ["--service-provider-id-hex", "@VPSBG_PREMIUM_PROVIDER_ID_HEX@"],
       ["--service-policy-key-hex", "@VPSBG_PREMIUM_POLICY_PUBKEY_HEX@"],
       ["--service-store", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/provider.sqlite3"],
-      ["--service-rollback-authority", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/rollback.sqlite3"],
         ["--service-shared-authorization", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-authorization.bin"],
       ["--service-shared-issuer-approval", "/home/pir/data/payment-v1/vpsbg-premium-free-pow-beta/shared-clearing-approval.bin"],
       ["--service-shared-operator-key-hex", "@VPSBG_OPERATOR_PUBKEY_HEX@"],
@@ -3428,7 +3424,7 @@ export function validateDeploymentTree(rootInput) {
     "Storeless measured-policy boundary",
     "exact protocol digest argument and the script that supplies it MUST be",
     "requires a new measured UKI",
-    "opens no ProviderStore or rollback authority",
+    "opens no ProviderStore",
     "VPSBG Premium + Free-PoW functional beta",
   ]) {
     requireText(deploymentDoc.text, required, "Hetzner/VPSBG deployment document");

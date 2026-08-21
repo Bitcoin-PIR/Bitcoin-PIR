@@ -19,16 +19,9 @@ streams; no database split can restore the two-server non-collusion assumption.
 
 SQLite WAL files MUST remain on a local filesystem. A WAL on NFS or multiple
 active issuer hosts is not a consensus system. Two independent ProviderStore
-database files MUST NOT be used as active/active replicas, even when both point
-at the same rollback-floor file. The fresh grant nonce makes an exact
-mutation from two clones produce different successor commitments, so one CAS
-wins and the other clone fails closed; that is clone fencing, not replication.
-Multi-host active/active requires one reviewed linearizable detailed-state
-store with linearizable unique constraints plus an explicit failover protocol.
-
-Back up the rollback-floor file separately from the main database. A backup
-job that snapshots the main database and its floor together can restore a
-stale but mutually consistent pair and defeat the rollback boundary.
+database files MUST NOT be used as active/active replicas. Multi-host
+active/active requires one reviewed linearizable detailed-state store with
+linearizable unique constraints plus an explicit failover protocol.
 
 ## Provider store
 
@@ -195,35 +188,26 @@ namespace and provider identity checks:
 verify canonical proof and derive a scheme-specific spend_key
 BEGIN IMMEDIATE
 verify store provider_id and active namespace
-verify the exact independent rollback-floor anchor
 INSERT spent_capabilities(namespace_id, spend_key)
 draw a fresh nonzero 256-bit grant-transition nonce from the OS RNG
 increment store_generation and extend the nonce-bound rolling commitment
 increment spend_commit_seq
 COMMIT
-atomically CAS the independently durable rollback-floor anchor
 install connection-local grant
 send AUTH_GRANTED
 ```
 
 A unique-key conflict is `AlreadySpent`. `AUTH_GRANTED` is impossible before a
-successful SQLite commit and a confirmed external anchor CAS. If SQLite commit
-returns an indeterminate I/O outcome, the server closes the connection and
-reopens the database to inspect the key; the current connection receives no
-grant in either case and the public result is `InternalAfterSpend`. If SQLite
-commits but the external CAS cannot be confirmed, the result is
-`UnanchoredCommit`, also without a grant. Checked reopen may reconcile exactly
-one successor whose recorded parent equals the current external anchor; it
-cannot skip generations or choose between forks.
+successful SQLite commit. If SQLite commit returns an indeterminate I/O
+outcome, the server closes the connection and reopens the database to inspect
+the key; the current connection receives no grant in either case and the
+public result is `InternalAfterSpend`.
 
 Every transition which directly authorizes service work uses a fresh OS-random
 256-bit nonce before the SQLite commit. Provider-local spends (including the
 shared-issuer delivery claim), Free-IP quota consumption, and the final
 standard-Cashu custody/grant transition all increment `spend_commit_seq`. RNG
-failure rolls back the transaction and produces no grant. Two cloned files
-starting from the same predecessor therefore propose different exact CAS
-successors: at most one can anchor, and the loser is fail-closed rather than
-accepted through a later transitive floor.
+failure rolls back the transaction and produces no grant.
 
 Recommended checked pragmas are:
 
@@ -252,9 +236,9 @@ files. It never silently creates an empty spent database.
   request timestamp, linkable client ID, or cross-provider identifier; the
   coarse bucket expiry and one provider-global clock high-water are retained
   solely for expiry and rollback enforcement. Each increment is one
-  `BEGIN IMMEDIATE` provider-store transaction followed by the external
-  rollback-floor CAS, with a fresh grant nonce and `spend_commit_seq` advance;
-  restart never refreshes quota and a lower wall clock fails closed.
+  `BEGIN IMMEDIATE` provider-store transaction with a fresh grant nonce and
+  `spend_commit_seq` advance; restart never refreshes quota and a lower wall
+  clock fails closed.
 - `ProofOfWork`: one server-fresh, secure-channel-bound challenge is held in
   connection state and consumed once.
 - `AnonymousTicket`: uses `spent_capabilities`.
@@ -364,7 +348,7 @@ digest or pins fail closed and require an explicit reviewed migration, never
 ambient endpoint or certificate trust.
 
 ```text
-PREPARED --externally anchored--> SUBMITTED -> WALLET_STORED -> GRANT_ISSUED
+PREPARED --durably committed--> SUBMITTED -> WALLET_STORED -> GRANT_ISSUED
                                    |              ^
                                    -> ATTENTION --|
 ```
@@ -389,9 +373,9 @@ zero or unlimited default exists. Delivery acknowledgement remains inside that
 cap. Only a terminal `SpentConfirmed` lot, backed by exact all-`SPENT` NUT-07
 evidence, is excluded from local custody exposure.
 
-Every actual state mutation advances `store_generation` and its independent
-rollback-floor CAS. The caller may send NUT-03 only after the store returns
-success for the anchored `PREPARED -> SUBMITTED` transition. Only
+Every actual state mutation advances `store_generation`. The caller may send
+NUT-03 only after the store returns success for the durable
+`PREPARED -> SUBMITTED` transition. Only
 `WALLET_STORED -> GRANT_ISSUED` also advances `spend_commit_seq`; that same
 transaction inserts the authenticated custody lot and globally unique
 provider-local note fingerprints. Schema v7 is strictly opened without
@@ -405,7 +389,7 @@ response uses NUT-09 with the identical blinded outputs.
 ### Standard Cashu custody export
 
 The online server never emits note secrets. Offline `bpir-admin cashu-custody`
-reserves available lots in one rollback-anchored transaction. Selection is
+reserves available lots in one durable transaction. Selection is
 bounded by the requested lot count, 512 total notes and 16 distinct keyset
 groups; candidates that would overflow a bound remain `Available`. The batch
 stores the exact provider, mint, unit, requested maximum and recipient key ID.
@@ -431,7 +415,7 @@ Exposure is released only by a later explicit owner-side `spent-confirm`. The
 command decrypts the exact acknowledged lots, performs one bounded NUT-07
 request for a same-mint/unit selection, and accepts only an exact ordered
 all-`SPENT` response. Before each per-export transaction it reopens the current
-rollback floor and rechecks immutable artifact, ordered member IDs, sealed-lot
+store state and rechecks immutable artifact, ordered member IDs, sealed-lot
 binding and transient exact `Y` fingerprints. Durable evidence contains only a
 domain-separated per-export observation digest and aggregate commitments; raw
 `Y`, per-note state, witness and the wider HTTP-batch digest are not stored.
@@ -470,7 +454,7 @@ preserves exact-response recovery, accounting and rollback commitments;
 ad-hoc SQL deletion or vacuuming is not an archival mechanism.
 
 Every accepted provider registration epoch is inserted into retained history
-in the same rollback-anchored transaction that installs it as current. Account
+in the same durable transaction that installs it as current. Account
 and payout-target identities remain immutable across rotation. Fresh status
 requests and every debt/payout mutation use only the current row; a historical
 request key is read only after the issuer has matched the canonical request
@@ -492,7 +476,7 @@ At most 64 live nonce digests may exist for one quote during the five-minute
 request-freshness horizon; expired rows are deleted transactionally before the
 limit is checked. A saturated client waits for expiry and signs a fresh nonce.
 The HTTP process also enforces a separate global status budget, because a
-per-quote row bound alone does not bound aggregate rollback-authority CAS work.
+per-quote row bound alone does not bound aggregate durable write work.
 
 Important uniqueness constraints include:
 
@@ -523,8 +507,7 @@ Payout creation stores the exact initial signed response in the same
 transaction as intent consumption, debit/reservation, payout creation and
 outbox insertion. Each later transition atomically compares the exact stored
 predecessor state/version/time and replaces it with the exact signed successor;
-zero or one row may change. Backup/restore cannot synthesize a lower predecessor
-that the external rollback floor has already superseded.
+zero or one row may change.
 
 Idempotency keys are stored as domain-separated digests, never cleartext.
 Quote/claim endpoint keys follow their own browser-generated lifecycle. Shared-
@@ -703,26 +686,25 @@ same OS account and backup access policy; never publish, relocate, hard-link or
 independently restore them. A live database backup must use SQLite's online
 backup API or a reviewed checkpoint-and-quiesce procedure. Copying only a live
 main file is not a valid backup, and copying main/WAL/SHM at different points in
-time is not an atomic backup set. The rollback authority remains outside this
-entire database/sidecar backup and restore domain.
+time is not an atomic backup set.
 
 `LocalTestSqliteProviderSettlementFloorV1` is intentionally named and exported
-only as a local-development, test and recovery-drill implementation. A second
-SQLite file—even at a different path—is **not** a production independent
-rollback authority. Co-snapshotting or restoring the detailed and floor files
-can restore a stale, mutually consistent pair. Production payout activation
-still requires a reviewed linearizable implementation in an independent
-administrative, failure, backup and restore domain, plus a reviewed real-funds
-executor and an authorized payout backend deployment. The existing no-funds
-worker core is not that executor.
+only as a local-development, test and recovery-drill implementation for the
+payout protocol. Production payout activation still requires a reviewed
+real-funds executor and an authorized payout backend deployment. The existing
+no-funds worker core is not that executor.
 
 ## Rollback and backup
 
 SQLite online backup guarantees a consistent historical snapshot, not that the
-snapshot contains later spends. Restoring it can make a consumed capability
-valid again. The provider-store public open/create APIs therefore require a
-trusted `RollbackFloorAuthorityV1`; there is no production SQLite-only mode.
-The authority record is keyed by `provider_id` and binds:
+snapshot contains later spends. Restoring an older snapshot can make a
+consumed capability valid again. There is no external rollback authority or
+separate rollback-floor file: the owner explicitly removed that mechanism
+(2026-08-21) and accepts snapshot-restore replay risk as an operational
+decision. Treat any store restore as a keyset-revocation decision point.
+
+Each store keeps an internal identity row with `store_generation`,
+`spend_commit_seq` and a hash-chained `rollback_commitment`:
 
 ```text
 store_instance_id
@@ -733,125 +715,35 @@ spend_commit_seq
 rollback_commitment
 ```
 
-The authority implementation MUST provide a linearizable, durably acknowledged
-initialize and compare-and-swap. It MUST be independent of the provider SQLite
-file, WAL, filesystem snapshot, sidecar files and atomic backup set. A second
-database on the same restore job is not independent. Suitable deployments
-include a remote linearizable database with separately controlled backups, or
-a hardware/managed monotonic service whose durability and disaster-recovery
-contract has been tested. The implemented authenticated remote-authority
-protocol and shared WebPKI-plus-leaf-SPKI-pinned loader provide that transport
-boundary. The authority sees a namespace/client binding, opaque fixed-format
-record revision and operation timing, not the provider floor plaintext.
-Provider/issuer processes never fall back to a local floor when remote
-configuration, TLS, signature, AEAD, freshness or CAS reconciliation fails. An
-in-process counter is not suitable, and a production deployment plus
-restore/failover acceptance drill remain separate release gates.
-
-### Production remote-authority topology (implemented, not deployed)
-
-The strict two-provider default requires separately operated authority
-instances for provider 0, provider 1 and their independently selected issuers,
-without one service pooling their observations.
-“Instance” here means an independently authenticated endpoint or hardware
-boundary with separate credentials, administration, security logs, monitoring,
-backup/restore policy and failure budget—not merely per-tenant namespace rows
-in one shared database. Provider admission state, issuer quote/ledger state and
-provider settlement-payout state each use their own typed floor value; one
-generic client must never let an operator cross-read or cross-CAS those
-namespaces.
-
-The remote protocol exposes only opaque bounded Read/initialize/CAS operations.
-Every request is client-signed, every response is authority-signed, and the
-transport requires ordinary WebPKI plus an out-of-band leaf-SPKI pin, absolute
-deadlines and no list/scan API. Namespace IDs and credentials are provisioned
-independently for each logical provider/issuer. The authority must not receive
-capabilities, invoices, payment hashes/preimages, payer/IP data, peer-provider
-identity, scopes, query addresses, PIR requests or results. Even this minimized
-API reveals its authenticated client-key/namespace tenant plus mutation timing
-and rate; the operator may know which service that tenant represents.
-
-One common authority service for both PIR legs would therefore add a cross-leg
-timing observer and shared availability/administrative boundary. It weakens the
-default non-collusion topology even if access control prevents one tenant from
-reading another's values. Such a deployment requires an explicit threat-model
-exception; it is not the strict default. The repository ships the server,
-client and typed adapters, but they are not yet a reviewed/accepted production
-deployment; local SQLite floors must not be relabelled as one.
-
-The floor protocol contains no capability, spend key, invoice, payment hash,
-client address, operation, peer-provider or PIR data. The provider/issuer ID is
-inside the client-sealed opaque value rather than a wire field. It nevertheless
-exposes an authenticated namespace/client-key tenant and the timing/rate of
-durable store mutations; its network edge can also observe the connecting
-provider/issuer host address unless separately hidden.
-Two independent PIR providers therefore MUST NOT use one commonly observable
-remote floor service unless that new cross-provider timing observer is
-explicitly accepted in the threat model. Prefer provider-operated hardware or
-separately administered authority instances/credentials. Replicas of the same
-logical `provider_id` are already one trust domain and must share its one
-linearizable floor. Authority logs follow the same minimization and retention
-rules as other provider security telemetry.
-
 `store_generation` advances on every security-relevant mutation: namespace
 install, irreversible namespace close, capability spend, and signed
 policy/epoch-floor advance. `spend_commit_seq` advances on provider-local
 spends, Free-IP admissions and the final standard-Cashu custody/grant
 transition. Every grant-producing transition additionally binds a fresh
 nonzero 256-bit OS nonce into its successor commitment. The rolling commitment
-binds each legitimate successor to its parent and mutation digest, preventing
-two cloned stores from silently winning at the same generation. It is a
-fork/restore lineage check, not a substitute for host and database integrity
-controls against arbitrary privileged row editing.
+is same-database bookkeeping: its compare-and-set stops two concurrent writers
+from committing conflicting state at one generation, and it gives auditors a
+fork/lineage trail. It does not detect or prevent restoring an older snapshot.
 
 Startup and mutation semantics are:
 
-- **new store:** the operator chooses a fresh nonzero `store_instance_id`.
-  `create` initializes generation zero in the external authority before
-  creating SQLite. Initialization is idempotent only for that exact record.
-  If filesystem creation then fails, the orphan generation-zero record is
-  retained and an exact retry may finish creation; choosing another identity
-  fails closed;
-- **normal restart/current backup:** SQLite and the authority must match
-  exactly. The server double-collects the authority around its SQLite read so a
-  healthy concurrent writer is not mistaken for rollback;
-- **lost external CAS response:** SQLite may be exactly one generation ahead.
-  Reconciliation is allowed only when its recorded parent is the exact current
-  authority commitment and its spend sequence did not decrease. One CAS makes
-  this idempotent. The operation that lost the response never receives a grant;
-- **stale restore:** SQLite below the authority floor is `RollbackDetected`.
-  The server does not lower or overwrite the authority;
-- **fork:** the same generation with a different commitment, more than one
-  unanchored generation, a wrong parent, or a decreased spend sequence is
-  rejected;
-- **floor loss or outage:** a missing/unavailable authority fails closed. The
-  floor is never reconstructed by trusting SQLite metadata;
-- **identity mismatch:** one provider's authority record cannot be rebound to
-  another `store_instance_id`, provider, or schema version;
+- **new store:** the operator chooses a fresh nonzero `store_instance_id` and
+  `create` initializes generation zero;
+- **restart/backup restore:** serve mode opens whatever consistent database it
+  is given, subject to identity, schema and integrity checks;
+- **identity mismatch:** a database cannot be rebound to another
+  `store_instance_id`, provider, or schema version;
 - **multi-process concurrency:** `BEGIN IMMEDIATE` serializes one shared local
-  SQLite file. If two cloned files race the same logical grant, the fresh nonces
-  make their successor commitments different; the external CAS accepts exactly
-  one and the loser fails closed. Independent database-file active/active is
-  prohibited and this fencing behavior must not be advertised as HA. A future
-  replica design must share one reviewed linearizable detailed-state store and
-  one external floor record.
+  SQLite file; the commit-chain compare-and-set rejects a second writer racing
+  the same generation. Independent database-file active/active remains
+  prohibited.
 
-An old backup becomes intentionally unusable after the external floor advances.
-Disaster recovery therefore needs a database backup at the exact currently
-anchored generation (or a separately tested incremental/replicated spent
-store). A signed backup manifest helps operators select the matching snapshot
-but cannot reconstruct missing spend keys and cannot replace the authority.
-If the only database backup is stale, safe recovery is to keep service stopped,
-revoke/rotate every credential keyset whose spends may be missing, create a new
-store identity and initialize a new authority record through an audited
-operator ceremony. Production tooling must not expose a `--force-floor` or
-"trust restored DB" switch.
+Disaster recovery guidance: keep recent database backups, and treat a restore
+from a backup that may be missing spend rows as a decision point to
+revoke/rotate the affected credential keysets before serving again.
 
-Provider startup tests cover normal restart, checked current backup, stale
-restore, same-generation fork, cloned-store CAS, lost CAS response, authority
-outage/loss, wrong identity, and concurrent writers. Release testing must also
-cover WAL recovery, checkpoint timing, corruption, read-only media, disk full,
-interrupted migration, and the concrete production authority backend.
+Release testing must cover WAL recovery, checkpoint timing, corruption,
+read-only media, disk full, and interrupted migration.
 
 ## Forbidden persistence and logs
 

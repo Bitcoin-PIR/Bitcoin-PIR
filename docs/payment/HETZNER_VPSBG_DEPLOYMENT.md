@@ -7,7 +7,7 @@ deployment preparation is retained in
 
 ## Storeless measured-policy boundary
 
-The VPSBG storeless profile opens no ProviderStore or rollback authority. A
+The VPSBG storeless profile opens no ProviderStore. A
 policy change requires a new measured UKI. The exact protocol digest argument and the script that supplies it MUST be
 versioned together. The template gate
 reports missing live source-fair evidence as a P1 activation blocker.
