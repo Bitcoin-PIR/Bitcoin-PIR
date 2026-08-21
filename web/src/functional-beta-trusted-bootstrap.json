@@ -63,13 +63,13 @@
     {
       "label": "VPSBG Payment V1 provider",
       "endpoint": "wss://weikeng2.bitcoinpir.org",
-      "providerIdHex": "85bfdd55b1408402bcad886568b732818a32472747226aa009839d45e0b96cac",
-      "policySigningKeyHex": "73c5889ee3bb11b79a7628bad1aa24be927f6e047abadd6dd6ce38e45bb0cfd5",
-      "operatorSigningKeyHex": "256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a",
+      "providerIdHex": "a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d",
+      "policySigningKeyHex": "791d6e18d6ed2147a0925ec23a157e7ef1f9314d7add7d13b179ef14c16e91b2",
+      "operatorSigningKeyHex": "30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c",
       "stableServerId": "pir2-vpsbg-dpf-v1",
       "serverPin": {
-        "binarySha256Hex": "4b05fc9030b63fe75ae59a9f80c9a449d620d16f56f969c0b43ff15bd98df6e2",
-        "measurementHex": "e3f6b4df452512b871dd00aa53fa1e887e8c52e8c4e258e233d6b656b1afaa69a71ead21e836c9717c0af0c012684c18"
+        "binarySha256Hex": "3cfe3c1a40eb509bd8882d15b04cf8564ad4d551be9b53be7f8bd70c53cec858",
+        "measurementHex": "92b357c051c308f4dd073d36fb7a09e809abf7e77742e9364f4014e55addac4b696dcbfe41ed29cef7aa8f62b4a74888"
       },
       "hardwareAttestation": "required",
       "expectedArkFingerprintHex": "1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a",

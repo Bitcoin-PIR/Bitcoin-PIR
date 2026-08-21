@@ -126,18 +126,18 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 Payment V1 beta UKI, pinned
- * 2026-08-12 after embedding the reviewed epoch-8 policy in the measured
- * initramfs. Image 265 serves DPF, Harmony-query and TEE ORAM.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-21
+ * after the BAT V2 genesis sealed ceremony (Observe/Enroll/Probe/Ready on
+ * image 277). Image 277 serves DPF, Harmony-query and TEE ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from image 265 after validating the AMD chain, REPORT_DATA,
+  // Captured from image 277 after validating the AMD chain, REPORT_DATA,
   // exact unified_server binary and both attested database manifest roots.
   measurementHex:
-    'e3f6b4df452512b871dd00aa53fa1e887e8c52e8c4e258e233d6b656b1afaa69a71ead21e836c9717c0af0c012684c18',
+    '92b357c051c308f4dd073d36fb7a09e809abf7e77742e9364f4014e55addac4b696dcbfe41ed29cef7aa8f62b4a74888',
   binarySha256Hex:
-    '4b05fc9030b63fe75ae59a9f80c9a449d620d16f56f969c0b43ff15bd98df6e2',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 265, SEV-SNP, Tier 3 DPF + Harmony + Direct ORAM, epoch-8)',
+    '3cfe3c1a40eb509bd8882d15b04cf8564ad4d551be9b53be7f8bd70c53cec858',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 277, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, BAT V2 genesis)',
 };
 
 /**
@@ -315,15 +315,14 @@ export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
  * Pinned 2026-05-25. Operator key generated offline via
  * `bpir-admin generate-identity --purpose operator`; the SECRET lives
  * only on the operator's workstation (`~/.config/bpir-admin/operator.key`,
- * backed up out-of-band) and signs the pir1 / pir2 `IdentityCert`s
+ * backed up out-of-band) and signs the pir1 `IdentityCert`
  * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * LIVE END-TO-END (reverified 2026-07-22). pir1 + pir2 both serve
- * REQ_ANNOUNCE on their independently pinned production binaries;
- * `announce()` against
- * either returns an
- * operator-endorsed bundle that verifies under this pinned key
- * (operator-pin + cert signature + validity + chain + channel binding).
+ * Since the 2026-08-21 BAT V2 genesis sealed ceremony, pir2's
+ * `IdentityCert` is signed by its own per-provider operator key. The
+ * product flow takes each provider's operator pin from
+ * `functional-beta-trusted-bootstrap.json` (`operatorSigningKeyHex`),
+ * so this constant remains only the pir1-era legacy/shared fallback.
  * The "verified operator" badge is wired into the DPF + HarmonyPIR cards
  * (web/index.html) and the playground, gated on `state === 'verified'`.
  * See docs/history/OPERATOR_IDENTITY.md.
