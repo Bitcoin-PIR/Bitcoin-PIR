@@ -7,7 +7,6 @@ use pir_service_protocol::{
     ServiceProtocolError, SettlementUnitV1,
 };
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 /// On-disk schema version. This crate never performs an implicit migration.
@@ -68,13 +67,13 @@ pub struct StoreIdentity {
     pub issuer_id: [u8; 32],
     pub network: LightningNetworkV1,
     pub commit_seq: u64,
-    /// Zero only at generation zero; otherwise the exact previous externally
-    /// anchored rolling commitment.
+    /// Zero only at generation zero; otherwise the exact previous rolling
+    /// commitment.
     pub rollback_parent_commitment: [u8; 32],
     pub rollback_commitment: [u8; 32],
-    /// Highest trusted status-service wall-clock observation. The rolling
-    /// commitment and mandatory external rollback authority protect it against
-    /// stale database restore.
+    /// Highest trusted status-service wall-clock observation, recorded in the
+    /// rolling commitment. Restoring an older snapshot restores an older
+    /// floor.
     pub status_time_floor: u64,
     pub schema_version: u32,
 }
@@ -199,8 +198,7 @@ where
 /// Store-specific durable write marker.
 ///
 /// A method constructs this value only after SQLite reports a successful
-/// commit and the external rollback authority confirms the new generation, or
-/// when replaying an already-anchored row.
+/// commit, or when replaying an already-committed row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommitMarker {
     pub store_instance_id: [u8; 16],
@@ -945,6 +943,5 @@ pub(crate) struct StoreHandle {
     pub expected_store_instance_id: [u8; 16],
     pub expected_issuer_id: [u8; 32],
     pub expected_network: LightningNetworkV1,
-    pub rollback_authority: Arc<dyn crate::IssuerRollbackFloorAuthorityV1>,
     pub options: StoreOptions,
 }

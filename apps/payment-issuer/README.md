@@ -44,15 +44,12 @@ Generate the signed artifacts with the two independent, self-verifying
 builders linked from
 [`docs/runbooks/payment-artifacts.md`](../../docs/runbooks/payment-artifacts.md).
 
-`init-store`, `check-store`, and every available serving mode require
-`--rollback-authority <sqlite>`: a separate local SQLite rollback-floor file
-that anchors the store's monotonic generation counter. `serve-fake` is
-explicitly test-only.
+`serve-fake` is explicitly test-only.
 
-`init-store` refuses overwrite and creates the issuer database and rollback
-floor only inside private owner-controlled directories. On Unix, both
-main files are mode 0600; all modes reject symlinks, public/wrong-owner files,
-non-0700 parents and same-inode aliases. The private parent also protects
+`init-store` refuses overwrite and creates the issuer database only inside a
+private owner-controlled directory. On Unix, the main file is mode 0600; all
+modes reject symlinks, public/wrong-owner files, non-0700 parents and
+same-inode aliases. The private parent also protects
 SQLite `-wal`/`-shm` files, which can contain invoice, payment-hash and recovery
 state. Initialization failure never automatically deletes partial files.
 

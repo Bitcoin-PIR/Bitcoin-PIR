@@ -20,8 +20,7 @@ upper bounds accepted for a Lightning-node-assigned invoice timestamp, an
 exact reserved-quote recovery deadline, active-capacity/recovery-horizon
 indexes, retained policy/key lineage, clearing ledger and payout state. Older
 schemas are rejected; this crate performs no implicit migration, so any future
-migration must be an explicit offline operator procedure coordinated with the
-external rollback authority.
+migration must be an explicit offline operator procedure.
 
 It deliberately contains no HTTP server, Lightning client, wallet keys,
 external payout executor, payer identity, browser IP, PIR query, Bitcoin
@@ -69,41 +68,16 @@ labels, payment hashes, replay images, and settlement evidence remain internal.
 Only a domain-separated nonce digest is stored, and the status-service clock
 may not move below its durable floor.
 
-Both `create` and `open_existing` require the rollback authority; there is no
-unprotected open API. The authority record binds the random store-instance ID,
-issuer ID, Lightning network, schema version, generation, and rolling
-commitment. It must be linearizable, durable, and outside the backup/restore
-domain of the SQLite database and WAL. A stale generation, a different
-commitment at the same generation, a missing record, or an authority outage is
-fatal.
-
-SQLite commits before the external CAS so the store can recover from a lost
-CAS response without ever acknowledging an uncommitted database write. On
-open, an exact authority match is accepted. The only automatically recoverable
-mismatch is exactly one SQLite successor whose parent equals the authoritative
-commitment; the store CAS-anchors that successor before serving. A database two
-or more generations ahead, a same-generation fork, or an authority ahead of
-SQLite fails closed. This one-successor rule prevents a process from stacking
-unanchored mutations.
-
-All issuer replicas must share the same authority file; there is exactly one
-active issuer per store. `SqliteIssuerRollbackFloorAuthorityV1` is the
-supported adapter: a separate local SQLite file holding the monotonic floor.
-Keep it in an independent backup/restore domain from the main database so a
-combined snapshot restore cannot silently revert both files together.
-
-Floor-only restart convergence is safe for this trait because issuer SQLite
-commits before anchoring, permits at most one unanchored generation, and binds
-each exact one-step successor to the same issuer, network, store instance, and
-schema with a changed rolling commitment. A fresh authority read equal to the
-SQLite successor proves the lost CAS completed; equality with its predecessor
-permits exactly that successor CAS. Missing, advanced, or forked observations
-remain fatal to the issuer store.
+`create` and `open_existing` are plain open APIs. The identity row binds the
+random store-instance ID, issuer ID, Lightning network, schema version,
+commit sequence, and a rolling commitment. The commit-chain compare-and-set is
+same-database bookkeeping that rejects concurrent writers at one generation.
+There is no external rollback authority; restoring an older database snapshot
+restores older state (accepted owner decision, 2026-08-21).
 
 Every quote, authenticated status, retained-policy/key-lineage, clearing,
-ledger, settlement and payout mutation uses the same commit-then-CAS barrier.
-Exact idempotent replays do not create a generation, but still require the
-database and authority to match before returning.
+ledger, settlement and payout mutation advances the same commit chain. Exact
+idempotent replays do not create a new generation.
 
 Provider registration rotation keeps one mutable current row and writes every
 accepted epoch, including the current epoch, into digest-addressed history in

@@ -1855,13 +1855,6 @@ fn map_backend_error(error: LightningBackendErrorV1) -> IssuerCoreErrorV1 {
 
 fn map_store_error(error: StoreError) -> IssuerCoreErrorV1 {
     match error {
-        StoreError::RollbackFloorMissing
-        | StoreError::RollbackFloorIdentityMismatch
-        | StoreError::RollbackDetected { .. }
-        | StoreError::RollbackFork
-        | StoreError::RollbackAuthorityProtocol(_)
-        | StoreError::RollbackAuthorityUnavailable(_)
-        | StoreError::UnanchoredCommit { .. } => IssuerCoreErrorV1::StoreUnanchored,
         StoreError::CommitOutcomeUnknown(_) => IssuerCoreErrorV1::OutcomeUnknown,
         StoreError::QuoteMissing => IssuerCoreErrorV1::NotFound,
         StoreError::InvalidQuoteState

@@ -35,7 +35,6 @@ ExecStart=/opt/bitcoinpir/unified-server/@UNIFIED_SERVER_SHA256@/unified_server 
     --service-provider-id-hex @HETZNER_PROVIDER_ID_HEX@ \
     --service-policy-key-hex @HETZNER_POLICY_PUBKEY_HEX@ \
     --service-store /var/lib/bitcoinpir-provider-direct-payment-v1/provider.sqlite3 \
-    --service-rollback-authority /var/lib/bitcoinpir-provider-direct-payment-v1/rollback.sqlite3 \
     --max-connections 128 \
     --service-max-concurrent-auth 16 \
     --service-max-concurrent-online-v2full-auth 4 \

@@ -86,9 +86,10 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
 31. Proof-level Cashu DLEQ fields and wallet blinding scalars never cross the
     PIR wire. Standard Cashu imports are normalized before authorization.
 32. Accepted policy, credential-keyset, Cashu-manifest, clearing-authorization,
-    and directory epochs have durable monotonic rollback floors. The only
-    provider-policy exception is the measured storeless Free-PoW profile in
-    invariant 71: its exact complete signed policy digest is the immutable
+    and directory epochs are monotonic within each store's durable state: a
+    store never accepts an epoch lower than the highest it has recorded. The
+    only provider-policy exception is the measured storeless Free-PoW profile
+    in invariant 71: its exact complete signed policy digest is the immutable
     floor for one UKI measurement.
 33. Blind clearing commits to one issuer-approved settlement keyset and its
     recovery horizon before the provider reveals blinded outputs.
@@ -179,9 +180,10 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     event-value comparison. URL
     normalization, symlinks, devices, FIFOs or a changing file never relax the
     boundary.
-51. Each rollback-floor file lives in an independent backup/restore domain
-    from the database it anchors, so no single snapshot restore can revert a
-    store and its floor together.
+51. Payment stores keep an internal hash-chained commit sequence for
+    diagnostics only. There is no separate rollback-floor file or external
+    rollback authority: restoring an older database snapshot restores older
+    state. This is an accepted owner decision (2026-08-21).
 52. A payout worker commits signed `Accepted -> InFlight` before the first
     external submission and performs only reconciliation for an `InFlight`
     command after restart or ambiguity. A real-funds executor MUST provide a
@@ -204,9 +206,9 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     query or inclusion/result verification only when it explicitly executes and
     verifies those exact operations; such a result remains confined to its
     synthetic trust and data boundary.
-55. Rollback-floor updates are atomic compare-and-swap operations on the local
-    SQLite floor file; a store generation may only move forward, and any
-    mismatch between store and floor fails closed.
+55. Store mutations advance the internal commit sequence with a same-database
+    compare-and-set, so two concurrent writers cannot commit conflicting state
+    at one generation.
 56. A standard-Cashu policy signs one canonical mint endpoint and one or two
     nonzero, strictly sorted leaf-SPKI SHA-256 pins. Every provider NUT-03,
     NUT-09 and NUT-07 call uses that exact tuple with ordinary WebPKI; there is
@@ -283,7 +285,7 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     idempotency key over the exact clearing authorization, credential binding
     and credential. The provider MUST verify the canonical issuer-signed success
     and exact request/offer match before deriving and atomically claiming a
-    separate HMAC local grant-delivery key in its rollback-protected synthetic
+    separate HMAC local grant-delivery key in its durable synthetic
     namespace. Only the first local claim may grant. This local claim is not an
     issuer nullifier, settlement mutation or cross-provider spent set.
 65. The browser quote-claim private key, provider-to-issuer wire idempotency key
@@ -326,7 +328,7 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     `FreeV1`/`ProofOfWork`/zero-price offers with no issuer, key, credential,
     Cashu manifest, endpoint, retained grace or privacy-leakage field. Startup
     requires the exact nonzero domain-separated digest of the complete signed
-    policy and rejects every ProviderStore, rollback authority, retained policy,
+    policy and rejects every ProviderStore, retained policy,
     Free-IP quota/key, payment/Cashu/BAT/ARC/shared-issuer, legacy credential or
     test-root input. The digest argument and provider/policy-key pins MUST be in
     the measured UKI. Each challenge is random, single-outstanding,
@@ -510,15 +512,16 @@ cryptography receive an independent review.
   domain-separated spend keys;
 - spent state is fsync-backed before success;
 - restart and backup restore tests verify old spends remain rejected;
-- restoring an old database snapshot is a security rollback. Production needs
-  a separately durable monotonic authority or must fail closed and revoke all
-  keysets whose missing spend rows could be replayed before service resumes.
+- restoring an old database snapshot can replay spends whose rows are missing
+  from the snapshot. There is no external rollback authority; the operator
+  accepts this risk and must treat store restores as a keyset-revocation
+  decision point.
 - issuer quote transitions and payout transitions use database predecessor
   version CAS so two workers cannot sign competing economic outcomes;
 - quote reservation has atomic outstanding and total-record ceilings; active
   authenticated status nonces are capped per quote and expire after the
   signed replay window. The issuer edge applies separate bounded request
-  budgets so a valid claim key cannot amplify rollback-authority writes;
+  budgets;
 - a claim handler loads settlement state from the authoritative database and
   never promotes a client-submitted signed snapshot into payment evidence.
 
@@ -591,8 +594,6 @@ or peer-provider/pair identifiers.
 - independent ARC cryptographic review before removing `experimental`;
 - protocol fuzzing and malformed length tests;
 - crash/restart/concurrency tests for every spent path;
-- a reviewed linearizable production rollback-authority adapter deployed in
-  independently observable provider/issuer domains, with restore/failover drills;
 - a separately reviewed real-funds payout executor with authoritative durable
   command-ID status/fencing; the shipped no-funds worker is not activation;
 - Lightning identity-secret, SCB and supported datastore backup/restore drills;

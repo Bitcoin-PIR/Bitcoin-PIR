@@ -6,38 +6,18 @@ Lightning data.
 
 The normative contract is [`docs/payment/PERSISTENCE.md`](../../../docs/payment/PERSISTENCE.md).
 Creating a store and serving an existing store are separate APIs. Serve mode
-never creates a missing database. Both public APIs require an
-`Arc<dyn RollbackFloorAuthorityV1>`: a rollback floor stored outside the
-database it protects. `SqliteRollbackFloorAuthorityV1` is the supported
-adapter — a separate local SQLite file that must not share a backup boundary
-with the provider store.
+never creates a missing database.
 
-Floor-only restart convergence is safe for this trait because the protected
-store exposes at most one unanchored SQLite generation, every successor must
-keep the same provider/store/schema identity, advance `store_generation` by
-exactly one, advance `spend_commit_seq` by at most one, and change the rolling
-commitment. Therefore a floor equal to the SQLite successor means
-the lost CAS completed; equality with its predecessor permits exactly that one
-successor CAS; every other observation is returned as a conflict for the store
-to reject.
-
-The floor record binds the provider ID, one immutable store-instance ID,
+The store identity row binds the provider ID, one immutable store-instance ID,
 schema version, store generation, spend-commit sequence, and a rolling commit
 lineage. Every namespace install/close, spend, signed-policy/floor advance,
 standard-Cashu intent mutation, and durable IP-quota consumption increments
-`store_generation`; a bearer spend
-or final Cashu grant claim also increments `spend_commit_seq`. SQLite commits
-first, the compare-and-swap floor anchor commits second, and the public
-operation reports success only after both are confirmed. A lost CAS response
-is recoverable: exactly one locally committed successor with the anchored
-parent can be submitted idempotently on checked reopen. A database below the
-floor generation, more than one generation ahead, or at the same generation
-with a different commitment fails closed.
-
-The authority must not live in this SQLite file, its WAL, a sidecar restored
-with it, or the same atomic backup set. Losing the authority is not repaired by
-trusting the database: startup fails until an operator performs the documented
-credential-revocation/new-store ceremony.
+`store_generation`; a bearer spend or final Cashu grant claim also increments
+`spend_commit_seq`. The commit-chain compare-and-set is same-database
+bookkeeping: it rejects two concurrent writers at one generation and preserves
+a fork/lineage trail. There is no external rollback authority; restoring an
+older database snapshot restores older state (accepted owner decision,
+2026-08-21).
 
 Creation durably checkpoints the initial WAL, syncs the database file, and on
 Unix syncs its parent directory. Existing stores are opened with SQLite
@@ -53,22 +33,22 @@ payment hash, or raw capability columns.
 Schema v7 keeps delivery-acknowledged standard-Cashu lots inside the exact
 per-mint/unit exposure cap. Only an owner-initiated, exact NUT-07 all-`SPENT`
 confirmation moves an export and every member lot to `SpentConfirmed`. The
-same rollback-anchored transaction persists digest-only evidence bound to the
-provider/store, precondition floor, export/artifact, ordered members, note
+same durable transaction persists digest-only evidence bound to the
+provider/store, precondition state, export/artifact, ordered members, note
 fingerprints, transient Y set and a domain-separated exact per-export NUT-07
 observation digest. The wider HTTP batch digest is deliberately not stored,
 so batching does not create a durable cross-export identifier. The store keeps
 no raw Y or per-note NUT-07 state. See
 [`PROVIDER_STORE_V7_MIGRATION.md`](../../../docs/archive/payment/PROVIDER_STORE_V7_MIGRATION.md).
 
-Schema v5 adds rollback-anchored `IpRateLimited` buckets keyed only by a
+Schema v5 adds durable `IpRateLimited` buckets keyed only by a
 provider-local 32-byte HMAC subject plus scope/offer, highest window, and
 count. It stores neither raw IP nor a cross-provider identifier; restart does
 not reset quota and lower wall-clock windows fail closed. Schema v4 also stores
 the standard-Cashu merchant DFA as public digests,
 coarse hour buckets, and an opaque AEAD recovery envelope. The native
 `pir-cashu-client` default build implements its persistence trait directly for
-`ProviderStore`. `PREPARED -> SUBMITTED` must be externally anchored before
+`ProviderStore`. `PREPARED -> SUBMITTED` must be durably committed before
 the caller may send NUT-03, and no API transitions a submitted intent back to
 prepared. ProviderStore does not auto-migrate prior schemas. Development-only
 v6 is rejected and must be replaced through the explicit v7 ceremony.

@@ -17,14 +17,10 @@ use pir_service_protocol::{
 };
 #[cfg(feature = "provider-store")]
 use pir_service_store::{
-    verify_provider_local_arc_spend_v1, ProviderStore, RollbackFloorAuthorityErrorV1,
-    RollbackFloorAuthorityV1, RollbackFloorV1, StoreError, StoreOptions,
+    verify_provider_local_arc_spend_v1, ProviderStore, StoreError, StoreOptions,
     VerifiedOfferNamespaceInstallOutcomeV1,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-#[cfg(feature = "provider-store")]
-use std::sync::{Arc as SyncArc, Mutex};
-
 use super::*;
 
 const NOW: u64 = 1_500;
@@ -89,44 +85,7 @@ impl Fixture {
 }
 
 #[cfg(feature = "provider-store")]
-#[derive(Debug, Default)]
-struct TestRollbackAuthorityV1 {
-    floor: Mutex<Option<RollbackFloorV1>>,
-}
-
 #[cfg(feature = "provider-store")]
-impl RollbackFloorAuthorityV1 for TestRollbackAuthorityV1 {
-    fn load(
-        &self,
-        _provider_id: &[u8; 32],
-    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().unwrap())
-    }
-
-    fn initialize(
-        &self,
-        initial: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        floor.ok_or_else(|| RollbackFloorAuthorityErrorV1::new("ARC test floor missing"))
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &RollbackFloorV1,
-        next: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        floor.ok_or_else(|| RollbackFloorAuthorityErrorV1::new("ARC test floor disappeared"))
-    }
-}
-
 #[cfg(feature = "provider-store")]
 struct ProviderArcFixtureV1 {
     policy: ServicePolicyV1,
@@ -312,7 +271,6 @@ impl ProviderArcFixtureV1 {
             [instance_byte; 16],
             self.policy.provider_id,
             StoreOptions::default(),
-            SyncArc::new(TestRollbackAuthorityV1::default()),
         )
         .unwrap()
     }
@@ -1105,13 +1063,11 @@ fn real_arc_adapter_installs_namespace_spends_once_and_survives_restart() {
     let fixture = ProviderArcFixtureV1::new(31);
     let directory = private_provider_tempdir("bitcoinpir-real-arc-provider-");
     let path = directory.path().join("provider.sqlite3");
-    let authority = SyncArc::new(TestRollbackAuthorityV1::default());
     let store = ProviderStore::create(
         &path,
         [31; 16],
         fixture.policy.provider_id,
         StoreOptions::default(),
-        authority.clone(),
     )
     .unwrap();
     assert!(matches!(
@@ -1140,7 +1096,6 @@ fn real_arc_adapter_installs_namespace_spends_once_and_survives_restart() {
         &path,
         fixture.policy.provider_id,
         StoreOptions::default(),
-        authority,
     )
     .unwrap();
     let replay = verify_provider_local_arc_spend_v1(&bound, NOW, &fixture.keyring).unwrap();

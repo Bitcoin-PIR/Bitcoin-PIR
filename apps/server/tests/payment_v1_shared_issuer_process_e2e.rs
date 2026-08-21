@@ -10,7 +10,7 @@
 //! The TLS edge also drops one complete, successful redeem response after the
 //! issuer commits it. The provider must fail closed without a delivery claim,
 //! then recover by replaying the exact request after the issuer and provider
-//! restart against their original stores and rollback floors.
+//! restart against their original stores.
 //!
 //! The private test CA hook is inherited from `standard-cashu-process-e2e`, so
 //! there is one test-only WebPKI injection surface and `pir-strict-https` keeps
@@ -25,9 +25,7 @@ use libdpf::Dpf;
 use pir_core::cuckoo::write_header_with_anchor;
 use pir_core::merkle::sha256;
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
-use pir_issuer_store::{
-    IssuerStore, SqliteIssuerRollbackFloorAuthorityV1, StoreOptions as IssuerStoreOptions,
-};
+use pir_issuer_store::{IssuerStore, StoreOptions as IssuerStoreOptions};
 use pir_lightning_backend::FakeLightningNodeV1;
 use pir_payment_crypto::{cashu_hash_to_curve_v1, K256CashuMintKeyringV1};
 use pir_provider_clearing_client::{
@@ -54,9 +52,7 @@ use pir_service_protocol::{
     ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1,
     ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
 };
-use pir_service_store::{
-    ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions as ProviderStoreOptions,
-};
+use pir_service_store::{ProviderStore, StoreOptions as ProviderStoreOptions};
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
@@ -122,7 +118,6 @@ struct ProviderFixture {
     policy_signing_key: SigningKey,
     policy_path: PathBuf,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     scope_id: [u8; 32],
     policy_digest: [u8; 32],
     shared: Option<SharedProviderConfig>,
@@ -163,7 +158,6 @@ struct IssuerMaterial {
     issuer_root: SigningKey,
     settlement_signing_key: SigningKey,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     quote_delegation_path: PathBuf,
     quote_signing_key_path: PathBuf,
     credential_derivation_key_path: PathBuf,
@@ -412,9 +406,9 @@ async fn shared_issuer_real_process_tls_e2e() {
         b"committed-response-dropped\n"
     );
 
-    // Kill and reopen the actual issuer against the same detailed store and
-    // rollback floor. The provider is also reopened to prove recovery does not
-    // depend on volatile client state.
+    // Kill and reopen the actual issuer against the same durable store. The
+    // provider is also reopened to prove recovery does not depend on volatile
+    // client state.
     let (issuer_loss_stdout, issuer_loss_stderr) = payment_issuer.stop();
     assert_issuer_log(&issuer_loss_stdout, &issuer_loss_stderr, &paid);
     assert_issuer_ledger(&issuer, &paid, &[&wrong_ca, &wrong_pin, &offline]);
@@ -436,7 +430,7 @@ async fn shared_issuer_real_process_tls_e2e() {
         (9, 0)
     );
 
-    // A real issuer restart reopens the same rollback-protected store and the
+    // A real issuer restart reopens the same durable store and the
     // independently generated authorization/approval/request-key artifacts.
     // The next balance is freshly signed and revalidated; no payout fixture or
     // in-memory registration is accepted as a substitute.
@@ -672,12 +666,9 @@ fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
     let admin_binary = required_bpir_admin_binary();
     let issuer_root_dir = root.join("payment-issuer");
     let store_dir = issuer_root_dir.join("store-domain");
-    let rollback_dir = issuer_root_dir.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&issuer_root_dir, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let issuer_root = SigningKey::from_bytes(&[0x31; 32]);
     let quote_signing_key = SigningKey::from_bytes(&[0x32; 32]);
@@ -745,7 +736,6 @@ fn build_issuer_material(root: &Path, now: u64) -> IssuerMaterial {
         issuer_root,
         settlement_signing_key,
         store_path: store_dir.join("issuer.sqlite3"),
-        rollback_path: rollback_dir.join("floor.sqlite3"),
         quote_delegation_path,
         quote_signing_key_path,
         credential_derivation_key_path,
@@ -775,12 +765,9 @@ fn build_provider(
 ) -> ProviderFixture {
     let provider_root = root.join(format!("provider-{index}"));
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let operator = SigningKey::from_bytes(&[0x40u8.wrapping_add(index); 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x60u8.wrapping_add(index); 32]);
@@ -1110,18 +1097,11 @@ fn build_provider(
     );
 
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let rollback = SqliteRollbackFloorAuthorityV1::create(
-        &rollback_path,
-        ProviderStoreOptions::default().busy_timeout,
-    )
-    .expect("create provider rollback floor");
     let store = ProviderStore::create(
         &store_path,
         [0x20u8.wrapping_add(index); 16],
         provider_id,
         ProviderStoreOptions::default(),
-        Arc::new(rollback),
     )
     .expect("create provider store");
     drop(store);
@@ -1133,7 +1113,6 @@ fn build_provider(
         policy_signing_key,
         policy_path,
         store_path,
-        rollback_path,
         scope_id,
         policy_digest,
         shared,
@@ -1303,8 +1282,6 @@ fn init_issuer_store(issuer: &IssuerMaterial) {
             OsString::from("init-store"),
             OsString::from("--store"),
             issuer.store_path.as_os_str().to_owned(),
-            OsString::from("--rollback-authority"),
-            issuer.rollback_path.as_os_str().to_owned(),
             OsString::from("--issuer-id-hex"),
             OsString::from(hex::encode(issuer.issuer_id)),
             OsString::from("--network"),
@@ -1315,7 +1292,6 @@ fn init_issuer_store(issuer: &IssuerMaterial) {
         .expect("run payment-issuer init-store");
     assert_command_success("payment-issuer init-store", &output);
     assert_private_regular_file(&issuer.store_path);
-    assert_private_regular_file(&issuer.rollback_path);
 }
 
 fn spawn_payment_issuer(
@@ -1335,8 +1311,6 @@ fn spawn_payment_issuer(
         OsString::from(format!("127.0.0.1:{port}")),
         OsString::from("--store"),
         issuer.store_path.as_os_str().to_owned(),
-        OsString::from("--rollback-authority"),
-        issuer.rollback_path.as_os_str().to_owned(),
         OsString::from("--quote-delegation"),
         issuer.quote_delegation_path.as_os_str().to_owned(),
         OsString::from("--quote-signing-key"),
@@ -1447,8 +1421,6 @@ fn spawn_provider(
         hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
         "--service-store".to_owned(),
         fixture.store_path.to_string_lossy().into_owned(),
-        "--service-rollback-authority".to_owned(),
-        fixture.rollback_path.to_string_lossy().into_owned(),
         "--max-connections".to_owned(),
         "16".to_owned(),
         "--service-max-concurrent-auth".to_owned(),
@@ -1840,16 +1812,10 @@ fn write_tiny_table(path: &Path, params: &pir_core::params::TableParams, tag_see
 }
 
 fn assert_provider_spend_inventory(fixture: &ProviderFixture, expected: u64) {
-    let rollback = SqliteRollbackFloorAuthorityV1::open_existing(
-        &fixture.rollback_path,
-        ProviderStoreOptions::default().busy_timeout,
-    )
-    .expect("open provider rollback floor for audit");
     let store = ProviderStore::open_existing(
         &fixture.store_path,
         fixture.provider_id,
         ProviderStoreOptions::default(),
-        Arc::new(rollback),
     )
     .expect("open provider store for audit");
     let inventory = store
@@ -1860,17 +1826,11 @@ fn assert_provider_spend_inventory(fixture: &ProviderFixture, expected: u64) {
 }
 
 fn assert_issuer_redemption_inventory(issuer: &IssuerMaterial, expected: u64) {
-    let rollback = SqliteIssuerRollbackFloorAuthorityV1::open_existing(
-        &issuer.rollback_path,
-        IssuerStoreOptions::default().busy_timeout,
-    )
-    .expect("open issuer rollback floor for redemption inventory");
     let store = IssuerStore::open_existing(
         &issuer.store_path,
         issuer.issuer_id,
         LightningNetworkV1::Regtest,
         IssuerStoreOptions::default(),
-        Arc::new(rollback),
     )
     .expect("open issuer store for redemption inventory");
     assert_eq!(
@@ -1887,17 +1847,11 @@ fn assert_issuer_ledger(
     paid: &ProviderFixture,
     failed: &[&ProviderFixture],
 ) {
-    let rollback = SqliteIssuerRollbackFloorAuthorityV1::open_existing(
-        &issuer.rollback_path,
-        IssuerStoreOptions::default().busy_timeout,
-    )
-    .expect("open issuer rollback floor for audit");
     let store = IssuerStore::open_existing(
         &issuer.store_path,
         issuer.issuer_id,
         LightningNetworkV1::Regtest,
         IssuerStoreOptions::default(),
-        Arc::new(rollback),
     )
     .expect("open issuer store for audit");
     let paid_balance = store

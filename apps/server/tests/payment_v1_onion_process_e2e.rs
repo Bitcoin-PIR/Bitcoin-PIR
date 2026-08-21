@@ -44,14 +44,13 @@ use pir_service_protocol::{
     ServicePolicyV1, ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
     REQ_AUTH_BEGIN_V1,
 };
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{ProviderStore, StoreOptions};
 use std::fs::{self, File};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -91,7 +90,6 @@ struct ProviderFixture {
     receipt_key_id: Vec<u8>,
     policy_path: PathBuf,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     scope_id: [u8; 32],
     policy_digest: [u8; 32],
     issued_at: u64,
@@ -202,8 +200,6 @@ impl ServerProcess {
             hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
             "--service-store".to_owned(),
             fixture.store_path.display().to_string(),
-            "--service-rollback-authority".to_owned(),
-            fixture.rollback_path.display().to_string(),
             "--max-connections".to_owned(),
             "32".to_owned(),
             "--service-max-concurrent-auth".to_owned(),
@@ -808,12 +804,9 @@ fn build_provider(
 ) -> ProviderFixture {
     let provider_root = root.join(format!("onion-provider-{index}"));
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let operator_key = SigningKey::from_bytes(&[0x11u8.wrapping_add(index); 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x21u8.wrapping_add(index); 32]);
@@ -930,9 +923,6 @@ fn build_provider(
     chmod(&policy_path, 0o644);
 
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let authority =
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
     let store = ProviderStore::create(
         &store_path,
         [0x51u8.wrapping_add(index); 16],
@@ -940,12 +930,10 @@ fn build_provider(
         StoreOptions {
             busy_timeout: Duration::from_secs(1),
         },
-        Arc::new(authority),
     )
     .unwrap();
     drop(store);
     chmod(&store_path, 0o600);
-    chmod(&rollback_path, 0o600);
 
     ProviderFixture {
         index,
@@ -956,7 +944,6 @@ fn build_provider(
         receipt_key_id,
         policy_path,
         store_path,
-        rollback_path,
         scope_id,
         policy_digest,
         issued_at,

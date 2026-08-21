@@ -434,12 +434,9 @@ fn map_provider_store_commit_error(error: StoreError) -> AdmissionCommitErrorV1 
         | StoreError::NamespaceExpired
         | StoreError::ServiceProtocol(_)
         | StoreError::InvalidInput(_) => AdmissionCommitErrorV1::InvalidOrSpent,
-        StoreError::InternalAfterSpend { .. } | StoreError::UnanchoredCommit { .. } => {
-            AdmissionCommitErrorV1::InternalAfterSpend
-        }
+        StoreError::InternalAfterSpend { .. } => AdmissionCommitErrorV1::InternalAfterSpend,
         StoreError::Sqlite(_)
         | StoreError::Io(_)
-        | StoreError::RollbackAuthorityUnavailable(_)
         | StoreError::MissingDatabase(_)
         | StoreError::NotRegularDatabase(_) => AdmissionCommitErrorV1::ServerBusy {
             retry_after_ms: 1_000,
@@ -452,11 +449,7 @@ fn map_provider_store_commit_error(error: StoreError) -> AdmissionCommitErrorV1 
         StoreError::SchemaMismatch(_)
         | StoreError::IntegrityCheckFailed(_)
         | StoreError::ProviderMismatch
-        | StoreError::RollbackFloorMissing
-        | StoreError::RollbackFloorIdentityMismatch
-        | StoreError::RollbackDetected { .. }
         | StoreError::RollbackFork
-        | StoreError::RollbackAuthorityProtocol(_)
         | StoreError::NamespaceConflict
         | StoreError::ExclusiveKeyLineageConflict
         | StoreError::StoreGenerationExhausted
@@ -2914,9 +2907,7 @@ mod tests {
             AdmissionCommitErrorV1::ScopeUnavailable
         );
         assert_eq!(
-            map_provider_store_commit_error(StoreError::RollbackAuthorityProtocol(
-                "invalid floor".to_owned()
-            )),
+            map_provider_store_commit_error(StoreError::RollbackFork),
             AdmissionCommitErrorV1::ScopeUnavailable
         );
         assert_eq!(
@@ -2927,13 +2918,6 @@ mod tests {
             map_provider_store_commit_error(StoreError::InternalAfterSpend {
                 read_back: pir_service_store::SpendReadBack::Present,
                 database_error: "commit outcome ambiguous".to_owned(),
-            }),
-            AdmissionCommitErrorV1::InternalAfterSpend
-        );
-        assert_eq!(
-            map_provider_store_commit_error(StoreError::UnanchoredCommit {
-                store_generation: 7,
-                authority_error: "anchor unavailable after commit".to_owned(),
             }),
             AdmissionCommitErrorV1::InternalAfterSpend
         );

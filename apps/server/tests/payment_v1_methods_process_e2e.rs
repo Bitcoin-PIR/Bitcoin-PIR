@@ -3,7 +3,7 @@
 //! The fixtures use public deterministic keys, a tiny manifest-bound DPF
 //! database, and loopback sockets only.  Each provider owns a different
 //! policy key, provider ID, Free-IP HMAC key, BAT scalar, experimental ARC
-//! key, provider store, and rollback authority.  There is intentionally no
+//! key, and provider store.  There is intentionally no
 //! pair identifier or peer-provider configuration.
 //!
 //! This is local wire/admission evidence, not production-attestation
@@ -43,7 +43,7 @@ use pir_service_protocol::{
     OperationStartV1, PriceV1, PrivacyLeakageV1, ServiceOfferV1, ServicePolicyV1,
     ServiceScopePolicyV1, ServiceScopeV1, VerificationMode, WorkloadId,
 };
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{ProviderStore, StoreOptions};
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
 use std::fs::{self, File};
 use std::net::{TcpListener, TcpStream};
@@ -51,7 +51,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
@@ -72,7 +71,6 @@ struct ProviderFixture {
     policy_signing_key: SigningKey,
     policy_path: PathBuf,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     free_ip_key_path: PathBuf,
     bat_key_path: PathBuf,
     arc_key_path: PathBuf,
@@ -134,8 +132,6 @@ impl ServerProcess {
                 &hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
                 "--service-store",
                 fixture.store_path.to_str().expect("UTF-8 test path"),
-                "--service-rollback-authority",
-                fixture.rollback_path.to_str().expect("UTF-8 test path"),
                 "--service-free-ip-key",
                 fixture.free_ip_key_path.to_str().expect("UTF-8 test path"),
                 "--service-trust-direct-peer-ip",
@@ -236,7 +232,6 @@ async fn independent_providers_enforce_free_bat_and_experimental_arc_over_real_s
     assert_ne!(provider0.arc_key_path, provider1.arc_key_path);
     assert_ne!(provider0.arc_key_id, provider1.arc_key_id);
     assert_ne!(provider0.store_path, provider1.store_path);
-    assert_ne!(provider0.rollback_path, provider1.rollback_path);
 
     let port0 = unused_loopback_port();
     let mut port1 = unused_loopback_port();
@@ -575,12 +570,9 @@ async fn open_verified_session(
 fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> ProviderFixture {
     let provider_root = root.join(format!("payment-methods-provider-{index}"));
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let operator_key = SigningKey::from_bytes(&[0x11u8.wrapping_add(index); 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x21u8.wrapping_add(index); 32]);
@@ -775,9 +767,6 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
     chmod(&policy_path, 0o644);
 
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let authority =
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
     let store = ProviderStore::create(
         &store_path,
         [0x91u8.wrapping_add(index); 16],
@@ -785,12 +774,10 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         StoreOptions {
             busy_timeout: Duration::from_secs(1),
         },
-        Arc::new(authority),
     )
     .unwrap();
     drop(store);
     chmod(&store_path, 0o600);
-    chmod(&rollback_path, 0o600);
 
     ProviderFixture {
         index,
@@ -798,7 +785,6 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
         policy_signing_key,
         policy_path,
         store_path,
-        rollback_path,
         free_ip_key_path,
         bat_key_path,
         arc_key_path,

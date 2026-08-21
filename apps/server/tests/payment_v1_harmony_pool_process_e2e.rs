@@ -45,7 +45,7 @@ use pir_service_protocol::{
 };
 #[cfg(feature = "standard-cashu-process-e2e")]
 use pir_service_protocol::{AuthBeginV1, AuthorizationProofV1, REQ_AUTH_BEGIN_V1};
-use pir_service_store::{ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions};
+use pir_service_store::{ProviderStore, StoreOptions};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::future::Future;
 use std::io::Write;
@@ -54,7 +54,6 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -76,7 +75,6 @@ struct ProviderFixture {
     issuer_id: [u8; 32],
     policy_path: PathBuf,
     store_path: PathBuf,
-    rollback_path: PathBuf,
     scope_id: [u8; 32],
     policy_digest: [u8; 32],
     issued_at: u64,
@@ -157,8 +155,6 @@ impl ServerProcess {
             hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
             "--service-store".to_owned(),
             fixture.store_path.display().to_string(),
-            "--service-rollback-authority".to_owned(),
-            fixture.rollback_path.display().to_string(),
             "--max-connections".to_owned(),
             "16".to_owned(),
             "--service-max-concurrent-auth".to_owned(),
@@ -303,8 +299,6 @@ fn complete_two_database_policy_starts_with_two_exact_hint_pools() {
         hex::encode(fixture.policy_signing_key.verifying_key().to_bytes()),
         "--service-store".to_owned(),
         fixture.store_path.display().to_string(),
-        "--service-rollback-authority".to_owned(),
-        fixture.rollback_path.display().to_string(),
         "--max-connections".to_owned(),
         "16".to_owned(),
         "--service-max-concurrent-auth".to_owned(),
@@ -899,12 +893,9 @@ fn build_provider(
 ) -> ProviderFixture {
     let provider_root = root.join("provider");
     let store_dir = provider_root.join("store-domain");
-    let rollback_dir = provider_root.join("rollback-domain");
     fs::create_dir_all(&store_dir).unwrap();
-    fs::create_dir_all(&rollback_dir).unwrap();
     chmod(&provider_root, 0o700);
     chmod(&store_dir, 0o700);
-    chmod(&rollback_dir, 0o700);
 
     let operator_key = SigningKey::from_bytes(&[0x10; 32]);
     let policy_signing_key = SigningKey::from_bytes(&[0x20; 32]);
@@ -1023,9 +1014,6 @@ fn build_provider(
     chmod(&policy_path, 0o644);
 
     let store_path = store_dir.join("provider.sqlite3");
-    let rollback_path = rollback_dir.join("floor.sqlite3");
-    let authority =
-        SqliteRollbackFloorAuthorityV1::create(&rollback_path, Duration::from_secs(1)).unwrap();
     let store = ProviderStore::create(
         &store_path,
         [0x50; 16],
@@ -1033,12 +1021,10 @@ fn build_provider(
         StoreOptions {
             busy_timeout: Duration::from_secs(1),
         },
-        Arc::new(authority),
     )
     .unwrap();
     drop(store);
     chmod(&store_path, 0o600);
-    chmod(&rollback_path, 0o600);
 
     ProviderFixture {
         provider_id,
@@ -1047,7 +1033,6 @@ fn build_provider(
         issuer_id: binding.issuer_id,
         policy_path,
         store_path,
-        rollback_path,
         scope_id,
         policy_digest,
         issued_at,

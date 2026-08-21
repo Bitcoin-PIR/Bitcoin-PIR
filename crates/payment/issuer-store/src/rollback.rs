@@ -1,112 +1,20 @@
-//! Independently durable anti-rollback authority for issuer state.
+//! Internal commit-chain bookkeeping for issuer state.
 //!
-//! An implementation is trusted production infrastructure. Its state must not
-//! be restored atomically with the protected SQLite database, WAL, or backups.
+//! Every committed mutation advances `commit_seq` and extends a hash chain
+//! over the mutation history inside the same SQLite transaction. This is
+//! plain bookkeeping used by integrity checks; there is no external
+//! anti-rollback authority.
 
-use crate::{StoreError, StoreIdentity, StoreResult, SCHEMA_VERSION};
-use pir_service_protocol::LightningNetworkV1;
 use sha2::{Digest, Sha256};
-use std::fmt;
 
-pub const ISSUER_ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1: &[u8] =
+use crate::SCHEMA_VERSION;
+use pir_service_protocol::LightningNetworkV1;
+
+const ISSUER_ROLLBACK_INITIAL_COMMITMENT_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-store-initial-commitment/v1";
-pub const ISSUER_ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1: &[u8] =
+const ISSUER_ROLLBACK_MUTATION_COMMITMENT_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/issuer-store-mutation-commitment/v1";
 const ISSUER_MUTATION_DIGEST_DOMAIN_V1: &[u8] = b"BitcoinPIR/issuer-store-mutation-digest/v1";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IssuerRollbackFloorV1 {
-    pub store_instance_id: [u8; 16],
-    pub issuer_id: [u8; 32],
-    pub network: LightningNetworkV1,
-    pub store_generation: u64,
-    pub rollback_commitment: [u8; 32],
-    pub schema_version: u32,
-}
-
-impl IssuerRollbackFloorV1 {
-    pub(crate) fn from_identity(identity: &StoreIdentity) -> Self {
-        Self {
-            store_instance_id: identity.store_instance_id,
-            issuer_id: identity.issuer_id,
-            network: identity.network,
-            store_generation: identity.commit_seq,
-            rollback_commitment: identity.rollback_commitment,
-            schema_version: identity.schema_version,
-        }
-    }
-
-    pub(crate) fn validate(&self) -> StoreResult<()> {
-        if self.store_instance_id.iter().all(|byte| *byte == 0)
-            || self.issuer_id.iter().all(|byte| *byte == 0)
-            || self.rollback_commitment.iter().all(|byte| *byte == 0)
-        {
-            return Err(StoreError::RollbackAuthorityProtocol(
-                "floor contains a zero identity or commitment".to_owned(),
-            ));
-        }
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(StoreError::RollbackAuthorityProtocol(
-                "floor schema version is unsupported".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IssuerRollbackFloorAuthorityErrorV1 {
-    reason: String,
-}
-
-impl IssuerRollbackFloorAuthorityErrorV1 {
-    pub fn new(reason: impl Into<String>) -> Self {
-        Self {
-            reason: reason.into(),
-        }
-    }
-
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
-}
-
-impl fmt::Display for IssuerRollbackFloorAuthorityErrorV1 {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.reason)
-    }
-}
-
-impl std::error::Error for IssuerRollbackFloorAuthorityErrorV1 {}
-
-/// Linearizable, independently durable compare-and-swap authority.
-///
-/// Every returned record is the durable live authority value after the
-/// attempted operation. `Ok` alone does **not** mean the requested mutation
-/// applied: `initialize` and `compare_and_advance` may return a conflicting
-/// current record. Every caller must validate exact equality with the expected
-/// initial/next floor (or apply its explicit domain reconciliation rule) before
-/// treating the operation as successful. An implementation must never lower a
-/// generation, rebind an identity, or accept two commitments at one
-/// generation.
-pub trait IssuerRollbackFloorAuthorityV1: fmt::Debug + Send + Sync + 'static {
-    fn load(
-        &self,
-        issuer_id: &[u8; 32],
-        network: LightningNetworkV1,
-    ) -> Result<Option<IssuerRollbackFloorV1>, IssuerRollbackFloorAuthorityErrorV1>;
-
-    fn initialize(
-        &self,
-        initial: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1>;
-
-    fn compare_and_advance(
-        &self,
-        expected: &IssuerRollbackFloorV1,
-        next: &IssuerRollbackFloorV1,
-    ) -> Result<IssuerRollbackFloorV1, IssuerRollbackFloorAuthorityErrorV1>;
-}
 
 pub(crate) fn initial_commitment(
     store_instance_id: &[u8; 16],

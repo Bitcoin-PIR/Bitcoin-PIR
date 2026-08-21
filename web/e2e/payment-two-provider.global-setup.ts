@@ -319,30 +319,18 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       const secretRoot = join(providerRoot, 'secrets');
       const stateRoot = join(runtimeRoot, provider.name);
       const issuerStoreParent = join(stateRoot, 'issuer-store');
-      const issuerFloorParent = join(stateRoot, 'issuer-floor');
       const serverStoreParent = join(stateRoot, 'server-store');
-      const serverFloorParent = join(stateRoot, 'server-floor');
-      for (const directory of [
-        stateRoot,
-        issuerStoreParent,
-        issuerFloorParent,
-        serverStoreParent,
-        serverFloorParent,
-      ]) {
+      for (const directory of [stateRoot, issuerStoreParent, serverStoreParent]) {
         await mkdir(directory, { recursive: true, mode: 0o700 });
         await chmod(directory, 0o700);
       }
 
       const issuerStore = join(issuerStoreParent, 'issuer.sqlite');
-      const issuerFloor = join(issuerFloorParent, 'rollback.sqlite');
       recordIndependentStatePath(independentStatePaths, issuerStore);
-      recordIndependentStatePath(independentStatePaths, issuerFloor);
       runChecked(cargoDebugBinary('payment-issuer'), [
         'init-store',
         '--store',
         issuerStore,
-        '--rollback-authority',
-        issuerFloor,
         '--issuer-id-hex',
         exactHex('issuer_id', provider.issuer_id, 32),
         '--network',
@@ -350,17 +338,13 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       ]);
 
       const serverStore = join(serverStoreParent, 'provider.sqlite');
-      const serverFloor = join(serverFloorParent, 'rollback.sqlite');
       recordIndependentStatePath(independentStatePaths, serverStore);
-      recordIndependentStatePath(independentStatePaths, serverFloor);
       runChecked(cargoDebugBinary('bpir-admin'), [
         'service-store-init',
         '--provider-id-hex',
         exactHex('provider_id', provider.provider_id, 32),
         '--store',
         serverStore,
-        '--rollback-authority',
-        serverFloor,
       ]);
 
       const issuerPort = await reserveLoopbackPort();
@@ -404,8 +388,6 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         webOrigin,
         '--store',
         issuerStore,
-        '--rollback-authority',
-        issuerFloor,
         '--quote-delegation',
         quoteDelegationPath,
         '--quote-signing-key',
@@ -481,8 +463,6 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
         exactHex('policy_signing_pubkey', provider.policy_signing_pubkey, 32),
         '--service-store',
         serverStore,
-        '--service-rollback-authority',
-        serverFloor,
         '--max-connections',
         '16',
         '--service-max-concurrent-auth',

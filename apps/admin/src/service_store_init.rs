@@ -1,13 +1,8 @@
-//! Explicit, one-shot initialization of a provider admission store and its
-//! separate local rollback-floor authority file.
+//! Explicit, one-shot initialization of a provider admission store.
 
 use clap::Args;
-use pir_service_store::{
-    ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
-    SCHEMA_VERSION,
-};
+use pir_service_store::{ProviderStore, StoreOptions, SCHEMA_VERSION};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Args, Debug)]
@@ -18,9 +13,6 @@ pub struct ServiceStoreInitArgs {
     /// New provider-local admission/spent-set SQLite file.
     #[arg(long)]
     pub store: PathBuf,
-    /// New separate local SQLite rollback floor file.
-    #[arg(long)]
-    pub rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     pub busy_timeout_ms: u64,
@@ -48,37 +40,8 @@ where
     let store_instance_id = random_nonzero_store_instance_id()?;
     let store_path = prepare_new_private_file_path(&args.store)?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
-    let authority_path = prepare_new_private_file_path(&args.rollback_authority)?;
-    if store_path == authority_path {
-        return Err("--store and --rollback-authority must be different paths".to_owned());
-    }
-    if store_path.parent() == authority_path.parent() {
-        eprintln!(
-            "warning: provider store and rollback authority share one directory; prefer independent backup/restore domains"
-        );
-    }
-    let authority: Arc<dyn RollbackFloorAuthorityV1> =
-        match SqliteRollbackFloorAuthorityV1::create(&authority_path, timeout) {
-            Ok(authority) => Arc::new(authority),
-            Err(error) => {
-                let detail = format!(
-                    "create rollback authority {}: {error}",
-                    authority_path.display()
-                );
-                return if std::fs::symlink_metadata(&authority_path).is_ok() {
-                    Err(incomplete_local_ceremony_error(
-                        detail,
-                        &store_path,
-                        &authority_path,
-                    ))
-                } else {
-                    Err(detail)
-                };
-            }
-        };
     pre_store_create(&store_path);
     let finish = || -> Result<(), String> {
-        set_owner_only(&authority_path)?;
         let store = ProviderStore::create(
             &store_path,
             store_instance_id,
@@ -86,7 +49,6 @@ where
             StoreOptions {
                 busy_timeout: timeout,
             },
-            Arc::clone(&authority),
         )
         .map_err(|error| format!("create provider store {}: {error}", store_path.display()))?;
         set_owner_only(&store_path)?;
@@ -101,18 +63,13 @@ where
         {
             return Err("new provider store failed exact identity self-check".to_owned());
         }
-        // Reopen both files through the same production open-existing path.
-        let reopened_authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
-            SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-                .map_err(|error| format!("reopen rollback authority: {error}"))?,
-        );
+        // Reopen through the same production open-existing path.
         let reopened = ProviderStore::open_existing(
             &store_path,
             provider_id,
             StoreOptions {
                 busy_timeout: timeout,
             },
-            reopened_authority,
         )
         .map_err(|error| format!("reopen provider store: {error}"))?;
         if reopened
@@ -124,21 +81,19 @@ where
         }
         Ok(())
     };
-    finish().map_err(|error| incomplete_local_ceremony_error(error, &store_path, &authority_path))?;
+    finish().map_err(|error| incomplete_local_ceremony_error(error, &store_path))?;
 
     println!("provider_id={}", hex::encode(provider_id));
     println!("store_instance_id={}", hex::encode(store_instance_id));
     println!("schema_version={SCHEMA_VERSION}");
     println!("store={}", store_path.display());
-    println!("rollback_authority={}", authority_path.display());
     Ok(())
 }
 
-fn incomplete_local_ceremony_error(error: String, store: &Path, authority: &Path) -> String {
+fn incomplete_local_ceremony_error(error: String, store: &Path) -> String {
     format!(
-        "{error}; initialization ceremony is incomplete and neither {} nor {} may be used as live state; inspect both paths, then manually remove only the files created by this failed ceremony before rerunning (this command never auto-deletes or adopts partial state)",
-        store.display(),
-        authority.display()
+        "{error}; initialization ceremony is incomplete and {} may not be used as live state; inspect the path, then manually remove only the files created by this failed ceremony before rerunning (this command never auto-deletes or adopts partial state)",
+        store.display()
     )
 }
 
@@ -158,25 +113,6 @@ pub(crate) fn validate_existing_private_file_path(
         label,
     )
     .map(|checked| checked.path().to_path_buf())
-}
-
-pub(crate) fn private_database_paths_alias(first: &Path, second: &Path) -> Result<bool, String> {
-    if first == second {
-        return Ok(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let first = std::fs::symlink_metadata(first)
-            .map_err(|error| format!("inspect {}: {error}", first.display()))?;
-        let second = std::fs::symlink_metadata(second)
-            .map_err(|error| format!("inspect {}: {error}", second.display()))?;
-        Ok(first.dev() == second.dev() && first.ino() == second.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        Err("sensitive SQLite path alias checks are unsupported on non-Unix platforms".to_owned())
-    }
 }
 
 #[cfg(unix)]
@@ -211,44 +147,32 @@ mod tests {
 
     fn args(root: &Path) -> ServiceStoreInitArgs {
         let store_dir = root.join("provider-domain");
-        let authority_dir = root.join("rollback-domain");
         std::fs::create_dir_all(&store_dir).unwrap();
-        std::fs::create_dir_all(&authority_dir).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&store_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-            std::fs::set_permissions(&authority_dir, std::fs::Permissions::from_mode(0o700))
-                .unwrap();
         }
         ServiceStoreInitArgs {
             provider_id_hex: hex::encode([7u8; 32]),
             store: store_dir.join("provider.sqlite3"),
-            rollback_authority: authority_dir.join("floor.sqlite3"),
             busy_timeout_ms: 1_000,
         }
     }
 
     #[test]
-    fn creates_and_reopens_exact_store_and_independent_authority() {
+    fn creates_and_reopens_exact_store() {
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
         let store_path = args.store.clone();
-        let authority_path = args.rollback_authority.clone();
         run(args).unwrap();
         assert!(store_path.is_file());
-        assert!(authority_path.is_file());
-        assert_ne!(store_path.parent(), authority_path.parent());
-        let authority =
-            SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, Duration::from_secs(1))
-                .unwrap();
         let store = ProviderStore::open_existing(
             &store_path,
             [7; 32],
             StoreOptions {
                 busy_timeout: Duration::from_secs(1),
             },
-            Arc::new(authority),
         )
         .unwrap();
         let identity = store.identity().unwrap();
@@ -257,35 +181,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_overwrite_and_same_path() {
+    fn rejects_overwrite() {
         let directory = tempfile::tempdir().unwrap();
         let first = args(directory.path());
         run(first).unwrap();
         assert!(run(args(directory.path()))
             .unwrap_err()
             .contains("already exists"));
-
-        let other = tempfile::tempdir().unwrap();
-        let mut same = args(other.path());
-        same.rollback_authority = same.store.clone();
-        assert!(run(same).unwrap_err().contains("different paths"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn store_and_authority_are_owner_only() {
+    fn store_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
         let store_path = args.store.clone();
-        let authority_path = args.rollback_authority.clone();
         run(args).unwrap();
-        for path in [store_path, authority_path] {
-            assert_eq!(
-                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
+        assert_eq!(
+            std::fs::metadata(store_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
@@ -301,28 +217,11 @@ mod tests {
         assert!(run(args).unwrap_err().contains("mode-0700"));
     }
 
-    #[test]
-    fn every_post_authority_error_is_marked_as_an_incomplete_ceremony() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = directory.path().join("provider.sqlite3");
-        let authority = directory.path().join("authority.sqlite3");
-        let message = incomplete_local_ceremony_error(
-            "later self-check failed".to_owned(),
-            &store,
-            &authority,
-        );
-        assert!(message.contains("initialization ceremony is incomplete"));
-        assert!(message.contains("never auto-deletes or adopts partial state"));
-        assert!(message.contains(store.to_str().unwrap()));
-        assert!(message.contains(authority.to_str().unwrap()));
-    }
-
     #[cfg(unix)]
     #[test]
-    fn provider_creation_failure_preserves_authority_and_reports_incomplete_ceremony() {
+    fn provider_creation_failure_reports_incomplete_ceremony() {
         let directory = tempfile::tempdir().unwrap();
         let args = args(directory.path());
-        let authority_path = args.rollback_authority.clone();
         let result = run_with_pre_store_create_v1(args, |store_path| {
             std::fs::write(store_path, b"deterministic provider-create blocker").unwrap();
         });
@@ -335,10 +234,6 @@ mod tests {
         assert!(
             error.contains("never auto-deletes or adopts partial state"),
             "{error}"
-        );
-        assert!(
-            authority_path.is_file(),
-            "authority must be preserved for operator inspection"
         );
     }
 }

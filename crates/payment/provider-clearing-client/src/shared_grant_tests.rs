@@ -2,7 +2,6 @@ use super::*;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
-use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
 use pir_issuer_clearing::RedeemResponseDerivationKeyV1;
@@ -10,7 +9,7 @@ use pir_issuer_service::{
     SettlementPayoutPolicyV1, SharedIssuerClearingServiceV1, TrustedClearingProviderV1,
 };
 use pir_issuer_store::{
-    IssuerStore, ProviderSettlementRegistrationWriteV1, SqliteIssuerRollbackFloorAuthorityV1,
+    IssuerStore, ProviderSettlementRegistrationWriteV1,
     StoreOptions as IssuerStoreOptions,
 };
 use pir_service_protocol::{
@@ -26,7 +25,7 @@ use pir_service_protocol::{
     VerifiedServiceOfferV1, WorkloadId,
 };
 use pir_service_store::{
-    ProviderStore, RollbackFloorAuthorityV1, SqliteRollbackFloorAuthorityV1, StoreOptions,
+    ProviderStore, StoreOptions,
 };
 use tempfile::TempDir;
 
@@ -417,19 +416,11 @@ impl FixtureV1 {
             _ => unreachable!(),
         };
 
-        let rollback = Arc::new(
-            SqliteRollbackFloorAuthorityV1::create(
-                directory.path().join("rollback.sqlite3"),
-                Duration::from_secs(1),
-            )
-            .expect("create rollback authority"),
-        );
         let store = ProviderStore::create(
             directory.path().join("provider.sqlite3"),
             [0x71; 16],
             PROVIDER_ID,
             StoreOptions::default(),
-            rollback as Arc<dyn RollbackFloorAuthorityV1>,
         )
         .expect("create provider store");
         let verified_offer = verified_offer_v1(&policy, &policy_signing.verifying_key());
@@ -508,20 +499,12 @@ impl FixtureV1 {
 fn real_issuer_service_v1(fixture: &FixtureV1) -> SharedIssuerClearingServiceV1 {
     let issuer_root = SigningKey::from_bytes(&[0x21; 32]);
     let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
-    let rollback = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            fixture._directory.path().join("issuer-rollback.sqlite3"),
-            IssuerStoreOptions::default().busy_timeout,
-        )
-        .expect("create issuer rollback authority"),
-    );
     let store = IssuerStore::create(
         fixture._directory.path().join("issuer.sqlite3"),
         [0x75; 16],
         issuer_id,
         LightningNetworkV1::Regtest,
         IssuerStoreOptions::default(),
-        rollback,
     )
     .expect("create issuer store");
     let provider_request = SigningKey::from_bytes(&[0x76; 32]);
@@ -814,19 +797,11 @@ fn shared_committer_rejects_a_store_for_another_provider_before_transport() {
         )
         .expect("restrict wrong-provider test directory permissions");
     }
-    let authority = Arc::new(
-        SqliteRollbackFloorAuthorityV1::create(
-            second_directory.path().join("rollback.sqlite3"),
-            Duration::from_secs(1),
-        )
-        .expect("create wrong-provider authority"),
-    );
     let wrong_store = ProviderStore::create(
         second_directory.path().join("provider.sqlite3"),
         [0x73; 16],
         [0x74; 32],
         StoreOptions::default(),
-        authority as Arc<dyn RollbackFloorAuthorityV1>,
     )
     .expect("create wrong-provider store");
     let transport =

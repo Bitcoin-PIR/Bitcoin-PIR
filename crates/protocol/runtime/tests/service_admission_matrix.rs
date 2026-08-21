@@ -11,8 +11,7 @@
 use std::collections::HashSet;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt as _;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Mutex;
 
 use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
@@ -39,10 +38,7 @@ use pir_service_protocol::{
 use sha2::{Digest, Sha256};
 use x25519_dalek::StaticSecret;
 
-use pir_service_store::{
-    ProviderStore, SqliteRollbackFloorAuthorityV1, StoreOptions,
-    VerifiedOfferNamespaceInstallOutcomeV1,
-};
+use pir_service_store::{ProviderStore, StoreOptions, VerifiedOfferNamespaceInstallOutcomeV1};
 
 const PROVIDER: [u8; 32] = [0x42; 32];
 const DB_ID: u8 = 7;
@@ -588,18 +584,8 @@ fn direct_receipt_production_committer_spend_survives_store_restart() {
     #[cfg(unix)]
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let store_path = directory.path().join("provider.sqlite3");
-    let floor_path = directory.path().join("provider-floor.sqlite3");
-    let authority = Arc::new(
-        SqliteRollbackFloorAuthorityV1::create(&floor_path, Duration::from_secs(1)).unwrap(),
-    );
-    let store = ProviderStore::create(
-        &store_path,
-        [0x71; 16],
-        PROVIDER,
-        StoreOptions::default(),
-        authority.clone(),
-    )
-    .unwrap();
+    let store = ProviderStore::create(&store_path, [0x71; 16], PROVIDER, StoreOptions::default())
+        .unwrap();
     assert!(matches!(
         store
             .install_verified_offer_namespace_v1(&verified_offer, NOW_UNIX, None)
@@ -622,8 +608,7 @@ fn direct_receipt_production_committer_spend_survives_store_restart() {
     drop(store);
 
     let reopened =
-        ProviderStore::open_existing(&store_path, PROVIDER, StoreOptions::default(), authority)
-            .unwrap();
+        ProviderStore::open_existing(&store_path, PROVIDER, StoreOptions::default()).unwrap();
     let committer = ProviderStoreBearerCommitterV1::new(&reopened, None);
     let (mut replay_gate, replay) = authorize(&policy, &decoded, &resolution, &committer);
     assert!(matches!(

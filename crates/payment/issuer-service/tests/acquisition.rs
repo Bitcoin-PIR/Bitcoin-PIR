@@ -11,7 +11,7 @@ use pir_issuer_service::{
     QuoteSigningMaterialV1,
 };
 use pir_issuer_store::{
-    BatKeyLineageRegistration, IssuerStore, QuoteState, SqliteIssuerRollbackFloorAuthorityV1,
+    BatKeyLineageRegistration, IssuerStore, QuoteState,
     StoreOptions,
 };
 use pir_lightning_backend::FakeLightningNodeV1;
@@ -297,13 +297,6 @@ fn rotated_bat_policy(fixture: &Fixture, epoch: u64, bat_multiplier: u8) -> Serv
 #[test]
 fn startup_rejects_missing_wrong_and_retained_bat_private_material() {
     let directory = private_tempdir("bitcoinpir-issuer-key-coverage-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -315,7 +308,6 @@ fn startup_rejects_missing_wrong_and_retained_bat_private_material() {
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _ = store
@@ -373,13 +365,6 @@ fn startup_rejects_missing_wrong_and_retained_bat_private_material() {
 #[test]
 fn startup_requires_quote_signer_only_through_recovery_horizon() {
     let directory = private_tempdir("bitcoinpir-issuer-quote-key-coverage-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -391,7 +376,6 @@ fn startup_requires_quote_signer_only_through_recovery_horizon() {
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _ = store
@@ -526,13 +510,6 @@ fn startup_requires_quote_signer_only_through_recovery_horizon() {
 #[test]
 fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
     let directory = private_tempdir("bitcoinpir-issuer-clearing-key-readiness-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
         .expect("fake Lightning");
     let fixture = fixture(lightning.payee_pubkey());
@@ -542,7 +519,6 @@ fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _ = store
@@ -649,13 +625,6 @@ fn clearing_readiness_requires_live_binding_key_and_immutable_lineage() {
 #[test]
 fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_body() {
     let directory = private_tempdir("bitcoinpir-issuer-service-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -667,7 +636,6 @@ fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_bo
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _installed = store
@@ -725,13 +693,6 @@ fn exact_quote_create_recovers_after_policy_rotation_and_conflicts_on_changed_bo
 #[test]
 fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
     let directory = private_tempdir("bitcoinpir-issuer-same-second-claim-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -743,7 +704,6 @@ fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _installed = store
@@ -896,13 +856,6 @@ fn same_second_settlement_claim_retries_without_write_then_replays_exactly() {
 #[test]
 fn bat_v2_lifecycle_is_class_bound_dleq_checked_and_restart_replay_exact() {
     let directory = private_tempdir("bitcoinpir-issuer-bat-v2-lifecycle-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -1055,7 +1008,6 @@ fn bat_v2_lifecycle_is_class_bound_dleq_checked_and_restart_replay_exact() {
         issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _ = store
@@ -1252,13 +1204,6 @@ fn bat_v2_lifecycle_is_class_bound_dleq_checked_and_restart_replay_exact() {
 #[test]
 fn background_batch_expires_open_invoice_without_status_nonce() {
     let directory = private_tempdir("bitcoinpir-issuer-reconcile-test-");
-    let authority = Arc::new(
-        SqliteIssuerRollbackFloorAuthorityV1::create(
-            directory.path().join("floor.sqlite3"),
-            StoreOptions::default().busy_timeout,
-        )
-        .expect("rollback authority"),
-    );
     let lightning = Arc::new(
         FakeLightningNodeV1::new(LightningNetworkV1::Regtest, [3; 32], [7; 32], NOW)
             .expect("fake Lightning"),
@@ -1270,7 +1215,6 @@ fn background_batch_expires_open_invoice_without_status_nonce() {
         fixture.issuer_id,
         LightningNetworkV1::Regtest,
         StoreOptions::default(),
-        authority,
     )
     .expect("issuer store");
     let _installed = store

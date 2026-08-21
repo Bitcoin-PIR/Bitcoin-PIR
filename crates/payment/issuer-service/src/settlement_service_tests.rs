@@ -1,7 +1,7 @@
 use super::*;
 use pir_issuer_store::{
     BatKeyLineageRegistration, ProviderSettlementRegistrationWriteV1,
-    SqliteIssuerRollbackFloorAuthorityV1, StoreOptions,
+    StoreOptions,
 };
 use pir_payment_crypto::{cashu_hash_to_curve_v1, K256CashuMintKeyringV1};
 use pir_service_protocol::{
@@ -54,20 +54,12 @@ impl Fixture {
         }
         let issuer_root = SigningKey::from_bytes(&ISSUER_ROOT_SEED);
         let issuer_id = derive_issuer_id(&issuer_root.verifying_key().to_bytes());
-        let rollback = Arc::new(
-            SqliteIssuerRollbackFloorAuthorityV1::create(
-                directory.path().join("issuer-floor.sqlite3"),
-                StoreOptions::default().busy_timeout,
-            )
-            .expect("rollback floor"),
-        );
         let store = IssuerStore::create(
             directory.path().join("issuer.sqlite3"),
             [0x11; 16],
             issuer_id,
             LightningNetworkV1::Regtest,
             StoreOptions::default(),
-            rollback,
         )
         .expect("issuer store");
         let provider_request = SigningKey::from_bytes(&[0x22; 32]);

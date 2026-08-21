@@ -71,7 +71,7 @@ impl TestPath {
 }
 
 fn create_store(path: &Path) -> ProviderStore {
-    ProviderStore::create_unprotected_for_tests(
+    ProviderStore::create(
         path,
         STORE_INSTANCE,
         PROVIDER,
@@ -141,7 +141,7 @@ fn create_is_explicit_and_schema_has_no_linkage_columns() {
     assert_ne!(identity.rollback_commitment, [0; 32]);
     assert_eq!(identity.schema_version, SCHEMA_VERSION);
 
-    assert!(ProviderStore::create_unprotected_for_tests(
+    assert!(ProviderStore::create(
         &test_path.database,
         [1; 16],
         PROVIDER,
@@ -210,7 +210,7 @@ fn missing_exclusive_key_lineage_table_is_rejected_as_schema_drift() {
     drop(connection);
 
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &test_path.database,
             PROVIDER,
             StoreOptions::default()
@@ -223,7 +223,7 @@ fn missing_exclusive_key_lineage_table_is_rejected_as_schema_drift() {
 fn serve_mode_rejects_missing_corrupt_wrong_provider_and_unknown_schema() {
     let missing = TestPath::new();
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &missing.database,
             PROVIDER,
             StoreOptions::default()
@@ -234,7 +234,7 @@ fn serve_mode_rejects_missing_corrupt_wrong_provider_and_unknown_schema() {
 
     let corrupt = TestPath::new();
     std::fs::write(&corrupt.database, b"not a sqlite database").unwrap();
-    assert!(ProviderStore::open_existing_unprotected_for_tests(
+    assert!(ProviderStore::open_existing(
         &corrupt.database,
         PROVIDER,
         StoreOptions::default()
@@ -244,7 +244,7 @@ fn serve_mode_rejects_missing_corrupt_wrong_provider_and_unknown_schema() {
     let wrong_provider = TestPath::new();
     let _store = create_store(&wrong_provider.database);
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &wrong_provider.database,
             [0x99; 32],
             StoreOptions::default()
@@ -259,7 +259,7 @@ fn serve_mode_rejects_missing_corrupt_wrong_provider_and_unknown_schema() {
     connection.pragma_update(None, "user_version", 999).unwrap();
     drop(connection);
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &wrong_schema.database,
             PROVIDER,
             StoreOptions::default()
@@ -279,7 +279,7 @@ fn schema_extensions_and_symlink_paths_fail_closed() {
         .unwrap();
     drop(connection);
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &test_path.database,
             PROVIDER,
             StoreOptions::default()
@@ -295,7 +295,7 @@ fn schema_extensions_and_symlink_paths_fail_closed() {
         let link = target._directory.path().join("provider-link.sqlite3");
         symlink(&target.database, &link).unwrap();
         assert!(matches!(
-            ProviderStore::open_existing_unprotected_for_tests(
+            ProviderStore::open_existing(
                 &link,
                 PROVIDER,
                 StoreOptions::default()
@@ -306,7 +306,7 @@ fn schema_extensions_and_symlink_paths_fail_closed() {
         let hardlink = target._directory.path().join("provider-hardlink.sqlite3");
         std::fs::hard_link(&target.database, &hardlink).unwrap();
         assert!(matches!(
-            ProviderStore::open_existing_unprotected_for_tests(
+            ProviderStore::open_existing(
                 &hardlink,
                 PROVIDER,
                 StoreOptions::default()
@@ -314,7 +314,7 @@ fn schema_extensions_and_symlink_paths_fail_closed() {
             Err(StoreError::NotRegularDatabase(_))
         ));
         assert!(matches!(
-            ProviderStore::open_existing_unprotected_for_tests(
+            ProviderStore::open_existing(
                 &target.database,
                 PROVIDER,
                 StoreOptions::default()
@@ -451,7 +451,7 @@ fn exclusive_key_lineage_survives_close_reopen_and_restart() {
     store.close_namespace(&same_lineage.namespace_id).unwrap();
     drop(store);
 
-    let reopened = ProviderStore::open_existing_unprotected_for_tests(
+    let reopened = ProviderStore::open_existing(
         &test_path.database,
         PROVIDER,
         StoreOptions::default(),
@@ -464,7 +464,7 @@ fn exclusive_key_lineage_survives_close_reopen_and_restart() {
     ));
     drop(reopened);
 
-    let restarted = ProviderStore::open_existing_unprotected_for_tests(
+    let restarted = ProviderStore::open_existing(
         &test_path.database,
         PROVIDER,
         StoreOptions::default(),
@@ -563,7 +563,7 @@ fn committed_spend_survives_reopen_and_duplicate_is_rejected() {
     assert_eq!(store.spend(request).unwrap().spend_commit_seq, 1);
     drop(store);
 
-    let reopened = ProviderStore::open_existing_unprotected_for_tests(
+    let reopened = ProviderStore::open_existing(
         &test_path.database,
         PROVIDER,
         StoreOptions::default(),
@@ -594,7 +594,7 @@ fn wal_commit_is_visible_while_an_older_reader_remains_open() {
     assert_eq!(store.spend(request).unwrap().spend_commit_seq, 1);
     drop(store);
 
-    let reopened = ProviderStore::open_existing_unprotected_for_tests(
+    let reopened = ProviderStore::open_existing(
         &test_path.database,
         PROVIDER,
         StoreOptions::default(),
@@ -698,7 +698,7 @@ fn policy_head_and_epoch_floors_survive_reopen_and_reject_rollback_atomically() 
     );
     drop(store);
 
-    let store = ProviderStore::open_existing_unprotected_for_tests(
+    let store = ProviderStore::open_existing(
         &test_path.database,
         PROVIDER,
         StoreOptions::default(),
@@ -759,7 +759,7 @@ fn policy_head_and_epoch_floors_survive_reopen_and_reject_rollback_atomically() 
 fn zero_sentinels_are_rejected_before_persistence() {
     let zero_provider_path = TestPath::new();
     assert!(matches!(
-        ProviderStore::create_unprotected_for_tests(
+        ProviderStore::create(
             &zero_provider_path.database,
             STORE_INSTANCE,
             [0; 32],
@@ -771,7 +771,7 @@ fn zero_sentinels_are_rejected_before_persistence() {
 
     let zero_instance_path = TestPath::new();
     assert!(matches!(
-        ProviderStore::create_unprotected_for_tests(
+        ProviderStore::create(
             &zero_instance_path.database,
             [0; 16],
             PROVIDER,
@@ -876,7 +876,7 @@ fn foreign_key_violation_fails_full_open_integrity_check() {
         .unwrap();
     drop(connection);
     assert!(matches!(
-        ProviderStore::open_existing_unprotected_for_tests(
+        ProviderStore::open_existing(
             &test_path.database,
             PROVIDER,
             StoreOptions::default()

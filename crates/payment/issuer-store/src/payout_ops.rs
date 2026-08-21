@@ -174,7 +174,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_payout_intent(&transaction, self, &idempotency_digest)? {
             if existing.request_digest == request_digest
@@ -272,7 +271,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self.payout_intent_by_idempotency(request)?.ok_or_else(|| {
             StoreError::SchemaMismatch("committed payout intent missing".to_owned())
         })?;
@@ -299,7 +297,7 @@ impl IssuerStore {
                 return Err(StoreError::PayoutIntentIdempotencyConflict);
             }
         }
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn payout_by_idempotency(
@@ -318,7 +316,7 @@ impl IssuerStore {
                 return Err(StoreError::PayoutIdempotencyConflict);
             }
         }
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     pub fn payout_by_id(&self, payout_id: &[u8; 32]) -> StoreResult<Option<PayoutRecordV1>> {
@@ -327,7 +325,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_payout_by_id(&connection, self, payout_id)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Claims one pending or expired payout command under a durable lease.
@@ -351,7 +349,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let command_id: Option<Vec<u8>> = transaction
             .query_row(
                 "SELECT command_id FROM payout_outbox WHERE state = 1 OR \
@@ -394,12 +391,10 @@ impl IssuerStore {
             return Err(StoreError::PayoutOutboxUnavailable);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let connection = self.open_checked(false)?;
         let value = read_outbox_command(&connection, self, &command_id)?.ok_or_else(|| {
             StoreError::SchemaMismatch("claimed payout command missing".to_owned())
         })?;
-        let value = self.confirm_anchored_read(&connection, value)?;
         Ok(Some(DurableWrite {
             disposition: WriteDisposition::Committed,
             commit: marker(self, sequence),
@@ -428,7 +423,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         if read_payout(&transaction, self, &idempotency_digest)?.is_some() {
             return Ok(false);
         }
@@ -577,7 +571,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         Ok(true)
     }
 
@@ -595,7 +588,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         let Some(current) = read_payout_by_id(&transaction, self, predecessor.payout_id())? else {
             return Ok(false);
         };
@@ -727,7 +719,6 @@ impl IssuerStore {
             }
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         Ok(true)
     }
 }

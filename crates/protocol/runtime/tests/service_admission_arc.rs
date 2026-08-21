@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
@@ -19,49 +17,11 @@ use pir_service_protocol::{
 };
 use pir_service_store::{
     ArcExclusiveKeyLineageVerifierV1, ArcPresentationSpendVerifierV1, ArcVerifiedSpendSinkV1,
-    ExclusiveKeyLineage, ProviderStore, RollbackFloorAuthorityErrorV1, RollbackFloorAuthorityV1,
-    RollbackFloorV1, StoreOptions, VerifiedOfferNamespaceInstallOutcomeV1,
+    ExclusiveKeyLineage, ProviderStore, StoreOptions, VerifiedOfferNamespaceInstallOutcomeV1,
 };
 use sha2::{Digest, Sha256};
 
 const PROVIDER: [u8; 32] = [0x19; 32];
-
-#[derive(Debug, Default)]
-struct MemoryRollbackAuthorityV1 {
-    floor: Mutex<Option<RollbackFloorV1>>,
-}
-
-impl RollbackFloorAuthorityV1 for MemoryRollbackAuthorityV1 {
-    fn load(
-        &self,
-        _provider_id: &[u8; 32],
-    ) -> Result<Option<RollbackFloorV1>, RollbackFloorAuthorityErrorV1> {
-        Ok(*self.floor.lock().unwrap())
-    }
-
-    fn initialize(
-        &self,
-        initial: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.is_none() {
-            *floor = Some(*initial);
-        }
-        floor.ok_or_else(|| RollbackFloorAuthorityErrorV1::new("floor initialization failed"))
-    }
-
-    fn compare_and_advance(
-        &self,
-        expected: &RollbackFloorV1,
-        next: &RollbackFloorV1,
-    ) -> Result<RollbackFloorV1, RollbackFloorAuthorityErrorV1> {
-        let mut floor = self.floor.lock().unwrap();
-        if floor.as_ref() == Some(expected) {
-            *floor = Some(*next);
-        }
-        floor.ok_or_else(|| RollbackFloorAuthorityErrorV1::new("floor disappeared"))
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct FakeReviewedArcAdapterV1;
@@ -269,7 +229,6 @@ fn provider_store_committer_routes_only_provider_local_experimental_arc() {
         [0x44; 16],
         PROVIDER,
         StoreOptions::default(),
-        Arc::new(MemoryRollbackAuthorityV1::default()),
     )
     .unwrap();
     let adapter = FakeReviewedArcAdapterV1;

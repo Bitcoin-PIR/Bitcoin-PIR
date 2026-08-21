@@ -12,22 +12,8 @@ pub enum StoreError {
     SchemaMismatch(String),
     IntegrityCheckFailed(String),
     ProviderMismatch,
-    RollbackFloorMissing,
-    RollbackFloorIdentityMismatch,
-    RollbackDetected {
-        database_generation: u64,
-        authority_generation: u64,
-    },
+    /// Concurrent writers raced the internal commit-chain compare-and-set.
     RollbackFork,
-    RollbackAuthorityProtocol(String),
-    RollbackAuthorityUnavailable(String),
-    /// SQLite committed, but the independently durable rollback anchor could
-    /// not be confirmed. No authorization or successful mutation response may
-    /// be returned to the caller.
-    UnanchoredCommit {
-        store_generation: u64,
-        authority_error: String,
-    },
     NamespaceMissing,
     NamespaceClosed,
     NamespaceExpired,
@@ -85,37 +71,9 @@ impl fmt::Display for StoreError {
                 write!(f, "provider database integrity check failed: {reason}")
             }
             Self::ProviderMismatch => write!(f, "provider database identity mismatch"),
-            Self::RollbackFloorMissing => write!(
-                f,
-                "independently durable provider rollback floor is missing"
-            ),
-            Self::RollbackFloorIdentityMismatch => write!(
-                f,
-                "provider rollback floor belongs to a different store identity"
-            ),
-            Self::RollbackDetected {
-                database_generation,
-                authority_generation,
-            } => write!(
-                f,
-                "provider database rollback detected (database generation {database_generation}, authority floor {authority_generation})"
-            ),
             Self::RollbackFork => write!(
                 f,
-                "provider database and rollback authority contain conflicting state at one generation"
-            ),
-            Self::RollbackAuthorityProtocol(reason) => {
-                write!(f, "provider rollback authority contract violation: {reason}")
-            }
-            Self::RollbackAuthorityUnavailable(reason) => {
-                write!(f, "provider rollback authority unavailable: {reason}")
-            }
-            Self::UnanchoredCommit {
-                store_generation,
-                authority_error,
-            } => write!(
-                f,
-                "provider-store generation {store_generation} committed but is not externally anchored: {authority_error}"
+                "concurrent provider-store writers conflicted at one commit generation"
             ),
             Self::NamespaceMissing => write!(f, "spend namespace is missing"),
             Self::NamespaceClosed => write!(f, "spend namespace is closed"),

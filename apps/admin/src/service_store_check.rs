@@ -1,12 +1,8 @@
 //! Fail-closed provider-store startup/SLO probe with no listener.
 
 use clap::Args;
-use pir_service_store::{
-    ProviderStore, ProviderStoreOperationalInventoryV1, RollbackFloorAuthorityV1,
-    SqliteRollbackFloorAuthorityV1, StoreOptions,
-};
+use pir_service_store::{ProviderStore, ProviderStoreOperationalInventoryV1, StoreOptions};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[derive(Args, Debug)]
@@ -17,9 +13,6 @@ pub struct ServiceStoreCheckArgs {
     /// Existing provider-local admission/spent-set SQLite file.
     #[arg(long)]
     pub store: PathBuf,
-    /// Existing separate local SQLite rollback floor file.
-    #[arg(long)]
-    pub rollback_authority: PathBuf,
     /// SQLite busy timeout in milliseconds (1..=60000).
     #[arg(long, default_value_t = 5_000)]
     pub busy_timeout_ms: u64,
@@ -40,26 +33,12 @@ pub fn run(args: ServiceStoreCheckArgs) -> Result<(), String> {
     )?;
     let timeout = Duration::from_millis(args.busy_timeout_ms);
     let started = Instant::now();
-    let authority_path = crate::service_store_init::validate_existing_private_file_path(
-        &args.rollback_authority,
-        "provider rollback authority",
-    )?;
-    if crate::service_store_init::private_database_paths_alias(&store_path, &authority_path)? {
-        return Err(
-            "provider store and rollback authority resolve to the same file/inode".to_owned(),
-        );
-    }
-    let authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
-        SqliteRollbackFloorAuthorityV1::open_existing(&authority_path, timeout)
-            .map_err(|error| format!("open provider rollback authority: {error}"))?,
-    );
     let store = ProviderStore::open_existing(
         &store_path,
         provider_id,
         StoreOptions {
             busy_timeout: timeout,
         },
-        authority,
     )
     .map_err(|error| format!("open provider store: {error}"))?;
     let identity = store
@@ -116,49 +95,40 @@ mod tests {
     use super::*;
     use std::os::unix::fs::{symlink, PermissionsExt};
 
-    fn initialized_paths() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    fn initialized_store() -> (tempfile::TempDir, PathBuf) {
         let root = tempfile::tempdir().unwrap();
         let store_parent = root.path().join("provider-store");
-        let authority_parent = root.path().join("provider-floor");
         std::fs::create_dir(&store_parent).unwrap();
-        std::fs::create_dir(&authority_parent).unwrap();
         std::fs::set_permissions(&store_parent, std::fs::Permissions::from_mode(0o700)).unwrap();
-        std::fs::set_permissions(&authority_parent, std::fs::Permissions::from_mode(0o700))
-            .unwrap();
         let store = store_parent.join("admission.sqlite3");
-        let authority = authority_parent.join("floor.sqlite3");
         crate::service_store_init::run(crate::service_store_init::ServiceStoreInitArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store: store.clone(),
-            rollback_authority: authority.clone(),
             busy_timeout_ms: 1_000,
         })
         .unwrap();
-        (root, store, authority)
+        (root, store)
     }
 
-    fn args(store: PathBuf, authority: PathBuf) -> ServiceStoreCheckArgs {
+    fn args(store: PathBuf) -> ServiceStoreCheckArgs {
         ServiceStoreCheckArgs {
             provider_id_hex: hex::encode([0x31_u8; 32]),
             store,
-            rollback_authority: authority,
             busy_timeout_ms: 1_000,
         }
     }
 
     #[test]
-    fn serving_equivalent_check_accepts_exact_initialized_pair() {
-        let (_root, store, authority) = initialized_paths();
-        run(args(store.clone(), authority.clone())).unwrap();
+    fn serving_equivalent_check_accepts_exact_initialized_store() {
+        let (_root, store) = initialized_store();
+        run(args(store.clone())).unwrap();
         let timeout = Duration::from_secs(1);
-        let rollback = SqliteRollbackFloorAuthorityV1::open_existing(&authority, timeout).unwrap();
         let opened = ProviderStore::open_existing(
             &store,
             [0x31; 32],
             StoreOptions {
                 busy_timeout: timeout,
             },
-            Arc::new(rollback),
         )
         .unwrap();
         let inventory = opened.operational_inventory().unwrap();
@@ -173,18 +143,14 @@ mod tests {
     }
 
     #[test]
-    fn check_rejects_wrong_provider_symlink_and_same_inode_alias() {
-        let (_root, store, authority) = initialized_paths();
-        let mut wrong = args(store.clone(), authority.clone());
+    fn check_rejects_wrong_provider_and_symlink() {
+        let (_root, store) = initialized_store();
+        let mut wrong = args(store.clone());
         wrong.provider_id_hex = hex::encode([0x32_u8; 32]);
         assert!(run(wrong).unwrap_err().contains("identity mismatch"));
 
         let link = store.parent().unwrap().join("store-link.sqlite3");
         symlink(&store, &link).unwrap();
-        assert!(run(args(link, authority.clone())).is_err());
-
-        let alias = authority.parent().unwrap().join("store-alias.sqlite3");
-        std::fs::hard_link(&store, &alias).unwrap();
-        assert!(run(args(store, alias)).is_err());
+        assert!(run(args(link)).is_err());
     }
 }

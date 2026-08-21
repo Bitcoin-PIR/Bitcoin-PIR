@@ -82,8 +82,7 @@ use pir_service_protocol::{
     WorkloadId as ServiceWorkloadIdV1,
 };
 use pir_service_store::{
-    CashuCustodyInventoryV1, ProviderStore, RollbackFloorAuthorityV1,
-    SqliteRollbackFloorAuthorityV1, StoreOptions,
+    CashuCustodyInventoryV1, ProviderStore, StoreOptions,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -304,10 +303,8 @@ struct CliArgs {
     /// Measurement-bound pir2 identity/clearing dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pir2_sealed: Pir2SealedCliV1,
-    /// Existing provider spend database. The rollback authority is exactly one
-    /// local SQLite floor file; startup never creates or silently substitutes it.
+    /// Existing provider spend database.
     service_store_path: Option<PathBuf>,
-    service_rollback_authority_path: Option<PathBuf>,
     /// Secret HMAC key for provider-local durable IP quota cohorts.
     service_free_ip_key_path: Option<PathBuf>,
     /// Assert that the TCP peer address is the real client address. This is
@@ -630,7 +627,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut service_storeless_bat_v2 = StorelessBatV2CliV2::default();
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut service_store_path: Option<PathBuf> = None;
-    let mut service_rollback_authority_path: Option<PathBuf> = None;
     let mut service_free_ip_key_path: Option<PathBuf> = None;
     let mut service_trust_direct_peer_ip = false;
     let mut service_bat_key_paths: Vec<PathBuf> = Vec::new();
@@ -979,16 +975,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--service-store" => {
                 service_store_path = args.get(i + 1).map(PathBuf::from);
-                i += 1;
-            }
-            "--service-rollback-authority" => {
-                if service_rollback_authority_path.is_some() {
-                    fatal_cli("--service-rollback-authority must not be repeated");
-                }
-                let path = args.get(i + 1).unwrap_or_else(|| {
-                    fatal_cli("--service-rollback-authority requires a path");
-                });
-                service_rollback_authority_path = Some(PathBuf::from(path));
                 i += 1;
             }
             "--service-free-ip-key" => {
@@ -1438,7 +1424,6 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         service_storeless_bat_v2,
         pir2_sealed,
         service_store_path,
-        service_rollback_authority_path,
         service_free_ip_key_path,
         service_trust_direct_peer_ip,
         service_bat_key_paths,
@@ -7550,29 +7535,6 @@ fn validate_existing_private_sqlite_path_v1(
     .map(|checked| checked.path().to_path_buf())
 }
 
-fn private_sqlite_paths_alias_v1(
-    first: &std::path::Path,
-    second: &std::path::Path,
-) -> Result<bool, String> {
-    if first == second {
-        return Ok(true);
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let first_metadata = std::fs::symlink_metadata(first)
-            .map_err(|error| format!("failed to inspect {}: {error}", first.display()))?;
-        let second_metadata = std::fs::symlink_metadata(second)
-            .map_err(|error| format!("failed to inspect {}: {error}", second.display()))?;
-        Ok(first_metadata.dev() == second_metadata.dev()
-            && first_metadata.ino() == second_metadata.ino())
-    }
-    #[cfg(not(unix))]
-    {
-        Err("sensitive SQLite path alias checks are unsupported on non-Unix platforms".to_owned())
-    }
-}
-
 #[cfg(all(test, unix))]
 mod secret_loader_tests_v1 {
     use super::*;
@@ -7826,11 +7788,9 @@ mod secret_loader_tests_v1 {
         fs::set_permissions(&store, fs::Permissions::from_mode(0o600)).unwrap();
         fs::hard_link(&store, &authority).unwrap();
         assert!(validate_existing_private_sqlite_path_v1(&store, "provider store").is_err());
-        assert!(validate_existing_private_sqlite_path_v1(
-            &authority,
-            "provider rollback authority"
-        )
-        .is_err());
+        assert!(
+            validate_existing_private_sqlite_path_v1(&authority, "provider database").is_err()
+        );
     }
 }
 
@@ -7979,30 +7939,13 @@ mod experimental_arc_opt_in_tests_v1 {
     }
 }
 
-fn service_rollback_authority_source_v1(
-    local_sqlite: Option<&Path>,
-) -> Result<&Path, String> {
-    local_sqlite.ok_or_else(|| "--service-rollback-authority is required".to_owned())
-}
-
 fn provider_store_startup_log_line_v1(elapsed_ms: u128) -> String {
     format!("  Provider store startup_check=ok elapsed_ms={elapsed_ms}")
 }
 
 #[cfg(test)]
-mod service_rollback_authority_source_tests_v1 {
-    use super::{provider_store_startup_log_line_v1, service_rollback_authority_source_v1};
-    use std::path::Path;
-
-    #[test]
-    fn local_sqlite_source_is_required() {
-        let local = Path::new("/local.sqlite3");
-        assert_eq!(
-            service_rollback_authority_source_v1(Some(local)).unwrap(),
-            local
-        );
-        assert!(service_rollback_authority_source_v1(None).is_err());
-    }
+mod provider_store_startup_log_tests_v1 {
+    use super::provider_store_startup_log_line_v1;
 
     #[test]
     fn serving_startup_log_omits_exact_business_inventory() {
@@ -8038,7 +7981,6 @@ fn load_strict_service_admission_v1(
         || args.service_storeless_free_pow_policy_digest_hex.is_some()
         || args.service_storeless_bat_v2.any_configured()
         || args.service_store_path.is_some()
-        || args.service_rollback_authority_path.is_some()
         || args.service_free_ip_key_path.is_some()
         || args.service_trust_direct_peer_ip
         || !args.service_bat_key_paths.is_empty()
@@ -8182,7 +8124,6 @@ fn load_strict_service_admission_v1(
             || args.arc_key_path.is_some()
             || !args.cashu_keysets.is_empty()
             || args.service_store_path.is_some()
-            || args.service_rollback_authority_path.is_some()
             || args.service_free_ip_key_path.is_some()
             || args.service_trust_direct_peer_ip
             || !args.service_bat_key_paths.is_empty()
@@ -8248,33 +8189,13 @@ fn load_strict_service_admission_v1(
             .service_store_path
             .as_deref()
             .ok_or_else(|| "--service-store is required".to_owned())?;
-        let rollback_path =
-            service_rollback_authority_source_v1(args.service_rollback_authority_path.as_deref())?;
         let canonical_store =
             validate_existing_private_sqlite_path_v1(provider_store_path, "provider spend store")?;
 
         let options = StoreOptions::default();
         let store_startup_check_started = Instant::now();
-        let canonical_rollback = validate_existing_private_sqlite_path_v1(
-            rollback_path,
-            "provider rollback authority",
-        )?;
-        if private_sqlite_paths_alias_v1(&canonical_store, &canonical_rollback)? {
-            return Err(
-                "provider store and rollback authority must be different files/inodes".to_owned(),
-            );
-        }
-        let rollback_authority: Arc<dyn RollbackFloorAuthorityV1> = Arc::new(
-            SqliteRollbackFloorAuthorityV1::open_existing(&canonical_rollback, options.busy_timeout)
-                .map_err(|error| format!("failed to open rollback authority: {error}"))?,
-        );
-        let store = ProviderStore::open_existing(
-            &canonical_store,
-            provider_id,
-            options,
-            rollback_authority,
-        )
-        .map_err(|error| format!("failed to open provider spend store: {error}"))?;
+        let store = ProviderStore::open_existing(&canonical_store, provider_id, options)
+            .map_err(|error| format!("failed to open provider spend store: {error}"))?;
         let _store_inventory = store.operational_inventory().map_err(|error| {
             format!("failed to read provider store operational inventory: {error}")
         })?;
@@ -8788,7 +8709,6 @@ fn storeless_bat_v2_has_forbidden_configuration_v2(args: &CliArgs) -> bool {
         || args.arc_key_path.is_some()
         || !args.cashu_keysets.is_empty()
         || args.service_store_path.is_some()
-        || args.service_rollback_authority_path.is_some()
         || args.service_free_ip_key_path.is_some()
         || args.service_trust_direct_peer_ip
         || !args.service_bat_key_paths.is_empty()
@@ -10443,7 +10363,7 @@ async fn main() {
         }
         if runtime.provider_store.is_none() {
             println!(
-                "  Storeless Free-PoW: exact policy digest pin active; no provider store or rollback authority"
+                "  Storeless Free-PoW: exact policy digest pin active; no provider store"
             );
         }
         AdmissionEnforcementV1::Enforced
@@ -14774,7 +14694,6 @@ mod service_admission_dispatch_tests {
 
         for forbidden in [
             vec!["--service-store", "/private/provider.sqlite"],
-            vec!["--service-rollback-authority", "/private/rollback.sqlite"],
             vec![
                 "--service-shared-idempotency-key",
                 "/private/idempotency.key",

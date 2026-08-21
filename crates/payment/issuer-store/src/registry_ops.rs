@@ -33,7 +33,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
         if let Some(existing) = read_arc_lineage(&transaction, self, &candidate.key_fingerprint)? {
             if arc_lineage_matches(&existing, &candidate) {
                 return Ok(DurableWrite {
@@ -110,7 +109,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .arc_key_lineage_experimental(&candidate.raw_public_key)?
             .ok_or_else(|| {
@@ -131,7 +129,7 @@ impl IssuerStore {
             .map_err(|_| StoreError::InvalidInput("invalid ARC public key"))?;
         let connection = self.open_checked(false)?;
         let value = read_arc_lineage(&connection, self, &fingerprint)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Registers one raw BAT verification key in exactly one audience lineage.
@@ -144,7 +142,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         let v2_owner: Option<Vec<u8>> = transaction
             .query_row(
@@ -231,7 +228,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .bat_key_lineage(&registration.raw_public_key)?
             .ok_or_else(|| {
@@ -249,7 +245,7 @@ impl IssuerStore {
             .map_err(|_| StoreError::InvalidInput("invalid BAT public key"))?;
         let connection = self.open_checked(false)?;
         let value = read_bat_lineage(&connection, self, &fingerprint)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Registers one settlement denomination key in one immutable Cashu
@@ -262,7 +258,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) =
             read_settlement_lineage(&transaction, self, &candidate.key_fingerprint)?
@@ -334,7 +329,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .settlement_key_lineage(&registration.raw_public_key)?
             .ok_or_else(|| {
@@ -355,7 +349,7 @@ impl IssuerStore {
             .map_err(|_| StoreError::InvalidInput("invalid settlement public key"))?;
         let connection = self.open_checked(false)?;
         let value = read_settlement_lineage(&connection, self, &fingerprint)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 }
 

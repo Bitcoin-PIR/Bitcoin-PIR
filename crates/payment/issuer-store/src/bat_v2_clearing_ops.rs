@@ -95,7 +95,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if read_bat_v2_clearing_epoch_reservation(
             &transaction,
@@ -154,7 +153,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .bat_v2_clearing_epoch_reservation(
                 &reservation.provider_id,
@@ -189,7 +187,7 @@ impl IssuerStore {
             provider_id,
             authorization_epoch,
         )?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Registers exact BAT V2 operator and issuer accounting artifacts. The
@@ -233,7 +231,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         if let Some(existing) = read_bat_v2_authorization(&transaction, self, &digest)? {
             if existing.exact_authorization == exact_authorization
@@ -422,7 +419,6 @@ impl IssuerStore {
             return Err(StoreError::BatV2ClearingReservationMismatch);
         }
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         let value = self
             .bat_v2_accounting_authorization(&digest)?
             .ok_or_else(|| {
@@ -448,7 +444,7 @@ impl IssuerStore {
         }
         let connection = self.open_checked(false)?;
         let value = read_bat_v2_authorization(&connection, self, digest)?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Returns the sole authorization eligible for new debt for this
@@ -484,7 +480,7 @@ impl IssuerStore {
                 })
             })
             .transpose()?;
-        self.confirm_anchored_read(&connection, value)
+        Ok(value)
     }
 
     /// Returns only terminal attempt state. Prior success bytes are never
@@ -510,7 +506,7 @@ impl IssuerStore {
             ],
             |row| row.get(0),
         )?;
-        self.confirm_anchored_read(&connection, found)
+        Ok(found)
     }
 
     pub fn bat_v2_redeem_committer(
@@ -544,7 +540,6 @@ impl IssuerStore {
         let mut connection = self.open_checked(false)?;
         let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let previous_identity = verify_expected_identity(&transaction, &self.handle)?;
-        let previous_floor = self.require_exact_rollback_floor(&previous_identity)?;
 
         // BEGIN IMMEDIATE serializes this cross-table global-spend decision.
         // Conflicts are terminal but prior success bytes are never read.
@@ -756,7 +751,6 @@ impl IssuerStore {
             ],
         )?;
         commit(transaction)?;
-        self.anchor_committed_identity(&previous_floor, &committed_identity)?;
         Ok(true)
     }
 }

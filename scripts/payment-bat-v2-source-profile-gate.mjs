@@ -427,7 +427,6 @@ export function validatePir1UnitV1(source, profile) {
   const accounting = profile.issuer.accounting.find((entry) => entry.provider === "pir1");
   forbid(command, [
     [/--service-store(?:\s|$)/u, "ProviderStore"],
-    [/--service-(?:remote-)?rollback-authority(?:\s|$)/u, "rollback authority"],
     [/--service-shared-/u, "V1 shared clearing"],
     [/--service-(?:bat-key|arc-key|cashu-)/u, "V1 BAT/ARC/Standard Cashu"],
     [/--service-retained-policy(?:\s|$)/u, "V1 retained policy"],
