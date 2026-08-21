@@ -1470,8 +1470,8 @@ trap - EXIT
 trap - HUP INT TERM
 start_unified_server_runtime_log
 
-# VPSBG is query-only and has no Harmony V2 hint pool, so the measured
-# invocation keeps online V2Full authorization disabled (limit 0).
+# VPSBG is query-only but now carries a Harmony V2 query scope (policy epoch 2).
+# Allow up to 2 concurrent online V2Full authorizations for Harmony query jobs.
 # Revalidate the mutable-mount public bytes after the bounded ORAM build. The
 # Rust loader then repeats canonical/signature/digest/member/role-key checks in
 # the final Ready process; the audit receipt is evidence, not runtime authority.
@@ -1515,7 +1515,7 @@ run_pir2_with_public_artifacts exec "$UNIFIED_SERVER" \
     --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
     --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" \
     --service-max-concurrent-auth 4 \
-    --service-max-concurrent-online-v2full-auth 0 \
+    --service-max-concurrent-online-v2full-auth 2 \
     --connection-idle-timeout-ms 300000 \
     --service-pre-auth-timeout-ms 300000 \
     2>&1
