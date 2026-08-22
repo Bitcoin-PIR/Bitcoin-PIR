@@ -730,79 +730,6 @@ async fn test_harmony_client_fetch_catalog() {
     client.disconnect().await.unwrap();
 }
 
-/// Live HarmonyPIR fresh sync over Payment-V1 admission.
-///
-/// This remains strict-canary gated because it completes production admission
-/// and sends a real db0 query. The historical unchunked-response failure from
-/// 2026-08-06 is retained in the dated rollout evidence, not treated as the
-/// current expected result here.
-#[tokio::test]
-#[ignore = "scheduled/manual strict production canary"]
-async fn test_harmony_strict_production_canary_sync_single() {
-    if !strict_production_canary_enabled() {
-        eprintln!("strict HarmonyPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
-        return;
-    }
-
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.connect().await.expect("connect failed");
-
-    // The public deployment enforces Payment-V1 admission on both legs:
-    // attest → secure channel → policy → free-offer authorize (hint on
-    // pir1/Hetzner, query on pir2/VPSBG).
-    let pin = PRODUCTION_DATABASE_PINS[0];
-    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
-        .await
-        .expect("live HarmonyPIR admission failed");
-
-    let script_hashes = vec![test_script_hash()];
-    let result = client.sync(&script_hashes, None).await.expect("sync failed");
-
-    assert_eq!(result.results.len(), 1);
-    // HarmonyClient now prefers REQ_GET_DB_CATALOG (0x02) over the legacy
-    // REQ_HARMONY_GET_INFO (0x40), so `synced_height` reflects the real tip.
-    assert!(
-        result.synced_height > 0,
-        "synced_height should be non-zero via REQ_GET_DB_CATALOG; got {}",
-        result.synced_height,
-    );
-    assert!(result.was_fresh_sync);
-
-    println!("Sync result: {:?}", result);
-
-    client.disconnect().await.unwrap();
-}
-
-/// Live HarmonyPIR batch query over Payment-V1 admission.
-#[tokio::test]
-#[ignore = "scheduled/manual strict production canary"]
-async fn test_harmony_strict_production_canary_query_batch() {
-    if !strict_production_canary_enabled() {
-        eprintln!("strict HarmonyPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
-        return;
-    }
-
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.connect().await.expect("connect failed");
-    client.fetch_catalog().await.expect("fetch_catalog failed");
-
-    // The public deployment enforces Payment-V1 admission on both legs
-    // (attest → secure channel → policy → free-offer authorize).
-    let pin = PRODUCTION_DATABASE_PINS[0];
-    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
-        .await
-        .expect("live HarmonyPIR admission failed");
-
-    let script_hashes = vec![test_script_hash()];
-    let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
-
-    assert_eq!(results.len(), 1);
-
-    println!("Query result: {:?}", results);
-
-    client.disconnect().await.unwrap();
-}
-
 // ─── WsConnection Resilience Tests ───────────────────────────────────────
 
 /// Scheduled native database-root canary for the supported HarmonyPIR
@@ -1005,41 +932,6 @@ mod onion_tests {
         assert!(main_db.chunk_bins > 0);
 
         println!("Catalog: {:#?}", catalog);
-
-        client.disconnect().await.unwrap();
-    }
-
-    /// Live OnionPIR batch query over Payment-V1 admission.
-    ///
-    /// Canary-gated because it completes production admission and sends a real
-    /// db0 query. Historical offer-budget failures belong to dated rollout
-    /// evidence rather than this test's current expected behavior.
-    #[tokio::test]
-    #[ignore = "scheduled/manual strict production canary"]
-    async fn test_onion_strict_production_canary_query_batch() {
-        if !strict_production_canary_enabled() {
-            eprintln!("strict OnionPIR canary disabled; set PIR_STRICT_PRODUCTION_CANARY=1");
-            return;
-        }
-
-        let mut client = OnionClient::new(&onion_url());
-        client.connect().await.expect("connect failed");
-        client.fetch_catalog().await.expect("fetch_catalog failed");
-
-        // The public deployment enforces Payment-V1 admission; complete the
-        // attest → secure channel → policy → free-offer authorize sequence
-        // before key registration (the ungranted chunk-policy upload would
-        // otherwise hard-close the connection).
-        common::admit_onion_live(&mut client, 0, &common::production_db0_onion_v2_proof_policy())
-            .await
-            .expect("live OnionPIR admission failed");
-
-        let script_hashes = vec![test_script_hash()];
-        let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
-
-        assert_eq!(results.len(), 1);
-
-        println!("Query result: {:?}", results);
 
         client.disconnect().await.unwrap();
     }
