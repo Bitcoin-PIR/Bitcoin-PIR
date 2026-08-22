@@ -813,7 +813,7 @@ async fn harmony_cold_batch_query(
 /// amortization). Under admission enforcement every batch is a cold session
 /// (connect + admit + full hint download + one batch), so the bench now
 /// reports three cold-session data points with growing batch sizes. Runs via
-/// the same granted production path as `test_harmony_strict_production_canary_*`.
+/// the same granted production path as `test_harmony_strict_production_canary`.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn harmony_amortization_bench() {
