@@ -154,3 +154,8 @@ deploy/payment-v1/network/*
 # dev-issuer demo key files (never commit)
 arc_key.bin
 cashu_key.bin
+
+# Owner-only private keys, ceremony artifacts, and API tokens.
+# These are never committed to the repository.
+.keys/
+.secrets/

@@ -17,7 +17,7 @@ const runPath = resolve(
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh",
 );
 const reviewedPolicySha256 =
-  "e32ed6e9bd4ae3ee32e174898c8da1072c26d4c74915ef905573739dc59cecc3";
+  "4de63f8a9a1ca21c60fcdb89581603faa3cafa10081c463bdfa2681288ad4f82";
 
 function validateBuildContract(source) {
   assert.match(

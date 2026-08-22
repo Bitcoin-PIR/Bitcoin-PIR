@@ -324,14 +324,20 @@ Status: release-gating checklist. `MUST` items are fail-closed requirements.
     server pair or Harmony hint/query payment context. This rule does not apply
     to the genuinely single-provider Onion and TEE-ORAM backends.
 71. Storeless service admission is permitted only for a nonempty canonical
-    signed policy with no empty scope and only provider-local
-    `FreeV1`/`ProofOfWork`/zero-price offers with no issuer, key, credential,
-    Cashu manifest, endpoint, retained grace or privacy-leakage field. Startup
-    requires the exact nonzero domain-separated digest of the complete signed
-    policy and rejects every ProviderStore, retained policy,
-    Free-IP quota/key, payment/Cashu/BAT/ARC/shared-issuer, legacy credential or
-    test-root input. The digest argument and provider/policy-key pins MUST be in
-    the measured UKI. Each challenge is random, single-outstanding,
+    signed policy with no empty scope, pinned by the exact nonzero
+    domain-separated digest of the complete signed policy. There are two
+    mutually exclusive profiles. The Free-PoW canary accepts only
+    provider-local `FreeV1`/`ProofOfWork`/zero-price offers with no issuer,
+    key, credential, Cashu manifest or endpoint, and rejects every
+    ProviderStore, retained policy, Free-IP quota/key, payment/Cashu/BAT/ARC/
+    shared-issuer, legacy credential or test-root input. The storeless BAT V2
+    profile accepts only those Free-PoW offers and shared-issuer scheme-6
+    offers, must contain at least one scheme-6 offer, and still opens no
+    ProviderStore. A scope may be Free-only, BAT-only, or both; members of
+    one class share commercial terms (price, endpoint, windows, credential
+    count) while backend, workload and entitlement limits stay on the member.
+    The digest argument and provider/policy-key pins MUST be in the measured
+    UKI. Each Free-PoW challenge is random, single-outstanding,
     connection-local, short-lived and bound to the secure-channel exporter plus
     exact provider/policy/scope/offer/operation. A policy-byte change, including
     renewal or difficulty/limit change, requires a new UKI measurement and

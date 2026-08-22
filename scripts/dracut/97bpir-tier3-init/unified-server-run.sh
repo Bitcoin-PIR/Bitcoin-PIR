@@ -1515,7 +1515,7 @@ run_pir2_with_public_artifacts exec "$UNIFIED_SERVER" \
     --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
     --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" \
     --service-max-concurrent-auth 4 \
-    --service-max-concurrent-online-v2full-auth 2 \
+    --service-max-concurrent-online-v2full-auth 0 \
     --connection-idle-timeout-ms 300000 \
     --service-pre-auth-timeout-ms 300000 \
     2>&1
