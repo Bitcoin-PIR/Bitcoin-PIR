@@ -788,7 +788,9 @@ impl ProviderRedeemRequestV2 {
         proof.verify_class_binding(class)?;
         if member.member.provider_id != authorization.claims.provider_id
             || !class.members.contains(&member.member)
-            || member.common_terms != class.common_terms
+            || !member
+                .common_terms
+                .commercially_equivalent_to(&class.common_terms)
         {
             return Err(ServiceProtocolError::InvalidValue {
                 field: "ProviderRedeemRequestV2.member",
@@ -1593,7 +1595,9 @@ pub fn precheck_bat_v2_redeem_v2(
 
     if member.issuer_id != expectation.issuer_id
         || member.class_id != class.class_id
-        || member.common_terms != class.common_terms
+        || !member
+            .common_terms
+            .commercially_equivalent_to(&class.common_terms)
         || !class.members.contains(&member.member)
     {
         return Err(ServiceProtocolError::InvalidValue {

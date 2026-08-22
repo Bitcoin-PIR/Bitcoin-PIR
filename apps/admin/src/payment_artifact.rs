@@ -855,11 +855,12 @@ fn build_bat_v2_class(args: BatV2ClassArgs) -> Result<(), String> {
         .ok_or_else(|| "BAT V2 class member list is empty".to_owned())?
         .common_terms
         .clone();
-    if projections
-        .iter()
-        .any(|projection| projection.common_terms != common_terms)
-    {
-        return Err("BAT V2 class members do not have identical canonical terms".to_owned());
+    if projections.iter().any(|projection| {
+        !projection
+            .common_terms
+            .commercially_equivalent_to(&common_terms)
+    }) {
+        return Err("BAT V2 class members do not have identical commercial terms".to_owned());
     }
     let mut members = projections
         .iter()
@@ -1558,11 +1559,31 @@ mod tests {
         policy_key: &SigningKey,
         price_msat: u64,
     ) -> (ServicePolicyV1, [u8; 32]) {
+        bat_v2_policy_with_scope(
+            provider_id,
+            issuer_id,
+            policy_key,
+            price_msat,
+            BackendId::DpfPirV1,
+            WorkloadId::DpfEvaluateJobV1,
+            1,
+        )
+    }
+
+    fn bat_v2_policy_with_scope(
+        provider_id: [u8; 32],
+        issuer_id: [u8; 32],
+        policy_key: &SigningKey,
+        price_msat: u64,
+        backend: BackendId,
+        workload: WorkloadId,
+        protocol_version: u16,
+    ) -> (ServicePolicyV1, [u8; 32]) {
         let scope = ServiceScopeV1 {
             provider_id,
-            backend: BackendId::DpfPirV1,
-            workload: WorkloadId::DpfEvaluateJobV1,
-            protocol_version: 1,
+            backend,
+            workload,
+            protocol_version,
             dataset: DatasetBindingV1::Class { class_id: 1 },
             operation_profile: 1,
             entitlement_profile: 2,
@@ -1633,8 +1654,24 @@ mod tests {
         let settlement = SigningKey::from_bytes(&[0x75; 32]);
         let issuer_id = derive_issuer_id(&issuer.verifying_key().to_bytes());
         let (policy_a, scope_a) = bat_v2_policy([0x11; 32], issuer_id, &policy_key, 2_000);
-        let (policy_b, scope_b) = bat_v2_policy([0x12; 32], issuer_id, &policy_key, 2_000);
-        let (mixed_policy, _) = bat_v2_policy([0x12; 32], issuer_id, &policy_key, 2_001);
+        let (policy_b, scope_b) = bat_v2_policy_with_scope(
+            [0x12; 32],
+            issuer_id,
+            &policy_key,
+            2_000,
+            BackendId::HarmonyPirV2,
+            WorkloadId::HarmonyQueryJobV1,
+            2,
+        );
+        let (mixed_policy, _) = bat_v2_policy_with_scope(
+            [0x12; 32],
+            issuer_id,
+            &policy_key,
+            2_001,
+            BackendId::HarmonyPirV2,
+            WorkloadId::HarmonyQueryJobV1,
+            2,
+        );
         let policy_a_path = directory.path().join("policy-a.bin");
         let policy_b_path = directory.path().join("policy-b.bin");
         let mixed_policy_path = directory.path().join("policy-mixed.bin");
@@ -1725,7 +1762,7 @@ mod tests {
             force: false,
         })
         .unwrap_err()
-        .contains("identical canonical terms"));
+        .contains("identical commercial terms"));
         assert!(!mixed_terms_out.exists());
         let unknown_field_config = directory.path().join("unknown-field.toml");
         std::fs::write(

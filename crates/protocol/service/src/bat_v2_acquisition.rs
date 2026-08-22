@@ -991,7 +991,9 @@ fn validate_verified_member_for_class(
     now_unix: u64,
 ) -> Result<(), ServiceProtocolError> {
     class.verify_for(&verified_member.issuer_id, &verified_member.class_id)?;
-    if verified_member.common_terms != class.common_terms
+    if !verified_member
+        .common_terms
+        .commercially_equivalent_to(&class.common_terms)
         || class
             .members
             .binary_search(&verified_member.member)

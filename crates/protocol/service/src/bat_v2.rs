@@ -100,7 +100,9 @@ pub fn verify_bat_acceptance_class_member_projection_v2(
     projection: &VerifiedBatAcceptanceMemberV2,
 ) -> Result<(), ServiceProtocolError> {
     class.verify_for(&projection.issuer_id, &projection.class_id)?;
-    if projection.common_terms != class.common_terms
+    if !projection
+        .common_terms
+        .commercially_equivalent_to(&class.common_terms)
         || !class.members.contains(&projection.member)
         || projection.policy_issued_at > projection.policy_expires_at
     {
@@ -356,6 +358,24 @@ impl BatAcceptanceTermsV2 {
             });
         }
         Ok(())
+    }
+
+    /// Shared commercial terms for one BAT V2 class. Backend, workload,
+    /// dataset, profiles, and entitlement limits stay on the member that
+    /// advertised the offer; they are not a class-wide identity.
+    pub fn commercially_equivalent_to(&self, other: &Self) -> bool {
+        self.auth_padding_class == other.auth_padding_class
+            && self.priority_class == other.priority_class
+            && self.deployment_status == other.deployment_status
+            && self.price_msat == other.price_msat
+            && self.issuer_endpoint == other.issuer_endpoint
+            && self.invoice_expiry_seconds == other.invoice_expiry_seconds
+            && self.claim_window_seconds == other.claim_window_seconds
+            && self.minimum_credential_validity_seconds == other.minimum_credential_validity_seconds
+            && self.retired_policy_grace_seconds == other.retired_policy_grace_seconds
+            && self.credential_count == other.credential_count
+            && self.credential_presentation_limit == other.credential_presentation_limit
+            && self.privacy_leakage == other.privacy_leakage
     }
 
     pub fn terms_digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
@@ -1085,6 +1105,75 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn bat_v2_class_accepts_members_with_distinct_backend_workload_limits() {
+        let dpf_scope = scope([9; 32]);
+        let mut harmony_scope = dpf_scope.clone();
+        harmony_scope.backend = BackendId::HarmonyPirV2;
+        harmony_scope.workload = WorkloadId::HarmonyQueryJobV1;
+        harmony_scope.protocol_version = 2;
+        harmony_scope.operation_profile = 3;
+        harmony_scope.entitlement_profile = 4;
+        let dpf_policy = sign_policy_with_offer(dpf_scope.clone(), v2_offer(&dpf_scope)).unwrap();
+        let mut harmony_offer = v2_offer(&harmony_scope);
+        harmony_offer.offer_id = 8;
+        let harmony_policy = sign_policy_with_offer(harmony_scope.clone(), harmony_offer).unwrap();
+        let provider_key = SigningKey::from_bytes(&[3; 32]);
+        let dpf_verified = dpf_policy
+            .verify_current_for_acquisition(
+                &dpf_scope.provider_id,
+                150,
+                &PolicyRollbackGuardV1::initial(),
+                &ServicePolicyEpochFloorsV1::initial(),
+                &provider_key.verifying_key(),
+            )
+            .unwrap();
+        let harmony_verified = harmony_policy
+            .verify_current_for_acquisition(
+                &harmony_scope.provider_id,
+                150,
+                &PolicyRollbackGuardV1::initial(),
+                &ServicePolicyEpochFloorsV1::initial(),
+                &provider_key.verifying_key(),
+            )
+            .unwrap();
+        let dpf_member =
+            bat_acceptance_member_from_verified_policy_v2(&dpf_verified, &dpf_scope.scope_id(), 7)
+                .unwrap();
+        let harmony_member = bat_acceptance_member_from_verified_policy_v2(
+            &harmony_verified,
+            &harmony_scope.scope_id(),
+            8,
+        )
+        .unwrap();
+        assert_ne!(dpf_member.common_terms, harmony_member.common_terms);
+        assert!(dpf_member
+            .common_terms
+            .commercially_equivalent_to(&harmony_member.common_terms));
+
+        let mut members = vec![dpf_member.member.clone(), harmony_member.member.clone()];
+        members.sort();
+        let class = BatAcceptanceClassV2::sign(
+            [0x42; 32],
+            3,
+            100,
+            1_480,
+            point(11),
+            dpf_member.common_terms.clone(),
+            members,
+            &SigningKey::from_bytes(&[8; 32]),
+        )
+        .unwrap();
+        verify_bat_acceptance_class_member_projection_v2(&class, &dpf_member).unwrap();
+        verify_bat_acceptance_class_member_projection_v2(&class, &harmony_member).unwrap();
+
+        let mut different_price = harmony_member.clone();
+        different_price.common_terms.price_msat += 1;
+        assert!(
+            verify_bat_acceptance_class_member_projection_v2(&class, &different_price).is_err()
+        );
     }
 
     fn v1_golden_policy() -> ServicePolicyV1 {

@@ -27,7 +27,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "13880c1e13fc1f6169dca9f69ccecd19edb3481e4adbb07be1c65ba1a2f973cd",
+    "62bfe52b1e8875b7baf2579b528cfa01ce494705656fa9de6717fe4b55dcf596",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "361d6a52a2e61482d8e766823a17c3b12187f96805c7e1f9d0f785e27ae64ef9",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":

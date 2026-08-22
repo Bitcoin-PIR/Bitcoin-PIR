@@ -279,7 +279,9 @@ impl BatV2IssuerRedemptionServiceV2 {
         )
         .map_err(|_| IssuerServiceErrorV1::OutcomeUnknownCredentialBurned)?;
         if verified.class_id != class_record.class_id
-            || verified.common_terms != class.common_terms
+            || !verified
+                .common_terms
+                .commercially_equivalent_to(&class.common_terms)
             || verified.redemption_deadline != member.redemption_deadline
             || verified.member != member_tuple(member)
             || !class.members.contains(&verified.member)

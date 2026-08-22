@@ -238,8 +238,12 @@ scheme 6 instead of treating it as provider-bound BAT V1.
 After all provider policies are signed, the credential issuer signs a
 separate canonical `BatAcceptanceClassV2` artifact. It binds the issuer root,
 stable class ID, key epoch and absolute key validity, one raw BAT verification
-key, one common-terms projection, and a strictly sorted set of exact
-`(provider_id, policy_digest, scope_id, offer_id)` members. The class ID is not
+key, one commercial-terms projection, and a strictly sorted set of exact
+`(provider_id, policy_digest, scope_id, offer_id)` members. Members of one
+class must share price, issuer endpoint, validity windows, credential count
+and padding class. Backend, workload, dataset, operation/entitlement profiles
+and limits stay on the member that advertised the offer, so one class can
+cover DPF and Harmony scopes that sell the same BAT. The class ID is not
 derived from that artifact, so provider policy digests and the issuer artifact
 do not form a digest cycle. The class artifact and terms use independent V2
 signature/digest domains; the raw-key ID additionally commits issuer, class,
@@ -277,9 +281,10 @@ POST /v2/quotes/{quote_id}/claim
 
 An exact replay of a committed V2 *acquisition claim* returns the same blind
 issuance response so a paid invoice is recoverable after a lost response. This
-does not define redeem replay: issuer-global first-spend redemption,
-non-grantable redeem replay, storeless provider admission and SDK/Web class
-wallet handling are still pending.
+does not define redeem replay: issuer-global first-spend redemption and
+non-grantable redeem replay remain the V2 redeem contract. Storeless provider
+admission and SDK/Web class wallet handling use the same class-member
+projection.
 
 ## PIR wire messages
 

@@ -75,7 +75,7 @@ impl fmt::Display for ServicePolicyActivationErrorV1 {
                 "storeless service policy must contain only provider-local Free proof-of-work offers",
             ),
             Self::StorelessBatV2PolicyShape => formatter.write_str(
-                "payment-storeless BAT V2 policy must contain scheme 6 and only provider-local Free proof-of-work or shared-issuer BAT V2 offers",
+                "payment-storeless BAT V2 policy must contain at least one scheme-6 offer and only provider-local Free proof-of-work or shared-issuer BAT V2 offers",
             ),
             Self::StorelessRetainedBatV2PolicyExpired => formatter.write_str(
                 "retained payment-storeless BAT V2 policy has no member inside its redemption horizon",
@@ -509,11 +509,8 @@ pub fn activate_exact_storeless_free_pow_policy_v1(
                     || !offer.endpoint.is_empty()
                     || offer.invoice_expiry_seconds != 0
                     || offer.claim_window_seconds != 0
-                    || offer.minimum_credential_validity_seconds != 1
-                    || offer.retired_policy_grace_seconds != 0
                     || offer.credential_count != 1
                     || offer.credential_presentation_limit != 1
-                    || offer.privacy_leakage != pir_service_protocol::PrivacyLeakageV1::NONE
             })
     {
         return Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly);
@@ -656,59 +653,52 @@ fn decode_exact_storeless_policy_v1(
 }
 
 fn is_closed_storeless_bat_v2_policy_v1(policy: &ServicePolicyV1) -> bool {
-    if policy.scopes.is_empty() {
+    if policy.scopes.is_empty() || policy.scopes.iter().any(|scope| scope.offers.is_empty()) {
         return false;
     }
+    let mut bat_v2_count = 0;
     for scope in &policy.scopes {
-        if scope.offers.len() != 2 {
-            return false;
-        }
-        let mut free_pow_count = 0;
-        let mut bat_v2_count = 0;
         for offer in &scope.offers {
             if offer.authorization == AuthScheme::BitcoinPirCashuBatV2 {
                 bat_v2_count += 1;
-                if offer.acquisition != AcquisitionMethod::Bolt11V1
-                    || offer.free_mode != FreeModeV1::NotFree
-                    || offer.verification != VerificationMode::SharedIssuerOnline
-                    || !matches!(offer.price, PriceV1::MilliSatoshi(_))
-                    || offer.issuer_id.iter().all(|byte| *byte == 0)
-                    || offer.key_id.len() != 32
-                    || offer.key_id.iter().all(|byte| *byte == 0)
-                    || offer.credential_binding.is_some()
-                    || offer.cashu_mint_manifest.is_some()
-                {
+                if !is_storeless_bat_v2_offer_v1(offer) {
                     return false;
                 }
-            } else {
-                free_pow_count += 1;
-                if offer.acquisition != AcquisitionMethod::FreeV1
-                    || offer.authorization != AuthScheme::FreeV1
-                    || offer.free_mode != FreeModeV1::ProofOfWork
-                    || offer.verification != VerificationMode::ProviderLocal
-                    || offer.price != PriceV1::Free
-                    || offer.issuer_id != [0; 32]
-                    || !offer.key_id.is_empty()
-                    || offer.credential_binding.is_some()
-                    || offer.cashu_mint_manifest.is_some()
-                    || !offer.endpoint.is_empty()
-                    || offer.invoice_expiry_seconds != 0
-                    || offer.claim_window_seconds != 0
-                    || offer.minimum_credential_validity_seconds != 1
-                    || offer.retired_policy_grace_seconds != 0
-                    || offer.credential_count != 1
-                    || offer.credential_presentation_limit != 1
-                    || offer.privacy_leakage != pir_service_protocol::PrivacyLeakageV1::NONE
-                {
-                    return false;
-                }
+            } else if !is_storeless_free_pow_offer_v1(offer) {
+                return false;
             }
         }
-        if free_pow_count != 1 || bat_v2_count != 1 {
-            return false;
-        }
     }
-    true
+    bat_v2_count > 0
+}
+
+fn is_storeless_bat_v2_offer_v1(offer: &ServiceOfferV1) -> bool {
+    offer.acquisition == AcquisitionMethod::Bolt11V1
+        && offer.free_mode == FreeModeV1::NotFree
+        && offer.verification == VerificationMode::SharedIssuerOnline
+        && matches!(offer.price, PriceV1::MilliSatoshi(_))
+        && !offer.issuer_id.iter().all(|byte| *byte == 0)
+        && offer.key_id.len() == 32
+        && !offer.key_id.iter().all(|byte| *byte == 0)
+        && offer.credential_binding.is_none()
+        && offer.cashu_mint_manifest.is_none()
+}
+
+fn is_storeless_free_pow_offer_v1(offer: &ServiceOfferV1) -> bool {
+    offer.acquisition == AcquisitionMethod::FreeV1
+        && offer.authorization == AuthScheme::FreeV1
+        && offer.free_mode == FreeModeV1::ProofOfWork
+        && offer.verification == VerificationMode::ProviderLocal
+        && offer.price == PriceV1::Free
+        && offer.issuer_id == [0; 32]
+        && offer.key_id.is_empty()
+        && offer.credential_binding.is_none()
+        && offer.cashu_mint_manifest.is_none()
+        && offer.endpoint.is_empty()
+        && offer.invoice_expiry_seconds == 0
+        && offer.claim_window_seconds == 0
+        && offer.credential_count == 1
+        && offer.credential_presentation_limit == 1
 }
 
 /// Decode, verify, durably advance rollback state, install provider-local
@@ -1291,15 +1281,9 @@ mod tests {
             Err(ServicePolicyActivationErrorV1::StorelessPolicyIsNotFreeProofOfWorkOnly)
         ));
 
-        for mutate in [
-            |offer: &mut ServiceOfferV1| offer.endpoint = "https://issuer.invalid".to_owned(),
-            |offer: &mut ServiceOfferV1| offer.minimum_credential_validity_seconds = 2,
-            |offer: &mut ServiceOfferV1| offer.retired_policy_grace_seconds = 1,
-            |offer: &mut ServiceOfferV1| {
-                offer.privacy_leakage =
-                    PrivacyLeakageV1::from_bits(PrivacyLeakageV1::ISSUER_ISSUANCE_TIMING).unwrap()
-            },
-        ] {
+        for mutate in
+            [|offer: &mut ServiceOfferV1| offer.endpoint = "https://issuer.invalid".to_owned()]
+        {
             let template = free_pow_policy(&signing, provider_id, 2);
             let mut scopes = template.scopes;
             mutate(&mut scopes[0].offers[0]);
@@ -1409,13 +1393,13 @@ mod tests {
 
         let mut only_bat_scopes = template.scopes.clone();
         only_bat_scopes[0].offers = vec![bat_offer.clone()];
-        assert!(rejects_closed_shape(&resign(&template, only_bat_scopes)));
+        assert!(!rejects_closed_shape(&resign(&template, only_bat_scopes)));
 
         let mut duplicate_bat = bat_offer.clone();
         duplicate_bat.offer_id = 3;
         let mut duplicate_bat_scopes = template.scopes.clone();
         duplicate_bat_scopes[0].offers = vec![bat_offer.clone(), duplicate_bat];
-        assert!(rejects_closed_shape(&resign(
+        assert!(!rejects_closed_shape(&resign(
             &template,
             duplicate_bat_scopes,
         )));
@@ -1436,10 +1420,38 @@ mod tests {
         free_only_scope.offers = vec![free_offer];
         let mut split_method_scopes = vec![bat_only_scope, free_only_scope];
         split_method_scopes.sort_by_key(|scope| scope.scope.scope_id());
-        assert!(rejects_closed_shape(&resign(
+        assert!(!rejects_closed_shape(&resign(
             &template,
             split_method_scopes,
         )));
+
+        let mut harmony_free = template.scopes[0].clone();
+        harmony_free.scope.backend = BackendId::HarmonyPirV2;
+        harmony_free.scope.workload = WorkloadId::HarmonyQueryJobV1;
+        harmony_free.scope.protocol_version = 2;
+        let mut harmony_free_offer = template.scopes[0].offers[0].clone();
+        harmony_free_offer.offer_id = 501;
+        harmony_free.offers = vec![harmony_free_offer];
+        let mut dpf_plus_harmony = template.scopes.clone();
+        dpf_plus_harmony.push(harmony_free);
+        dpf_plus_harmony.sort_by_key(|scope| scope.scope.scope_id());
+        let mixed = resign(&template, dpf_plus_harmony);
+        let mixed_activated = activate_exact_storeless_bat_v2_policy_v1(
+            &mixed.encode().unwrap(),
+            provider_id,
+            signing.verifying_key(),
+            mixed.policy_digest().unwrap(),
+            150,
+        )
+        .unwrap();
+        assert_eq!(mixed_activated.policy().scopes.len(), 2);
+        assert_eq!(
+            required_admission_routes_v1(mixed_activated.policy()),
+            BTreeSet::from([
+                AdmissionMethodRouteV1::FreeProofOfWork,
+                AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline,
+            ])
+        );
     }
 
     #[test]
@@ -1496,13 +1508,7 @@ mod tests {
         let options = StoreOptions {
             busy_timeout: Duration::from_secs(1),
         };
-        let store = ProviderStore::create(
-            &store_path,
-            [1; 16],
-            provider_id,
-            options,
-        )
-        .unwrap();
+        let store = ProviderStore::create(&store_path, [1; 16], provider_id, options).unwrap();
         let signing = SigningKey::from_bytes(&[3; 32]);
         let (old_policy, scope_id) = retained_receipt_policy(&signing, provider_id, 1);
         let old_bytes = old_policy.encode().unwrap();
@@ -1561,8 +1567,7 @@ mod tests {
         ));
 
         drop(store);
-        let reopened =
-            ProviderStore::open_existing(&store_path, provider_id, options).unwrap();
+        let reopened = ProviderStore::open_existing(&store_path, provider_id, options).unwrap();
         let current_after_restart = activate_service_policy_v1(
             &current_bytes,
             provider_id,

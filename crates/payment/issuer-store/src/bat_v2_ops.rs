@@ -122,11 +122,16 @@ impl IssuerStore {
             let (projection, _) =
                 project_current_bat_acceptance_member_v2(&transaction, self, member, now_unix)?;
             if !projection_matches_artifact(artifact, member, &projection) {
-                return Err(if projection.common_terms != artifact.common_terms {
-                    StoreError::BatV2ClassTermsConflict
-                } else {
-                    StoreError::BatV2ClassMemberMismatch
-                });
+                return Err(
+                    if !projection
+                        .common_terms
+                        .commercially_equivalent_to(&artifact.common_terms)
+                    {
+                        StoreError::BatV2ClassTermsConflict
+                    } else {
+                        StoreError::BatV2ClassMemberMismatch
+                    },
+                );
             }
             verified_members.push(projection);
         }
