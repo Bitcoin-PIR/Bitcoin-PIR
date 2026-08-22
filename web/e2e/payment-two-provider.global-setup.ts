@@ -543,8 +543,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
       databaseProof,
       providers: runtimeProviders,
     };
-    if (independentStatePaths.size !== 8) {
-      throw new Error('two issuers and two providers did not receive eight independent state paths');
+    if (independentStatePaths.size !== 4) {
+      throw new Error('two issuers and two providers did not receive four independent state paths');
     }
     assertIndependentRuntimeProviders(fixture.providers, backendMode);
     process.env.BITCOINPIR_PAYMENT_TWO_PROVIDER_FIXTURE = JSON.stringify(fixture);
