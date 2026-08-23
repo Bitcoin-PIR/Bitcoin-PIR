@@ -1,8 +1,12 @@
 # Build and reproduce a Tier 3 UKI
 
-This is the current operator entry for the production `unified_server` runtime
-UKI. It keeps four different concerns separate so a historical experiment
-cannot silently become the release recipe.
+This is Flow E step 3 in
+[Production operations](../PRODUCTION_OPERATIONS.md). It is the current
+operator entry for the production `unified_server` **runtime** UKI. The
+attested-builder producer UKI is Flow H
+([Attested-builder Tier 3 UKI](../ATTESTED_BUILDER_TIER3_UKI.md)); do
+not substitute it here. It keeps four different concerns separate so a
+historical experiment cannot silently become the release recipe.
 
 ## 1. Source and runtime binary
 
@@ -65,12 +69,11 @@ Hetzner may build the candidate only when its exact kernel/modules and build
 dependencies satisfy the command above. The script must not inherit host
 compression or unrelated dracut modules.
 
-If those inputs are unavailable, the fallback is the established VPSBG
-maintenance shape: separately authorize changing measured boot to no attached
-UKI, reboot into the stock root filesystem, build there, archive off-host, and
-reattach the recorded rollback image if the maintenance build fails. Do not
-assume the VPSBG API's `null`/`None` behavior; confirm the operator action and
-rollback image before changing the server.
+If those inputs are unavailable, the fallback is Flow F in
+[Production operations](../PRODUCTION_OPERATIONS.md):
+`scripts/vpsbg-data-disk.sh open`, build on the stock root filesystem,
+archive off-host, then `close` with the recorded rollback image if the
+maintenance build fails. The detach body is `{"kernel_image_id":null}`.
 
 ## 4. Reproducibility and verification
 

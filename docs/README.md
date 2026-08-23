@@ -2,15 +2,17 @@
 
 Start production work at [Production operations](PRODUCTION_OPERATIONS.md).
 Live production state is queried, never inferred from documents:
-`scripts/vpsbg-production-status.sh` for pir2, and each operation script's
-status subcommand for the rest.
+`scripts/production-status.sh` for pir1+pir2,
+`scripts/vpsbg-production-status.sh` for pir2 only, and each operation
+script's status subcommand for the rest.
 
 ## Runbooks
 
 | Work | Entry |
 | --- | --- |
-| UKI, VPSBG images, Payment artifacts, issuer state, sealed release, private start, and production source readiness | [Production operations](PRODUCTION_OPERATIONS.md) |
-| Database and root rotation | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
+| Diagnose, CI/PR, Pages, pir1, pir2 runtime UKI, data-disk, sealed release, DB/proofs, payment source-ready | [Production operations](PRODUCTION_OPERATIONS.md) (flows A–I) |
+| Database and root rotation (DPF / Harmony / Onion v2 / ORAM proofs) | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
+| Producer (attested-builder) UKI | [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md); producer *scope* is that repo's README |
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
 | Direct ORAM diagnosis | [Direct ORAM debug](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md) |
 | Development and PR checks | [Testing](TESTING.md) |

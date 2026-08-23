@@ -1,5 +1,8 @@
 # Start the private publisher network
 
+This is Flow I step 3 in
+[Production operations](../PRODUCTION_OPERATIONS.md).
+
 Use [`scripts/payment-v1-activate.sh`](../../scripts/payment-v1-activate.sh)
 with the `private` subcommand.
 

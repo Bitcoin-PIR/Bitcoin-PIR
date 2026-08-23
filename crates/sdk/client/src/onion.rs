@@ -544,9 +544,9 @@ impl OnionClient {
         verify_database_proof(&db, &bundle, policy)
     }
 
-    /// Fetch and verify the staged v2 proof without falling back to v1.
-    /// Production callers can opt in after v2 evidence and sidecars are
-    /// deployed; the existing v1 method remains available during migration.
+    /// Fetch and verify the v2 proof without falling back to v1.
+    /// Production OnionPIR and Direct ORAM use this path. The v1
+    /// method remains the DPF/Harmony compatibility surface.
     pub async fn verify_database_proof_v2(
         &mut self,
         db_id: u8,

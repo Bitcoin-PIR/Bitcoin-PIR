@@ -88,7 +88,7 @@ if [[ "$action" == phase ]]; then
   trap - EXIT HUP INT TERM
   echo "startup_env=$out"
   echo "PASS sealed_phase_config=$phase"
-  echo 'NEXT_STEP=place/use this exact startup.env and boot the measured UKI'
+  echo 'NEXT_STEP=place this exact startup.env with scripts/vpsbg-data-disk.sh put, then boot the measured UKI'
   exit 0
 fi
 dry_run=0; args=()

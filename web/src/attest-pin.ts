@@ -114,9 +114,9 @@ function bytesToHex(bytes: Uint8Array): string {
  *   against MEASUREMENT (transitively, for Tier 3) and against
  *   the cmdline pin (for Slice 2 with bpir-verify hook).
  *
- * Operator publishes both in `docs/history/PHASE3_ROADMAP.md::Attested
- * values published`. Update here whenever you re-bake + republish
- * the UKI on pir2 (every binary change).
+ * This file is the pin catalog. `docs/history/PHASE3_ROADMAP.md` is
+ * frozen rationale, not an identity source. Update these fields when
+ * a reviewed pir2 UKI republish is accepted (every binary change).
  */
 export interface ServerAttestPin {
   measurementHex?: string;

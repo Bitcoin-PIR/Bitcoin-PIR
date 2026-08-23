@@ -267,7 +267,8 @@ echo "builder Tier 3 UKI sha256:  $UKI_SHA"
     "builder_binary_sha256=$ATTESTED_BUILDER_BIN_SHA256"
 echo
 cat <<EOF
-Before booting this UKI, provision runtime inputs on VPSBG Slice 2:
+Before booting this UKI, provision runtime inputs on the stock rootfs
+(Flow F, scripts/vpsbg-data-disk.sh):
 
 For database-proof v2 re-attestation of the retained production layouts:
 
@@ -321,9 +322,10 @@ The wrapper rejects every other full-build mode. The native pipeline must emit
 the server DB, proof sidecars, Direct ORAM inputs, final BuildEvidence v2, and
 SNP quote before this runner marks its output eligible for staging.
 
-Upload $OUT in VPSBG Measured Boot as a temporary UKI and reboot.
-The UKI will power off after completion. Then switch Measured Boot back to
-"None", boot Slice 2, and collect:
+Upload and switch with scripts/vpsbg-measured-boot.sh (Flow E-style
+authorization, separate from this build). The UKI powers off after
+completion. Then Flow F open, collect, and close to the recorded
+runtime image:
 
   /home/pir/data/attested-builder-runs/latest/build-summary.txt
   /home/pir/data/attested-builder-runs/latest/build-evidence.bin

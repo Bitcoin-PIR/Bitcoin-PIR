@@ -2,9 +2,11 @@
 # Read-only VPSBG control-plane and Direct ORAM progress snapshot.
 set -euo pipefail
 
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+readonly REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 readonly API_BASE='https://api.vpsbg.eu/v1'
 readonly DEFAULT_STATUS_URL='https://weikeng2.bitcoinpir.org/status.json'
-readonly DEFAULT_TOKEN_FILE="${XDG_CONFIG_HOME:-${HOME:?HOME is required}/.config}/bitcoinpir/secrets/vpsbg-api-token"
+readonly DEFAULT_TOKEN_FILE="$REPO_ROOT/.secrets/vpsbg-api-token"
 
 usage() {
   cat <<'USAGE'
@@ -59,7 +61,10 @@ if [[ -n "$root" ]]; then
   fi
 else
   token_file="${VPSBG_API_TOKEN_FILE:-$DEFAULT_TOKEN_FILE}"
-  [[ -r "$token_file" && -s "$token_file" ]] || { echo 'VPSBG API token file is missing or empty' >&2; exit 2; }
+  [[ -r "$token_file" && -s "$token_file" ]] || {
+    echo "VPSBG API token file is missing or empty: $token_file" >&2
+    exit 2
+  }
   token=$(tr -d '\r\n' <"$token_file")
   [[ -n "$token" ]] || { echo 'VPSBG API token is empty' >&2; exit 2; }
   curl --fail --silent --show-error --max-time 20 --retry 0 -H 'Accept: application/json' -H "Authorization: Bearer $token" "$API_BASE/servers" | jq -e . >"$servers_file"

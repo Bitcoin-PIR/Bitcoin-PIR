@@ -1,5 +1,8 @@
 # Initialize issuer state
 
+This is Flow I step 2 in
+[Production operations](../PRODUCTION_OPERATIONS.md).
+
 Use [`scripts/payment-v1-issuer-state.sh`](../../scripts/payment-v1-issuer-state.sh)
 after Payment V1 artifacts are ready and an issuer environment has been selected.
 

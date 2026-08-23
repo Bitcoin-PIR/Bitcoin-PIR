@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Smoke-test the attested-builder database proof binding.
+# Smoke-test the retained mixed-provenance v1 database-proof opcode.
+#
+# This is not the production pin catalog and not a v2/Onion/ORAM check.
+# Flow H.0: verify-live is v1-only. Onion/ORAM stay on local
+# db-proof verify / the browser after Flow C.
 #
 # This script is intentionally read-only. It verifies the local mirrored proof
 # directory, then verifies live PIR servers if requested. It does not SSH,

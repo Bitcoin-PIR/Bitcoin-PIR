@@ -1,10 +1,17 @@
 # Database and root rotation runbook
 
+This is Flow H in [Production operations](PRODUCTION_OPERATIONS.md).
+VPSBG maintenance boots are Flow F. Frontend pin publication is Flow C.
+The producer UKI is [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md),
+never the runtime UKI in Flow E.
+
 Use this runbook whenever production moves to a new full snapshot, adds or
 replaces a delta, or rebuilds an existing height with different database
 roots. It covers the proof, server catalog, production pins, and strict v2
-OnionPIR proof pins as one release unit. DPF/HarmonyPIR retain their v1 proof
-compatibility surface; strict OnionPIR does not use a v1 layout-pin fallback.
+OnionPIR / ORAM proof pins as one release unit. DPF/HarmonyPIR retain their
+v1 proof compatibility surface; strict OnionPIR does not use a v1
+layout-pin fallback. Pin-family names and verifier scope are in
+Production operations H.0.
 
 The safety rule is simple: a client may be temporarily unavailable during a
 rotation, but it must never fall back to an unverified root. A proof/pin or
@@ -28,9 +35,15 @@ measurement/report identity after the measured run. The native snapshot or
 delta run must emit the complete server-loadable generation and its evidence
 as one output; a collection assembled afterward is not a production candidate.
 This single-output rule covers the native V2 `server-db`, Direct inputs and V2
-evidence. The explicitly retained V1 proof sidecars used only for
-DPF/Harmony compatibility remain separate `proof_dir` inputs; they cannot fill
-a missing native V2 production stage.
+evidence. That V2 evidence already binds `bucket_super_root` (DPF/Harmony)
+together with the Onion layout and Direct ORAM inputs. The explicitly
+retained V1 proof sidecars used only for the live DPF/Harmony *opcode*
+remain separate `proof_dir` inputs; they cannot fill a missing native V2
+production stage. The production UKI does not emit a second
+`BUILD_EVIDENCE_VERSION=1` directory. A new height therefore needs a
+Human decision on the DPF/Harmony pin/transport before activation; do
+not invent a v1 UKI mode or splice a host-side v1 pass onto the measured
+V2 tree.
 
 This repository's `scripts/build_full.sh`, related `build_*` wrappers and
 `tools/db-builder` remain useful for development and regression work, but they
@@ -41,8 +54,11 @@ authorize a build, VPSBG boot, database mutation or deployment.
 ## Invariants
 
 - Every database selected by the sync plan has one independently verified
-  `DatabaseProofBundle` and one matching entry in
-  `PRODUCTION_DB_PROOF_PINS`.
+  `DatabaseProofBundle` and matching entries in the pin tables that
+  backend uses: `PRODUCTION_DB_PROOF_PINS` (DPF/Harmony v1),
+  `PRODUCTION_ONION_DB_PROOF_V2_PINS` (pir1 Onion), and
+  `PRODUCTION_ORAM_DB_PROOF_V2_PINS` plus
+  `verification/locks/generated-proofs.json` (pir2 Direct ORAM).
 - Every sync plan selectable from a supported starting height is contiguous in
   both height and block hash. Overlapping alternatives in the active catalog do
   not have to form one full-snapshot-to-delta chain: production may serve a
@@ -147,11 +163,16 @@ In the same change set, update `web/src/attest-pin.ts`:
    packed-entry counts, table sizes, slot sizes, arity, and Merkle geometry
    against the independently accepted v2 proof. Do not recreate the removed
    `PRODUCTION_ONION_QUERY_LAYOUT_PINS` table or a v1 layout fallback.
-3. Update the duplicate `PRODUCTION_DATABASE_PINS` in
+3. For Direct ORAM, update `PRODUCTION_ORAM_DB_PROOF_V2_PINS` and the
+   matching lock in `verification/locks/generated-proofs.json`. That
+   table shares layout and Merkle roots with the Onion v2 pins and
+   independently binds the native full-build producer. Do not collapse
+   Onion and ORAM builder identities into one table.
+4. Update the duplicate `PRODUCTION_DATABASE_PINS` in
    `crates/sdk/client/tests/integration_test.rs`. The scheduled native canary must
    fail on an unreviewed rotation; keep these values synchronized with the
    independently reviewed web pins.
-4. Update proof artifacts under `web/public/proofs/` and any public block links
+5. Update proof artifacts under `web/public/proofs/` and any public block links
    or reproducibility manifests for the new endpoints.
 
 Run the Rust/WASM/web tests that cover proof parsing, full-field pin matching,
@@ -192,13 +213,15 @@ V2 output used by Onion/ORAM and Direct ORAM reconstruction. Review it and use
 the maintenance-window activation step below; never collapse or manually edit
 these generated path/proof pairings.
 
-Hetzner can be staged over its normal SSH/operator path. VPSBG Tier 3 has no
-SSH, so a complete proof/root rotation must use a planned portal maintenance
-boot: select `UKI: None`, reboot into the maintenance system, stage the
-immutable directories over SSH, verify them, and write the proposed config to
-a separate file without replacing the active `databases.toml`. Then reselect
-the known-good Tier 3 UKI and reboot with the old active config until the
-activation window.
+Hetzner can be staged over its normal SSH/operator path. VPSBG measured
+boot has no SSH, so a complete proof/root rotation uses Flow F in
+[Production operations](PRODUCTION_OPERATIONS.md)
+(`scripts/vpsbg-data-disk.sh open`), stages the immutable directories
+over stock-rootfs SSH, verifies them, and writes the proposed config to
+a separate file without replacing the active `databases.toml`. Then
+`close` with the known-good runtime image id and reboot with the old
+active config until the activation window. Do not use the VPSBG portal
+as the primary path, and do not build a provisioner UKI.
 
 The authenticated `bpir-admin upload --no-activate` path may stage an ordinary
 database directory while Tier 3 is running, but it is not a substitute for the
@@ -228,12 +251,14 @@ before following the activation steps below.
 There is no single atomic switch across both hosts and GitHub Pages. Use a
 short maintenance window and accept temporary fail-closed queries:
 
-1. Stop or drain the Hetzner services through their normal supervisor. In the
-   VPSBG portal, select `UKI: None` and reboot into the SSH-capable maintenance
-   system; this stops the Tier 3 query path without launching an ad hoc server.
+1. Stop or drain the Hetzner services through their normal supervisor. On
+   VPSBG, use Flow F in [Production operations](PRODUCTION_OPERATIONS.md)
+   (`scripts/vpsbg-data-disk.sh open`) so the guest reaches stock rootfs
+   and SSH. Do not use the portal as the primary path, and do not build a
+   provisioner UKI.
 2. Atomically replace each host's active `databases.toml` with the prepared
-   version. Restart the normal Hetzner services. On VPSBG, reselect the same
-   known-good Tier 3 UKI and reboot; an unchanged data/proof schema needs this
+   version. Restart the normal Hetzner services. On VPSBG, `close` with the
+   same known-good Tier 3 image id; an unchanged data/proof schema needs this
    config reload but does not require rebuilding the UKI. Do not run a second
    server that bypasses either deployed supervisor/boot path.
 3. Until both hosts agree, treat the fleet as unavailable. DPF and the
@@ -247,11 +272,18 @@ short maintenance window and accept temporary fail-closed queries:
      --server wss://weikeng2.bitcoinpir.org --db-id <db-id> <expected-args>
    ```
 
+   `verify-live` fetches the v1 database-proof opcode only. It covers
+   DPF/Harmony compatibility. It does not certify Onion v2 or ORAM v2.
+   Those stay on the local `db-proof verify` / `verify-proof-directory`
+   path and the browser/WASM check after Flow C.
+
 5. Confirm runtime pin and operator identity on Hetzner, and runtime pin,
    operator identity, SEV-SNP measurement, AMD certificate chain, and secure
    channel on VPSBG.
-6. Merge/deploy the already-reviewed frontend proof pins. Wait for the exact
-   commit's Pages workflow to complete successfully.
+6. Merge the already-reviewed frontend proof pins (Flow B), then publish
+   them with Flow C in [Production operations](PRODUCTION_OPERATIONS.md).
+   Wait for that exact commit's `deploy-web.yml` run to complete
+   successfully. A push to `main` does not publish.
 
 Activating the servers before the new web pins makes old clients reject the
 new proof; deploying the pins first makes new clients reject old servers.
@@ -304,14 +336,15 @@ record. Routine rotations belong in a dated operations record
 
 Rollback the generation as a unit:
 
-1. Stop the Hetzner services and use the VPSBG portal to select `UKI: None` and
-   reboot into the SSH-capable maintenance system.
+1. Stop the Hetzner services and open a VPSBG stock-rootfs window with
+   Flow F (`scripts/vpsbg-data-disk.sh open`).
 2. Restore the prior `databases.toml`, database directories, and proof
    directories on both hosts. Restart the normal Hetzner services, then
-   reselect the prior known-good Tier 3 UKI in the VPSBG portal and reboot.
+   `close` with the prior known-good Tier 3 image id.
 3. Run `verify-live` for every restored database ID on both hosts and confirm
    both catalogs agree.
-4. Redeploy the prior known-good frontend proof pins and wait for Pages.
+4. Redeploy the prior known-good frontend proof pins with Flow C and wait
+   for Pages.
 5. Repeat the strict browser acceptance checks above.
 
 If only one host fails after activation, do not leave a mixed fleet serving.
