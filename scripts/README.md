@@ -5,7 +5,8 @@ Helper scripts for running and testing the PIR system.
 > **Scope note (2026-08).** The database build and refresh sections below
 > describe the local development pipeline. They are **not** the production
 > database release path: production rotations use the locked
-> `Bitcoin-PIR/attested-builder` producer and
+> `Bitcoin-PIR/attested-builder` producer (that repo's README is the
+> coverage map) and
 > [`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md),
 > and every retention/cleanup decision is governed by
 > [`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md).
@@ -13,14 +14,20 @@ Helper scripts for running and testing the PIR system.
 
 ## Production status
 
-For production diagnosis, run this read-only command first:
+For production diagnosis (Flow A in
+[`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md)),
+run this read-only command first:
 
 ```bash
-./scripts/vpsbg-production-status.sh
+./scripts/production-status.sh
 ```
 
-It only GETs the VPSBG control plane and public `/status.json`; it never uses SSH.
-It reports control-plane state, boot mode, and attached image. The ORAM endpoint exists only during build/switch; after `unified_server` owns 8091, its fields are expected to be `unavailable`.
+That prints pir1 SSH health and then the pir2 VPSBG snapshot. For pir2
+only, `./scripts/vpsbg-production-status.sh` GETs the VPSBG control plane
+and public `/status.json` and never uses SSH. Both default to
+`.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
+build/switch; after `unified_server` owns 8091, its fields are expected
+to be `unavailable`.
 Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
 
 Before a database or Direct ORAM rebuild, read

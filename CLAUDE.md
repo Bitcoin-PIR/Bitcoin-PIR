@@ -13,7 +13,7 @@ for agents are in [`AGENTS.md`](AGENTS.md); read that first.
 | Which tests to run | [`docs/TESTING.md`](docs/TESTING.md) |
 | Any production operation | [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) |
 | Client trust pins (binary hashes, SEV measurement, DB proofs) | [`web/src/attest-pin.ts`](web/src/attest-pin.ts) — never copy values into prose |
-| Live production state | Query it (`scripts/vpsbg-production-status.sh`); never infer from documents |
+| Live production state | Query it (`scripts/production-status.sh`); never infer from documents |
 | Privacy invariants and proofs | [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) + [`verification/locks/`](verification/locks/) |
 
 ## Privacy invariants (NEVER weaken; details in VERIFICATION_OVERVIEW.md)

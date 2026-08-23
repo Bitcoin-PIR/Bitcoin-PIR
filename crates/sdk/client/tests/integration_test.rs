@@ -151,9 +151,9 @@ const PRODUCTION_DATABASE_PINS: [ProductionDatabasePin; 2] = [
     },
 ];
 
-/// V2 is activated only for strict OnionPIR. DPF/Harmony keep the v1 opcode
-/// during the compatibility window, so their production pins above remain
-/// intentionally unchanged.
+/// V2 is required for strict OnionPIR. DPF/Harmony keep the v1 opcode
+/// as their compatibility surface, so their production pins above remain
+/// a separate table.
 fn production_onion_v2_pin(mut pin: ProductionDatabasePin) -> ProductionDatabasePin {
     pin.params_hash_hex = match pin.db_id {
         0 => "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",

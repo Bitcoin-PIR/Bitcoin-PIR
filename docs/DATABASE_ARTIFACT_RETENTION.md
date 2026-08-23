@@ -1,5 +1,9 @@
 # Database artifact retention and debug handoff
 
+This is the current-lineage map used by Flow H in
+[Production operations](PRODUCTION_OPERATIONS.md). It is not an
+activation instruction.
+
 This is the canonical map for the production database lineage at heights
 `940611 -> 948454`. It exists to prevent another incident from turning into a
 full rebuild merely because an intermediate file cannot be found.

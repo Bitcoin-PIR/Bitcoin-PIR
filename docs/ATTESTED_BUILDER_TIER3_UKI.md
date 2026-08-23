@@ -1,12 +1,26 @@
 # Attested Builder Tier 3 UKI
 
-This runbook is for the temporary VPSBG SEV-SNP builder image. It is separate
-from the production pir2 Tier 3 UKI. The builder UKI has no sshd, no
-cloudflared, and no runit service tree. It boots, mounts `/home/pir/data`, runs
-one selected attested-builder workflow, writes SEV-SNP evidence, then powers
-off. The image is pinned to reviewed `Bitcoin-PIR/attested-builder` commit
-`8d9d21a6be560236cb666269cf1f93a3de53bb1f`, which provides native
-predecessor-free full-build V2 pipelines for both snapshots and deltas.
+This is the **producer** UKI used by Flow H in
+[Production operations](PRODUCTION_OPERATIONS.md). It is not the
+serving pir2 UKI (Flow E, `scripts/build_uki_tier3.sh`). Placing
+`config.env` and collecting outputs is Flow F
+(`scripts/vpsbg-data-disk.sh`), not the VPSBG portal.
+
+What the producer covers (DPF/Harmony INDEX+CHUNK, Onion v2, Direct
+ORAM inputs, MuHash, BuildEvidence v2, SEV-SNP) and what it does not
+(Harmony hints, BHTM, k-of-n builder quorum, Nitro) is the attested-builder
+README, not this UKI runbook.
+
+This runbook is for the one-shot VPSBG SEV-SNP builder image. The
+builder UKI has no sshd, no cloudflared, and no runit service tree. It
+boots, mounts `/home/pir/data`, runs one selected attested-builder
+workflow, writes SEV-SNP evidence, then powers off. The reviewed
+producer commit is the value bound by
+`PRODUCTION_ORAM_DB_PROOF_V2_PINS` in
+[`web/src/attest-pin.ts`](../web/src/attest-pin.ts) and by
+`scripts/build_uki_attested_builder_tier3.sh`; do not copy it into
+other prose. That producer provides native predecessor-free full-build
+V2 pipelines for both snapshots and deltas.
 `MODE=native-full-build-v2-snapshot` and
 `MODE=native-full-build-v2-delta` stage the complete server-loadable database,
 typed Direct ORAM inputs/manifest, BuildEvidence V2 and SNP report as one
@@ -15,7 +29,7 @@ eligibility claim unless it observes V2, `evidence_mode=full_build`, and no
 predecessor hashes. `MODE=reattest-existing-v2` remains a proof migration tool
 only and is ineligible for production TEE-ORAM.
 
-## Build the UKI on VPSBG Slice 2
+## Build the producer UKI
 
 The standalone `attested-builder` checkout is expected at:
 
@@ -23,10 +37,10 @@ The standalone `attested-builder` checkout is expected at:
 /home/pir/bitcoin-pir/attested-builder
 ```
 
-Build:
+Build on an approved Linux host that already has that checkout
+(stock-rootfs SSH is Flow F if that host is the VPSBG guest):
 
 ```bash
-ssh vpsbg-pir
 cd /home/pir/BitcoinPIR
 sudo ./scripts/build_uki_attested_builder_tier3.sh
 ```
@@ -110,7 +124,7 @@ production TEE-ORAM must reject them.
 
 Use the snapshot mode for a new full database:
 
-Prepare these while the server is still in Slice 2:
+Prepare these on the stock rootfs (Flow F) before attaching the builder UKI:
 
 ```bash
 sudo mkdir -p /home/pir/data/attested-builder/inputs
@@ -216,19 +230,18 @@ Building/uploading the UKI, switching measured boot and rebooting are separate
 production operations and require explicit authorization; the source runbook
 or a prepared config does not grant it.
 
-Upload `/tmp/bpir-attested-builder-tier3.efi` in the VPSBG Measured Boot UI and
-reboot. The image powers off after success or failure.
+Upload and switch with Flow E commands
+(`scripts/vpsbg-measured-boot.sh upload` then `switch`) as their own
+authorization. The builder image powers off after success or failure.
 
 After it powers off:
 
-1. Switch Measured Boot back to `None`.
-2. Boot the normal Slice 2 rootfs.
-3. Collect outputs from the configured `OUT_DIR`. A successful native V2 run
-   updates the convenience link only after its evidence gate passes:
-
-```bash
-/home/pir/data/attested-builder-runs/latest/
-```
+1. Flow F `open` (detach `{"kernel_image_id":null}`, stock rootfs, SSH).
+2. Collect outputs from the configured `OUT_DIR`. A successful native V2
+   run updates `/home/pir/data/attested-builder-runs/latest/` only after
+   its evidence gate passes.
+3. Flow F `close` with the recorded **runtime** image id when the guest
+   should serve again. Do not leave the builder UKI attached.
 
 Important files:
 
@@ -261,7 +274,7 @@ The runner also writes coarse status/log files under:
 
 ## Verify After Boot
 
-On Slice 2 or another host with the same attested-builder binary:
+On the stock rootfs or another host with the same attested-builder binary:
 
 ```bash
 pir-attested-builder verify-build-evidence \

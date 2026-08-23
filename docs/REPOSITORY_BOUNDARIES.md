@@ -14,7 +14,7 @@ of truth is versioned, pinned, tested, and consumed without copying source.
 |---|---|---|
 | `Bitcoin-PIR/Bitcoin-PIR` | Wire protocol, database catalog, production clients and server, strict trust policy, deployment integration | Consumer-side proof verifiers, trusted-root installation, attestation and operator-pin policy, Merkle preflight, production Web app |
 | `Bitcoin-PIR/harmonypir` | Generic HarmonyPIR protocol and reusable client state machine | Bitcoin database orchestration and BitcoinPIR wire framing do not move upstream |
-| `Bitcoin-PIR/attested-builder` | Reproducible database/root-bundle producer | The production client verifier remains here until a stable, versioned verifier API exists |
+| `Bitcoin-PIR/attested-builder` | Native full-build V2 database + BuildEvidence producer (see that repo's README) | Client verifiers, pin tables, and live `verify-live` stay here |
 | `Bitcoin-PIR/bhtm` | BHTM proof producer | Production pinning and proof consumption |
 | `Bitcoin-PIR/oram` | ORAM implementation and proof producer | Production ORAM policy and live deployment binding |
 | [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs) | Formal protocol and wire-shape specifications | A lock to an exact proof commit and the generated contract binding it compiles |
@@ -183,10 +183,11 @@ count. The current milestone consists of:
 
 After that milestone merges, use this order:
 
-1. Import the production DB, BHTM, and ORAM bundles from `web/public/proofs/`
-   into `proof-registry`. Add `verification/locks/generated-proofs.json`, rerun
-   the current consumer verifier in this repository, and generate browser
-   assets from the lock before deleting the original files.
+1. **Partial:** `verification/locks/generated-proofs.json` exists and is
+   the ORAM lock in Flow H.0. Bundles still live in-tree under
+   `web/public/proofs/`. Deleting those files after generating browser
+   assets from the lock is remaining cleanup, not a missing proof
+   family.
 2. Reconcile the two `rootbundle` implementations. **Complete:**
    `attested-builder` now has CI, shared golden vectors, compatibility tests,
    and protected `rootbundle-v*` releases; this repository pins the exact

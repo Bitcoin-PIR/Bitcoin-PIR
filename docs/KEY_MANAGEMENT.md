@@ -35,19 +35,30 @@ binaries, and per-ordinal `startup.env` files.
 | --- | --- |
 | `vpsbg-api-token` | VPSBG control-plane API bearer token |
 
+VPSBG scripts default to these repository paths. They do not fall back
+to `~/.config/bitcoinpir`. Override with `VPSBG_API_TOKEN_FILE` or
+`--token-file` only when the repository file is the wrong credential.
+
 ## VPSBG file modification procedure
 
-To modify files on the VPSBG data disk (`/home/pir/data/`):
+This is Flow F in [Production operations](PRODUCTION_OPERATIONS.md).
+Use [`scripts/vpsbg-data-disk.sh`](../scripts/vpsbg-data-disk.sh). It
+detaches measured boot with `{"kernel_image_id":null}`, stop/starts the
+guest, and SSHes with `.keys/vpsbg-ssh.key` plus
+[`deploy/vpsbg_known_hosts`](../deploy/vpsbg_known_hosts). `open` and
+`close` each require an explicit `--image-id` and `--apply`; `put` does
+not call `close`.
 
-1. **Disable measured boot** via the VPSBG API:
-   `POST /v1/servers/25285/measured-boot` with `image_id: null`.
-2. **Stop then start** the server:
-   `POST /v1/servers/25285/stop` → wait → `POST /v1/servers/25285/start`.
-3. **SSH in** using `ssh -i .keys/vpsbg-ssh.key root@87.120.8.198`.
-4. Modify files directly on the data disk.
-5. **Re-enable measured boot** by switching to the desired UKI image:
-   `scripts/vpsbg-measured-boot.sh switch --server-id 25285 --image-id <ID> --apply`.
+```sh
+scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --dry-run
+scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh put --local /absolute/file \
+  --remote /home/pir/data/relative/path --apply
+scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
+```
 
-Never build a dedicated "provisioner UKI" to write files to the data
-disk. The provisioner approach (scripts/dracut/97bpir-pir2-sealed-provisioner/)
-was an error and has been removed.
+A sealed `startup.env` must be placed at
+`/home/pir/data/pir2-sealed/startup.env`. Never build a dedicated
+"provisioner UKI" to write files to the data disk. The provisioner
+approach (`scripts/dracut/97bpir-pir2-sealed-provisioner/`) was an
+error; the leftover builder is unused by the production UKI.

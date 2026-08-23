@@ -33,10 +33,10 @@ Documentation index: [`docs/README.md`](docs/README.md).
 
 - Every production operation starts at
   [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md).
-  Upload, switch, reboot, rollback, deployment, and funds all require
-  explicit authorization per run.
+  Pick one numbered flow (A–I). Upload, switch, reboot, rollback,
+  Pages deploy, and funds all require explicit authorization per step.
 - VPSBG measured-boot operations use `scripts/vpsbg-measured-boot.sh` (API),
-  not SSH.
+  not SSH. VPSBG data-disk edits use `scripts/vpsbg-data-disk.sh`.
 - Read [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md)
   before touching database or ORAM artifacts.
 

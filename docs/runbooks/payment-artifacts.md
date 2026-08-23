@@ -1,5 +1,9 @@
 # Generate Payment V1 artifacts
 
+This is Flow I step 1 in
+[Production operations](../PRODUCTION_OPERATIONS.md). It is not a
+production issuer deploy.
+
 Use [`scripts/payment-v1-artifacts.sh`](../../scripts/payment-v1-artifacts.sh)
 to build and self-verify one selected Payment V1 or BAT V2 artifact.
 

@@ -1,5 +1,9 @@
 # Testing entry points
 
+This is Flow B in [Production operations](PRODUCTION_OPERATIONS.md).
+Green CI is not a deploy. Publishing the browser client is Flow C
+(manual `deploy-web.yml` on `main`).
+
 Pick your checks by *change class*, not by a single default command. The
 matrix below maps what you touched to the minimum local checks and to the CI
 that will actually run on your PR (most workflows are path-filtered; two run
@@ -19,11 +23,11 @@ and passing it says nothing about non-Payment changes.
 | `crates/sdk/wasm` or the WASM↔TS boundary | `wasm-pack build crates/sdk/wasm --target web --out-dir pkg -- --locked --offline`, then `cd web && npm run build && npm test` | `web-build.yml` | — |
 | `crates/sdk/server` | `cargo test --locked --offline -p pir-sdk-server`; `cargo build -p pir-sdk-server` | **None** — no workflow watches this path | Crate has ~0 lib tests; CI stays green if you break it |
 | `apps/server` / `crates/protocol/runtime` | `cargo test --locked --offline -p runtime --lib hint_pool`; `cargo test --locked --offline -p runtime --bin unified_server`; for admission/process behavior run `scripts/payment-v1-local-check.sh --pr` or the matching `scripts/payment-v1-ci-lane.sh --lane runtime-*` | `payment-platform.yml` (via `apps/server/**`); `pir-sdk-integration.yml` only if you touched `hint_pool.rs`, `unified_server.rs`, or the crate manifest | A deployed binary/UKI is a separate authorized release, never implied by green CI |
-| `web/` (TypeScript, pins, tests) | `cd web && npm run build && npm test && npm run build-web` | `web-build.yml`; `deploy-web.yml` adds Playwright gates only at the manual release dispatch | Pin edits: keep `web/src/attest-pin.ts`, the `verification/locks` files, and the duplicate pins in `crates/sdk/client/tests/integration_test.rs` consistent (rotation runbook §3) |
+| `web/` (TypeScript, pins, tests) | `cd web && npm run build && npm test && npm run build-web` | `web-build.yml`; `deploy-web.yml` adds Playwright gates only at the manual release dispatch | Pin edits: keep `PRODUCTION_DB_PROOF_PINS`, `PRODUCTION_ONION_DB_PROOF_V2_PINS`, `PRODUCTION_ORAM_DB_PROOF_V2_PINS`, `verification/locks/generated-proofs.json`, and the duplicate pins in `crates/sdk/client/tests/integration_test.rs` consistent (rotation runbook §3 / Flow H.0) |
 | Payment V1 (crates/payment, issuer apps, deploy templates) | Profiles below (`--quick` / `--pr`; `--deploy-template-audit` only for template work) | `payment-platform.yml`, sometimes `directory-relay-artifact.yml` | Source-ready ≠ deployed; production routing is in [Production operations](PRODUCTION_OPERATIONS.md) |
 | `verification/locks`, contracts, verifier scripts | `cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract`; `python3 -m unittest verification/scripts/test_verify_formal_lock.py`; `cd web && npm test` (lock↔pin tests) | `formal-proof.yml` (every PR, unfiltered); `generated-proof-lock.yml` (lock paths) | Protocol framing / round-shape / padding changes must update the contract and proof lock (`REPOSITORY_BOUNDARIES.md`) |
 | `tools/db-builder`, `scripts/build_*.sh` | `cargo build -p build`; there is no test suite | **None** | Production databases come from the locked attested-builder, not these scripts; see `DATABASE_ARTIFACT_RETENTION.md` before any rebuild |
-| UKI scripts, `.github/workflows/**` | `node scripts/github-workflow-supply-chain-gate.mjs`; `node --test scripts/tier3-uki-policy-contract.test.mjs` | `workflow-supply-chain.yml` | UKI builds themselves are operator actions on the build host, not CI |
+| UKI scripts, VPSBG operator scripts, `.github/workflows/**` | `node scripts/github-workflow-supply-chain-gate.mjs`; `node --test scripts/tier3-uki-policy-contract.test.mjs`; `bash scripts/vpsbg-production-status.test.sh`; `bash scripts/ops-operator-scripts.test.sh` | `workflow-supply-chain.yml` | UKI builds and live VPSBG mutations are operator actions, not CI |
 | Documentation only | none | none (all workflows are path-filtered) | CI does not check documentation truth; identity values (hashes, image IDs) must be pointers to `web/src/attest-pin.ts` / `docs/data-retention/`, not copies |
 
 Merges are manual: there is no aggregate **required** check on `main`. The

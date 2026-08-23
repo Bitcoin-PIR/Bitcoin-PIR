@@ -1,5 +1,8 @@
 # Run the pir2 sealed release
 
+This is Flow G in [Production operations](../PRODUCTION_OPERATIONS.md).
+Placing `startup.env` is Flow F, not a provisioner UKI.
+
 Use [`scripts/pir2-sealed-ceremony.sh`](../../scripts/pir2-sealed-ceremony.sh)
 to advance the prepared pir2 release through Observe, sealed release, Enroll,
 Probe, and Ready.
@@ -28,9 +31,17 @@ scripts/pir2-sealed-ceremony.sh phase \
 scripts/pir2-sealed-ceremony.sh release [existing release arguments]
 ```
 
-After `PASS sealed_phase_config=observe`, use that exact file as
-`/home/pir/data/pir2-sealed/startup.env` for the measured Observe boot. Run the
-release after the Observe receipt is available. Generate new startup files for
-`enroll`, `probe`, and `ready`, and boot each in that order. A completed release
-prints `PASS sealed_release`; every phase file prints
-`PASS sealed_phase_config=<phase>` and `NEXT_STEP`.
+After `PASS sealed_phase_config=observe`, place that exact file with
+[`scripts/vpsbg-data-disk.sh`](../../scripts/vpsbg-data-disk.sh):
+
+```sh
+scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh put --local /absolute/observe.startup.env \
+  --remote /home/pir/data/pir2-sealed/startup.env --apply
+scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
+```
+
+Do not build a provisioner UKI. Run the release after the Observe receipt is
+available. Generate new startup files for `enroll`, `probe`, and `ready`, and
+boot each in that order. A completed release prints `PASS sealed_release`;
+every phase file prints `PASS sealed_phase_config=<phase>` and `NEXT_STEP`.

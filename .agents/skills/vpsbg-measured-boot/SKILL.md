@@ -6,14 +6,20 @@ compatibility: Requires scripts/vpsbg-measured-boot.sh, jq, curl, a VPSBG API to
 
 # VPSBG measured boot
 
-Run all VPSBG operations through `scripts/vpsbg-measured-boot.sh`. It is the
-only API entry point.
+This is Flow E in
+[`docs/PRODUCTION_OPERATIONS.md`](../../../docs/PRODUCTION_OPERATIONS.md).
+Data-disk edits are Flow F (`scripts/vpsbg-data-disk.sh`). Do not SSH
+for measured-boot attach/detach.
+
+Run measured-boot operations through `scripts/vpsbg-measured-boot.sh`.
+It is the only API entry for status, images, upload, switch, and
+rollback.
 
 ## Inputs
 
 - `--server-id ID` for status, switch, or rollback.
-- `VPSBG_API_TOKEN_FILE` for status, or `--token-file PATH` for a mutation,
-  when the default token location is not appropriate.
+- `VPSBG_API_TOKEN_FILE` or `--token-file PATH` when
+  `<repo>/.secrets/vpsbg-api-token` is not the credential to use.
 - `--uki PATH` for `upload`.
 - `--image-id ID` for `switch` or `rollback`.
 
@@ -23,11 +29,12 @@ Start with the read-only view:
 
 ```bash
 scripts/vpsbg-measured-boot.sh status --server-id ID
+scripts/vpsbg-measured-boot.sh images
 ```
 
-Success prints `PASS action=status` and status fields. Record a concrete image
-ID when one is attached; `image_id=unavailable` is a valid observation, not an
-image selection.
+Success prints `PASS action=status` or `PASS action=images` and status
+fields. Record a concrete image ID when one is attached;
+`image_id=unavailable` is a valid observation, not an image selection.
 
 For an authorized mutation, confirm that this exact upload, switch, or rollback
 is authorized, then run one command:
