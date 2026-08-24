@@ -9,6 +9,7 @@
 use crate::dpf::plan_index_pbc_rounds_for_hashes;
 use pir_core::params::{CHUNK_CUCKOO_NUM_HASHES, INDEX_CUCKOO_NUM_HASHES, NUM_HASHES};
 use pir_sdk::{DatabaseInfo, PirError, PirResult, ScriptHash};
+use pir_service_protocol::{BackendId, ServiceScopePolicyV1, WorkloadId};
 
 /// Product-facing backend identifier. String labels match the signed service
 /// scope and `web/src/service-entitlement.ts::ProductQueryShapeV1`.
@@ -103,6 +104,75 @@ pub struct ProductQueryShapeV1 {
     pub exact_index_frames: Option<u64>,
     /// Counters deliberately omitted instead of estimated.
     pub omitted: ProductQueryOmissionsV1,
+}
+
+/// Fail locally when a signed service scope cannot admit the planner-proven
+/// lower bounds for a query. This deliberately checks only counters present in
+/// [`ProductQueryLowerBoundsV1`]; omitted, data-dependent transcript costs
+/// remain the operator's responsibility when sizing the signed scope.
+pub fn assert_product_query_shape_fits_scope_v1(
+    shape: &ProductQueryShapeV1,
+    scope: &ServiceScopePolicyV1,
+    label: &str,
+) -> PirResult<()> {
+    let (backend, workload) = match (shape.backend, shape.workload) {
+        (ProductBackendV1::DpfPir, ProductWorkloadV1::DpfQuery) => {
+            (BackendId::DpfPirV1, WorkloadId::DpfEvaluateJobV1)
+        }
+        (ProductBackendV1::HarmonyPir, ProductWorkloadV1::HarmonyQuery) => {
+            (BackendId::HarmonyPirV2, WorkloadId::HarmonyQueryJobV1)
+        }
+        (ProductBackendV1::HarmonyPir, ProductWorkloadV1::HarmonyHint) => {
+            (BackendId::HarmonyPirV2, WorkloadId::HarmonyHintBundleV1)
+        }
+        _ => {
+            return Err(PirError::InvalidState(format!(
+                "{label} has an unknown backend/workload"
+            )))
+        }
+    };
+    if scope.scope.backend != backend || scope.scope.workload != workload {
+        return Err(PirError::InvalidState(format!(
+            "{label} does not match the planned backend/workload"
+        )));
+    }
+
+    let limits = &scope.limits;
+    let required = &shape.lower_bounds;
+    let comparisons = [
+        (
+            "logical inputs",
+            Some(required.logical_inputs),
+            u64::from(limits.max_logical_inputs),
+        ),
+        (
+            "frames",
+            Some(required.frames),
+            u64::from(limits.max_frames),
+        ),
+        (
+            "concurrent sockets",
+            required.concurrent_sockets.map(u64::from),
+            u64::from(limits.max_concurrent_sockets),
+        ),
+        (
+            "hint groups",
+            required.hint_groups,
+            u64::from(limits.max_hint_groups),
+        ),
+        ("work units", required.work_units, limits.max_work_units),
+    ];
+    for (field, required, maximum) in comparisons {
+        let Some(required) = required else {
+            continue;
+        };
+        if required > maximum {
+            return Err(PirError::InvalidState(format!(
+                "{label} {field} limit is insufficient (requires {required}, signed maximum {maximum})"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Plan a DPF query for one provider without opening a socket.
@@ -322,6 +392,7 @@ fn checked_product(values: &[u64], label: &str) -> PirResult<u64> {
 mod tests {
     use super::*;
     use pir_sdk::DatabaseKind;
+    use pir_service_protocol::{DatasetBindingV1, EntitlementLimitsV1, ServiceScopeV1};
 
     fn db(index_k: u8, chunk_k: u8) -> DatabaseInfo {
         DatabaseInfo {
@@ -419,5 +490,45 @@ mod tests {
         assert!(plan_harmony_service_query_v1(&[], &valid).is_err());
         assert!(plan_dpf_service_query_v1(&[[0; 20]], &db(2, 3)).is_err());
         assert!(plan_harmony_service_hint_v1(&db(3, 2)).is_err());
+    }
+
+    #[test]
+    fn signed_scope_preflight_reports_the_exact_insufficient_counter() {
+        let plan = plan_harmony_service_query_v1(&[[0; 20], [1; 20]], &db(75, 80)).unwrap();
+        let required_work = plan.lower_bounds.work_units.unwrap();
+        let scope = ServiceScopePolicyV1 {
+            scope: ServiceScopeV1 {
+                provider_id: [7; 32],
+                backend: BackendId::HarmonyPirV2,
+                workload: WorkloadId::HarmonyQueryJobV1,
+                protocol_version: 2,
+                dataset: DatasetBindingV1::ManifestRoot { root: [8; 32] },
+                operation_profile: 1,
+                entitlement_profile: 1,
+            },
+            limits: EntitlementLimitsV1 {
+                max_logical_inputs: u16::MAX,
+                max_frames: u32::MAX,
+                max_request_bytes: u64::MAX,
+                max_response_bytes: u64::MAX,
+                max_wall_time_ms: u32::MAX,
+                max_concurrent_sockets: u8::MAX,
+                max_hint_groups: u16::MAX,
+                max_work_units: required_work - 1,
+            },
+            offers: Vec::new(),
+        };
+
+        let error =
+            assert_product_query_shape_fits_scope_v1(&plan, &scope, "selected Harmony query scope")
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "invalid state: selected Harmony query scope work units limit is insufficient \
+                 (requires {required_work}, signed maximum {})",
+                required_work - 1,
+            )
+        );
     }
 }

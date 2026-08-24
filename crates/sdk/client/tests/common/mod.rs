@@ -29,9 +29,9 @@
 use ed25519_dalek::VerifyingKey;
 use pir_sdk::{PirError, PirResult};
 use pir_sdk_client::{
-    dangerous_unpaired_build_authorization_proof_v1, AcceptedServicePolicyV1,
-    DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient, RootPolicy,
-    ServicePolicyCheckpointV1,
+    assert_product_query_shape_fits_scope_v1, dangerous_unpaired_build_authorization_proof_v1,
+    AcceptedServicePolicyV1, DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient,
+    ProductQueryShapeV1, RootPolicy, ServicePolicyCheckpointV1,
 };
 use pir_service_protocol::{
     pow_solution_meets_difficulty_v1, AuthScheme, BackendId, FreeModeV1, FreePowProofV1,
@@ -423,16 +423,23 @@ async fn admit_harmony_hint_authorize(
     Ok(())
 }
 
-/// Authorize the Harmony query leg's free offer. Call this only after all
-/// hint-megabyte work is done: the live `harmony-query-job-v1` scope grants
-/// `max_wall_time_ms = 120_000` measured from the AUTH grant, and a fresh
-/// ~21 s main-bundle download plus per-level sibling streams must not eat
-/// into the query phase's window.
-async fn admit_harmony_query_authorize(
+struct PreparedHarmonyQueryAuthorization {
+    accepted: AcceptedServicePolicyV1,
+    scope_id: [u8; 32],
+    offer_id: u32,
+    free_mode: FreeModeV1,
+}
+
+/// Fetch and verify the Harmony query policy, then fail before query-leg PoW,
+/// hint authorization/download, or query AUTH if its signed counters cannot
+/// admit the planner-proven query lower bounds. Fetching the policy does not
+/// start the grant window.
+async fn prepare_harmony_query_authorization(
     client: &mut HarmonyClient,
     db_id: u8,
     pins: &LiveProviderPins,
-) -> PirResult<()> {
+    query_shape: &ProductQueryShapeV1,
+) -> PirResult<PreparedHarmonyQueryAuthorization> {
     let accepted = client
         .fetch_service_policy_v1(
             1,
@@ -448,6 +455,36 @@ async fn admit_harmony_query_authorize(
         BackendId::HarmonyPirV2,
         WorkloadId::HarmonyQueryJobV1,
     )?;
+    let scope = accepted
+        .policy()
+        .scopes
+        .iter()
+        .find(|entry| entry.scope.scope_id() == scope_id)
+        .ok_or_else(|| {
+            PirError::InvalidState("selected Harmony query scope is not in policy".into())
+        })?;
+    assert_product_query_shape_fits_scope_v1(query_shape, scope, "selected Harmony query scope")?;
+    Ok(PreparedHarmonyQueryAuthorization {
+        accepted,
+        scope_id,
+        offer_id,
+        free_mode,
+    })
+}
+
+/// Authorize the prepared Harmony query leg only after all hint-megabyte work
+/// is done, so the signed grant window is reserved for the query transcript.
+async fn admit_harmony_query_authorize(
+    client: &mut HarmonyClient,
+    db_id: u8,
+    prepared: PreparedHarmonyQueryAuthorization,
+) -> PirResult<()> {
+    let PreparedHarmonyQueryAuthorization {
+        accepted,
+        scope_id,
+        offer_id,
+        free_mode,
+    } = prepared;
     let proof_bytes = free_proof_bytes(
         free_mode,
         client.request_query_pow_challenge_v1(db_id, &accepted, scope_id, offer_id, now_unix()),
@@ -472,31 +509,32 @@ impl pir_sdk_client::HintProgress for NoopHintProgress {
 }
 
 /// Complete the live admission sequence for a HarmonyPIR query, ordered to
-/// respect the production grant windows (the same staging the browser
-/// product uses):
+/// fail before paid/expensive work and respect the signed grant windows:
 ///
 /// 1. install the verified database proof,
 /// 2. snapshot the catalog (once the hint-leg grant is flushed, the hint
 ///    connection accepts exactly the V2Full main-dispatch frame; any other
 ///    frame — even an otherwise-ungated one like REQ_GET_DB_CATALOG —
 ///    terminalizes it),
-/// 3. open both legs' secure channels and authorize the hint leg
-///    (`harmony-hint-bundle-v1`, V2Full transport),
-/// 4. preflight the proof-verified tree tops over the query leg,
-/// 5. download the complete main + Merkle-sibling hint bundle under the
-///    V2Full grant — all hint-leg traffic, bounded by the hint scope's
-///    300 s window,
-/// 6. ONLY THEN authorize the query leg (`harmony-query-job-v1`), whose
-///    grant allows 120 s total for the INDEX → CHUNK → Merkle query phase.
+/// 3. open the query leg's secure channel and preflight the proof-verified
+///    tree tops,
+/// 4. fetch the query policy and reject undersized signed limits locally,
+/// 5. open and authorize the hint leg (`harmony-hint-bundle-v1`, V2Full
+///    transport),
+/// 6. download the complete main + Merkle-sibling hint bundle under the
+///    V2Full grant — all hint-leg traffic is bounded by the signed hint scope,
+/// 7. ONLY THEN authorize the query leg (`harmony-query-job-v1`), reserving
+///    its signed grant window for the INDEX → CHUNK → Merkle query phase.
 ///
-/// Authorizing the query leg up-front instead spends a double-digit share
-/// of its 120 s window on the ~21 s main-bundle download + sibling streams
-/// before the first INDEX frame leaves, so the admission sequence keeps
-/// hint-leg megabytes outside the query grant's budget.
+/// Authorizing the query leg up-front instead spends part of its signed window
+/// on the main-bundle download + sibling streams before the first INDEX frame
+/// leaves, so the admission sequence keeps hint-leg megabytes outside the
+/// query grant's budget.
 pub async fn admit_harmony_live(
     client: &mut HarmonyClient,
     db_id: u8,
     proof_policy: &DatabaseProofPolicy,
+    script_hashes: &[pir_sdk::ScriptHash],
 ) -> PirResult<()> {
     client.set_root_policy(RootPolicy::RequireVerified);
     let roots = client.verify_database_proof(db_id, proof_policy).await?;
@@ -514,6 +552,12 @@ pub async fn admit_harmony_live(
         .find(|db| db.db_id == db_id)
         .cloned()
         .ok_or(PirError::DatabaseNotFound(db_id))?;
+    let query_shape = client.plan_service_query(script_hashes, db_id)?;
+
+    admit_harmony_leg_channel(client, 1).await?;
+    client.preflight_verified_database(db_id).await?;
+    let prepared =
+        prepare_harmony_query_authorization(client, db_id, &vpsbg_pins(), &query_shape).await?;
 
     admit_harmony_leg_channel(client, 0).await?;
     admit_harmony_hint_authorize(client, db_id, &hetzner_pins()).await?;
@@ -521,13 +565,11 @@ pub async fn admit_harmony_live(
     // hint connection may only carry the V2Full main dispatch followed by
     // the canonical sibling sequence. Query-leg work below uses the other
     // connection and is unaffected.
-    admit_harmony_leg_channel(client, 1).await?;
-    client.preflight_verified_database(db_id).await?;
     client
         .fetch_complete_hints_with_progress(&db_info, &NoopHintProgress)
         .await?;
 
-    admit_harmony_query_authorize(client, db_id, &vpsbg_pins()).await?;
+    admit_harmony_query_authorize(client, db_id, prepared).await?;
     Ok(())
 }
 

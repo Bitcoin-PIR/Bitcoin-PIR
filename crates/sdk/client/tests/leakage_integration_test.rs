@@ -354,8 +354,13 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let (k_index, k_chunk, db_id) =
             (main.index_k as usize, main.chunk_k as usize, main.db_id);
         // The public deployment enforces Payment-V1 admission.
-        common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy())
-            .await?;
+        common::admit_harmony_live(
+            &mut client,
+            db_id,
+            &common::production_db0_proof_policy(),
+            shs,
+        )
+        .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile { profile: recorder.take_profile("harmony"), k_index, k_chunk })
@@ -800,7 +805,13 @@ async fn harmony_cold_batch_query(
 ) -> Result<std::time::Duration, PirError> {
     let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
     client.connect().await?;
-    common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
+    common::admit_harmony_live(
+        &mut client,
+        db_id,
+        &common::production_db0_proof_policy(),
+        shs,
+    )
+    .await?;
     let started = std::time::Instant::now();
     client.query_batch(shs, db_id).await?;
     let elapsed = started.elapsed();
@@ -1739,8 +1750,13 @@ async fn harmony_data_correctness_diagnostic() {
             db.height, db.index_bins, db.chunk_bins,
         );
         // The public deployment enforces Payment-V1 admission.
-        common::admit_harmony_live(&mut client, db_id, &common::production_db0_proof_policy())
-            .await?;
+        common::admit_harmony_live(
+            &mut client,
+            db_id,
+            &common::production_db0_proof_policy(),
+            &[sh_a, sh_b],
+        )
+        .await?;
         let results = client.query_batch(&[sh_a, sh_b], db_id).await?;
         client.disconnect().await.ok();
         Ok(results)
