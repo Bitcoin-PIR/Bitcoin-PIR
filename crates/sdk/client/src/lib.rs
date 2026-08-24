@@ -107,9 +107,9 @@ pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
 pub use query_plan::{
-    plan_dpf_service_query_v1, plan_harmony_service_hint_v1, plan_harmony_service_query_v1,
-    ProductBackendV1, ProductQueryLowerBoundsV1, ProductQueryOmissionsV1, ProductQueryShapeV1,
-    ProductWorkloadV1,
+    assert_product_query_shape_fits_scope_v1, plan_dpf_service_query_v1,
+    plan_harmony_service_hint_v1, plan_harmony_service_query_v1, ProductBackendV1,
+    ProductQueryLowerBoundsV1, ProductQueryOmissionsV1, ProductQueryShapeV1, ProductWorkloadV1,
 };
 pub use service::{
     accept_bat_v2_authorization_response_v2, accept_pow_challenge_response_v1,

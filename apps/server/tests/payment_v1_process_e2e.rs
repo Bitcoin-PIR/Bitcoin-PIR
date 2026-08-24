@@ -696,6 +696,55 @@ async fn two_independent_providers_enforce_secure_paid_capabilities_over_real_so
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn harmony_work_limit_rejection_returns_an_encrypted_error_response() {
+    let root = tempfile::tempdir().expect("test root");
+    chmod(root.path(), 0o700);
+    let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
+    let first_index_frame_work = u64::try_from(INDEX_PARAMS.k).unwrap();
+    let provider = build_provider_with_harmony_work_limit(
+        root.path(),
+        0,
+        manifest_root,
+        unix_now(),
+        None,
+        first_index_frame_work - 1,
+    );
+    let port = unused_loopback_port();
+    let server = ServerProcess::spawn(root.path(), &db_path, &provider, port, 0);
+    let requests = valid_tiny_harmony_query_requests();
+    let receipt = provider.receipt(provider.harmony_scope_id, HARMONY_OFFER_ID, 0xa0);
+    let (mut secure, accepted) =
+        open_verified_session(port, &provider, manifest_root, &requests[0]).await;
+    let proof = dangerous_unpaired_build_authorization_proof_v1(
+        &accepted,
+        &provider.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        &receipt.encode().unwrap(),
+    )
+    .unwrap();
+    dangerous_unpaired_authorize_service_operation_v1(
+        &mut secure,
+        &accepted,
+        provider.harmony_scope_id,
+        HARMONY_OFFER_ID,
+        OperationStartV1::HarmonyQuery { db_id: 0 },
+        proof,
+    )
+    .await
+    .expect("undersized scope must still authorize before the backend frame is counted");
+
+    let response = secure
+        .roundtrip(&requests[0])
+        .await
+        .expect("resource-limit rejection must remain an encrypted response");
+    expect_error_response(&response, "service entitlement limit exceeded");
+    secure.close().await.unwrap();
+
+    let (stdout, stderr) = server.stop();
+    assert_loopback_listener(0, port, &stdout, &stderr);
+}
+
 #[cfg(feature = "standard-cashu-process-e2e")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn all_non_receipt_methods_commit_before_real_harmony_query_and_replay_after_restart() {
@@ -1462,6 +1511,17 @@ fn build_provider(
     now: u64,
     matrix_mint: Option<&TestCashuMint>,
 ) -> ProviderFixture {
+    build_provider_with_harmony_work_limit(root, index, manifest_root, now, matrix_mint, 320)
+}
+
+fn build_provider_with_harmony_work_limit(
+    root: &Path,
+    index: u8,
+    manifest_root: [u8; 32],
+    now: u64,
+    matrix_mint: Option<&TestCashuMint>,
+    harmony_max_work_units: u64,
+) -> ProviderFixture {
     let provider_root = root.join(format!("provider-{index}"));
     let store_dir = provider_root.join("store-domain");
     fs::create_dir_all(&store_dir).unwrap();
@@ -1621,7 +1681,7 @@ fn build_provider(
                     max_wall_time_ms: 10_000,
                     max_concurrent_sockets: 1,
                     max_hint_groups: 0,
-                    max_work_units: 320,
+                    max_work_units: harmony_max_work_units,
                 },
                 offers: harmony_offers,
             },
@@ -1774,4 +1834,3 @@ fn unix_now() -> u64 {
         .expect("system clock before epoch")
         .as_secs()
 }
-

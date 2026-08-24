@@ -827,9 +827,14 @@ async fn test_harmony_strict_production_canary() {
     // the exact browser ordering only after the public db0/db1 preflights, then
     // exercise the supported db0 query path.
     let pin = PRODUCTION_DATABASE_PINS[0];
-    common::admit_harmony_live(&mut client, pin.db_id, &production_proof_policy(pin))
-        .await
-        .expect("strict HarmonyPIR live admission failed");
+    common::admit_harmony_live(
+        &mut client,
+        pin.db_id,
+        &production_proof_policy(pin),
+        &probes,
+    )
+    .await
+    .expect("strict HarmonyPIR live admission failed");
 
     let fresh_sync = client
         .sync(&probes, None)
