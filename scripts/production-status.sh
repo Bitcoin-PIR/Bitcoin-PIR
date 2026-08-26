@@ -81,7 +81,9 @@ echo 'PASS host=pir1'
 echo '[stage] pir2 VPSBG status'
 status_args=()
 [[ -z "$server_id" ]] || status_args+=(--server-id "$server_id")
-"$root/scripts/vpsbg-production-status.sh" "${status_args[@]}"
+# POSIX-safe empty-array expansion: a bare quoted-at expansion is an unbound
+# variable under `set -u` on bash < 4.4 (e.g. macOS /bin/bash 3.2).
+"$root/scripts/vpsbg-production-status.sh" "${status_args[@]+"${status_args[@]}"}"
 echo 'PASS host=pir2'
 echo 'PASS production_status'
 echo 'NEXT_STEP=use scripts/vpsbg-measured-boot.sh or scripts/vpsbg-data-disk.sh only after this run is authorized'
