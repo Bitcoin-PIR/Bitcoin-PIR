@@ -18,6 +18,7 @@ inferred: see [Production operations](../PRODUCTION_OPERATIONS.md).
 | [PIR1_STARTUP_HINT_POOL_THRASHING.md](PIR1_STARTUP_HINT_POOL_THRASHING.md) | Startup RCA cited by the systemd units |
 | [UPSTREAM_REQUEST_2402b16_REGRESSION.md](UPSTREAM_REQUEST_2402b16_REGRESSION.md) | Upstream regression context cited by the systemd units |
 | [GIT_CLEANUP_2026-08-13.md](GIT_CLEANUP_2026-08-13.md) | Records which branches/worktrees were removed and which were preserved |
+| [EPOCH5_ENTITLEMENT_ROTATION.md](EPOCH5_ENTITLEMENT_ROTATION.md) | Entitlement-rotation RCA cited by `docs/runbooks/pir2-sealed-release.md` |
 
 Everything else — completed plans, dated preflights, rollout records, status
 trackers, process audits, probe dumps, and research surveys — was removed from

@@ -78,6 +78,13 @@ status already reports `boot_mode=stock`, rerun `open` so it waits for stock
 SSH without detaching again. If status still reports measured boot, stop and
 investigate instead of repeating the mutation.
 
+Power-state reads race with the platform: a successful `close` reattaches the
+image and VPSBG then auto-starts the guest, but an immediate status snapshot
+can still report the guest as stopped, and an explicit stop request can take
+tens of seconds to settle. Always re-read the nested `state.running` value
+before concluding the final power state; never infer it from the first
+snapshot or from the HTTP response alone.
+
 A sealed `startup.env` must be placed at
 `/home/pir/data/pir2-sealed/startup.env`. Never build a dedicated
 "provisioner UKI" to write files to the data disk. The provisioner
