@@ -56,10 +56,10 @@ fi
 
 # ─── Defaults (override via env) ───────────────────────────────────────────
 CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
-# The next reviewed image accepts service-policy epoch 4 with this exact
+# The next reviewed image accepts service-policy epoch 5 with this exact
 # digest. A policy rotation is a production behavior change and must update
 # this reviewed lock in source before a new UKI can be emitted.
-TIER3_SERVICE_POLICY_SHA256=f5e172db281cac90fba804adb98aad6f14b9cf69ec807ac9ad14219bbfbfeeb5
+TIER3_SERVICE_POLICY_SHA256=324b07017cfa1f8ce3f8efc57433a5593bb72fc3ab24b3e23ef851164c50778d
 TIER3_INITRD_COMPRESSION=zstd
 TIER3_INITRD_MAGIC=28b52ffd
 TIER3_MAX_UKI_BYTES=$((256 * 1024 * 1024))

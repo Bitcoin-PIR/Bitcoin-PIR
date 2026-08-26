@@ -126,19 +126,19 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-22
- * after the epoch-3 sealed ceremony (Observe/Enroll/Ready on image 291).
- * Image 291 serves DPF, Harmony-query and TEE ORAM under the relaxed
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-26
+ * after the epoch-5 sealed ceremony (Observe/Enroll/Probe/Ready on image 295).
+ * Image 295 serves DPF, Harmony-query and TEE ORAM under the epoch-5
  * BAT V2 class that covers offers 402 and 502.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from live image 291 after validating the AMD chain, REPORT_DATA,
+  // Captured from live image 295 after validating the AMD chain, REPORT_DATA,
   // exact unified_server binary and both attested database manifest roots.
   measurementHex:
-    'bede0c87aaaf7abe84a8f8b46201106989eab74c01ec882f0e812dc72d0504aa922a9f5834c971d7f075db36166b88f4',
+    'd5c34d4dd9601234474c387b32f6623f0b7fb60b1f0ea916e2f1bc98b140f0872a9236d75f4c2dbf8f949db79172e8ab',
   binarySha256Hex:
-    '61c4acae35a769b47b09b5a8bffd40cc6d4687ee02eb5a0f3421632e71098d1e',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 291, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, epoch 3)',
+    '790f6d5b5434bb42ded3dd550fc3631d429c594d5fd89d1026aaad07be343f0e',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 295, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, epoch 5)',
 };
 
 /**
