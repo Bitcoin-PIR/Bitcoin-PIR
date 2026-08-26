@@ -32,8 +32,10 @@ use crate::unified_server_bat_v2::{
 };
 use crate::{
     decode_fixed_hex_v1, read_exact_secret_v1, read_regular_file_bounded_v1, CliArgs,
-    ProviderAdmissionHttpsTransportV1, SharedIssuerRuntimeConfigV1,
-    StrictServiceAdmissionRuntimeV1, SERVICE_CONFIG_FILE_LIMIT_V1,
+    SERVICE_CONFIG_FILE_LIMIT_V1,
+};
+use super::admission_runtime::{
+    ProviderAdmissionHttpsTransportV1, SharedIssuerRuntimeConfigV1, StrictServiceAdmissionRuntimeV1,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

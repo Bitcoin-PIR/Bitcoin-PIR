@@ -14,27 +14,26 @@
 mod admission;
 mod unified_server_bat_v2;
 mod unified_server_pir2_sealed;
+use admission::legacy::admission_runtime::StrictServiceAdmissionRuntimeV1;
 use admission::legacy::{load_strict_service_admission_v1, validate_legacy_experimental_arc_cli_v1};
 #[cfg(test)]
 use admission::legacy::cashu::{load_cashu_epoch_keys_v1, parse_cashu_exposure_limits_v1, validate_existing_private_sqlite_path_v1, zeroize_cashu_epoch_keys_v1};
 #[cfg(test)]
 use admission::legacy::strict_admission::{cashu_inventory_within_limits_v1, storeless_bat_v2_has_forbidden_configuration_v2};
 #[cfg(test)]
+use pir_cashu_client::CashuCustodyExposureLimitsV1;
+#[cfg(test)]
 use pir_service_store::CashuCustodyInventoryV1;
 
 use pir_runtime_core::free_admission::{
-    FreeAdmissionCommitterV1, FreeIpSubjectKeyV1, FreeRateLimitStateV1,
+    FreeAdmissionCommitterV1,
 };
-use pir_runtime_core::harmony_attach_runtime::HarmonyAttachRegistryV1;
 use pir_runtime_core::service_admission::{
     encode_auth_result_response_v1, encode_harmony_attach_result_response_v1,
     encode_pow_challenge_response_v1, encode_service_policy_response_v1, AdmissionEnforcementV1,
-    AdmissionMethodRouteV1, BackendFrameKindV1, BackendFramePermitV1, BackendFrameV1,
+    BackendFrameKindV1, BackendFramePermitV1, BackendFrameV1,
     CompositeAdmissionMethodCommitterV1, ConnectionAdmissionGateV1, ProviderStoreBearerCommitterV1,
     ServiceWireRequestV1,
-};
-use pir_runtime_core::service_policy_runtime::{
-    ActivatedRetainedServicePolicyV1, ActivatedServicePolicyV1,
 };
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
@@ -46,7 +45,7 @@ use runtime::table::{
     DatabaseDescriptor, DatabaseType, MappedDatabase, MappedSubTable, ServerState,
 };
 use unified_server_bat_v2::{
-    SealedStorelessBatV2InputsV2, StorelessBatV2CliV2, StorelessBatV2RuntimeConfigV2,
+    SealedStorelessBatV2InputsV2, StorelessBatV2CliV2,
 };
 use unified_server_pir2_sealed::{
     dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
@@ -72,37 +71,20 @@ use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
-use pir_arc_adapter::{
-    ArcPresentationCanonicalizerV1 as ExperimentalArcPresentationCanonicalizerV1,
-    ArcSecretKeyringV1,
-};
-use pir_payment_crypto::K256CashuMintKeyringV1;
+use pir_arc_adapter::ArcPresentationCanonicalizerV1 as ExperimentalArcPresentationCanonicalizerV1;
 use pir_service_protocol::{
     bind_auth_begin_v1, BackendId as ServiceBackendIdV1, DatasetBindingV1,
     HarmonyAttachRejectCodeV1, HarmonyAttachResultV1, HarmonyAttachTransitionErrorV1,
-    IssuerClearingApprovalV1, OperationStartV1, ProviderClearingAuthorizationV1,
-    ProviderRedeemEnvelopeV1, ServicePolicyRequestV1, ServicePolicyResponseV1, ServicePolicyV1,
-    ServiceProtocolError, TrustedCatalogResolutionV1, VerifiedServiceOfferV1,
-    WorkloadId as ServiceWorkloadIdV1,
-};
-use pir_service_store::{
-    ProviderStore,
+    OperationStartV1, ServicePolicyV1,
+    TrustedCatalogResolutionV1, WorkloadId as ServiceWorkloadIdV1,
 };
 use zeroize::{Zeroize, Zeroizing};
 
 use pir_cashu_client::{
-    CashuCustodyExposureLimitsV1, CashuMintRouteV1, CashuMintTransportFailureKindV1,
-    CashuMintTransportFailureV1, CashuMintTransportV1, CashuMintTrustV1,
-    ChaCha20Poly1305CustodyCipherV1, ChaCha20Poly1305RecoveryCipherV1,
     StandardCashuAdmissionCommitterV1, StandardCashuClientV1,
 };
 use pir_db_attest::{BuildKind, ProofBundle};
-use pir_provider_clearing_client::{
-    ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1, SharedIssuerRedeemEnvelopeV1,
-    SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
-    StorelessBatV2AdmissionCommitterV2,
-};
-use pir_strict_https::{HttpsPostErrorV1, StrictHttpsClientV1};
+use pir_provider_clearing_client::StorelessBatV2AdmissionCommitterV2;
 
 /// Detailed per-connection/per-query logging is a privacy-dangerous local
 /// diagnostic mode. Production/default logging must never depend on request
@@ -4348,352 +4330,6 @@ struct UnifiedServerData {
     /// Whether this server accepts PIR query opcodes (DPF + OnionPIR +
     /// HarmonyPIR query phase). Mirrors `CliArgs::serve_queries`.
     serve_queries: bool,
-}
-
-struct StrictServiceAdmissionRuntimeV1 {
-    policy: ActivatedServicePolicyV1,
-    retained_policies: BTreeMap<[u8; 32], ActivatedRetainedServicePolicyV1>,
-    /// Absent only for an exact-digest-pinned storeless Free-PoW or closed BAT
-    /// V2 profile.
-    /// Every durable quota, credential, payment, Cashu, ARC, retained-policy,
-    /// or shared-issuer route requires this store at startup.
-    provider_store: Option<ProviderStore>,
-    free_rate_limits: Arc<FreeRateLimitStateV1>,
-    free_ip_subject_key: Option<FreeIpSubjectKeyV1>,
-    trust_direct_peer_ip: bool,
-    bat_keyring: Option<K256CashuMintKeyringV1>,
-    experimental_arc_keyring: Option<ArcSecretKeyringV1>,
-    cashu_recovery_cipher: Option<ChaCha20Poly1305RecoveryCipherV1>,
-    cashu_custody_cipher: Option<ChaCha20Poly1305CustodyCipherV1>,
-    cashu_exposure_limits: BTreeMap<([u8; 32], String), CashuCustodyExposureLimitsV1>,
-    shared_issuer: Option<SharedIssuerRuntimeConfigV1>,
-    storeless_bat_v2: Option<StorelessBatV2RuntimeConfigV2>,
-    http_transport: ProviderAdmissionHttpsTransportV1,
-    harmony_attach_registry: Arc<HarmonyAttachRegistryV1>,
-    monotonic_origin: Instant,
-}
-
-struct SharedIssuerRuntimeConfigV1 {
-    authorization: ProviderClearingAuthorizationV1,
-    issuer_approval: IssuerClearingApprovalV1,
-    operator_verifying_key: VerifyingKey,
-    issuer_settlement_verifying_key: VerifyingKey,
-    clearing_signing_key: ed25519_dalek::SigningKey,
-    minimum_authorization_epoch: u64,
-    idempotency_key: Zeroizing<[u8; 32]>,
-}
-
-impl core::fmt::Debug for SharedIssuerRuntimeConfigV1 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("SharedIssuerRuntimeConfigV1")
-            .field("provider_id", &self.authorization.claims.provider_id)
-            .field("issuer_id", &self.authorization.claims.issuer_id)
-            .field(
-                "minimum_authorization_epoch",
-                &self.minimum_authorization_epoch,
-            )
-            .field("clearing_signing_key", &"[REDACTED]")
-            .field("idempotency_key", &"[REDACTED]")
-            .finish()
-    }
-}
-
-impl SharedIssuerRuntimeConfigV1 {
-    fn committer<'a>(
-        &self,
-        provider_store: &ProviderStore,
-        transport: &'a dyn SharedIssuerRedeemTransportV1,
-    ) -> Result<SharedIssuerAdmissionCommitterV1<'a>, pir_service_protocol::ServiceProtocolError>
-    {
-        SharedIssuerAdmissionCommitterV1::new(
-            self.authorization.clone(),
-            self.issuer_approval.clone(),
-            self.operator_verifying_key,
-            self.issuer_settlement_verifying_key,
-            self.clearing_signing_key.clone(),
-            self.minimum_authorization_epoch,
-            ProviderRedeemIdempotencyKeyV1::from_bytes(*self.idempotency_key)?,
-            provider_store.clone(),
-            transport,
-        )
-    }
-}
-
-#[derive(Clone)]
-struct ProviderAdmissionHttpsTransportV1 {
-    connect_timeout: Duration,
-    io_timeout: Duration,
-    #[cfg(feature = "standard-cashu-process-e2e")]
-    test_only_webpki_root_pem: Option<Arc<[u8]>>,
-}
-
-impl core::fmt::Debug for ProviderAdmissionHttpsTransportV1 {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("ProviderAdmissionHttpsTransportV1")
-            .field("connect_timeout", &self.connect_timeout)
-            .field("io_timeout", &self.io_timeout)
-            .field("test_only_webpki_root_pem", &"[REDACTED]")
-            .finish()
-    }
-}
-
-impl ProviderAdmissionHttpsTransportV1 {
-    fn client_for_pins(
-        &self,
-        leaf_spki_sha256_pins: &[[u8; 32]],
-    ) -> Result<StrictHttpsClientV1, String> {
-        #[cfg(feature = "standard-cashu-process-e2e")]
-        if let Some(root) = self.test_only_webpki_root_pem.as_deref() {
-            return StrictHttpsClientV1::new_with_leaf_spki_sha256_pins_and_test_only_webpki_root_pem(
-                self.connect_timeout,
-                self.io_timeout,
-                leaf_spki_sha256_pins,
-                root,
-            );
-        }
-        StrictHttpsClientV1::new_with_leaf_spki_sha256_pins(
-            self.connect_timeout,
-            self.io_timeout,
-            leaf_spki_sha256_pins,
-        )
-    }
-
-    fn validate_trust(
-        &self,
-        endpoint: &str,
-        leaf_spki_sha256_pins: &[[u8; 32]],
-    ) -> Result<(), String> {
-        StrictHttpsClientV1::validate_base_endpoint(endpoint)?;
-        self.client_for_pins(leaf_spki_sha256_pins).map(|_| ())
-    }
-}
-
-impl CashuMintTransportV1 for ProviderAdmissionHttpsTransportV1 {
-    fn post_json(
-        &self,
-        trust: CashuMintTrustV1<'_>,
-        route: CashuMintRouteV1,
-        request_json: &[u8],
-        max_response_bytes: usize,
-    ) -> Result<Vec<u8>, CashuMintTransportFailureV1> {
-        self.client_for_pins(trust.leaf_spki_sha256_pins())
-            .map_err(|_| {
-                CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::Network,
-                    None,
-                )
-            })?
-            .post(
-                trust.mint_endpoint(),
-                route.path(),
-                "application/json",
-                "application/json",
-                request_json,
-                max_response_bytes,
-            )
-            .map_err(|error| match error {
-                HttpsPostErrorV1::DefinitelyNotSent => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::Network,
-                    None,
-                ),
-                HttpsPostErrorV1::OutcomeUnknown => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::Timeout,
-                    None,
-                ),
-                HttpsPostErrorV1::HttpStatus { status, body } => {
-                    CashuMintTransportFailureV1::from_http_status(status, body.as_slice())
-                }
-                HttpsPostErrorV1::InvalidResponse => CashuMintTransportFailureV1::ambiguous(
-                    CashuMintTransportFailureKindV1::InvalidContentType,
-                    None,
-                ),
-            })
-    }
-}
-
-impl SharedIssuerRedeemTransportV1 for ProviderAdmissionHttpsTransportV1 {
-    fn redeem(
-        &self,
-        envelope: SharedIssuerRedeemEnvelopeV1<'_>,
-        max_response_bytes: usize,
-    ) -> Result<Vec<u8>, SharedIssuerTransportErrorV1> {
-        let mut request = ProviderRedeemEnvelopeV1 {
-            request: envelope.request.clone(),
-            request_auth: envelope.request_auth.clone(),
-            credential_binding: envelope.credential_binding.clone(),
-            canonical_credential: envelope.canonical_credential.to_vec(),
-        };
-        let encoded = request.encode();
-        request.canonical_credential.zeroize();
-        let body =
-            Zeroizing::new(encoded.map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?);
-        self.client_for_pins(envelope.redeem_leaf_spki_sha256_pins)
-            .map_err(|_| SharedIssuerTransportErrorV1::ScopeUnavailable)?
-            .post_with_error_content_type(
-                envelope.redeem_endpoint,
-                "/v1/redeems",
-                "application/vnd.bitcoinpir.redeem-v1",
-                "application/vnd.bitcoinpir.redeem-result-v1",
-                "application/problem+json",
-                &body,
-                max_response_bytes,
-            )
-            .map_err(|error| match error {
-                HttpsPostErrorV1::DefinitelyNotSent => SharedIssuerTransportErrorV1::NotSent {
-                    retry_after_ms: 1_000,
-                },
-                HttpsPostErrorV1::HttpStatus {
-                    status: 400 | 409 | 410 | 422,
-                    ..
-                } => SharedIssuerTransportErrorV1::InvalidOrSpent,
-                HttpsPostErrorV1::HttpStatus {
-                    status: 401 | 403 | 404,
-                    ..
-                } => SharedIssuerTransportErrorV1::ScopeUnavailable,
-                HttpsPostErrorV1::OutcomeUnknown | HttpsPostErrorV1::HttpStatus { .. } => {
-                    SharedIssuerTransportErrorV1::OutcomeUnknown
-                }
-                HttpsPostErrorV1::InvalidResponse => SharedIssuerTransportErrorV1::InvalidResponse,
-            })
-    }
-}
-
-impl StrictServiceAdmissionRuntimeV1 {
-    fn all_policies(&self) -> impl Iterator<Item = &ServicePolicyV1> {
-        std::iter::once(self.policy.policy()).chain(
-            self.retained_policies
-                .values()
-                .map(ActivatedRetainedServicePolicyV1::policy),
-        )
-    }
-
-    fn response_for_policy_request(
-        &self,
-        request: ServicePolicyRequestV1,
-        now_unix: u64,
-    ) -> Option<(ServicePolicyResponseV1, [u8; 32])> {
-        match request {
-            ServicePolicyRequestV1::Current => {
-                self.policy.verify_current(now_unix).ok()?;
-                Some((self.policy.response(), self.policy.policy_digest()))
-            }
-            ServicePolicyRequestV1::Retained { policy_digest } => {
-                let retained = self.retained_policies.get(&policy_digest)?;
-                (retained.has_live_redemption(now_unix)
-                    || retained.has_live_bat_v2_redemption(now_unix))
-                .then(|| (retained.response(), policy_digest))
-            }
-        }
-    }
-
-    fn policy_for_digest(&self, policy_digest: &[u8; 32]) -> Option<&ServicePolicyV1> {
-        if policy_digest == &self.policy.policy_digest() {
-            Some(self.policy.policy())
-        } else {
-            self.retained_policies
-                .get(policy_digest)
-                .map(ActivatedRetainedServicePolicyV1::policy)
-        }
-    }
-
-    fn verified_offer_for_authorization(
-        &self,
-        policy_digest: &[u8; 32],
-        scope_id: &[u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> Result<Option<VerifiedServiceOfferV1<'_>>, ServiceProtocolError> {
-        if policy_digest == &self.policy.policy_digest() {
-            return self
-                .policy
-                .verified_offer(scope_id, offer_id, now_unix)
-                .map(Some);
-        }
-        let Some(retained) = self.retained_policies.get(policy_digest) else {
-            return Ok(None);
-        };
-        let is_bat_v2 = retained.policy().scopes.iter().any(|scope_policy| {
-            scope_policy.scope.scope_id() == *scope_id
-                && scope_policy.offers.iter().any(|offer| {
-                    offer.offer_id == offer_id
-                        && offer.authorization
-                            == pir_service_protocol::AuthScheme::BitcoinPirCashuBatV2
-                })
-        });
-        if is_bat_v2 {
-            retained
-                .verified_bat_v2_offer_for_redemption(scope_id, offer_id, now_unix)
-                .map(Some)
-        } else {
-            retained
-                .verified_offer_for_redemption(scope_id, offer_id, now_unix)
-                .map(Some)
-        }
-    }
-
-    fn verified_bat_v2_member_for_authorization(
-        &self,
-        policy_digest: &[u8; 32],
-        scope_id: &[u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> Result<Option<pir_service_protocol::VerifiedBatAcceptanceMemberV2>, ServiceProtocolError>
-    {
-        if policy_digest == &self.policy.policy_digest() {
-            return self
-                .policy
-                .verified_bat_v2_member_for_admission(scope_id, offer_id, now_unix)
-                .map(Some);
-        }
-        let Some(retained) = self.retained_policies.get(policy_digest) else {
-            return Ok(None);
-        };
-        retained
-            .verified_bat_v2_member_for_redemption(scope_id, offer_id, now_unix)
-            .map(Some)
-    }
-
-    fn is_current_policy_digest(&self, policy_digest: &[u8; 32]) -> bool {
-        policy_digest == &self.policy.policy_digest()
-    }
-
-    fn supports(&self, route: AdmissionMethodRouteV1) -> bool {
-        match route {
-            AdmissionMethodRouteV1::FreeOpenBestEffort => self.provider_store.is_some(),
-            AdmissionMethodRouteV1::FreeProofOfWork => true,
-            AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
-            | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => {
-                self.provider_store.is_some()
-            }
-            AdmissionMethodRouteV1::FreeIpRateLimited => {
-                self.free_ip_subject_key.is_some()
-                    && self.trust_direct_peer_ip
-                    && self.free_rate_limits.is_persistent()
-            }
-            AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => {
-                self.provider_store.is_some() && self.bat_keyring.is_some()
-            }
-            AdmissionMethodRouteV1::ArcProviderLocalExperimental => {
-                self.provider_store.is_some() && self.experimental_arc_keyring.is_some()
-            }
-            AdmissionMethodRouteV1::StandardCashuMintOnline => {
-                self.provider_store.is_some()
-                    && self.cashu_recovery_cipher.is_some()
-                    && self.cashu_custody_cipher.is_some()
-                    && !self.cashu_exposure_limits.is_empty()
-            }
-            AdmissionMethodRouteV1::FreeAnonymousTicketSharedIssuerOnline
-            | AdmissionMethodRouteV1::BitcoinPirCashuBatSharedIssuerOnline
-            | AdmissionMethodRouteV1::ArcSharedIssuerOnlineExperimental => {
-                self.provider_store.is_some() && self.shared_issuer.is_some()
-            }
-            AdmissionMethodRouteV1::BitcoinPirCashuBatV2SharedIssuerOnline => {
-                self.provider_store.is_none() && self.storeless_bat_v2.is_some()
-            }
-        }
-    }
 }
 
 impl UnifiedServerData {
