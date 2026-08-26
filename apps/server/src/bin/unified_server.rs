@@ -14,7 +14,9 @@
 mod admission;
 mod unified_server_bat_v2;
 mod unified_server_pir2_sealed;
+use admission::arc::ArcAdmissionV1;
 use admission::legacy::admission_runtime::StrictServiceAdmissionRuntimeV1;
+use admission::local::LocalAdmissionV1;
 use admission::legacy::{load_strict_service_admission_v1, validate_legacy_experimental_arc_cli_v1};
 #[cfg(test)]
 use admission::legacy::cashu::{load_cashu_epoch_keys_v1, parse_cashu_exposure_limits_v1, validate_existing_private_sqlite_path_v1, zeroize_cashu_epoch_keys_v1};
@@ -260,6 +262,9 @@ struct CliArgs {
     /// externally-issued credentials verify. Without it, a random key is
     /// generated (no external credential can verify — dev/test only).
     arc_key_path: Option<PathBuf>,
+    /// Operator-local admission configuration (`--local-admission-config`).
+    /// Replaces the legacy signed-policy surface; mutually exclusive with it.
+    local_admission_config: Option<PathBuf>,
     require_cashu: bool,
     cashu_keysets: Vec<(String, String)>,
     /// Enforce the production V1 service admission state machine. This first
@@ -602,6 +607,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut require_arc = false;
     let mut arc_key_path: Option<PathBuf> = None;
+    let mut local_admission_config: Option<PathBuf> = None;
     let mut require_cashu = false;
     let mut cashu_keysets: Vec<(String, String)> = Vec::new();
     let mut require_service_auth_v1 = false;
@@ -777,6 +783,13 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
                 if let Some(p) = args.get(i + 1) {
                     arc_key_path = Some(PathBuf::from(p));
                 }
+                i += 1;
+            }
+            "--local-admission-config" => {
+                let Some(p) = args.get(i + 1) else {
+                    fatal_cli("--local-admission-config requires a file path");
+                };
+                local_admission_config = Some(PathBuf::from(p));
                 i += 1;
             }
             "--require-cashu" => {
@@ -1384,6 +1397,18 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
     )
     .unwrap_or_else(|error| fatal_cli(error));
 
+    if local_admission_config.is_some()
+        && (service_policy_path.is_some()
+            || !service_retained_policy_paths.is_empty()
+            || service_storeless_bat_v2.any_configured()
+            || service_storeless_free_pow_policy_digest_hex.is_some())
+    {
+        fatal_cli(
+            "--local-admission-config replaces the legacy signed-policy configuration; \
+             pass one or the other, not both",
+        );
+    }
+
     CliArgs {
         bind_address,
         port,
@@ -1399,6 +1424,7 @@ fn parse_args_from(args: Vec<String>) -> CliArgs {
         harmony_pool_bindings,
         require_arc,
         arc_key_path,
+        local_admission_config,
         require_cashu,
         cashu_keysets,
         require_service_auth_v1,
@@ -8842,38 +8868,11 @@ async fn main() {
     };
 
     // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
-    let (arc_verifier, require_arc) = if args.require_arc {
-        let verifier = match &args.arc_key_path {
-            Some(path) => {
-                let mut secret = read_exact_secret_v1::<128>(path, "ARC key").unwrap_or_else(|e| {
-                    panic!("failed to load ARC key from {}: {e}", path.display())
-                });
-                let v = pir_runtime_core::arc_verifier::ArcVerifier::from_secret_key_bytes(&secret)
-                    .unwrap_or_else(|e| {
-                        panic!("failed to load ARC key from {}: {e}", path.display())
-                    });
-                secret.zeroize();
-                println!(
-                    "  ARC: enabled — verification required (shared key loaded from {})",
-                    path.display()
-                );
-                v
-            }
-            None => {
-                let v = pir_runtime_core::arc_verifier::ArcVerifier::generate();
-                eprintln!(
-                    "  ARC: WARNING — --require-arc set without --arc-key; generated a random \
-                     key. No externally-issued credential will verify. Pass --arc-key <arc_key.bin> \
-                     to share the issuer's key."
-                );
-                v
-            }
-        };
-        (Some(std::sync::Mutex::new(verifier)), true)
-    } else {
-        println!("  ARC: disabled (use --require-arc to enable)");
-        (None, false)
-    };
+    let arc_admission = ArcAdmissionV1::from_cli(&args).unwrap_or_else(|error| panic!("{error}"));
+    let (arc_verifier, require_arc) = arc_admission.into_parts();
+    let local_admission = LocalAdmissionV1::load(args.local_admission_config.as_deref())
+        .unwrap_or_else(|error| fatal_cli(error));
+    println!("  {}", local_admission.startup_log_line());
 
     let (cashu_verifier, require_cashu) = if args.require_cashu {
         if args.cashu_keysets.is_empty() {
