@@ -108,7 +108,8 @@ pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
 pub use query_plan::{
     assert_product_query_shape_fits_scope_v1, plan_dpf_service_query_v1,
-    plan_harmony_service_hint_v1, plan_harmony_service_query_v1, ProductBackendV1,
+    plan_harmony_service_hint_v1, plan_harmony_service_query_v1,
+    plan_harmony_service_query_with_verified_merkle_v1, ProductBackendV1,
     ProductQueryLowerBoundsV1, ProductQueryOmissionsV1, ProductQueryShapeV1, ProductWorkloadV1,
 };
 pub use service::{

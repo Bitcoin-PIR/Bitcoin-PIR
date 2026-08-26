@@ -153,6 +153,12 @@ fn product_query_plan_json(plan: &ProductQueryShapeV1) -> serde_json::Value {
         "frames".into(),
         serde_json::Value::from(plan.lower_bounds.frames),
     );
+    if let Some(request_bytes) = plan.lower_bounds.request_bytes {
+        lower_bounds.insert(
+            "requestBytes".into(),
+            serde_json::Value::String(request_bytes.to_string()),
+        );
+    }
     if let Some(work_units) = plan.lower_bounds.work_units {
         // ProductQueryShapeV1 represents u64 counters as canonical decimal
         // strings so JavaScript never loses integer precision.

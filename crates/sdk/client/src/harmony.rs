@@ -1043,8 +1043,10 @@ impl HarmonyClient {
     }
 
     /// Compute query-provider Payment-V1 admission lower bounds using the
-    /// cached catalog and the exact live INDEX PBC planner. No network or hint
-    /// state is touched.
+    /// cached catalog and the exact live INDEX PBC planner. Once strict
+    /// preflight has authenticated the tree tops, the plan also includes the
+    /// mandatory INDEX/CHUNK Merkle transcript. No network or hint state is
+    /// touched.
     pub fn plan_service_query(
         &self,
         script_hashes: &[ScriptHash],
@@ -1058,7 +1060,34 @@ impl HarmonyClient {
             .ok_or_else(|| {
                 PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
             })?;
-        crate::query_plan::plan_harmony_service_query_v1(script_hashes, db_info)
+        let Some(tree_tops) = self.verified_tree_tops.get(&db_id) else {
+            return crate::query_plan::plan_harmony_service_query_v1(script_hashes, db_info);
+        };
+        let k_index = usize::from(db_info.index_k);
+        let k_chunk = usize::from(db_info.chunk_k);
+        if tree_tops.len() != k_index + k_chunk {
+            return Err(PirError::InvalidState(format!(
+                "db_id {db_id} has {} verified tree tops, expected {}",
+                tree_tops.len(),
+                k_index + k_chunk,
+            )));
+        }
+        let index_sibling_levels = tree_tops[..k_index]
+            .iter()
+            .map(|top| top.cache_from_level)
+            .max()
+            .unwrap_or(0);
+        let chunk_sibling_levels = tree_tops[k_index..]
+            .iter()
+            .map(|top| top.cache_from_level)
+            .max()
+            .unwrap_or(0);
+        crate::query_plan::plan_harmony_service_query_with_verified_merkle_v1(
+            script_hashes,
+            db_info,
+            index_sibling_levels,
+            chunk_sibling_levels,
+        )
     }
 
     /// Compute the catalog-known main-group lower bound for a cold-cache
@@ -8789,6 +8818,17 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
             )?);
         }
         for level in &mut prepared {
+            if std::env::var("HARMONY_BENCH").is_ok() {
+                let work_units: Vec<u64> = level
+                    .items_per_group
+                    .iter()
+                    .map(|items| items.iter().map(|&count| u64::from(count)).sum())
+                    .collect();
+                eprintln!(
+                    "[HARMONY_BENCH]   Merkle pipeline send (table={}, level={}): requests={:?} work_units={:?}",
+                    level.table_type, level.level, level.request_bytes, work_units,
+                );
+            }
             for request in &mut level.requests {
                 self.query_conn.send(std::mem::take(request)).await?;
             }
@@ -8800,6 +8840,13 @@ impl BucketMerkleSiblingQuerier for HarmonySiblingQuerier<'_> {
             let mut level_responses = Vec::with_capacity(level.requests.len());
             for _ in &level.requests {
                 level_responses.push(self.query_conn.recv().await?);
+            }
+            if std::env::var("HARMONY_BENCH").is_ok() {
+                let response_bytes: Vec<usize> = level_responses.iter().map(Vec::len).collect();
+                eprintln!(
+                    "[HARMONY_BENCH]   Merkle pipeline recv (table={}, level={}): responses={:?}",
+                    level.table_type, level.level, response_bytes,
+                );
             }
             responses.push(level_responses);
         }
@@ -10327,6 +10374,27 @@ mod tests {
         assert_eq!(u16::from_le_bytes([wire[6], wire[7]]), 5); // round_id
         assert_eq!(u16::from_le_bytes([wire[8], wire[9]]), 2); // num_groups
         assert_eq!(wire[10], 1); // sub_queries_per_group
+    }
+
+    #[test]
+    fn service_plan_request_bytes_match_batch_encoder() {
+        let indices_per_group = 1_064_usize;
+        let items: Vec<BatchItem> = (0..75)
+            .map(|group_id| BatchItem {
+                group_id,
+                indices: vec![0; indices_per_group],
+            })
+            .collect();
+        let wire = encode_batch_query(0, 0, 0, &items);
+        assert_eq!(
+            u64::try_from(wire.len() - 4).unwrap(),
+            crate::query_plan::harmony_batch_counted_request_bytes(
+                75,
+                indices_per_group as u64,
+                0,
+            )
+            .unwrap(),
+        );
     }
 
     #[test]

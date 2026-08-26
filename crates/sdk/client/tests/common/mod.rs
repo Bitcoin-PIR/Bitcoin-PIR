@@ -552,10 +552,9 @@ pub async fn admit_harmony_live(
         .find(|db| db.db_id == db_id)
         .cloned()
         .ok_or(PirError::DatabaseNotFound(db_id))?;
-    let query_shape = client.plan_service_query(script_hashes, db_id)?;
-
     admit_harmony_leg_channel(client, 1).await?;
     client.preflight_verified_database(db_id).await?;
+    let query_shape = client.plan_service_query(script_hashes, db_id)?;
     let prepared =
         prepare_harmony_query_authorization(client, db_id, &vpsbg_pins(), &query_shape).await?;
 
