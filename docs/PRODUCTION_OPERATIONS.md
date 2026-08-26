@@ -61,7 +61,7 @@ stop and report.
 | Native full-build V2 snapshot/delta | hours; no wall-clock is written here | no progress for 3 min → stop | `build-summary.txt`, then `latest/` only after the V2 gate |
 | Direct ORAM release reconstruct | target 10 min | 15 min (3 min without a stage) | ORAM debug runbook stages |
 | VPSBG `images` / `upload` | seconds / a few min | 10 min upload | `PASS action=images\|upload` |
-| VPSBG `switch` / `close` reboot | 2–10 min | 15 min | `boot_mode=measured`, `running=true` |
+| VPSBG `switch` / `close` attachment | seconds; starting is separate | 15 min | `boot_mode=measured`, expected image id; read `running` separately |
 | Data-disk `open` | 2–10 min | 15 min | `boot_mode=stock`, `ssh_ready=true` |
 | `pir2-post-switch-check.sh` | 5–20 min | 15 min wait + attest | `PASS action=post_switch_check` |
 
@@ -215,7 +215,9 @@ Never build a provisioner UKI. Detach body is
    `/home/pir/data/pir2-sealed/startup.env`.
 4. Auth — `close --server-id 25285 --image-id CURRENT --apply`. Same
    image id as step 1 unless the user named a different one.
-5. Read — Flow E step 6 if the guest should be serving again.
+5. Read — confirm the expected image is attached. `close` does not start a
+   stopped guest; starting it requires its own explicit authorization. Run
+   Flow E step 6 only when the guest should be serving again.
 
 ## G. pir2 sealed ceremony — Local then Auth
 
