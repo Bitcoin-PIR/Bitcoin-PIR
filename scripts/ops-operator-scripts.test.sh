@@ -64,6 +64,15 @@ status_preview=$("$script_dir/production-status.sh" --dry-run)
 grep -qx 'PASS production_status dry_run=true' <<<"$status_preview"
 grep -qx 'pir1_host=65.21.91.217' <<<"$status_preview"
 
+# Empty-array regressions: a bare quoted-at expansion crashes under `set -u`
+# on bash < 4.4 (macOS /bin/bash 3.2), so every status_args expansion must be
+# written with the "${status_args[@]+...}" guard idiom. The inner repetition
+# inside the idiom is fine; flag only expansions missing the @]+ guard.
+if grep '"${status_args\[@\]}"' "$script_dir/production-status.sh" | grep -qv '@\]+'; then
+  echo 'production-status.sh uses the unbound bare status_args expansion' >&2
+  exit 1
+fi
+
 check_preview=$("$script_dir/pir2-post-switch-check.sh" --dry-run)
 grep -qx "pin_source=$repo/web/src/attest-pin.ts" <<<"$check_preview"
 grep -qx 'PASS action=post_switch_check dry_run=true' <<<"$check_preview"
