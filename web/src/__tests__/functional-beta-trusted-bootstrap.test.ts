@@ -24,10 +24,10 @@ describe('bundled functional-beta trusted bootstrap', () => {
       '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
     );
     expect(parsed.providers[1].serverPin.measurementHex).toBe(
-      'bede0c87aaaf7abe84a8f8b46201106989eab74c01ec882f0e812dc72d0504aa922a9f5834c971d7f075db36166b88f4',
+      'd5c34d4dd9601234474c387b32f6623f0b7fb60b1f0ea916e2f1bc98b140f0872a9236d75f4c2dbf8f949db79172e8ab',
     );
     expect(parsed.providers[1].serverPin.binarySha256Hex).toBe(
-      '61c4acae35a769b47b09b5a8bffd40cc6d4687ee02eb5a0f3421632e71098d1e',
+      '790f6d5b5434bb42ded3dd550fc3631d429c594d5fd89d1026aaad07be343f0e',
     );
     expect(parsed.providers[0].supportedWorkloads).toEqual([
       'dpf-query', 'harmony-hint', 'onion-session',
