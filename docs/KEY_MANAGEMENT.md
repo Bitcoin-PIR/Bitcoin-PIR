@@ -29,6 +29,16 @@ Subdirectory holding AMD certs (ARK/ASK/VCEK PEMs), per-epoch
 `public-artifact-set.env`, BAT V2 class/authorization/approval
 binaries, and per-ordinal `startup.env` files.
 
+The owner identity-authority activation certificate and the sealed runtime
+certificate are different wire artifacts. `GenerationBoundIdentityCertV2`
+belongs to the owner authority store and is not accepted at the runtime
+`identity.cert` path. The current sealed runtime requires a legacy
+`IdentityCert` V1 signed for the same enrolled identity public key. Its
+`server_id` must be copied from the signature-verified sealed `release.bin`
+`stable_server_id`; do not infer that value from the authority-store record.
+Keep both certificates because the V2 artifact proves the reserved generation
+activation while the V1 artifact is the runtime compatibility certificate.
+
 ## `.secrets/` — API tokens
 
 | File | Purpose |
@@ -44,7 +54,7 @@ to `~/.config/bitcoinpir`. Override with `VPSBG_API_TOKEN_FILE` or
 This is Flow F in [Production operations](PRODUCTION_OPERATIONS.md).
 Use [`scripts/vpsbg-data-disk.sh`](../scripts/vpsbg-data-disk.sh). It
 detaches measured boot with `{"kernel_image_id":null}`, stop/starts the
-guest, and SSHes with `.keys/vpsbg-ssh.key` plus
+stock guest, and SSHes with `.keys/vpsbg-ssh.key` plus
 [`deploy/vpsbg_known_hosts`](../deploy/vpsbg_known_hosts). `open` and
 `close` each require an explicit `--image-id` and `--apply`; `put` does
 not call `close`.
@@ -56,6 +66,17 @@ scripts/vpsbg-data-disk.sh put --local /absolute/file \
   --remote /home/pir/data/relative/path --apply
 scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
 ```
+
+`close` reattaches the selected measured-boot image but does not call the
+VPSBG `/start` endpoint. `PASS action=close` therefore proves attachment, not
+that the guest is running. Read back control-plane status; starting a stopped
+guest is a separate explicitly authorized production action.
+
+VPSBG may complete the detach while the immediately following stop request
+returns HTTP 423. After that response, read status before retrying anything. If
+status already reports `boot_mode=stock`, rerun `open` so it waits for stock
+SSH without detaching again. If status still reports measured boot, stop and
+investigate instead of repeating the mutation.
 
 A sealed `startup.env` must be placed at
 `/home/pir/data/pir2-sealed/startup.env`. Never build a dedicated
