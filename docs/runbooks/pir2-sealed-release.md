@@ -48,9 +48,19 @@ every phase file prints `PASS sealed_phase_config=<phase>` and `NEXT_STEP`.
 
 ## Receipt acceptance
 
-A phase status marker proves only that the guest persisted a receipt. Before a
-later authority signs or activates anything derived from an Enroll, Probe, or
-Ready receipt, an offline verifier must accept all of the following together:
+A phase status marker proves only that the guest persisted a receipt. The
+recovery HTTP root is served through Cloudflare with
+`Cache-Control: max-age=14400`, and a phase's receipt URL can return a cached
+receipt from an earlier phase (observed in the field: an Enroll fetch returned
+the previous Observe receipt with `CF-Cache-Status: HIT`). Before trusting any
+downloaded receipt, require its hash to equal the receipt hash declared by the
+phase's status response; if the two disagree, treat the download as rejecting
+evidence, rename it out of the way, and retrieve the persisted receipt through
+the Flow F data-disk window instead of retrying the public URL.
+
+Before a later authority signs or activates anything derived from an Enroll,
+Probe, or Ready receipt, an offline verifier must accept all of the following
+together:
 
 - the AMD ARK pin, ARK-to-ASK-to-VCEK chain, and SNP report signature;
 - the receipt digest duplicated in the signed SNP `REPORT_DATA`;
@@ -89,3 +99,7 @@ locally with no query when that offer is absent. Do not bypass the policy or
 substitute a paid authorization before the separately authorized issuer
 activation. Attestation, channel verification, and strict Ready receipt
 acceptance remain valid Flow G evidence.
+
+The incident that motivated the receipt-transport and acceptance rules in this
+section is recorded in
+[History: epoch-5 entitlement rotation](../history/EPOCH5_ENTITLEMENT_ROTATION.md).
