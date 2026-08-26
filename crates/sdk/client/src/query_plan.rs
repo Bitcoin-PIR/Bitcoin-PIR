@@ -65,6 +65,9 @@ pub struct ProductQueryLowerBoundsV1 {
     pub logical_inputs: u64,
     /// Minimum backend frames sent to this one provider.
     pub frames: u64,
+    /// Minimum request bytes charged by the backend gate, when derivable from
+    /// the verified database geometry.
+    pub request_bytes: Option<u64>,
     /// Minimum public backend work units, when derivable without I/O.
     pub work_units: Option<u64>,
     /// Minimum hint groups for a cold-cache hint workload.
@@ -151,6 +154,11 @@ pub fn assert_product_query_shape_fits_scope_v1(
             u64::from(limits.max_frames),
         ),
         (
+            "request bytes",
+            required.request_bytes,
+            limits.max_request_bytes,
+        ),
+        (
             "concurrent sockets",
             required.concurrent_sockets.map(u64::from),
             u64::from(limits.max_concurrent_sockets),
@@ -213,6 +221,7 @@ pub fn plan_dpf_service_query_v1(
         lower_bounds: ProductQueryLowerBoundsV1 {
             logical_inputs,
             frames,
+            request_bytes: None,
             work_units: Some(checked_add(index_work, chunk_work, "DPF work lower bound")?),
             hint_groups: None,
             concurrent_sockets: Some(1),
@@ -278,6 +287,7 @@ pub fn plan_harmony_service_query_v1(
         lower_bounds: ProductQueryLowerBoundsV1 {
             logical_inputs: pbc_rounds,
             frames,
+            request_bytes: None,
             work_units: Some(checked_add(
                 index_work,
                 chunk_work,
@@ -298,6 +308,148 @@ pub fn plan_harmony_service_query_v1(
     })
 }
 
+/// Add the mandatory Merkle transcript that becomes provable only after the
+/// client has authenticated the database tree tops.
+///
+/// Every INDEX frame produces one INDEX-Merkle pass per sibling level. The
+/// CHUNK path always emits one padded pair and at least one padded
+/// CHUNK-Merkle pass per sibling level, even for not-found and whale inputs.
+/// Extra real CHUNK rounds remain data-dependent and stay explicitly omitted.
+pub fn plan_harmony_service_query_with_verified_merkle_v1(
+    script_hashes: &[ScriptHash],
+    db_info: &DatabaseInfo,
+    index_sibling_levels: usize,
+    chunk_sibling_levels: usize,
+) -> PirResult<ProductQueryShapeV1> {
+    let mut plan = plan_harmony_service_query_v1(script_hashes, db_info)?;
+    if !db_info.has_bucket_merkle && (index_sibling_levels != 0 || chunk_sibling_levels != 0) {
+        return Err(PirError::InvalidState(
+            "Harmony tree-top levels require bucket Merkle in the verified catalog".into(),
+        ));
+    }
+    let exact_index_frames = plan.exact_index_frames.ok_or_else(|| {
+        PirError::InvalidState("Harmony query plan has no exact INDEX frame count".into())
+    })?;
+    let (index_rounds, _) =
+        plan_index_pbc_rounds_for_hashes(script_hashes, usize::from(db_info.index_k))?;
+    let mut index_items_per_group = vec![0_u64; usize::from(db_info.index_k)];
+    for round in index_rounds {
+        for (_, group) in round {
+            let count = index_items_per_group.get_mut(group).ok_or_else(|| {
+                PirError::InvalidState("Harmony PBC planner returned an invalid group".into())
+            })?;
+            *count = checked_add(
+                *count,
+                INDEX_CUCKOO_NUM_HASHES as u64,
+                "Harmony INDEX Merkle item count",
+            )?;
+        }
+    }
+    let index_merkle_passes = index_items_per_group.into_iter().max().ok_or_else(|| {
+        PirError::InvalidState("Harmony PBC planner returned no INDEX groups".into())
+    })?;
+    let index_levels = as_u64(index_sibling_levels, "Harmony INDEX sibling level count")?;
+    let chunk_levels = as_u64(chunk_sibling_levels, "Harmony CHUNK sibling level count")?;
+
+    let index_merkle_frames = checked_product(
+        &[index_merkle_passes, index_levels],
+        "Harmony INDEX Merkle frame lower bound",
+    )?;
+    let chunk_merkle_frames = chunk_levels;
+    let merkle_frames = checked_add(
+        index_merkle_frames,
+        chunk_merkle_frames,
+        "Harmony Merkle frame lower bound",
+    )?;
+    plan.lower_bounds.frames = checked_add(
+        plan.lower_bounds.frames,
+        merkle_frames,
+        "Harmony frame lower bound with verified Merkle",
+    )?;
+
+    let index_main_indices = harmony_indices_per_group(db_info.index_bins)?;
+    let chunk_main_indices = harmony_indices_per_group(db_info.chunk_bins)?;
+    let mandatory_chunk_frames = CHUNK_CUCKOO_NUM_HASHES as u64;
+    let mut request_bytes = checked_add(
+        checked_product(
+            &[
+                exact_index_frames,
+                harmony_batch_counted_request_bytes(
+                    db_info.index_k,
+                    index_main_indices,
+                    db_info.db_id,
+                )?,
+            ],
+            "Harmony INDEX request-byte lower bound",
+        )?,
+        checked_product(
+            &[
+                mandatory_chunk_frames,
+                harmony_batch_counted_request_bytes(
+                    db_info.chunk_k,
+                    chunk_main_indices,
+                    db_info.db_id,
+                )?,
+            ],
+            "Harmony CHUNK request-byte lower bound",
+        )?,
+        "Harmony main request-byte lower bound",
+    )?;
+    let mut merkle_work = 0_u64;
+
+    for level in 0..index_sibling_levels {
+        let level_bins = merkle_sibling_bins(db_info.index_bins, level)?;
+        let indices = harmony_indices_per_group(level_bins)?;
+        let frame_bytes =
+            harmony_batch_counted_request_bytes(db_info.index_k, indices, db_info.db_id)?;
+        request_bytes = checked_add(
+            request_bytes,
+            checked_product(
+                &[index_merkle_passes, frame_bytes],
+                "Harmony INDEX Merkle request-byte lower bound",
+            )?,
+            "Harmony request-byte lower bound",
+        )?;
+        merkle_work = checked_add(
+            merkle_work,
+            checked_product(
+                &[index_merkle_passes, u64::from(db_info.index_k), indices],
+                "Harmony INDEX Merkle work lower bound",
+            )?,
+            "Harmony Merkle work lower bound",
+        )?;
+    }
+    for level in 0..chunk_sibling_levels {
+        let level_bins = merkle_sibling_bins(db_info.chunk_bins, level)?;
+        let indices = harmony_indices_per_group(level_bins)?;
+        request_bytes = checked_add(
+            request_bytes,
+            harmony_batch_counted_request_bytes(db_info.chunk_k, indices, db_info.db_id)?,
+            "Harmony request-byte lower bound",
+        )?;
+        merkle_work = checked_add(
+            merkle_work,
+            checked_product(
+                &[u64::from(db_info.chunk_k), indices],
+                "Harmony CHUNK Merkle work lower bound",
+            )?,
+            "Harmony Merkle work lower bound",
+        )?;
+    }
+
+    plan.lower_bounds.request_bytes = Some(request_bytes);
+    plan.lower_bounds.work_units = Some(checked_add(
+        plan.lower_bounds.work_units.ok_or_else(|| {
+            PirError::InvalidState("Harmony query plan has no work-unit lower bound".into())
+        })?,
+        merkle_work,
+        "Harmony work lower bound with verified Merkle",
+    )?);
+    plan.omitted.request_bytes = false;
+    plan.omitted.merkle_frames = false;
+    Ok(plan)
+}
+
 /// Plan the catalog-known lower bound for a cold Harmony hint workload.
 ///
 /// The main V2 bundle contains every INDEX and CHUNK group. Authenticated
@@ -316,6 +468,7 @@ pub fn plan_harmony_service_hint_v1(db_info: &DatabaseInfo) -> PirResult<Product
         lower_bounds: ProductQueryLowerBoundsV1 {
             logical_inputs: 0,
             frames: 1,
+            request_bytes: None,
             work_units: Some(hint_groups),
             hint_groups: Some(hint_groups),
             concurrent_sockets: Some(1),
@@ -370,6 +523,42 @@ fn harmony_indices_per_group(real_n: u32) -> PirResult<u64> {
         ));
     }
     Ok(u64::from(indices))
+}
+
+pub(crate) fn harmony_batch_counted_request_bytes(
+    k: u8,
+    indices_per_group: u64,
+    db_id: u8,
+) -> PirResult<u64> {
+    // The service gate counts the opcode and decoded payload, but not the
+    // transport's four-byte record-length prefix. See `encode_batch_query`.
+    let per_group = checked_add(
+        5,
+        checked_product(&[4, indices_per_group], "Harmony batch indices bytes")?,
+        "Harmony batch per-group bytes",
+    )?;
+    checked_add(
+        checked_add(
+            7,
+            checked_product(&[u64::from(k), per_group], "Harmony batch group bytes")?,
+            "Harmony batch request bytes",
+        )?,
+        u64::from(db_id != 0),
+        "Harmony batch db-id bytes",
+    )
+}
+
+fn merkle_sibling_bins(main_bins: u32, level: usize) -> PirResult<u32> {
+    let mut bins = main_bins;
+    for _ in 0..=level {
+        bins = bins.div_ceil(8);
+    }
+    if bins == 0 {
+        return Err(PirError::InvalidState(
+            "Harmony Merkle sibling level has zero bins".into(),
+        ));
+    }
+    Ok(bins)
 }
 
 fn as_u64(value: usize, label: &str) -> PirResult<u64> {
@@ -481,6 +670,61 @@ mod tests {
         assert_eq!(plan.lower_bounds.hint_groups, Some(155));
         assert_eq!(plan.lower_bounds.work_units, Some(155));
         assert!(plan.omitted.sibling_hint_groups);
+    }
+
+    #[test]
+    fn verified_production_geometry_catches_the_two_mib_query_scope() {
+        let mut database = db(75, 80);
+        database.db_id = 0;
+        database.index_bins = 567_558;
+        database.chunk_bins = 1_066_928;
+        let plan = plan_harmony_service_query_with_verified_merkle_v1(
+            &[[0; 20], [1; 20]],
+            &database,
+            3,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(plan.pbc_rounds, Some(1));
+        assert_eq!(plan.lower_bounds.logical_inputs, 1);
+        assert_eq!(plan.lower_bounds.frames, 13);
+        assert_eq!(plan.lower_bounds.request_bytes, Some(2_153_811));
+        assert_eq!(plan.lower_bounds.work_units, Some(537_180));
+        assert!(!plan.omitted.request_bytes);
+        assert!(!plan.omitted.merkle_frames);
+        assert!(plan.omitted.additional_chunk_frames);
+
+        let scope = ServiceScopePolicyV1 {
+            scope: ServiceScopeV1 {
+                provider_id: [7; 32],
+                backend: BackendId::HarmonyPirV2,
+                workload: WorkloadId::HarmonyQueryJobV1,
+                protocol_version: 2,
+                dataset: DatasetBindingV1::ManifestRoot { root: [8; 32] },
+                operation_profile: 1,
+                entitlement_profile: 1,
+            },
+            limits: EntitlementLimitsV1 {
+                max_logical_inputs: 1,
+                max_frames: 75,
+                max_request_bytes: 2 * 1024 * 1024,
+                max_response_bytes: 128 * 1024 * 1024,
+                max_wall_time_ms: 60_000,
+                max_concurrent_sockets: 1,
+                max_hint_groups: 75,
+                max_work_units: 1_000_000,
+            },
+            offers: Vec::new(),
+        };
+        let error =
+            assert_product_query_shape_fits_scope_v1(&plan, &scope, "selected Harmony query scope")
+                .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid state: selected Harmony query scope request bytes limit is insufficient \
+             (requires 2153811, signed maximum 2097152)",
+        );
     }
 
     #[test]
