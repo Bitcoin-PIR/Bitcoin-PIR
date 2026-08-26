@@ -72,7 +72,16 @@ if grep '"${status_args\[@\]}"' "$script_dir/production-status.sh" | grep -qv '@
   echo 'production-status.sh uses the unbound bare status_args expansion' >&2
   exit 1
 fi
+if grep '"${status_args\[@\]}"' "$script_dir/vpsbg-measured-boot.sh" | grep -qv '@\]+'; then
+  echo 'vpsbg-measured-boot.sh uses the unbound bare status_args expansion' >&2
+  exit 1
+fi
 
+printf 'test-token\n' >"$tmp/vpsbg-token"
+status_token_preview=$("$script_dir/vpsbg-measured-boot.sh" status --token-file "$tmp/vpsbg-token" --dry-run)
+grep -qx 'PASS action=status dry_run=true' <<<"$status_token_preview"
+expect_fail 'status still rejects --image-id' \
+  "$script_dir/vpsbg-measured-boot.sh" status --image-id 291 --dry-run
 check_preview=$("$script_dir/pir2-post-switch-check.sh" --dry-run)
 grep -qx "pin_source=$repo/web/src/attest-pin.ts" <<<"$check_preview"
 grep -qx 'PASS action=post_switch_check dry_run=true' <<<"$check_preview"

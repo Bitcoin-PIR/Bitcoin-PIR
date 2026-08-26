@@ -7,7 +7,7 @@ usage() {
 usage: scripts/vpsbg-measured-boot.sh <status|images|upload|switch|rollback> [options]
 
 Read-only:
-  status [--server-id ID] [--status-url URL]
+  status [--server-id ID] [--status-url URL] [--token-file PATH]
   images [--token-file PATH]
 
 Mutations (require --apply; --dry-run is the default-safe preview):
@@ -15,8 +15,9 @@ Mutations (require --apply; --dry-run is the default-safe preview):
   switch   --server-id ID --image-id ID [--token-file PATH] [--apply]
   rollback --server-id ID --image-id ID [--token-file PATH] [--apply]
 
-Status and images use VPSBG_API_TOKEN_FILE or
-<repo>/.secrets/vpsbg-api-token. Mutations also accept --token-file PATH.
+All actions use VPSBG_API_TOKEN_FILE or
+<repo>/.secrets/vpsbg-api-token and also accept --token-file PATH;
+the latter is forwarded to the status helper as VPSBG_API_TOKEN_FILE.
 There is no delete action. Output is [stage] progress plus PASS and
 NEXT_STEP. --dry-run neither reads the token nor contacts VPSBG.
 EOF
@@ -47,7 +48,7 @@ done
 
 case "$action" in
   status)
-    [[ -z "$image" && -z "$image_id" && -z "$token_file" ]] || { echo 'status accepts neither --uki, --image-id, nor --token-file' >&2; exit 2; }
+    [[ -z "$image" && -z "$image_id" ]] || { echo 'status accepts neither --uki nor --image-id' >&2; exit 2; }
     ;;
   images)
     [[ -z "$image" && -z "$image_id" && -z "$server_id" && "$status_url_set" == 0 ]] || {
@@ -72,7 +73,15 @@ if [[ "$action" == status ]]; then
     exit 0
   fi
   echo '[stage] read-only VPSBG production status'
-  "$root/scripts/vpsbg-production-status.sh" "${status_args[@]}"
+  # Forward an explicit --token-file to the helper as VPSBG_API_TOKEN_FILE
+  # (linked worktrees have no <repo>/.secrets). POSIX-safe empty-array
+  # expansion: a bare quoted-at expansion is an unbound variable under
+  # `set -u` on bash < 4.4 (e.g. macOS /bin/bash 3.2).
+  if [[ -n "$token_file" ]]; then
+    VPSBG_API_TOKEN_FILE=$token_file "$root/scripts/vpsbg-production-status.sh" "${status_args[@]+"${status_args[@]}"}"
+  else
+    "$root/scripts/vpsbg-production-status.sh" "${status_args[@]+"${status_args[@]}"}"
+  fi
   echo 'PASS action=status'
   echo 'NEXT_STEP=choose upload, switch, or rollback with explicit --apply when authorized'
   exit 0
