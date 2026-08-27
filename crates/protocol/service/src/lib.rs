@@ -5,28 +5,47 @@
 //! does not verify payment proofs, perform I/O, or maintain spent state.
 
 mod attach;
+#[path = "legacy/auth.rs"]
 mod auth;
+#[path = "legacy/auth_verify.rs"]
 mod auth_verify;
+#[path = "legacy/bat_v2.rs"]
 mod bat_v2;
+#[path = "legacy/bat_v2_acquisition.rs"]
 mod bat_v2_acquisition;
+#[path = "legacy/bat_v2_redemption.rs"]
 mod bat_v2_redemption;
+#[path = "legacy/binding.rs"]
 mod binding;
+#[path = "legacy/cashu_manifest.rs"]
 mod cashu_manifest;
+#[path = "legacy/challenge.rs"]
 mod challenge;
+#[path = "legacy/clearing.rs"]
 mod clearing;
 mod codec;
+#[path = "legacy/directory.rs"]
 mod directory;
 mod error;
+#[path = "legacy/grant_claim.rs"]
 mod grant_claim;
+#[path = "legacy/issuance.rs"]
 mod issuance;
 mod opcode;
+#[path = "legacy/policy.rs"]
 mod policy;
 mod proof;
+#[path = "legacy/quote.rs"]
 mod quote;
+#[path = "legacy/quote_wasm.rs"]
 mod quote_wasm;
+#[path = "legacy/receipt.rs"]
 mod receipt;
+#[path = "legacy/scope.rs"]
 mod scope;
+#[path = "legacy/settlement.rs"]
 mod settlement;
+#[path = "legacy/settlement_http.rs"]
 mod settlement_http;
 
 pub use attach::{
