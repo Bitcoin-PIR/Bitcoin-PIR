@@ -4,4 +4,6 @@
 //! handling is being extracted under `admission::legacy` so it can be
 //! removed independently (series D, then R4 deletion).
 
+pub(crate) mod arc;
 pub mod legacy;
+pub(crate) mod local;
