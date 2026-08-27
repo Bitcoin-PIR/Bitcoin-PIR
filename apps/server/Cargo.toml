@@ -88,8 +88,8 @@ pir-service-store = { path = "../../crates/protocol/service-store" }
 pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
-pir-cashu-client = { path = "../../crates/payment/cashu-client" }
-pir-provider-clearing-client = { path = "../../crates/payment/provider-clearing-client" }
+pir-cashu-client = { path = "../../crates/payment/legacy/cashu-client" }
+pir-provider-clearing-client = { path = "../../crates/payment/legacy/provider-clearing-client" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-strict-https = { path = "../../crates/net/strict-https" }
