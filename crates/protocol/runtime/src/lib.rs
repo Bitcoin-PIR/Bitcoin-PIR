@@ -16,6 +16,7 @@ pub mod identity;
 pub mod manifest;
 pub mod protocol;
 pub mod service_admission;
+#[path = "legacy/service_policy_runtime.rs"]
 pub mod service_policy_runtime;
 pub mod snp_sealed_secrets;
 pub mod table;
