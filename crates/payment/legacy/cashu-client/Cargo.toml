@@ -23,8 +23,8 @@ insecure-dev-sqlite-store = ["dep:rusqlite"]
 [dependencies]
 base64 = "0.22"
 ciborium = "0.2"
-pir-payment-crypto = { path = "../crypto" }
-pir-service-protocol = { path = "../../protocol/service" }
+pir-payment-crypto = { path = "../../crypto" }
+pir-service-protocol = { path = "../../../protocol/service" }
 rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"], optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
@@ -33,8 +33,8 @@ sha2 = { version = "0.10", default-features = false }
 zeroize = { version = "1", features = ["derive"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pir-service-store = { path = "../../protocol/service-store" }
-pir-runtime-core = { path = "../../protocol/runtime" }
+pir-service-store = { path = "../../../protocol/service-store" }
+pir-runtime-core = { path = "../../../protocol/runtime" }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 getrandom = "0.2"
 k256 = { version = "0.13", default-features = false, features = ["arithmetic"] }
