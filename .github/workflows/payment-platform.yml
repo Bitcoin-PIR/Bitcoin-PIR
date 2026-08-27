@@ -12,7 +12,6 @@ on:
       - 'apps/payment-issuer/**'
       - 'apps/cln-rpc-guard/**'
       - 'apps/rollback-authority/**'
-      - 'apps/directory-relay/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -51,7 +50,6 @@ on:
       - 'apps/payment-issuer/**'
       - 'apps/cln-rpc-guard/**'
       - 'apps/rollback-authority/**'
-      - 'apps/directory-relay/**'
       - 'apps/admin/**'
       - 'apps/server/**'
       - 'crates/net/**'
@@ -222,9 +220,6 @@ jobs:
           node --check scripts/payment-v1-deployment-template-gate.mjs
           node scripts/payment-v1-deployment-template-gate.mjs
           node --check scripts/payment-v1-rendered-artifact-gate.mjs
-          bash -n scripts/build-payment-v1-directory-relay.sh
-          bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
-          node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
       - name: Typecheck the opt-in CDK browser interoperability harness
         working-directory: web
         run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false
