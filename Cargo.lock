@@ -254,26 +254,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitcoinpir-directory-relay"
-version = "0.1.0"
-dependencies = [
- "clap",
- "env_logger",
- "futures-util",
- "hex",
- "log",
- "pir-directory-nostr",
- "pir-private-files",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "toml",
-]
-
-[[package]]
 name = "bitcoinpir-oram"
 version = "0.1.0"
 dependencies = [
@@ -913,17 +893,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn",
-]
-
-[[package]]
-name = "dev-issuer"
-version = "0.1.0"
-dependencies = [
- "arc",
- "hex",
- "k256",
- "rand_core 0.6.4",
- "sha2",
 ]
 
 [[package]]
