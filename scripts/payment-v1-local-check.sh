@@ -18,7 +18,7 @@ from the network.
            It does not run --quick first, deployment-template audits, or a browser.
   --deploy-template-audit
            Explicit opt-in static deployment/template, renderer, runtime-evidence,
-           publisher, namespace, Caddy, and directory-relay gate audit. It does
+           publisher, namespace, and Caddy gate audit. It does
            not build, deploy, contact infrastructure, or run Chromium.
   --browser
            Explicit opt-in: run the --pr profile, then local Chromium payment
@@ -35,7 +35,7 @@ unified-server process E2E (including strict-TLS Standard Cashu and authenticate
 direct TEE-ORAM), WASM checks, and Web typecheck/tests/bundle; it contains no
 browser E2E.
 
-The `--pr` profile starts only temporary directory-relay, unified-server,
+The `--pr` profile starts only temporary unified-server,
 test-only TLS/NUT-03 mint and fake issuer listeners explicitly
 bound to 127.0.0.1. Browser profiles additionally start Vite and Playwright;
 the tests kill and wait for every child. No profile contacts an external Lightning
@@ -91,7 +91,6 @@ cargo test --locked --offline \
   -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
-  -p bitcoinpir-directory-relay \
   -p bitcoinpir-cln-rpc-guard \
   -p pir-runtime-core \
   -p pir-sdk-client \
@@ -120,7 +119,6 @@ cargo test --locked --offline \
   --manifest-path vendor/bitcoinpir-oram/Cargo.toml
 cargo test --locked --offline -p runtime --features cuckoo-oram \
   --test payment_v1_tee_oram_process_e2e
-cargo test --locked --offline -p bitcoinpir-directory-relay \
   --test payment_v1_two_relay_process_e2e \
   two_relay_real_process_catalog_e2e \
   -- --exact --ignored
@@ -312,7 +310,6 @@ cargo clippy --locked --offline --all-targets --no-deps \
   -p pir-cashu-custody \
   -p pir-arc-adapter \
   -p pir-directory-nostr \
-  -p bitcoinpir-directory-relay \
   -p bitcoinpir-cln-rpc-guard \
   -p payment-issuer \
   -p bpir-admin \
@@ -354,9 +351,6 @@ node --check scripts/payment-v1-pages-deploy-gate.mjs
 node scripts/payment-v1-pages-deploy-gate.mjs
 node --check scripts/payment-v1-deployment-template-gate.mjs
 node scripts/payment-v1-deployment-template-gate.mjs
-bash -n scripts/build-payment-v1-directory-relay.sh
-bash scripts/build-payment-v1-directory-relay.sh --help >/dev/null
-node --check scripts/payment-v1-directory-relay-artifact-gate.mjs
 node --check scripts/payment-v1-rendered-artifact-gate.mjs
 }
 

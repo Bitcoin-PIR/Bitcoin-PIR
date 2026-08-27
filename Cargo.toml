@@ -40,10 +40,8 @@ members = [
     "tools/db-builder",
     "apps/server",
     "tools/block-reader",
-    "apps/dev-issuer",
     "apps/payment-issuer",
     "apps/cln-rpc-guard",
-    "apps/directory-relay",
 ]
 exclude = ["vendor/bitcoinpir-oram"]
 
