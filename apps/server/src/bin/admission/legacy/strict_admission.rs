@@ -17,7 +17,6 @@ use pir_runtime_core::service_policy_runtime::{
     activate_service_policy_v1, validate_policy_method_coverage_v1,
     validate_retained_policy_method_coverage_v1,
 };
-use pir_runtime_core::free_admission::{FreeIpSubjectKeyV1, FreeRateLimitStateV1};
 use pir_arc_adapter::{ArcSecretKeyV1, ArcSecretKeyringV1};
 use pir_service_protocol::{IssuerClearingApprovalV1, ProviderClearingAuthorizationV1, ServicePolicyV1};
 use pir_service_store::{CashuCustodyInventoryV1, ProviderStore, StoreOptions};
@@ -325,10 +324,6 @@ pub(crate) fn load_strict_service_admission_v1(
             policy: loaded.policy,
             retained_policies: loaded.retained_policies,
             provider_store: None,
-            free_rate_limits: Arc::new(FreeRateLimitStateV1::new(
-                pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
-            )),
-            free_ip_subject_key: None,
             trust_direct_peer_ip: false,
             bat_keyring: None,
             experimental_arc_keyring: None,
@@ -448,20 +443,6 @@ pub(crate) fn load_strict_service_admission_v1(
         println!("{startup_line}");
         Some(store)
     };
-
-    let free_ip_subject_key = match args.service_free_ip_key_path.as_deref() {
-        Some(path) => Some(
-            FreeIpSubjectKeyV1::from_bytes(read_exact_secret_v1::<32>(
-                path,
-                "service Free IP HMAC key",
-            )?)
-            .map_err(|error| format!("invalid service Free IP HMAC key: {error}"))?,
-        ),
-        None => None,
-    };
-    if args.service_trust_direct_peer_ip && free_ip_subject_key.is_none() {
-        return Err("--service-trust-direct-peer-ip requires --service-free-ip-key".to_owned());
-    }
 
     let bat_keyring = if args.service_bat_key_paths.is_empty() {
         None
@@ -774,21 +755,10 @@ pub(crate) fn load_strict_service_admission_v1(
             ));
         }
     }
-    let free_rate_limits = Arc::new(match provider_store.as_ref() {
-        Some(store) => FreeRateLimitStateV1::provider_store(
-            store.clone(),
-            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
-        ),
-        None => FreeRateLimitStateV1::new(
-            pir_runtime_core::free_admission::DEFAULT_MAX_FREE_RATE_LIMIT_BUCKETS_V1,
-        ),
-    });
     let runtime = StrictServiceAdmissionRuntimeV1 {
         policy,
         retained_policies,
         provider_store,
-        free_rate_limits,
-        free_ip_subject_key,
         trust_direct_peer_ip: args.service_trust_direct_peer_ip,
         bat_keyring,
         experimental_arc_keyring,

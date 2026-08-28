@@ -9,7 +9,6 @@ pub mod cashu_verifier;
 pub mod channel;
 pub mod db_proof;
 pub mod eval;
-pub mod free_admission;
 pub mod handler;
 pub mod harmony_attach_runtime;
 pub mod identity;
