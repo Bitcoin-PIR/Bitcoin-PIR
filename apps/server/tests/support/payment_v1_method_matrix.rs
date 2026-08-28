@@ -94,10 +94,16 @@ impl MatrixMethod {
         }
     }
 
-    pub fn replay_rejection(self) -> &'static str {
+    /// Expected rejection when a spent capability is replayed after a server
+    /// restart. Open best-effort free admission (post-PoW) has no durable
+    /// capability to burn: re-authorization succeeds, so this returns `None`
+    /// for the free leg.
+    pub fn paid_replay_rejection(self) -> Option<&'static str> {
         match self {
-            Self::FreeIp => "server-busy",
-            Self::StandardCashu | Self::CashuBat | Self::ArcExperimental => "invalid-or-spent",
+            Self::FreeIp => None,
+            Self::StandardCashu | Self::CashuBat | Self::ArcExperimental => {
+                Some("invalid-or-spent")
+            }
         }
     }
 }
@@ -336,7 +342,7 @@ impl MethodMatrixFixture {
         write_private_file(&cashu_custody_key_path, &[0xd1u8.wrapping_add(seed); 32]);
 
         let offers = vec![
-            free_ip_offer(capability_count),
+            free_ip_offer(),
             standard_cashu_offer(cashu_manifest),
             paid_local_offer(
                 BAT_OFFER_ID,
@@ -472,13 +478,15 @@ fn credential_binding(
     .unwrap()
 }
 
-fn free_ip_offer(capability_count: usize) -> ServiceOfferV1 {
+fn free_ip_offer() -> ServiceOfferV1 {
+    // Open best-effort free admission (post-PoW): no quota, no window, no
+    // proof-of-work parameters — the mode rejects them by construction.
     ServiceOfferV1 {
         offer_id: FREE_IP_OFFER_ID,
         acquisition: AcquisitionMethod::FreeV1,
         free_mode: FreeModeV1::OpenBestEffort,
-        free_quota: u32::try_from(capability_count).unwrap(),
-        free_window_seconds: 3_600,
+        free_quota: 0,
+        free_window_seconds: 0,
         free_pow_difficulty_bits: 0,
         priority_class: 1,
         authorization: AuthScheme::FreeV1,
@@ -650,6 +658,13 @@ impl TestCashuMint {
             while !thread_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((socket, _)) => {
+                        // BSD (macOS) accept() inherits the listener's
+                        // O_NONBLOCK; POSIX (Linux) does not. Force blocking
+                        // I/O so the fixture behaves identically on both.
+                        if let Err(error) = socket.set_nonblocking(false) {
+                            eprintln!("matrix mint: failed to set blocking I/O: {error}");
+                            continue;
+                        }
                         let _ = serve_one_mint_request(
                             socket,
                             Arc::clone(&config),

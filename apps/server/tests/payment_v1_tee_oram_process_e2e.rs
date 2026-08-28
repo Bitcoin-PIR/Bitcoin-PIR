@@ -863,7 +863,7 @@ async fn all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_re
             fixture.proof(0),
         )
         .unwrap();
-        let error = dangerous_unpaired_authorize_service_operation_v1(
+        let replay = dangerous_unpaired_authorize_service_operation_v1(
             &mut secure,
             &accepted,
             provider.tee_scope_id,
@@ -871,12 +871,24 @@ async fn all_non_receipt_methods_commit_before_real_tee_oram_and_replay_after_re
             OperationStartV1::TeeOramQuery { db_id: 0 },
             proof,
         )
-        .await
-        .expect_err("matrix capability replay must stay terminal after restart");
-        assert!(
-            error.to_string().contains(method.replay_rejection()),
-            "{method:?}: {error}"
-        );
+        .await;
+        match method.paid_replay_rejection() {
+            Some(expected) => {
+                let error = replay
+                    .expect_err("matrix capability replay must stay terminal after restart");
+                assert!(
+                    error.to_string().contains(expected),
+                    "{method:?}: {error}"
+                );
+            }
+            // Open best-effort free admission has no durable capability:
+            // re-authorization after a restart must succeed.
+            None => {
+                replay.unwrap_or_else(|error| {
+                    panic!("{method:?} open free re-auth after restart failed: {error}")
+                });
+            }
+        }
         secure.close().await.unwrap();
     }
     assert_eq!(

@@ -38,16 +38,16 @@ use pir_sdk_client::channel::{establish, SecureChannelTransport};
 use pir_sdk_client::{
     dangerous_unpaired_authorize_service_operation_v1,
     dangerous_unpaired_build_authorization_proof_v1, fetch_verified_service_policy_v1,
-    request_pow_challenge_v1, AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1,
+    AcceptedServicePolicyV1, PirTransport, ServicePolicyCheckpointV1,
     WsConnection,
 };
 use pir_service_protocol::{
-    derive_bat_key_id_v1, derive_issuer_id, derive_provider_id, pow_solution_meets_difficulty_v1,
+    derive_bat_key_id_v1, derive_issuer_id, derive_provider_id,
     AcquisitionMethod, AuthPaddingClassV1, AuthScheme, AuthorizationProofV1, BackendId,
     BitcoinPirCashuBatProofV1, Bolt11QuoteKeyDelegationV1, CredentialKeyBindingClaimsV1,
     CredentialKeyBindingV1, CredentialUnitV1, DatasetBindingV1, DeploymentStatus,
-    EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1, FreePowProofV1,
-    IssuerClearingApprovalV1, LightningNetworkV1, OperationStartV1, PowChallengeResponseV1,
+    EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1,
+    IssuerClearingApprovalV1, LightningNetworkV1, OperationStartV1,
     PriceV1, PrivacyLeakageV1, ProviderClearingAuthorizationV1, ProviderRedeemEnvelopeV1,
     ProviderRedeemResponseV1, ServiceOfferV1, ServicePolicyV1, ServiceScopePolicyV1,
     ServiceScopeV1, SettlementUnitV1, VerificationMode, WorkloadId,
@@ -72,8 +72,7 @@ use zeroize::Zeroizing;
 
 const SHARED_OFFER_ID: u32 = 61;
 const FREE_OFFER_ID: u32 = 62;
-const FREE_POW_OFFER_ID: u32 = 63;
-const FREE_POW_DIFFICULTY_BITS: u8 = 4;
+const FREE_OPEN_SHARED_OFFER_ID: u32 = 63;
 const OPERATION_PROFILE: u16 = 41;
 const ENTITLEMENT_PROFILE: u16 = 401;
 const TINY_BINS_PER_TABLE: usize = 128;
@@ -93,7 +92,7 @@ static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProviderMethod {
     SharedIssuerBat,
-    SharedIssuerBatWithFreePow,
+    SharedIssuerBatWithFreeOpen,
     FreeOpen,
 }
 
@@ -126,7 +125,7 @@ struct ProviderFixture {
 impl ProviderFixture {
     fn proof(&self) -> AuthorizationProofV1 {
         match self.method {
-            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
+            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreeOpen => {
                 AuthorizationProofV1::BitcoinPirCashuBat(
                     self.shared
                         .as_ref()
@@ -143,7 +142,7 @@ impl ProviderFixture {
 
     fn offer_id(&self) -> u32 {
         match self.method {
-            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
+            ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreeOpen => {
                 SHARED_OFFER_ID
             }
             ProviderMethod::FreeOpen => FREE_OFFER_ID,
@@ -556,13 +555,13 @@ async fn shared_issuer_real_process_tls_e2e() {
     assert_issuer_ledger(&issuer, &paid, &[&wrong_ca, &wrong_pin, &offline]);
 }
 
-/// A provider may publish a local Free-PoW offer alongside a shared-issuer
+/// A provider may publish a local Free-open offer alongside a shared-issuer
 /// Cashu BAT offer for the exact same DPF scope.  The former must never call
 /// the issuer; the latter must still redeem through the issuer even though the
 /// provider has no provider-local BAT or ARC key material.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn shared_issuer_free_pow_and_bat_share_one_strict_policy_scope_e2e() {
-    let root = tempfile::tempdir().expect("shared-issuer plus Free-PoW process test root");
+async fn shared_issuer_free_open_and_bat_share_one_strict_policy_scope_e2e() {
+    let root = tempfile::tempdir().expect("shared-issuer plus Free-open process test root");
     chmod(root.path(), 0o700);
     let (db_path, manifest_root) = write_tiny_manifest_database(root.path());
     let tls = install_tls_material(root.path());
@@ -574,7 +573,7 @@ async fn shared_issuer_free_pow_and_bat_share_one_strict_policy_scope_e2e() {
     let provider = build_provider(
         root.path(),
         20,
-        ProviderMethod::SharedIssuerBatWithFreePow,
+        ProviderMethod::SharedIssuerBatWithFreeOpen,
         manifest_root,
         &issuer,
         &redeem_endpoint,
@@ -596,8 +595,8 @@ async fn shared_issuer_free_pow_and_bat_share_one_strict_policy_scope_e2e() {
             .iter()
             .map(|offer| offer.offer_id)
             .collect::<Vec<_>>(),
-        vec![SHARED_OFFER_ID, FREE_POW_OFFER_ID],
-        "the same signed scope must offer both premium BAT and Free-PoW"
+        vec![SHARED_OFFER_ID, FREE_OPEN_SHARED_OFFER_ID],
+        "the same signed scope must offer both premium BAT and Free-open"
     );
 
     init_issuer_store(&issuer);
@@ -625,13 +624,13 @@ async fn shared_issuer_free_pow_and_bat_share_one_strict_policy_scope_e2e() {
         Some(&tls.root),
     );
 
-    exercise_free_pow_grant_and_dpf(provider_port, &provider, manifest_root)
+    exercise_free_open_grant_and_dpf(provider_port, &provider, manifest_root)
         .await
-        .expect("Free-PoW offer in the combined policy must authorize one real DPF query");
+        .expect("Free-open offer in the combined policy must authorize one real DPF query");
     assert_eq!(
         forwarded_request_count(&forward_counter),
         0,
-        "Free-PoW must not contact the shared issuer"
+        "Free-open must not contact the shared issuer"
     );
 
     // Stop only the issuer to inspect its durable inventory, then restart it
@@ -792,7 +791,7 @@ fn build_provider(
     let scope_id = scope.scope_id();
 
     let (mut offers, shared) = match method {
-        ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreePow => {
+        ProviderMethod::SharedIssuerBat | ProviderMethod::SharedIssuerBatWithFreeOpen => {
             assert!(redeem_endpoint.starts_with("https://localhost:"));
             assert!(!redeem_pins.is_empty());
             let denomination_public_key = issuer.bat_keyring.denomination_public_keys()[0];
@@ -1038,14 +1037,14 @@ fn build_provider(
         }
     };
 
-    if method == ProviderMethod::SharedIssuerBatWithFreePow {
+    if method == ProviderMethod::SharedIssuerBatWithFreeOpen {
         offers.push(ServiceOfferV1 {
-            offer_id: FREE_POW_OFFER_ID,
+            offer_id: FREE_OPEN_SHARED_OFFER_ID,
             acquisition: AcquisitionMethod::FreeV1,
             free_mode: FreeModeV1::OpenBestEffort,
             free_quota: 0,
             free_window_seconds: 0,
-            free_pow_difficulty_bits: FREE_POW_DIFFICULTY_BITS,
+            free_pow_difficulty_bits: 0,
             priority_class: 1,
             authorization: AuthScheme::FreeV1,
             verification: VerificationMode::ProviderLocal,
@@ -1455,12 +1454,12 @@ fn spawn_provider(
     } else {
         assert!(test_root.is_none());
     }
-    if fixture.method == ProviderMethod::SharedIssuerBatWithFreePow {
+    if fixture.method == ProviderMethod::SharedIssuerBatWithFreeOpen {
         assert!(
             !args.iter().any(|arg| {
                 arg == "--service-bat-key" || arg == "--service-arc-key"
             }),
-            "combined shared-issuer/Free-PoW process test must not pass provider-local BAT or ARC keys"
+            "combined shared-issuer/Free-open process test must not pass provider-local BAT or ARC keys"
         );
     }
 
@@ -1579,7 +1578,7 @@ async fn exercise_grant_and_dpf(
     Ok(())
 }
 
-async fn exercise_free_pow_grant_and_dpf(
+async fn exercise_free_open_grant_and_dpf(
     port: u16,
     fixture: &ProviderFixture,
     manifest_root: [u8; 32],
@@ -1588,42 +1587,26 @@ async fn exercise_free_pow_grant_and_dpf(
     let (mut secure, accepted) =
         open_verified_session(port, fixture, manifest_root, &request).await;
     let operation = OperationStartV1::DpfQuery { db_id: 0 };
-    let challenge = request_pow_challenge_v1(
-        &mut secure,
-        &accepted,
-        fixture.scope_id,
-        FREE_POW_OFFER_ID,
-        operation.clone(),
-        unix_now(),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    if challenge.difficulty_bits != FREE_POW_DIFFICULTY_BITS {
-        return Err(format!(
-            "combined Free-PoW challenge used {} bits instead of {FREE_POW_DIFFICULTY_BITS}",
-            challenge.difficulty_bits
-        ));
-    }
-    let solution = solve_pow(&challenge);
+    // Open best-effort free admission (post-PoW): an empty free proof.
     let proof = dangerous_unpaired_build_authorization_proof_v1(
         &accepted,
         &fixture.scope_id,
-        FREE_POW_OFFER_ID,
-        &solution.encode().map_err(|error| error.to_string())?,
+        FREE_OPEN_SHARED_OFFER_ID,
+        &[],
     )
     .map_err(|error| error.to_string())?;
     let grant = dangerous_unpaired_authorize_service_operation_v1(
         &mut secure,
         &accepted,
         fixture.scope_id,
-        FREE_POW_OFFER_ID,
+        FREE_OPEN_SHARED_OFFER_ID,
         operation,
         proof,
     )
     .await
     .map_err(|error| error.to_string())?;
     if grant.scope_id != fixture.scope_id || grant.enforced_profile != ENTITLEMENT_PROFILE {
-        return Err("Free-PoW AUTH grant did not bind the selected scope/profile".to_owned());
+        return Err("Free-open AUTH grant did not bind the selected scope/profile".to_owned());
     }
     let response = secure
         .roundtrip(&request)
@@ -1636,7 +1619,7 @@ async fn exercise_free_pow_grant_and_dpf(
                 && result.results[0].iter().all(|item| item.len() == 52) => {}
         other => {
             return Err(format!(
-                "Free-PoW authorized DPF frame did not reach handler: {other:?}"
+                "Free-open authorized DPF frame did not reach handler: {other:?}"
             ))
         }
     }
@@ -1754,21 +1737,6 @@ fn valid_tiny_dpf_request() -> Vec<u8> {
         keys: vec![vec![key0.to_bytes(), key1.to_bytes()]],
     })
     .encode()
-}
-
-fn solve_pow(challenge: &PowChallengeResponseV1) -> FreePowProofV1 {
-    for nonce in 0..=u64::MAX {
-        let solution = FreePowProofV1 {
-            challenge_id: challenge.challenge_id,
-            nonce,
-        };
-        if pow_solution_meets_difficulty_v1(challenge, &solution)
-            .expect("test Free-PoW challenge must be valid")
-        {
-            return solution;
-        }
-    }
-    unreachable!("bounded test Free-PoW difficulty has a solution")
 }
 
 fn expect_error_response(response: &[u8], needle: &str) {

@@ -728,8 +728,8 @@ async fn all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_disp
                 method_fixture.proof(proof_index),
             )
             .unwrap();
-            let error = within(
-                "reject matrix replay",
+            let replay_result = within(
+                "matrix replay after restart",
                 dangerous_unpaired_authorize_service_operation_v1(
                     &mut replay,
                     &accepted,
@@ -739,12 +739,24 @@ async fn all_non_receipt_methods_restore_pre_dispatch_and_burn_on_real_hint_disp
                     proof,
                 ),
             )
-            .await
-            .expect_err("matrix capability replay must stay terminal after restart");
-            assert!(
-                error.to_string().contains(method.replay_rejection()),
-                "{method:?}/{proof_index}: {error}"
-            );
+            .await;
+            match method.paid_replay_rejection() {
+                Some(expected) => {
+                    let error = replay_result
+                        .expect_err("matrix capability replay must stay terminal after restart");
+                    assert!(
+                        error.to_string().contains(expected),
+                        "{method:?}/{proof_index}: {error}"
+                    );
+                }
+                // Open best-effort free admission has no durable capability:
+                // re-authorization after a restart must succeed.
+                None => {
+                    replay_result.unwrap_or_else(|error| {
+                        panic!("{method:?}/{proof_index} open free re-auth after restart failed: {error}")
+                    });
+                }
+            }
             replay.close().await.unwrap();
         }
     }
