@@ -41,7 +41,7 @@ mod quote;
 mod quote_wasm;
 #[path = "legacy/receipt.rs"]
 mod receipt;
-#[path = "legacy/scope.rs"]
+mod operation;
 mod scope;
 #[path = "legacy/settlement.rs"]
 mod settlement;

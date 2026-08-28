@@ -2,196 +2,23 @@
 
 use core::{fmt, mem};
 
-use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::attach::{HarmonyAttachGrantV1, HarmonyHintSideV1};
+use crate::attach::HarmonyAttachGrantV1;
 use crate::codec::{expect_v1, put_bytes_u32, Decoder};
 use crate::{
-    AuthPaddingClassV1, AuthScheme, BackendId, ScopeId, ServicePolicyV1, ServiceProtocolError,
-    WorkloadId, MAX_SIGNED_POLICY_LEN, SERVICE_PROTOCOL_VERSION,
+    AuthPaddingClassV1, AuthScheme, ScopeId, ServicePolicyV1, ServiceProtocolError,
+    MAX_SIGNED_POLICY_LEN, SERVICE_PROTOCOL_VERSION,
 };
 
-/// Exact V1 authorization body length, excluding the one-byte PIR opcode and
-/// outer four-byte record length.
-pub const AUTH_FRAME_CLASS_V1: usize = 16 * 1024;
+pub use crate::operation::{
+    AUTH_FRAME_CLASS_V1, HintTransport, OperationStartV1, MAX_AUTH_PROOF_LEN,
+    OPERATION_START_DIGEST_DOMAIN,
+};
+
 pub const MAX_AUTH_KEY_ID_LEN: usize = 64;
-pub const MAX_AUTH_PROOF_LEN: usize = 12 * 1024;
 pub const MAX_POLICY_WIRE_LEN: usize = MAX_SIGNED_POLICY_LEN;
-pub const OPERATION_START_DIGEST_DOMAIN: &[u8] = b"BitcoinPIR/operation-start/v1";
 pub(crate) const MAX_OPERATION_ENCODING_LEN: usize = 32;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum HintTransport {
-    V2Full = 1,
-    V2Half = 2,
-}
-
-impl HintTransport {
-    fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
-        match value {
-            1 => Ok(Self::V2Full),
-            2 => Ok(Self::V2Half),
-            value => Err(ServiceProtocolError::UnknownDiscriminant {
-                kind: "HintTransport",
-                value,
-            }),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OperationStartV1 {
-    DpfQuery {
-        db_id: u8,
-    },
-    HarmonyHint {
-        db_id: u8,
-        transport: HintTransport,
-        session_token: Option<[u8; 16]>,
-        primary_side: Option<HarmonyHintSideV1>,
-    },
-    HarmonyQuery {
-        db_id: u8,
-    },
-    OnionSession {
-        db_id: u8,
-    },
-    TeeOramQuery {
-        db_id: u8,
-    },
-}
-
-impl OperationStartV1 {
-    pub fn required_service(&self) -> (BackendId, WorkloadId) {
-        match self {
-            Self::DpfQuery { .. } => (BackendId::DpfPirV1, WorkloadId::DpfEvaluateJobV1),
-            Self::HarmonyHint { .. } => (BackendId::HarmonyPirV2, WorkloadId::HarmonyHintBundleV1),
-            Self::HarmonyQuery { .. } => (BackendId::HarmonyPirV2, WorkloadId::HarmonyQueryJobV1),
-            Self::OnionSession { .. } => (BackendId::OnionPirV1, WorkloadId::OnionEvaluateJobV1),
-            Self::TeeOramQuery { .. } => (BackendId::TeeOramV1, WorkloadId::TeeOramQueryV1),
-        }
-    }
-
-    pub fn encode(&self) -> Result<Vec<u8>, ServiceProtocolError> {
-        let mut out = Vec::with_capacity(20);
-        match self {
-            Self::DpfQuery { db_id } => {
-                out.push(1);
-                out.push(*db_id);
-            }
-            Self::HarmonyHint {
-                db_id,
-                transport,
-                session_token,
-                primary_side,
-            } => {
-                out.push(2);
-                out.push(*db_id);
-                out.push(*transport as u8);
-                match (transport, session_token, primary_side) {
-                    (HintTransport::V2Full, None, None) => {}
-                    (HintTransport::V2Half, Some(token), Some(side)) => {
-                        if token.iter().all(|byte| *byte == 0) {
-                            return Err(ServiceProtocolError::InvalidValue {
-                                field: "OperationStartV1.HarmonyHint.session_token",
-                                reason: "must be non-zero",
-                            });
-                        }
-                        out.extend_from_slice(token);
-                        out.push(*side as u8);
-                    }
-                    (HintTransport::V2Half, _, _) => {
-                        return Err(ServiceProtocolError::InvalidValue {
-                            field: "OperationStartV1.HarmonyHint",
-                            reason: "V2 half transport requires a session token and primary side",
-                        })
-                    }
-                    (HintTransport::V2Full, _, _) => {
-                        return Err(ServiceProtocolError::InvalidValue {
-                            field: "OperationStartV1.HarmonyHint",
-                            reason: "V2 full transport must not carry a session token or side",
-                        })
-                    }
-                }
-            }
-            Self::HarmonyQuery { db_id } => {
-                out.push(3);
-                out.push(*db_id);
-            }
-            Self::OnionSession { db_id } => {
-                out.push(4);
-                out.push(*db_id);
-            }
-            Self::TeeOramQuery { db_id } => {
-                out.push(5);
-                out.push(*db_id);
-            }
-        }
-        Ok(out)
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self, ServiceProtocolError> {
-        let mut decoder = Decoder::new(bytes);
-        let value = match decoder.u8("OperationStartV1.type")? {
-            1 => Self::DpfQuery {
-                db_id: decoder.u8("OperationStartV1.DpfQuery.db_id")?,
-            },
-            2 => {
-                let db_id = decoder.u8("OperationStartV1.HarmonyHint.db_id")?;
-                let transport =
-                    HintTransport::decode(decoder.u8("OperationStartV1.HarmonyHint.transport")?)?;
-                let (session_token, primary_side) = match transport {
-                    HintTransport::V2Full => (None, None),
-                    HintTransport::V2Half => (
-                        Some(decoder.fixed("OperationStartV1.HarmonyHint.session_token")?),
-                        Some(HarmonyHintSideV1::decode(
-                            decoder.u8("OperationStartV1.HarmonyHint.primary_side")?,
-                        )?),
-                    ),
-                };
-                let value = Self::HarmonyHint {
-                    db_id,
-                    transport,
-                    session_token,
-                    primary_side,
-                };
-                value.encode()?;
-                value
-            }
-            3 => Self::HarmonyQuery {
-                db_id: decoder.u8("OperationStartV1.HarmonyQuery.db_id")?,
-            },
-            4 => Self::OnionSession {
-                db_id: decoder.u8("OperationStartV1.OnionSession.db_id")?,
-            },
-            5 => Self::TeeOramQuery {
-                db_id: decoder.u8("OperationStartV1.TeeOramQuery.db_id")?,
-            },
-            value => {
-                return Err(ServiceProtocolError::UnknownDiscriminant {
-                    kind: "OperationStartV1",
-                    value,
-                })
-            }
-        };
-        decoder.finish()?;
-        Ok(value)
-    }
-
-    /// Digest of the canonical operation encoding.  This binds a challenge or
-    /// attach continuation without copying a payer, invoice, credential, peer
-    /// server, or PIR query payload into the continuation message.
-    pub fn digest(&self) -> Result<[u8; 32], ServiceProtocolError> {
-        let encoded = self.encode()?;
-        let mut hasher = Sha256::new();
-        hasher.update(OPERATION_START_DIGEST_DOMAIN);
-        hasher.update((encoded.len() as u32).to_le_bytes());
-        hasher.update(encoded);
-        Ok(hasher.finalize().into())
-    }
-}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct AuthBeginV1 {
@@ -588,6 +415,7 @@ impl ServicePolicyResponseV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attach::HarmonyHintSideV1;
 
     fn auth(operation: OperationStartV1) -> AuthBeginV1 {
         AuthBeginV1 {
@@ -701,17 +529,6 @@ mod tests {
         assert!(zero_token.encode_padded().is_err());
     }
 
-    #[test]
-    fn operation_service_mapping_has_no_peer_or_slot() {
-        assert_eq!(
-            OperationStartV1::DpfQuery { db_id: 1 }.required_service(),
-            (BackendId::DpfPirV1, WorkloadId::DpfEvaluateJobV1)
-        );
-        assert_eq!(
-            OperationStartV1::HarmonyQuery { db_id: 1 }.required_service(),
-            (BackendId::HarmonyPirV2, WorkloadId::HarmonyQueryJobV1)
-        );
-    }
 
     #[test]
     fn auth_results_roundtrip_and_reject_trailing() {
