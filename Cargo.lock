@@ -332,8 +332,6 @@ dependencies = [
  "k256",
  "pir-arc-adapter",
  "pir-attest-verify",
- "pir-cashu-client",
- "pir-cashu-custody",
  "pir-core",
  "pir-db-attest",
  "pir-directory-nostr",
@@ -1823,45 +1821,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-cashu-client"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "chacha20poly1305",
- "ciborium",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hex",
- "k256",
- "pir-payment-crypto",
- "pir-runtime-core",
- "pir-service-protocol",
- "pir-service-store",
- "rand_core 0.6.4",
- "rusqlite",
- "serde",
- "serde_bytes",
- "serde_json",
- "sha2",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-cashu-custody"
-version = "0.1.0"
-dependencies = [
- "chacha20poly1305",
- "getrandom 0.2.17",
- "hex",
- "hkdf",
- "sha2",
- "static_assertions",
- "x25519-dalek",
- "zeroize",
-]
-
-[[package]]
 name = "pir-channel"
 version = "0.1.0"
 dependencies = [
@@ -2045,27 +2004,6 @@ name = "pir-private-files"
 version = "0.1.0"
 dependencies = [
  "rustix",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-provider-clearing-client"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.2.17",
- "pir-issuer-clearing",
- "pir-issuer-service",
- "pir-issuer-store",
- "pir-private-files",
- "pir-runtime-core",
- "pir-service-protocol",
- "pir-service-store",
- "pir-strict-https",
- "rusqlite",
- "rustix",
- "sha2",
  "tempfile",
  "zeroize",
 ]
@@ -2640,21 +2578,14 @@ dependencies = [
  "libdpf",
  "memmap2",
  "onionpir",
- "pir-arc-adapter",
- "pir-cashu-client",
  "pir-core",
  "pir-db-attest",
  "pir-identity",
- "pir-issuer-store",
- "pir-lightning-backend",
- "pir-payment-crypto",
  "pir-private-files",
- "pir-provider-clearing-client",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
  "pir-service-protocol",
- "pir-service-store",
  "pir-strict-https",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

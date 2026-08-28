@@ -2377,7 +2377,6 @@ mod tests {
             scope_id,
             enforced_profile: 3,
             expires_in_ms: 10_000,
-            harmony_attach: None,
         };
         let mut granted_response = vec![RESP_AUTH_RESULT_V1];
         granted_response
@@ -2449,7 +2448,6 @@ mod tests {
             scope_id,
             enforced_profile: 1,
             expires_in_ms: 10_000,
-            harmony_attach: None,
         })
         .encode()
         .unwrap();
@@ -2540,7 +2538,6 @@ mod tests {
             scope_id,
             enforced_profile: 3,
             expires_in_ms: 10_000,
-            harmony_attach: None,
         })
         .encode()
         .unwrap();

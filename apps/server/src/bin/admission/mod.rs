@@ -1,9 +1,8 @@
-//! Admission decoupling root (D1).
+//! Admission decoupling root.
 //!
-//! PIR serving lives in `unified_server.rs`; all legacy payment/policy
-//! handling is being extracted under `admission::legacy` so it can be
-//! removed independently (series D, then R4 deletion).
+//! PIR serving lives in `unified_server.rs`. The legacy payment/policy
+//! admission layer is deleted; what remains is the operator-local
+//! configuration (`local`) and the single-issuer ARC facade (`arc`).
 
 pub(crate) mod arc;
-pub mod legacy;
 pub(crate) mod local;

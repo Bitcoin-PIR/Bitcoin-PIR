@@ -13,15 +13,10 @@ members = [
     "crates/protocol/service-store",
     "crates/payment/issuer-store",
     "crates/payment/crypto",
-    # R-DELETE (legacy-only consumers):
-    "crates/payment/legacy/cashu-client",
-    "crates/payment/legacy/cashu-custody",
     "crates/payment/arc-adapter",
     "crates/payment/lightning-backend",
     "crates/payment/issuer-credentials",
     "crates/payment/issuer-clearing",
-    # R-DELETE (legacy-only consumers):
-    "crates/payment/legacy/provider-clearing-client",
     "crates/payment/issuer-core",
     "crates/payment/issuer-service",
     "crates/security/private-files",

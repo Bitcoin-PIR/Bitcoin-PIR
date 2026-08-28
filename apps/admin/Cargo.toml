@@ -26,8 +26,6 @@ pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-service-protocol = { path = "../../crates/protocol/service" }
 pir-directory-nostr = { path = "../../crates/directory/nostr" }
 pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
-pir-cashu-client = { path = "../../crates/payment/legacy/cashu-client" }
-pir-cashu-custody = { path = "../../crates/payment/legacy/cashu-custody" }
 pir-payment-crypto = { path = "../../crates/payment/crypto" }
 pir-service-store = { path = "../../crates/protocol/service-store" }
 pir-strict-https = { path = "../../crates/net/strict-https" }

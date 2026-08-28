@@ -36,7 +36,7 @@ fn public_parameters_match_the_implementation() {
     let contract = contract();
 
     assert_eq!(contract["schema"], "BitcoinPIR/wire-shape-contract/v1");
-    assert_eq!(number(&contract, "/contractVersion"), 2);
+    assert_eq!(number(&contract, "/contractVersion"), 3);
     assert_eq!(number(&contract, "/parameters/indexGroups"), K);
     assert_eq!(number(&contract, "/parameters/chunkGroups"), K_CHUNK);
     assert_eq!(
@@ -86,7 +86,7 @@ fn round_kind_names_match_the_serde_wire_shape() {
         RoundKind::MerkleTreeTops,
     ];
 
-    let mut actual_names: Vec<String> = actual
+    let actual_names: Vec<String> = actual
         .into_iter()
         .map(|kind| {
             serde_json::to_value(kind)
@@ -97,7 +97,6 @@ fn round_kind_names_match_the_serde_wire_shape() {
                 .to_owned()
         })
         .collect();
-    actual_names.insert(7, "service_authorization".to_owned());
     let expected_names: Vec<&str> = expected
         .iter()
         .map(|value| value.as_str().expect("round kind must be a string"))
@@ -119,12 +118,7 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
         "index_max_items_per_group_per_level",
         "chunk_max_items_per_group_per_level",
         "session_query_index",
-        "query_db_id",
-        "authorization_scheme_by_server",
-        "authorization_scope_id_by_server",
-        "authorization_operation_by_server",
-        "authorization_timing_by_server",
-        "authorization_result_shape_by_server"
+        "query_db_id"
     ]);
 
     assert_eq!(
@@ -147,8 +141,6 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
         serde_json::json!([
             "pir_core::params",
             "pir_channel::Session",
-            "pir_service_protocol::AuthBeginV1",
-            "pir_runtime_core::service_admission",
             "pir_sdk::leakage",
             "pir_sdk_client::dpf",
             "pir_sdk_client::harmony",
@@ -163,76 +155,25 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
 }
 
 #[test]
-fn payment_v1_observer_boundary_is_explicit_and_fail_closed() {
+fn service_authorization_round_is_removed_with_payment_v1() {
+    // Payment V1 is deleted: free queries are open and the single-issuer
+    // credential presentation rides the pre-existing 0x08/0x09 opcodes, so
+    // there is no authorization exchange left in the wire contract. The
+    // locked EasyCrypt proof is regenerated and pinned without
+    // RServiceAuthorization separately.
     let contract = contract();
 
-    assert_eq!(
-        contract.pointer("/serviceAuthorization/roundKind"),
-        Some(&Value::String("service_authorization".to_owned()))
-    );
-    assert!(boolean(
-        &contract,
-        "/serviceAuthorization/independentPerServer"
-    ));
-    assert!(boolean(
-        &contract,
-        "/serviceAuthorization/transport/secureChannelRequired"
-    ));
-    assert!(!boolean(
-        &contract,
-        "/serviceAuthorization/transport/response/fixedLength"
-    ));
-    assert!(boolean(
-        &contract,
-        "/serviceAuthorization/transport/response/resultShapeObservableFromCiphertextLength"
-    ));
-
-    assert_eq!(
-        contract.pointer(
-            "/serviceAuthorization/observerModel/networkObserverWithoutChannelKeys/requestShapeHides"
-        ),
-        Some(&serde_json::json!([
-            "authorization_scheme",
-            "service_scope_id",
-            "authorization_operation",
-            "credential_proof_length"
-        ]))
-    );
-    assert_eq!(
-        contract.pointer(
-            "/serviceAuthorization/observerModel/networkObserverWithoutChannelKeys/admittedLeakage"
-        ),
-        Some(&serde_json::json!([
-            "authorization_occurrence_and_timing",
-            "authorization_result_shape"
-        ]))
-    );
-    assert_eq!(
-        contract.pointer(
-            "/serviceAuthorization/observerModel/providerAfterChannelDecryption/observableFields"
-        ),
-        Some(&serde_json::json!([
-            "authorization_scheme",
-            "service_scope_id",
-            "authorization_operation",
-            "credential_presentation",
-            "authorization_timing",
-            "authorization_result"
-        ]))
-    );
-    assert_eq!(
-        contract.pointer(
-            "/serviceAuthorization/observerModel/providerAfterChannelDecryption/forbiddenFields"
-        ),
-        Some(&serde_json::json!([
-            "bolt11_invoice",
-            "payment_hash",
-            "payment_preimage",
-            "payer_identity",
-            "peer_provider_id",
-            "provider_pair_id",
-            "pir_query_payload",
-            "pir_result"
-        ]))
-    );
+    assert_eq!(contract.pointer("/serviceAuthorization"), None);
+    assert!(!contract["roundKinds"]
+        .as_array()
+        .expect("roundKinds must be an array")
+        .iter()
+        .any(|kind| kind.as_str() == Some("service_authorization")));
+    assert!(!contract["admittedLeakage"]
+        .as_array()
+        .expect("admittedLeakage must be an array")
+        .iter()
+        .any(|axis| axis
+            .as_str()
+            .is_some_and(|axis| axis.starts_with("authorization_"))));
 }

@@ -967,7 +967,6 @@ fn grant_json_value_v1(grant: &AuthGrantedV1) -> serde_json::Value {
         "scopeIdHex": hex::encode(grant.scope_id),
         "enforcedProfile": grant.enforced_profile,
         "expiresInMs": grant.expires_in_ms,
-        "hasHarmonyAttach": grant.harmony_attach.is_some(),
     })
 }
 
@@ -1152,7 +1151,6 @@ mod tests {
             scope_id: [0x2a; 32],
             enforced_profile: 17,
             expires_in_ms: 9_000,
-            harmony_attach: None,
         };
         let value = grant_json_value_v1(&grant);
         let object = value.as_object().expect("grant JSON object");
@@ -1170,12 +1168,6 @@ mod tests {
         assert_eq!(
             object.get("expiresInMs").and_then(|value| value.as_u64()),
             Some(9_000)
-        );
-        assert_eq!(
-            object
-                .get("hasHarmonyAttach")
-                .and_then(|value| value.as_bool()),
-            Some(false)
         );
     }
 

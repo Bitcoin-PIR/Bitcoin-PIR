@@ -7,14 +7,6 @@
 
 use std::io;
 
-// Service authorization has its own canonical body codec. Re-export the
-// collision-checked opcodes here so existing runtime/server dispatch code has
-// one registry; body decoding lives in `crate::service_admission`.
-pub use pir_service_protocol::{
-    REQ_AUTH_BEGIN_V1, REQ_HARMONY_ATTACH_V1, REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1,
-    RESP_AUTH_RESULT_V1, RESP_HARMONY_ATTACH_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
-};
-
 // ─── Request variants ───────────────────────────────────────────────────────
 
 pub const REQ_PING: u8 = 0x00;

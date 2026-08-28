@@ -15,41 +15,6 @@ pub(crate) use config::LocalAdmissionConfigV1;
 
 use std::path::Path;
 
-use pir_runtime_core::service_admission::{
-    AdmissionCommitErrorV1, AdmissionMethodCommitterV1, AdmissionMethodRouteV1,
-};
-use pir_service_protocol::BoundAuthAttemptV1;
-
-/// Open, credential-free admission committer (the post-PoW free path):
-/// admits the OpenBestEffort route unconditionally. Proof-of-work as an
-/// admission mechanism is deleted; throttling, when desired, belongs to the
-/// operator-local configuration rather than to a cryptographic challenge.
-pub(crate) struct OpenFreeCommitterV1;
-
-impl AdmissionMethodCommitterV1 for OpenFreeCommitterV1 {
-    fn verify_and_commit_v1(
-        &self,
-        route: AdmissionMethodRouteV1,
-        _attempt: &BoundAuthAttemptV1<'_>,
-        _now_unix_seconds: u64,
-    ) -> Result<(), AdmissionCommitErrorV1> {
-        match route {
-            AdmissionMethodRouteV1::FreeOpenBestEffort => Ok(()),
-            _ => Err(AdmissionCommitErrorV1::UnsupportedScheme),
-        }
-    }
-}
-
-#[cfg(test)]
-mod open_free_tests {
-    use super::OpenFreeCommitterV1;
-
-    #[test]
-    fn open_free_object_is_zero_sized() {
-        assert_eq!(core::mem::size_of::<OpenFreeCommitterV1>(), 0);
-    }
-}
-
 /// Resolved local admission settings for this boot.
 #[derive(Clone, Debug)]
 pub(crate) struct LocalAdmissionV1 {

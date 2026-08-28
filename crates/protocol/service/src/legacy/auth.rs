@@ -4,7 +4,6 @@ use core::{fmt, mem};
 
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::attach::HarmonyAttachGrantV1;
 use crate::codec::{expect_v1, put_bytes_u32, Decoder};
 use crate::{
     AuthPaddingClassV1, AuthScheme, ScopeId, ServicePolicyV1, ServiceProtocolError,
@@ -12,7 +11,7 @@ use crate::{
 };
 
 pub use crate::operation::{
-    AUTH_FRAME_CLASS_V1, HintTransport, OperationStartV1, MAX_AUTH_PROOF_LEN,
+    AUTH_FRAME_CLASS_V1, HarmonyHintSideV1, HintTransport, OperationStartV1, MAX_AUTH_PROOF_LEN,
     OPERATION_START_DIGEST_DOMAIN,
 };
 
@@ -203,7 +202,6 @@ pub struct AuthGrantedV1 {
     pub scope_id: ScopeId,
     pub enforced_profile: u16,
     pub expires_in_ms: u32,
-    pub harmony_attach: Option<HarmonyAttachGrantV1>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,19 +232,7 @@ impl AuthResultV1 {
                 out.extend_from_slice(&granted.scope_id);
                 out.extend_from_slice(&granted.enforced_profile.to_le_bytes());
                 out.extend_from_slice(&granted.expires_in_ms.to_le_bytes());
-                match &granted.harmony_attach {
-                    Some(attach) => {
-                        if attach.expires_in_ms > granted.expires_in_ms {
-                            return Err(ServiceProtocolError::InvalidValue {
-                                field: "AuthGrantedV1.harmony_attach.expires_in_ms",
-                                reason: "must not outlive the authorization grant",
-                            });
-                        }
-                        out.push(1);
-                        attach.encode_into(&mut out)?;
-                    }
-                    None => out.push(0),
-                }
+                out.push(0);
             }
             Self::Rejected(rejected) => {
                 out.push(2);
@@ -272,30 +258,11 @@ impl AuthResultV1 {
                         reason: "must be non-zero",
                     });
                 }
-                let harmony_attach = match decoder.u8("AuthGrantedV1.has_harmony_attach")? {
-                    0 => None,
-                    1 => Some(HarmonyAttachGrantV1::decode_from(&mut decoder)?),
-                    value => {
-                        return Err(ServiceProtocolError::UnknownDiscriminant {
-                            kind: "AuthGrantedV1.has_harmony_attach",
-                            value,
-                        })
-                    }
-                };
-                if harmony_attach
-                    .as_ref()
-                    .is_some_and(|attach| attach.expires_in_ms > expires_in_ms)
-                {
-                    return Err(ServiceProtocolError::InvalidValue {
-                        field: "AuthGrantedV1.harmony_attach.expires_in_ms",
-                        reason: "must not outlive the authorization grant",
-                    });
-                }
+                let _legacy_attach_flag = decoder.u8("AuthGrantedV1.has_harmony_attach")?;
                 Self::Granted(AuthGrantedV1 {
                     scope_id,
                     enforced_profile,
                     expires_in_ms,
-                    harmony_attach,
                 })
             }
             2 => Self::Rejected(AuthRejectedV1 {
@@ -415,7 +382,6 @@ impl ServicePolicyResponseV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attach::HarmonyHintSideV1;
 
     fn auth(operation: OperationStartV1) -> AuthBeginV1 {
         AuthBeginV1 {
@@ -537,19 +503,6 @@ mod tests {
                 scope_id: [4; 32],
                 enforced_profile: 8,
                 expires_in_ms: 10_000,
-                harmony_attach: None,
-            }),
-            AuthResultV1::Granted(AuthGrantedV1 {
-                scope_id: [4; 32],
-                enforced_profile: 8,
-                expires_in_ms: 10_000,
-                harmony_attach: Some(HarmonyAttachGrantV1 {
-                    operation_id: [5; 32],
-                    attach_secret: [6; 32],
-                    primary_side: HarmonyHintSideV1::Index,
-                    attach_side: HarmonyHintSideV1::Chunk,
-                    expires_in_ms: 9_000,
-                }),
             }),
             AuthResultV1::Rejected(AuthRejectedV1 {
                 code: AuthRejectCode::InvalidOrSpent,
