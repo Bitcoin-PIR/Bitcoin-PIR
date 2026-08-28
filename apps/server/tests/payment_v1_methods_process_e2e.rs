@@ -56,7 +56,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
 const FREE_OPEN_OFFER_ID: u32 = 10;
-const FREE_IP_OFFER_ID: u32 = 11;
 const BAT_OFFER_ID: u32 = 12;
 const ARC_OFFER_ID: u32 = 13;
 const OPERATION_PROFILE: u16 = 21;
@@ -254,36 +253,6 @@ async fn independent_providers_enforce_free_bat_and_experimental_arc_over_real_s
     )
     .await;
 
-    // The direct-IP quota is provider-local and durable.  Consuming provider
-    // 0's one-slot bucket does not consume provider 1's independent bucket.
-    authorize_and_query(
-        port0,
-        &provider0,
-        manifest_root,
-        &request,
-        FREE_IP_OFFER_ID,
-        &[],
-    )
-    .await;
-    expect_authorization_rejected(
-        port0,
-        &provider0,
-        manifest_root,
-        &request,
-        FREE_IP_OFFER_ID,
-        &[],
-        "server-busy",
-    )
-    .await;
-    authorize_and_query(
-        port1,
-        &provider1,
-        manifest_root,
-        &request,
-        FREE_IP_OFFER_ID,
-        &[],
-    )
-    .await;
 
     // A provider-0 BAT is rejected by provider 1's independent key before
     // provider 1 accepts and commits its own capability.
@@ -378,16 +347,6 @@ async fn independent_providers_enforce_free_bat_and_experimental_arc_over_real_s
     let server0 = ServerProcess::spawn(root.path(), &db_path, &provider0, port0, 1);
     let server1 = ServerProcess::spawn(root.path(), &db_path, &provider1, port1, 1);
     for (port, fixture) in [(port0, &provider0), (port1, &provider1)] {
-        expect_authorization_rejected(
-            port,
-            fixture,
-            manifest_root,
-            &request,
-            FREE_IP_OFFER_ID,
-            &[],
-            "server-busy",
-        )
-        .await;
         expect_authorization_rejected(
             port,
             fixture,
@@ -720,7 +679,6 @@ fn build_provider(root: &Path, index: u8, manifest_root: [u8; 32], now: u64) -> 
 
     let offers = vec![
         free_offer(FREE_OPEN_OFFER_ID, FreeModeV1::OpenBestEffort),
-        free_offer(FREE_IP_OFFER_ID, FreeModeV1::IpRateLimited),
         paid_offer(
             BAT_OFFER_ID,
             AuthScheme::BitcoinPirCashuBatV1,
@@ -834,7 +792,6 @@ fn credential_binding(
 fn free_offer(offer_id: u32, mode: FreeModeV1) -> ServiceOfferV1 {
     let (free_quota, free_window_seconds) = match mode {
         FreeModeV1::OpenBestEffort => (0, 0),
-        FreeModeV1::IpRateLimited => (1, 3_600),
         _ => panic!("test helper supports only open and IP Free modes"),
     };
     ServiceOfferV1 {

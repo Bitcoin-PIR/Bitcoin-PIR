@@ -476,7 +476,7 @@ fn free_ip_offer(capability_count: usize) -> ServiceOfferV1 {
     ServiceOfferV1 {
         offer_id: FREE_IP_OFFER_ID,
         acquisition: AcquisitionMethod::FreeV1,
-        free_mode: FreeModeV1::IpRateLimited,
+        free_mode: FreeModeV1::OpenBestEffort,
         free_quota: u32::try_from(capability_count).unwrap(),
         free_window_seconds: 3_600,
         free_pow_difficulty_bits: 0,

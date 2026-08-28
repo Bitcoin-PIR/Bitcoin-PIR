@@ -72,7 +72,6 @@ fn canonical_body(request: &ServiceWireRequestV1) -> Vec<u8> {
     match request {
         ServiceWireRequestV1::Policy(request) => request.encode(),
         ServiceWireRequestV1::Auth(request) => request.encode_padded().unwrap(),
-        ServiceWireRequestV1::PowChallenge(request) => request.encode_padded().unwrap(),
         ServiceWireRequestV1::HarmonyAttach(request) => request.encode_padded().unwrap(),
     }
 }
@@ -88,7 +87,6 @@ fn payment_v1_provider_admission_is_total_and_never_falls_through_known_opcodes(
     for opcode in [
         REQ_SERVICE_POLICY_V1,
         REQ_AUTH_BEGIN_V1,
-        REQ_POW_CHALLENGE_V1,
         REQ_HARMONY_ATTACH_V1,
     ] {
         for (case_index, body) in bodies.iter().enumerate() {

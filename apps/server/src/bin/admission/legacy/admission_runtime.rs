@@ -17,7 +17,6 @@ use pir_provider_clearing_client::{
     ProviderRedeemIdempotencyKeyV1, SharedIssuerAdmissionCommitterV1,
     SharedIssuerRedeemEnvelopeV1, SharedIssuerRedeemTransportV1, SharedIssuerTransportErrorV1,
 };
-use pir_runtime_core::free_admission::{FreeIpSubjectKeyV1, FreeRateLimitStateV1};
 use pir_runtime_core::harmony_attach_runtime::HarmonyAttachRegistryV1;
 use pir_runtime_core::service_admission::AdmissionMethodRouteV1;
 use pir_runtime_core::service_policy_runtime::{
@@ -42,8 +41,6 @@ pub(crate) struct StrictServiceAdmissionRuntimeV1 {
     /// Every durable quota, credential, payment, Cashu, ARC, retained-policy,
     /// or shared-issuer route requires this store at startup.
     pub(crate) provider_store: Option<ProviderStore>,
-    pub(crate) free_rate_limits: Arc<FreeRateLimitStateV1>,
-    pub(crate) free_ip_subject_key: Option<FreeIpSubjectKeyV1>,
     pub(crate) trust_direct_peer_ip: bool,
     pub(crate) bat_keyring: Option<K256CashuMintKeyringV1>,
     pub(crate) experimental_arc_keyring: Option<ArcSecretKeyringV1>,
@@ -339,22 +336,17 @@ impl StrictServiceAdmissionRuntimeV1 {
             .map(Some)
     }
 
-    pub(crate) fn is_current_policy_digest(&self, policy_digest: &[u8; 32]) -> bool {
-        policy_digest == &self.policy.policy_digest()
-    }
-
     pub(crate) fn supports(&self, route: AdmissionMethodRouteV1) -> bool {
         match route {
             AdmissionMethodRouteV1::FreeOpenBestEffort => self.provider_store.is_some(),
-            AdmissionMethodRouteV1::FreeProofOfWork => true,
             AdmissionMethodRouteV1::FreeAnonymousTicketProviderLocal
             | AdmissionMethodRouteV1::Bolt11DirectReceiptProviderLocal => {
                 self.provider_store.is_some()
             }
-            AdmissionMethodRouteV1::FreeIpRateLimited => {
-                self.free_ip_subject_key.is_some()
-                    && self.trust_direct_peer_ip
-                    && self.free_rate_limits.is_persistent()
+            // Free proof-of-work and free IP-rate-limited routes were removed
+            // with the proof-of-work mechanism (R2).
+            AdmissionMethodRouteV1::FreeProofOfWork | AdmissionMethodRouteV1::FreeIpRateLimited => {
+                false
             }
             AdmissionMethodRouteV1::BitcoinPirCashuBatProviderLocal => {
                 self.provider_store.is_some() && self.bat_keyring.is_some()

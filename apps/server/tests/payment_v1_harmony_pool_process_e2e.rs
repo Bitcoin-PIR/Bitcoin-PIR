@@ -1073,10 +1073,10 @@ fn install_two_database_free_pow_policy(
             offers: vec![ServiceOfferV1 {
                 offer_id: 70 + u32::try_from(db_id).unwrap(),
                 acquisition: AcquisitionMethod::FreeV1,
-                free_mode: FreeModeV1::ProofOfWork,
+                free_mode: FreeModeV1::OpenBestEffort,
                 free_quota: 0,
                 free_window_seconds: 0,
-                free_pow_difficulty_bits: 1,
+                free_pow_difficulty_bits: 0,
                 priority_class: 1,
                 authorization: AuthScheme::FreeV1,
                 verification: VerificationMode::ProviderLocal,

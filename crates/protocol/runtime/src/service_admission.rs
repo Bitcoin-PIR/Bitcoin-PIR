@@ -21,11 +21,11 @@ use pir_service_protocol::{
     bind_auth_begin_v1, ArcPresentationCanonicalizerV1, AuthBeginV1, AuthGrantedV1, AuthRejectCode,
     AuthRejectedV1, AuthResultV1, AuthScheme, AuthorizationProofV1, BoundAuthAttemptV1,
     EntitlementLimitsV1, FreeAuthorizationProofV1, FreeModeV1, HarmonyAttachResultV1,
-    HarmonyAttachV1, HintTransport, OperationStartV1, PowChallengeRequestV1,
-    PowChallengeResponseV1, ScopeId, ServicePolicyRequestV1, ServicePolicyResponseV1,
+    HarmonyAttachV1, HintTransport, OperationStartV1, ScopeId, ServicePolicyRequestV1,
+    ServicePolicyResponseV1,
     ServiceProtocolError, TrustedServiceCatalogV1, VerificationMode, VerifiedServiceOfferV1,
-    REQ_AUTH_BEGIN_V1, REQ_HARMONY_ATTACH_V1, REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1,
-    RESP_AUTH_RESULT_V1, RESP_HARMONY_ATTACH_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
+    REQ_AUTH_BEGIN_V1, REQ_HARMONY_ATTACH_V1, REQ_SERVICE_POLICY_V1, RESP_AUTH_RESULT_V1,
+    RESP_HARMONY_ATTACH_V1, RESP_SERVICE_POLICY_V1,
 };
 use pir_service_store::{
     verify_provider_local_arc_spend_v1, verify_provider_local_bearer_spend_v1,
@@ -43,7 +43,6 @@ use crate::harmony_attach_runtime::{
 pub enum ServiceWireRequestV1 {
     Policy(ServicePolicyRequestV1),
     Auth(Box<AuthBeginV1>),
-    PowChallenge(Box<PowChallengeRequestV1>),
     HarmonyAttach(Box<HarmonyAttachV1>),
 }
 
@@ -56,10 +55,6 @@ impl fmt::Debug for ServiceWireRequestV1 {
                 .finish(),
             Self::Auth(request) => formatter
                 .debug_tuple("ServiceWireRequestV1::Auth")
-                .field(request)
-                .finish(),
-            Self::PowChallenge(request) => formatter
-                .debug_tuple("ServiceWireRequestV1::PowChallenge")
                 .field(request)
                 .finish(),
             Self::HarmonyAttach(request) => formatter
@@ -83,9 +78,6 @@ impl ServiceWireRequestV1 {
             REQ_AUTH_BEGIN_V1 => Ok(Some(Self::Auth(Box::new(AuthBeginV1::decode_padded(
                 body,
             )?)))),
-            REQ_POW_CHALLENGE_V1 => Ok(Some(Self::PowChallenge(Box::new(
-                PowChallengeRequestV1::decode_padded(body)?,
-            )))),
             REQ_HARMONY_ATTACH_V1 => Ok(Some(Self::HarmonyAttach(Box::new(
                 HarmonyAttachV1::decode_padded(body)?,
             )))),
@@ -111,15 +103,6 @@ pub fn encode_auth_result_response_v1(
     Ok(encode_service_record_v1(
         RESP_AUTH_RESULT_V1,
         &response.encode()?,
-    ))
-}
-
-pub fn encode_pow_challenge_response_v1(
-    response: &PowChallengeResponseV1,
-) -> Result<Vec<u8>, ServiceProtocolError> {
-    Ok(encode_service_record_v1(
-        RESP_POW_CHALLENGE_V1,
-        &response.encode_padded()?,
     ))
 }
 
@@ -941,10 +924,9 @@ impl ConnectionAdmissionGateV1 {
         }
     }
 
-    /// Check that a PoW challenge request belongs to the exact policy already
-    /// served on this encrypted connection. Challenge issuance does not grant
-    /// work and does not consume a capability.
-    pub fn permit_pow_challenge(
+    /// Shared policy-match preflight for operations that must attach to the
+    /// exact policy already served on this encrypted connection.
+    fn require_matching_policy_grant_state(
         &self,
         frame_was_encrypted: bool,
         policy_digest: &[u8; 32],
@@ -975,7 +957,7 @@ impl ConnectionAdmissionGateV1 {
         frame_was_encrypted: bool,
         policy_digest: &[u8; 32],
     ) -> Result<(), GateErrorV1> {
-        self.permit_pow_challenge(frame_was_encrypted, policy_digest)
+        self.require_matching_policy_grant_state(frame_was_encrypted, policy_digest)
     }
 
     /// Full binding -> method dispatch -> authoritative commit -> grant path.

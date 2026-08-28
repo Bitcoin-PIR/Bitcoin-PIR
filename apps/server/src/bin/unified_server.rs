@@ -27,12 +27,9 @@ use pir_cashu_client::CashuCustodyExposureLimitsV1;
 #[cfg(test)]
 use pir_service_store::CashuCustodyInventoryV1;
 
-use pir_runtime_core::free_admission::{
-    FreeAdmissionCommitterV1,
-};
 use pir_runtime_core::service_admission::{
     encode_auth_result_response_v1, encode_harmony_attach_result_response_v1,
-    encode_pow_challenge_response_v1, encode_service_policy_response_v1, AdmissionEnforcementV1,
+encode_service_policy_response_v1, AdmissionEnforcementV1,
     BackendFrameKindV1, BackendFramePermitV1, BackendFrameV1,
     CompositeAdmissionMethodCommitterV1, ConnectionAdmissionGateV1, ProviderStoreBearerCommitterV1,
     ServiceWireRequestV1,
@@ -5220,7 +5217,6 @@ fn service_gate_allows_ungranted_opcode(variant: u8) -> bool {
             | REQ_HANDSHAKE
             | REQ_SERVICE_POLICY_V1
             | REQ_AUTH_BEGIN_V1
-            | REQ_POW_CHALLENGE_V1
             | REQ_HARMONY_ATTACH_V1
             | REQ_ADMIN_AUTH_CHALLENGE
             | REQ_ADMIN_AUTH_RESPONSE
@@ -6055,7 +6051,6 @@ fn is_pre_auth_egress_opcode_v1(variant: u8) -> bool {
             | REQ_ANNOUNCE
             | REQ_HANDSHAKE
             | REQ_SERVICE_POLICY_V1
-            | REQ_POW_CHALLENGE_V1
             | REQ_BUCKET_MERKLE_TREE_TOPS
             | REQ_HARMONY_GET_INFO
             | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
@@ -9123,7 +9118,7 @@ async fn main() {
             // Privacy-conscious clients (the browser SDK) wrap every
             // application frame; legacy clients keep working.
             let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
-            let mut free_admission: Option<FreeAdmissionCommitterV1> = None;
+            let open_free_committer = admission::local::OpenFreeCommitterV1;
             // A Payment V1 V2Full authorization reserves one durable pool file
             // before credential verification and keeps its inode lock here
             // after credential commit. Only the first main dispatch durably
@@ -10030,9 +10025,8 @@ async fn main() {
                                                 if let Some(committer) = provider_local.as_ref() {
                                                     composite = composite.with_provider_local(committer);
                                                 }
-                                                if let Some(free) = free_admission.as_ref() {
-                                                    composite = composite.with_free(free);
-                                                }
+                                                composite = composite
+                                                    .with_free(&open_free_committer);
                                                 let standard_cashu = match (
                                                     runtime.provider_store.as_ref(),
                                                     runtime.cashu_recovery_cipher.as_ref(),
@@ -10281,174 +10275,6 @@ async fn main() {
                                 );
                             }
                         }
-                    }
-                    REQ_POW_CHALLENGE_V1 => {
-                        if !request_was_encrypted {
-                            let response = Response::Error(
-                                "PoW challenge requires the authenticated encrypted channel"
-                                    .into(),
-                            );
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                response.encode(),
-                            )
-                            .await;
-                            continue;
-                        }
-                        let request = match ServiceWireRequestV1::decode_inner_payload(payload) {
-                            Ok(Some(ServiceWireRequestV1::PowChallenge(request))) => request,
-                            Ok(_) => unreachable!("matched PoW challenge opcode"),
-                            Err(error) => {
-                                let response = Response::Error(format!(
-                                    "malformed REQ_POW_CHALLENGE_V1: {error}"
-                                ));
-                                let _ = send_resp(
-                                    &mut sink,
-                                    channel_session.as_mut(),
-                                    response.encode(),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        let Some(runtime) = server.service_admission.as_ref() else {
-                            let response = Response::Error(
-                                "service admission V1 is not enabled".into(),
-                            );
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                response.encode(),
-                            )
-                            .await;
-                            continue;
-                        };
-                        let Some(free) = free_admission.as_ref() else {
-                            let response = Response::Error(
-                                "Free admission is not bound to this secure channel".into(),
-                            );
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                response.encode(),
-                            )
-                            .await;
-                            continue;
-                        };
-                        let now_unix = match current_unix_seconds_v1() {
-                            Ok(now) => now,
-                            Err(_) => {
-                                let response =
-                                    Response::Error("service clock unavailable".into());
-                                let _ = send_resp(
-                                    &mut sink,
-                                    channel_session.as_mut(),
-                                    response.encode(),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        if !runtime.is_current_policy_digest(&request.policy_digest) {
-                            let response = Response::Error(
-                                "PoW challenges are available only under the current policy"
-                                    .into(),
-                            );
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                response.encode(),
-                            )
-                            .await;
-                            continue;
-                        }
-                        let verified_offer = match runtime.policy.verified_offer(
-                            &request.scope_id,
-                            request.offer_id,
-                            now_unix,
-                        ) {
-                            Ok(offer) => offer,
-                            Err(_) => {
-                                let response =
-                                    Response::Error("service offer unavailable".into());
-                                let _ = send_resp(
-                                    &mut sink,
-                                    channel_session.as_mut(),
-                                    response.encode(),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        let catalog_matches = server
-                            .resolve_service_operation_for_policy_v1(
-                                runtime.policy.policy(),
-                                &request.operation,
-                            )
-                            .is_some_and(|resolution| {
-                                let scope = verified_offer.scope();
-                                resolution.backend() == scope.backend
-                                    && resolution.workload() == scope.workload
-                                    && resolution.protocol_version() == scope.protocol_version
-                                    && resolution.dataset() == &scope.dataset
-                                    && resolution.operation_profile() == scope.operation_profile
-                            });
-                        if !catalog_matches
-                            || sink
-                                .admission_gate_mut()
-                                .permit_pow_challenge(true, &request.policy_digest)
-                                .is_err()
-                        {
-                            let response =
-                                Response::Error("PoW challenge scope unavailable".into());
-                            let _ = send_resp(
-                                &mut sink,
-                                channel_session.as_mut(),
-                                response.encode(),
-                            )
-                            .await;
-                            continue;
-                        }
-                        let challenge = match free.issue_pow_challenge(
-                            *request,
-                            verified_offer,
-                            now_unix,
-                            60,
-                        ) {
-                            Ok(challenge) => challenge,
-                            Err(_) => {
-                                let response =
-                                    Response::Error("PoW challenge unavailable".into());
-                                let _ = send_resp(
-                                    &mut sink,
-                                    channel_session.as_mut(),
-                                    response.encode(),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        let encoded = match encode_pow_challenge_response_v1(&challenge) {
-                            Ok(encoded) => encoded,
-                            Err(_) => {
-                                let response =
-                                    Response::Error("PoW challenge encoding failed".into());
-                                let _ = send_resp(
-                                    &mut sink,
-                                    channel_session.as_mut(),
-                                    response.encode(),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        let _ = send_resp(
-                            &mut sink,
-                            channel_session.as_mut(),
-                            encoded,
-                        )
-                        .await;
                     }
                     REQ_HARMONY_ATTACH_V1 => {
                         let result = if !request_was_encrypted {
@@ -10835,38 +10661,6 @@ async fn main() {
                             let server_hs = server.channel_keypair.new_handshake();
                             let server_eph_pub = server_hs.server_eph_pub();
                             let new_session = server_hs.complete_handshake(&client_eph_pub, &nonce);
-                            let new_free_admission = match server.service_admission.as_ref() {
-                                Some(runtime) => {
-                                    let ip_subject = if runtime.trust_direct_peer_ip {
-                                        runtime
-                                            .free_ip_subject_key
-                                            .as_ref()
-                                            .map(|key| key.subject(&runtime.policy.policy().provider_id, peer.ip()))
-                                    } else {
-                                        None
-                                    };
-                                    match FreeAdmissionCommitterV1::new(
-                                        runtime.policy.policy().provider_id,
-                                        new_session.service_authorization_exporter_v1(),
-                                        ip_subject,
-                                        Arc::clone(&runtime.free_rate_limits),
-                                    ) {
-                                        Ok(committer) => Some(committer),
-                                        Err(error) => {
-                                            unsafe_debug_log!(
-                                                "[{}] failed to bind Free admission to secure channel: {}",
-                                                peer, error
-                                            );
-                                            let err = Response::Error(
-                                                "secure-channel service binding failed".into(),
-                                            );
-                                            let _ = send_resp(&mut sink, None, err.encode()).await;
-                                            break;
-                                        }
-                                    }
-                                }
-                                None => None,
-                            };
                             let resp = Response::Handshake(
                                 pir_runtime_core::protocol::HandshakeResult { server_eph_pub },
                             );
@@ -10883,7 +10677,6 @@ async fn main() {
                             // all subsequent client→server and server→client
                             // frames.
                             channel_session = Some(new_session);
-                            free_admission = new_free_admission;
                             sink.admission_gate_mut().secure_channel_established();
                         } else {
                             let err = Response::Error(
@@ -14910,7 +14703,7 @@ mod harmony_dos_guard_tests {
             .split_once("REQ_AUTH_BEGIN_V1 =>")
             .unwrap()
             .1
-            .split_once("REQ_POW_CHALLENGE_V1 =>")
+            .split_once("REQ_HARMONY_ATTACH_V1 =>")
             .unwrap()
             .0;
         assert!(auth.contains("reserved_harmony_v2_full ="));

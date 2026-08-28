@@ -1042,7 +1042,7 @@ fn build_provider(
         offers.push(ServiceOfferV1 {
             offer_id: FREE_POW_OFFER_ID,
             acquisition: AcquisitionMethod::FreeV1,
-            free_mode: FreeModeV1::ProofOfWork,
+            free_mode: FreeModeV1::OpenBestEffort,
             free_quota: 0,
             free_window_seconds: 0,
             free_pow_difficulty_bits: FREE_POW_DIFFICULTY_BITS,
