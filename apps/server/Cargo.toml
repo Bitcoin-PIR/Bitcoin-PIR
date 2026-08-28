@@ -56,20 +56,6 @@ path = "src/bin/harmonypir_hint_bench.rs"
 [features]
 default = ["fastprp"]
 fastprp = ["harmonypir/fastprp-prp"]
-# Non-default local process E2E only. This forwards the test-only private CA
-# trust hook; production binaries and workflows must never enable it.
-# Non-default local process E2E only. This forwards a private test CA hook;
-# the mandatory leaf-SPKI pin remains signed Cashu-manifest data.
-# `pir-strict-https` independently compile-errors if this reaches a release build.
-standard-cashu-process-e2e = ["pir-strict-https/test-only-webpki-root"]
-# Non-default local process E2E for provider-to-shared-issuer clearing. Reuse
-# the exact Standard-Cashu private-root injection surface so `unified_server`
-# has only one test-only WebPKI escape hatch; `pir-strict-https` rejects that
-# hook in release builds.
-shared-issuer-process-e2e = [
-  "standard-cashu-process-e2e",
-  "pir-provider-clearing-client/test-only-webpki-root",
-]
 # Privacy-dangerous query-detail logging for local tests only. The build script
 # rejects this feature outside Cargo's debug profile; normal dev/release
 # binaries do not compile or recognize its CLI switch.
@@ -84,12 +70,7 @@ harmony-oram = ["cuckoo-oram"]
 pir-core = { path = "../../crates/protocol/core" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
 pir-service-protocol = { path = "../../crates/protocol/service" }
-pir-service-store = { path = "../../crates/protocol/service-store" }
-pir-payment-crypto = { path = "../../crates/payment/crypto", features = ["provider-store"] }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
-pir-arc-adapter = { path = "../../crates/payment/arc-adapter", features = ["provider-store"] }
-pir-cashu-client = { path = "../../crates/payment/legacy/cashu-client" }
-pir-provider-clearing-client = { path = "../../crates/payment/legacy/provider-clearing-client" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-strict-https = { path = "../../crates/net/strict-https" }
@@ -116,8 +97,6 @@ bitcoinpir-oram = { path = "../../vendor/bitcoinpir-oram", optional = true }
 tempfile = "3"
 pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
-pir-issuer-store = { path = "../../crates/payment/issuer-store" }
-pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
 rand_chacha = "0.3"
 clap = { version = "4", features = ["derive"] }

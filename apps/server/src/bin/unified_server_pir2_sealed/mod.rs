@@ -121,9 +121,16 @@ pub(super) enum Pir2SealedStartupV1 {
     },
     Ready {
         identity_key: SigningKey,
+        // Clearing-side ceremony outputs. Still validated and wrapped by the
+        // current measured-boot ceremony, but no longer consumed by the
+        // server since the clearing world was deleted; the R5 ceremony
+        // simplification removes them from the variant entirely.
+        #[allow(dead_code)]
         clearing_key: SigningKey,
         identity_cert: IdentityCert,
+        #[allow(dead_code)]
         accounting_auth: ProviderAccountingAuthorizationV2,
+        #[allow(dead_code)]
         issuer_approval: IssuerAccountingApprovalV2,
     },
 }

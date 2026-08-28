@@ -1,134 +1,73 @@
 {
-  "schema": "BitcoinPIR/wire-shape-contract/v1",
-  "contractVersion": 2,
-  "description": "Public PIR and Payment V1 authorization parameters, observer boundaries, and leakage axes covered by the EasyCrypt simulator-property proof.",
-  "proofBinding": {
-    "format": "BitcoinPIR/easycrypt-contract-binding/v1",
-    "source": "ContractBinding.ec"
+ "schema": "BitcoinPIR/wire-shape-contract/v1",
+ "contractVersion": 3,
+ "description": "Public PIR parameters, observer boundaries, and leakage axes covered by the EasyCrypt simulator-property proof. Version 3 removes the Payment V1 service-authorization round: free queries are open and the single-issuer credential presentation rides the pre-existing 0x08/0x09 opcodes, so there is no authorization exchange left to model.",
+ "proofBinding": {
+  "format": "BitcoinPIR/easycrypt-contract-binding/v1",
+  "source": "ContractBinding.ec"
+ },
+ "parameters": {
+  "indexGroups": 75,
+  "chunkGroups": 80,
+  "indexCuckooHashes": 2
+ },
+ "backends": {
+  "dpf": {
+   "deploymentServerCount": 2,
+   "formalPirRoundServerIds": [
+    0,
+    1
+   ]
   },
-  "parameters": {
-    "indexGroups": 75,
-    "chunkGroups": 80,
-    "indexCuckooHashes": 2
+  "harmony": {
+   "deploymentServerCount": 2,
+   "formalPirRoundServerIds": [
+    0
+   ]
   },
-  "backends": {
-    "dpf": {
-      "deploymentServerCount": 2,
-      "formalPirRoundServerIds": [0, 1]
-    },
-    "harmony": {
-      "deploymentServerCount": 2,
-      "formalPirRoundServerIds": [0]
-    },
-    "onion": {
-      "deploymentServerCount": 1,
-      "formalPirRoundServerIds": [0]
-    }
-  },
-  "roundKinds": [
-    "index",
-    "chunk",
-    "index_merkle_siblings",
-    "chunk_merkle_siblings",
-    "harmony_hint_refresh",
-    "onion_key_register",
-    "info",
-    "service_authorization",
-    "merkle_tree_tops"
-  ],
-  "admittedLeakage": [
-    "index_max_items_per_group_per_level",
-    "chunk_max_items_per_group_per_level",
-    "session_query_index",
-    "query_db_id",
-    "authorization_scheme_by_server",
-    "authorization_scope_id_by_server",
-    "authorization_operation_by_server",
-    "authorization_timing_by_server",
-    "authorization_result_shape_by_server"
-  ],
-  "serviceAuthorization": {
-    "roundKind": "service_authorization",
-    "independentPerServer": true,
-    "transport": {
-      "secureChannelRequired": true,
-      "requestOpcode": 14,
-      "responseOpcode": 14,
-      "request": {
-        "paddingClassWireId": 1,
-        "bodyBytes": 16384,
-        "canonicalPaddingByte": 0,
-        "innerOpcodeBytes": 1,
-        "innerPlaintextBytes": 16385,
-        "encryptedMagicBytes": 1,
-        "encryptedSequenceBytes": 8,
-        "aeadTagBytes": 16,
-        "sealedPayloadBytes": 16410,
-        "outerLengthPrefixBytes": 4,
-        "applicationRecordBytes": 16414
-      },
-      "response": {
-        "fixedLength": false,
-        "resultShapeObservableFromCiphertextLength": true
-      }
-    },
-    "observerModel": {
-      "networkObserverWithoutChannelKeys": {
-        "requestShapeHides": [
-          "authorization_scheme",
-          "service_scope_id",
-          "authorization_operation",
-          "credential_proof_length"
-        ],
-        "admittedLeakage": [
-          "authorization_occurrence_and_timing",
-          "authorization_result_shape"
-        ]
-      },
-      "providerAfterChannelDecryption": {
-        "observableFields": [
-          "authorization_scheme",
-          "service_scope_id",
-          "authorization_operation",
-          "credential_presentation",
-          "authorization_timing",
-          "authorization_result"
-        ],
-        "forbiddenFields": [
-          "bolt11_invoice",
-          "payment_hash",
-          "payment_preimage",
-          "payer_identity",
-          "peer_provider_id",
-          "provider_pair_id",
-          "pir_query_payload",
-          "pir_result"
-        ]
-      }
-    }
-  },
-  "explicitNonClaims": [
-    "NC-CRYPTOGRAPHIC-REDUCTIONS",
-    "NC-IMPLEMENTATION-REFINEMENT",
-    "NC-TIMING-AND-CPU",
-    "NC-NETWORK-METADATA",
-    "NC-COMPRESSION",
-    "NC-ONION-LRU-RETRY",
-    "NC-RESULT-CORRECTNESS"
-  ],
-  "implementationSurfaceIds": [
-    "pir_core::params",
-    "pir_channel::Session",
-    "pir_service_protocol::AuthBeginV1",
-    "pir_runtime_core::service_admission",
-    "pir_sdk::leakage",
-    "pir_sdk_client::dpf",
-    "pir_sdk_client::harmony",
-    "pir_sdk_client::onion",
-    "pir_sdk_client::onion_merkle",
-    "pir_sdk_client::leakage_integration",
-    "pir_sdk_wasm::harmony_wire",
-    "web::leakage",
-    "web::onionpir_client"
-  ]
+  "onion": {
+   "deploymentServerCount": 1,
+   "formalPirRoundServerIds": [
+    0
+   ]
+  }
+ },
+ "roundKinds": [
+  "index",
+  "chunk",
+  "index_merkle_siblings",
+  "chunk_merkle_siblings",
+  "harmony_hint_refresh",
+  "onion_key_register",
+  "info",
+  "merkle_tree_tops"
+ ],
+ "admittedLeakage": [
+  "index_max_items_per_group_per_level",
+  "chunk_max_items_per_group_per_level",
+  "session_query_index",
+  "query_db_id"
+ ],
+ "explicitNonClaims": [
+  "NC-CRYPTOGRAPHIC-REDUCTIONS",
+  "NC-IMPLEMENTATION-REFINEMENT",
+  "NC-TIMING-AND-CPU",
+  "NC-NETWORK-METADATA",
+  "NC-COMPRESSION",
+  "NC-ONION-LRU-RETRY",
+  "NC-RESULT-CORRECTNESS"
+ ],
+ "implementationSurfaceIds": [
+  "pir_core::params",
+  "pir_channel::Session",
+  "pir_sdk::leakage",
+  "pir_sdk_client::dpf",
+  "pir_sdk_client::harmony",
+  "pir_sdk_client::onion",
+  "pir_sdk_client::onion_merkle",
+  "pir_sdk_client::leakage_integration",
+  "pir_sdk_wasm::harmony_wire",
+  "web::leakage",
+  "web::onionpir_client"
+ ]
 }

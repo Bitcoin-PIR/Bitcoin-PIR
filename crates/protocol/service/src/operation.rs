@@ -7,9 +7,37 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::attach::HarmonyHintSideV1;
 use crate::codec::Decoder;
 use crate::{BackendId, ServiceProtocolError, WorkloadId};
+
+/// Which HarmonyPIR hint level (INDEX or CHUNK) an operation-start message
+/// refers to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum HarmonyHintSideV1 {
+    Index = 0,
+    Chunk = 1,
+}
+
+impl HarmonyHintSideV1 {
+    pub const fn complement(self) -> Self {
+        match self {
+            Self::Index => Self::Chunk,
+            Self::Chunk => Self::Index,
+        }
+    }
+
+    pub(crate) fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
+        match value {
+            0 => Ok(Self::Index),
+            1 => Ok(Self::Chunk),
+            value => Err(ServiceProtocolError::UnknownDiscriminant {
+                kind: "HarmonyHintSideV1",
+                value,
+            }),
+        }
+    }
+}
 
 /// Exact V1 authorization body length, excluding the one-byte PIR opcode and
 /// outer four-byte record length.

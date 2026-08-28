@@ -388,7 +388,6 @@ def render_contract_binding(contract: dict[str, object], contract_digest: str) -
         "harmony_hint_refresh": "RHarmonyHintRefresh",
         "onion_key_register": "ROnionKeyRegister",
         "info": "RInfo",
-        "service_authorization": "RServiceAuthorization",
         "merkle_tree_tops": "RMerkleTreeTops",
     }
     round_kinds = string_list_field(contract, "roundKinds")
@@ -407,148 +406,9 @@ def render_contract_binding(contract: dict[str, object], contract_digest: str) -
         "chunk_max_items_per_group_per_level",
         "session_query_index",
         "query_db_id",
-        "authorization_scheme_by_server",
-        "authorization_scope_id_by_server",
-        "authorization_operation_by_server",
-        "authorization_timing_by_server",
-        "authorization_result_shape_by_server",
     ]
     if leakage_axes != expected_leakage_axes:
-        fail("wire contract admittedLeakage drifted from the Payment V1 projection")
-
-    authorization = object_field(contract, "serviceAuthorization")
-    if set(authorization) != {
-        "roundKind",
-        "independentPerServer",
-        "transport",
-        "observerModel",
-    }:
-        fail("Payment V1 serviceAuthorization fields drifted")
-    if string_field(authorization, "roundKind") != "service_authorization":
-        fail("Payment V1 authorization must use the service_authorization round kind")
-    if not bool_field(authorization, "independentPerServer"):
-        fail("Payment V1 authorization must remain independent per server")
-    transport = object_field(authorization, "transport")
-    if set(transport) != {
-        "secureChannelRequired",
-        "requestOpcode",
-        "responseOpcode",
-        "request",
-        "response",
-    }:
-        fail("Payment V1 authorization transport fields drifted")
-    if not bool_field(transport, "secureChannelRequired"):
-        fail("Payment V1 authorization must require the secure channel")
-    request_opcode = int_field(transport, "requestOpcode")
-    response_opcode = int_field(transport, "responseOpcode")
-    if not (0 <= request_opcode <= 255 and 0 <= response_opcode <= 255):
-        fail("Payment V1 authorization opcodes must fit one byte")
-
-    request = object_field(transport, "request")
-    if set(request) != {
-        "paddingClassWireId",
-        "bodyBytes",
-        "canonicalPaddingByte",
-        "innerOpcodeBytes",
-        "innerPlaintextBytes",
-        "encryptedMagicBytes",
-        "encryptedSequenceBytes",
-        "aeadTagBytes",
-        "sealedPayloadBytes",
-        "outerLengthPrefixBytes",
-        "applicationRecordBytes",
-    }:
-        fail("Payment V1 authorization request-shape fields drifted")
-    padding_class_wire_id = int_field(request, "paddingClassWireId")
-    body_bytes = int_field(request, "bodyBytes")
-    canonical_padding_byte = int_field(request, "canonicalPaddingByte")
-    inner_opcode_bytes = int_field(request, "innerOpcodeBytes")
-    inner_plaintext_bytes = int_field(request, "innerPlaintextBytes")
-    encrypted_magic_bytes = int_field(request, "encryptedMagicBytes")
-    encrypted_sequence_bytes = int_field(request, "encryptedSequenceBytes")
-    aead_tag_bytes = int_field(request, "aeadTagBytes")
-    sealed_payload_bytes = int_field(request, "sealedPayloadBytes")
-    outer_length_prefix_bytes = int_field(request, "outerLengthPrefixBytes")
-    application_record_bytes = int_field(request, "applicationRecordBytes")
-    if min(
-        padding_class_wire_id,
-        body_bytes,
-        inner_opcode_bytes,
-        encrypted_magic_bytes,
-        encrypted_sequence_bytes,
-        aead_tag_bytes,
-        outer_length_prefix_bytes,
-    ) <= 0:
-        fail("Payment V1 authorization request dimensions must be positive")
-    if not 0 <= canonical_padding_byte <= 255:
-        fail("Payment V1 canonical padding byte must fit one byte")
-    if inner_plaintext_bytes != inner_opcode_bytes + body_bytes:
-        fail("Payment V1 inner plaintext length is inconsistent")
-    if sealed_payload_bytes != (
-        encrypted_magic_bytes
-        + encrypted_sequence_bytes
-        + inner_plaintext_bytes
-        + aead_tag_bytes
-    ):
-        fail("Payment V1 sealed payload length is inconsistent")
-    if application_record_bytes != outer_length_prefix_bytes + sealed_payload_bytes:
-        fail("Payment V1 application record length is inconsistent")
-
-    response = object_field(transport, "response")
-    if set(response) != {
-        "fixedLength",
-        "resultShapeObservableFromCiphertextLength",
-    }:
-        fail("Payment V1 authorization response-shape fields drifted")
-    if bool_field(response, "fixedLength"):
-        fail("Payment V1 contract must not claim that V1 auth responses are fixed length")
-    if not bool_field(response, "resultShapeObservableFromCiphertextLength"):
-        fail("Payment V1 contract must admit ciphertext response-shape leakage")
-
-    observer_model = object_field(authorization, "observerModel")
-    if set(observer_model) != {
-        "networkObserverWithoutChannelKeys",
-        "providerAfterChannelDecryption",
-    }:
-        fail("Payment V1 observer model must define exactly the network and provider views")
-    network_observer = object_field(observer_model, "networkObserverWithoutChannelKeys")
-    if set(network_observer) != {"requestShapeHides", "admittedLeakage"}:
-        fail("Payment V1 network observer fields drifted")
-    if string_list_field(network_observer, "requestShapeHides") != [
-        "authorization_scheme",
-        "service_scope_id",
-        "authorization_operation",
-        "credential_proof_length",
-    ]:
-        fail("Payment V1 network request-shape hiding boundary drifted")
-    if string_list_field(network_observer, "admittedLeakage") != [
-        "authorization_occurrence_and_timing",
-        "authorization_result_shape",
-    ]:
-        fail("Payment V1 network observer leakage boundary drifted")
-    provider_observer = object_field(observer_model, "providerAfterChannelDecryption")
-    if set(provider_observer) != {"observableFields", "forbiddenFields"}:
-        fail("Payment V1 provider observer fields drifted")
-    if string_list_field(provider_observer, "observableFields") != [
-        "authorization_scheme",
-        "service_scope_id",
-        "authorization_operation",
-        "credential_presentation",
-        "authorization_timing",
-        "authorization_result",
-    ]:
-        fail("Payment V1 provider observer projection drifted")
-    if string_list_field(provider_observer, "forbiddenFields") != [
-        "bolt11_invoice",
-        "payment_hash",
-        "payment_preimage",
-        "payer_identity",
-        "peer_provider_id",
-        "provider_pair_id",
-        "pir_query_payload",
-        "pir_result",
-    ]:
-        fail("Payment V1 provider forbidden-field boundary drifted")
+        fail("wire contract admittedLeakage drifted from the post-payment PIR projection")
 
     def ec_int_list(values: list[int]) -> str:
         return "[" + "; ".join(str(value) for value in values) + "]"
@@ -566,12 +426,7 @@ op contract_leakage (q : query) : leakage =
   {{| index_max_items_per_group_per_level = query_index_max q;
      chunk_max_items_per_group_per_level = query_chunk_max q;
      session_query_index                 = query_session_query_index q;
-     query_db_id                         = query_db_id q;
-     authorization_scheme_by_server      = query_authorization_scheme q;
-     authorization_scope_id_by_server    = query_authorization_scope_id q;
-     authorization_operation_by_server   = query_authorization_operation q;
-     authorization_timing_by_server      = query_authorization_timing q;
-     authorization_result_shape_by_server = query_authorization_result_shape q; |}}.
+     query_db_id                         = query_db_id q; |}}.
 
 lemma contract_index_groups : K = {index_groups}.
 proof. by trivial. qed.
@@ -592,40 +447,6 @@ lemma contract_onion_server_ids : pir_server_ids BOnion = {ec_int_list(backend_i
 proof. exact pir_server_ids_onion. qed.
 
 lemma contract_round_kind_count : size contract_round_kinds = {len(round_kinds)}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_request_opcode : service_auth_request_opcode = {request_opcode}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_response_opcode : service_auth_response_opcode = {response_opcode}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_padding_class : service_auth_padding_class_wire_id = {padding_class_wire_id}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_body_bytes : service_auth_body_bytes = {body_bytes}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_canonical_padding : service_auth_canonical_padding_byte = {canonical_padding_byte}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_inner_plaintext_bytes : service_auth_inner_plaintext_bytes = {inner_plaintext_bytes}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_sealed_payload_bytes : service_auth_sealed_payload_bytes = {sealed_payload_bytes}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_application_record_bytes : service_auth_application_record_bytes = {application_record_bytes}.
-proof. by trivial. qed.
-
-lemma contract_service_auth_requires_secure_channel : service_auth_secure_channel_required = true.
-proof. by trivial. qed.
-
-lemma contract_service_auth_response_is_variable : service_auth_response_fixed_length = false.
-proof. by trivial. qed.
-
-lemma contract_service_auth_result_shape_is_observable :
-  service_auth_result_shape_observable_from_ciphertext_length = true.
 proof. by trivial. qed.
 
 lemma contract_leakage_matches (q : query) : L q = contract_leakage q.

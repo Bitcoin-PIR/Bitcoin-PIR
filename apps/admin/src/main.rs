@@ -39,7 +39,6 @@
 use clap::{Parser, Subcommand};
 
 mod attest;
-mod cashu_custody;
 mod channel_test;
 mod db_proof;
 mod directory_artifact;
@@ -110,10 +109,6 @@ enum Command {
     #[command(name = "service-store-check")]
     ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
     /// Owner-only standard-Cashu custody operations. Only explicit
-    /// `spent-confirm` contacts the exact mint over strict HTTPS for NUT-07;
-    /// no command opens a listener or contacts a wallet/PIR server.
-    #[command(name = "cashu-custody")]
-    CashuCustody(cashu_custody::CashuCustodyArgs),
     /// Build and self-verify offline Payment V1 protocol artifacts.
     #[command(name = "payment-artifact")]
     PaymentArtifact(payment_artifact::PaymentArtifactArgs),
@@ -218,13 +213,6 @@ async fn main() {
                 1
             }
         },
-        Command::CashuCustody(args) => match cashu_custody::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("cashu-custody: {}", e);
-                1
-            }
-        },
         Command::PaymentArtifact(args) => match payment_artifact::run(args) {
             Ok(()) => 0,
             Err(e) => {
@@ -293,7 +281,6 @@ mod cli_tests {
             "service-keygen",
             "service-store-init",
             "service-store-check",
-            "cashu-custody",
             "payment-artifact",
             "payment-v1-no-funds-fixture",
             "pir2-sealed-release",

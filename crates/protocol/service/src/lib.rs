@@ -4,7 +4,6 @@
 //! encoding, authorization messages, opcodes, hashing, and strict decoding. It
 //! does not verify payment proofs, perform I/O, or maintain spent state.
 
-mod attach;
 #[path = "legacy/auth.rs"]
 mod auth;
 #[path = "legacy/auth_verify.rs"]
@@ -48,14 +47,10 @@ mod settlement;
 #[path = "legacy/settlement_http.rs"]
 mod settlement_http;
 
-pub use attach::{
-    try_attach_waiting_slot, HarmonyAttachGrantV1, HarmonyAttachRejectCodeV1,
-    HarmonyAttachResultV1, HarmonyAttachSlotV1, HarmonyAttachTransitionErrorV1, HarmonyAttachV1,
-    HarmonyHintSideV1, HARMONY_ATTACH_FRAME_CLASS_V1, MAX_HARMONY_ATTACH_TTL_MS_V1,
-};
 pub use auth::{
-    AuthBeginV1, AuthGrantedV1, AuthRejectCode, AuthRejectedV1, AuthResultV1, HintTransport,
-    OperationStartV1, ServicePolicyRequestV1, ServicePolicyResponseV1, AUTH_FRAME_CLASS_V1,
+    AuthBeginV1, AuthGrantedV1, AuthRejectCode, AuthRejectedV1, AuthResultV1, HarmonyHintSideV1,
+    HintTransport, OperationStartV1, ServicePolicyRequestV1, ServicePolicyResponseV1,
+    AUTH_FRAME_CLASS_V1,
     MAX_AUTH_KEY_ID_LEN, MAX_AUTH_PROOF_LEN, MAX_POLICY_WIRE_LEN, OPERATION_START_DIGEST_DOMAIN,
 };
 pub use auth_verify::{

@@ -52,7 +52,6 @@ jobs:
       - name: Check implementation contract against Rust
         run: |
           cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract
-          cargo test --locked --offline -p pir-runtime-core --test payment_authorization_wire_contract
 
       - name: Validate lock and expose exact proof revision
         id: lock
