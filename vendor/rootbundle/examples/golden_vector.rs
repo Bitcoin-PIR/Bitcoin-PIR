@@ -1,13 +1,12 @@
 use ed25519_dalek::SigningKey;
 use rootbundle::{
-    sign_root_bundle, BuildKind, BuildParamsV2, ChainAnchor, NamedRoot,
-    RootBundlePayload, SignedRootBundle,
+    sign_root_bundle, BuildKind, BuildParamsV2, ChainAnchor, NamedRoot, RootBundlePayload,
+    SignedRootBundle,
 };
 
 fn main() {
-    let params = BuildParamsV2::current_snapshot(
-        565_684, 1_064_454, 3_328, 815_432, 612_345, 1_345_678,
-    );
+    let params =
+        BuildParamsV2::current_snapshot(565_684, 1_064_454, 3_328, 815_432, 612_345, 1_345_678);
     let payload = RootBundlePayload {
         network_magic: [0xf9, 0xbe, 0xb4, 0xd9],
         build_kind: BuildKind::Snapshot,

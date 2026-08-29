@@ -72,7 +72,9 @@ fn build_catalog(num_full: u8, num_deltas: u8) -> DatabaseCatalog {
             anchor_kind: 0,
             anchor_bytes: Vec::new(),
         });
-        next_db_id = next_db_id.checked_add(1).expect("catalog overflow (u8 db_id)");
+        next_db_id = next_db_id
+            .checked_add(1)
+            .expect("catalog overflow (u8 db_id)");
     }
 
     // Chained deltas off the highest full snapshot.
@@ -82,7 +84,9 @@ fn build_catalog(num_full: u8, num_deltas: u8) -> DatabaseCatalog {
         let new_tip = prev_tip + DELTA_STEP;
         catalog.databases.push(DatabaseInfo {
             db_id: next_db_id,
-            kind: DatabaseKind::Delta { base_height: prev_tip },
+            kind: DatabaseKind::Delta {
+                base_height: prev_tip,
+            },
             name: format!("delta_{}_{}", prev_tip, new_tip),
             height: new_tip,
             index_bins: 256,
@@ -98,7 +102,9 @@ fn build_catalog(num_full: u8, num_deltas: u8) -> DatabaseCatalog {
             anchor_kind: 0,
             anchor_bytes: Vec::new(),
         });
-        next_db_id = next_db_id.checked_add(1).expect("catalog overflow (u8 db_id)");
+        next_db_id = next_db_id
+            .checked_add(1)
+            .expect("catalog overflow (u8 db_id)");
         prev_tip = new_tip;
     }
 
@@ -132,8 +138,8 @@ fn bench_compute_sync_plan(c: &mut Criterion) {
         // at_tip — early exit, no work.
         group.bench_function(BenchmarkId::from_parameter("at_tip"), |b| {
             b.iter(|| {
-                let plan = compute_sync_plan(black_box(catalog), black_box(Some(tip)))
-                    .expect("plan");
+                let plan =
+                    compute_sync_plan(black_box(catalog), black_box(Some(tip))).expect("plan");
                 black_box(plan);
             });
         });
@@ -141,8 +147,8 @@ fn bench_compute_sync_plan(c: &mut Criterion) {
         // 1-step incremental — shortest BFS.
         group.bench_function(BenchmarkId::from_parameter("incremental_1step"), |b| {
             b.iter(|| {
-                let plan = compute_sync_plan(black_box(catalog), black_box(Some(last_1)))
-                    .expect("plan");
+                let plan =
+                    compute_sync_plan(black_box(catalog), black_box(Some(last_1))).expect("plan");
                 black_box(plan);
             });
         });
@@ -150,8 +156,8 @@ fn bench_compute_sync_plan(c: &mut Criterion) {
         // 5-step incremental — at MAX_DELTA_CHAIN_LENGTH bound.
         group.bench_function(BenchmarkId::from_parameter("incremental_5step"), |b| {
             b.iter(|| {
-                let plan = compute_sync_plan(black_box(catalog), black_box(Some(last_5)))
-                    .expect("plan");
+                let plan =
+                    compute_sync_plan(black_box(catalog), black_box(Some(last_5))).expect("plan");
                 black_box(plan);
             });
         });
@@ -160,19 +166,21 @@ fn bench_compute_sync_plan(c: &mut Criterion) {
         // fall-back to compute_fresh_sync_plan (which currently
         // rebuilds the adjacency map a second time — the refactor
         // closes this).
-        group.bench_function(BenchmarkId::from_parameter("incremental_6step_fallback"), |b| {
-            b.iter(|| {
-                let plan = compute_sync_plan(black_box(catalog), black_box(Some(last_6)))
-                    .expect("plan");
-                black_box(plan);
-            });
-        });
+        group.bench_function(
+            BenchmarkId::from_parameter("incremental_6step_fallback"),
+            |b| {
+                b.iter(|| {
+                    let plan = compute_sync_plan(black_box(catalog), black_box(Some(last_6)))
+                        .expect("plan");
+                    black_box(plan);
+                });
+            },
+        );
 
         // Fresh sync — last_height = None.
         group.bench_function(BenchmarkId::from_parameter("fresh_sync"), |b| {
             b.iter(|| {
-                let plan = compute_sync_plan(black_box(catalog), black_box(None))
-                    .expect("plan");
+                let plan = compute_sync_plan(black_box(catalog), black_box(None)).expect("plan");
                 black_box(plan);
             });
         });
@@ -205,8 +213,7 @@ fn bench_planner_reuse(c: &mut Criterion) {
     group.bench_function(BenchmarkId::from_parameter("free_function_x10"), |b| {
         b.iter(|| {
             for last in &last_heights {
-                let plan = compute_sync_plan(black_box(&catalog), black_box(*last))
-                    .expect("plan");
+                let plan = compute_sync_plan(black_box(&catalog), black_box(*last)).expect("plan");
                 black_box(plan);
             }
         });

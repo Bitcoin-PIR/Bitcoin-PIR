@@ -21,9 +21,9 @@ use std::fs::File;
 use std::time::Instant;
 
 // Direct imports from pir-core (not via common.rs re-exports)
+use pir_core::codec as pc_codec;
 use pir_core::hash as pc_hash;
 use pir_core::params as pc_params;
-use pir_core::codec as pc_codec;
 use pir_core::pbc as pc_pbc;
 
 /// Simple deterministic PRNG for test reproducibility.
@@ -58,8 +58,14 @@ fn main() {
 
     println!("    Index entries: {}", num_entries);
     println!("    Chunks: {}", num_chunks);
-    println!("    Index cuckoo: {:.2} GB", index_cuckoo.len() as f64 / 1e9);
-    println!("    Chunk cuckoo: {:.2} GB", chunk_cuckoo.len() as f64 / 1e9);
+    println!(
+        "    Index cuckoo: {:.2} GB",
+        index_cuckoo.len() as f64 / 1e9
+    );
+    println!(
+        "    Chunk cuckoo: {:.2} GB",
+        chunk_cuckoo.len() as f64 / 1e9
+    );
     println!();
 
     // ── Test 1: Header parsing ──────────────────────────────────────────────
@@ -79,11 +85,29 @@ fn main() {
         );
         let pc_chunk_bins = pc_hash::read_chunk_cuckoo_header(&chunk_cuckoo);
 
-        check(&mut total_checks, &mut total_pass, "INDEX bins_per_table", legacy_bins == pc_bins);
-        check(&mut total_checks, &mut total_pass, "INDEX tag_seed", legacy_tag_seed == pc_tag_seed);
-        check(&mut total_checks, &mut total_pass, "CHUNK bins_per_table", legacy_chunk_bins == pc_chunk_bins);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            "INDEX bins_per_table",
+            legacy_bins == pc_bins,
+        );
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            "INDEX tag_seed",
+            legacy_tag_seed == pc_tag_seed,
+        );
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            "CHUNK bins_per_table",
+            legacy_chunk_bins == pc_chunk_bins,
+        );
 
-        println!("    INDEX: bins={}, tag_seed=0x{:016x}", pc_bins, pc_tag_seed);
+        println!(
+            "    INDEX: bins={}, tag_seed=0x{:016x}",
+            pc_bins, pc_tag_seed
+        );
         println!("    CHUNK: bins={}", pc_chunk_bins);
     }
     println!();
@@ -123,12 +147,17 @@ fn main() {
                     let lk = pc_hash::derive_cuckoo_key(header_master_seed, b, hf);
                     let pk = pc_hash::derive_cuckoo_key(header_master_seed, b, hf);
                     if lk != pk {
-                        println!("    FAIL: derive_cuckoo_key non-deterministic at group {}, hf {}", b, hf);
+                        println!(
+                            "    FAIL: derive_cuckoo_key non-deterministic at group {}, hf {}",
+                            b, hf
+                        );
                         key_ok = false;
                     }
                 }
             }
-            if !key_ok { continue; }
+            if !key_ok {
+                continue;
+            }
 
             // cuckoo_hash
             let key0 = pc_hash::derive_cuckoo_key(header_master_seed, legacy_b[0], 0);
@@ -150,7 +179,12 @@ fn main() {
             hash_pass += 1;
         }
 
-        check(&mut total_checks, &mut total_pass, &format!("INDEX hashes ({}/{})", hash_pass, n), hash_pass == n);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            &format!("INDEX hashes ({}/{})", hash_pass, n),
+            hash_pass == n,
+        );
     }
     println!();
 
@@ -170,7 +204,10 @@ fn main() {
             let lb = derive_chunk_groups(chunk_id);
             let pb = pc_hash::derive_int_groups_3(chunk_id, pc_params::K_CHUNK);
             if lb != pb {
-                println!("    FAIL: derive_chunk_groups mismatch for chunk_id {}", chunk_id);
+                println!(
+                    "    FAIL: derive_chunk_groups mismatch for chunk_id {}",
+                    chunk_id
+                );
                 continue;
             }
 
@@ -186,21 +223,31 @@ fn main() {
                     }
                 }
             }
-            if !key_ok { continue; }
+            if !key_ok {
+                continue;
+            }
 
             // cuckoo_hash_int
             let key0 = pc_hash::derive_cuckoo_key(chunk_header_master_seed, lb[0], 0);
             let lh = cuckoo_hash_int(chunk_id, key0, chunk_bins);
             let ph = pc_hash::cuckoo_hash_int(chunk_id, key0, chunk_bins);
             if lh != ph {
-                println!("    FAIL: cuckoo_hash_int mismatch for chunk_id {}", chunk_id);
+                println!(
+                    "    FAIL: cuckoo_hash_int mismatch for chunk_id {}",
+                    chunk_id
+                );
                 continue;
             }
 
             hash_pass += 1;
         }
 
-        check(&mut total_checks, &mut total_pass, &format!("CHUNK hashes ({}/{})", hash_pass, n), hash_pass == n);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            &format!("CHUNK hashes ({}/{})", hash_pass, n),
+            hash_pass == n,
+        );
     }
     println!();
 
@@ -218,7 +265,9 @@ fn main() {
             let offset = idx * INDEX_RECORD_SIZE;
             let sh = &index_file[offset..offset + SCRIPT_HASH_SIZE];
             let expected_chunk_id = u32::from_le_bytes(
-                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
+                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
             );
             let expected_num_chunks = index_file[offset + SCRIPT_HASH_SIZE + 4];
 
@@ -243,11 +292,15 @@ fn main() {
                     for slot in 0..INDEX_SLOTS_PER_BIN {
                         let slot_offset = bin_offset + slot * INDEX_SLOT_SIZE;
                         let tag = u64::from_le_bytes(
-                            index_cuckoo[slot_offset..slot_offset + TAG_SIZE].try_into().unwrap()
+                            index_cuckoo[slot_offset..slot_offset + TAG_SIZE]
+                                .try_into()
+                                .unwrap(),
                         );
                         if tag == expected_tag {
                             let cid = u32::from_le_bytes(
-                                index_cuckoo[slot_offset + TAG_SIZE..slot_offset + TAG_SIZE + 4].try_into().unwrap()
+                                index_cuckoo[slot_offset + TAG_SIZE..slot_offset + TAG_SIZE + 4]
+                                    .try_into()
+                                    .unwrap(),
                             );
                             let nc = index_cuckoo[slot_offset + TAG_SIZE + 4];
                             if cid == expected_chunk_id && nc == expected_num_chunks {
@@ -255,9 +308,13 @@ fn main() {
                             }
                         }
                     }
-                    if found { break; }
+                    if found {
+                        break;
+                    }
                 }
-                if found { break; }
+                if found {
+                    break;
+                }
             }
 
             if found {
@@ -267,7 +324,12 @@ fn main() {
             }
         }
 
-        check(&mut total_checks, &mut total_pass, &format!("Cuckoo lookups ({}/{})", lookup_pass, n), lookup_pass == n);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            &format!("Cuckoo lookups ({}/{})", lookup_pass, n),
+            lookup_pass == n,
+        );
     }
     println!();
 
@@ -283,7 +345,9 @@ fn main() {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
             let offset = idx * INDEX_RECORD_SIZE;
             let start_chunk_id = u32::from_le_bytes(
-                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
+                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
             );
             let num_chunks_val = index_file[offset + SCRIPT_HASH_SIZE + 4];
 
@@ -303,7 +367,10 @@ fn main() {
             let entries = pc_codec::parse_utxo_data(data);
 
             if entries.is_empty() {
-                println!("    FAIL: parsed 0 entries for entry {} (num_chunks={})", idx, num_chunks_val);
+                println!(
+                    "    FAIL: parsed 0 entries for entry {} (num_chunks={})",
+                    idx, num_chunks_val
+                );
                 continue;
             }
 
@@ -323,7 +390,12 @@ fn main() {
             }
         }
 
-        check(&mut total_checks, &mut total_pass, &format!("UTXO parsing ({}/{})", parse_pass, n), parse_pass == n);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            &format!("UTXO parsing ({}/{})", parse_pass, n),
+            parse_pass == n,
+        );
     }
     println!();
 
@@ -340,7 +412,9 @@ fn main() {
             let idx = (prng_next(&mut rng) % num_entries as u64) as usize;
             let offset = idx * INDEX_RECORD_SIZE;
             let start_chunk_id = u32::from_le_bytes(
-                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4].try_into().unwrap()
+                index_file[offset + SCRIPT_HASH_SIZE..offset + SCRIPT_HASH_SIZE + 4]
+                    .try_into()
+                    .unwrap(),
             );
             let num_chunks_val = index_file[offset + SCRIPT_HASH_SIZE + 4];
             if num_chunks_val > 0 {
@@ -354,10 +428,15 @@ fn main() {
         chunk_ids.sort();
         chunk_ids.dedup();
 
-        println!("    {} unique chunk_ids from {} entries", chunk_ids.len(), n);
+        println!(
+            "    {} unique chunk_ids from {} entries",
+            chunk_ids.len(),
+            n
+        );
 
         // Get group assignments
-        let item_groups: Vec<[usize; 3]> = chunk_ids.iter()
+        let item_groups: Vec<[usize; 3]> = chunk_ids
+            .iter()
             .map(|&id| pc_hash::derive_int_groups_3(id, pc_params::K_CHUNK))
             .collect();
 
@@ -365,10 +444,20 @@ fn main() {
         let rounds = pc_pbc::pbc_plan_rounds(&item_groups, pc_params::K_CHUNK, 3, 1000);
 
         let total_placed: usize = rounds.iter().map(|r| r.len()).sum();
-        println!("    {} rounds, {} items placed in {:.2?}", rounds.len(), total_placed, t.elapsed());
+        println!(
+            "    {} rounds, {} items placed in {:.2?}",
+            rounds.len(),
+            total_placed,
+            t.elapsed()
+        );
 
         let all_placed = total_placed == chunk_ids.len();
-        check(&mut total_checks, &mut total_pass, &format!("PBC planning ({}/{})", total_placed, chunk_ids.len()), all_placed);
+        check(
+            &mut total_checks,
+            &mut total_pass,
+            &format!("PBC planning ({}/{})", total_placed, chunk_ids.len()),
+            all_placed,
+        );
     }
     println!();
 

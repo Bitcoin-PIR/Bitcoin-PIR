@@ -162,7 +162,11 @@ pub fn unpack_onion_plaintext(
         // are not part of the payload. They should be zero for a clean
         // server response, but masking defensively keeps the byte
         // stream unaffected by noise / future encoding changes.
-        let mask: u64 = if bpc == 64 { u64::MAX } else { (1u64 << bpc) - 1 };
+        let mask: u64 = if bpc == 64 {
+            u64::MAX
+        } else {
+            (1u64 << bpc) - 1
+        };
         let payload_bits = c & mask;
         buffer |= (payload_bits as u128) << offset;
         offset += bpc;

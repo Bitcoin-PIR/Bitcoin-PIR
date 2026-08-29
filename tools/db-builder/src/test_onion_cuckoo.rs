@@ -56,15 +56,21 @@ fn test_index_cuckoo() {
     const MAX_KICKS: usize = 5000;
     const ENTRIES_PER_GROUP: usize = 2_000_000; // ~50M × 3 / 75
 
-    println!("=== A) Index Cuckoo: {}-hash, slots_per_bin={}, LF={} ===",
-        NUM_HASHES, SLOTS_PER_BIN, LOAD_FACTOR);
+    println!(
+        "=== A) Index Cuckoo: {}-hash, slots_per_bin={}, LF={} ===",
+        NUM_HASHES, SLOTS_PER_BIN, LOAD_FACTOR
+    );
     println!("  Entries per group: {}", ENTRIES_PER_GROUP);
 
-    let num_bins = ((ENTRIES_PER_GROUP as f64) / (SLOTS_PER_BIN as f64 * LOAD_FACTOR)).ceil() as usize;
+    let num_bins =
+        ((ENTRIES_PER_GROUP as f64) / (SLOTS_PER_BIN as f64 * LOAD_FACTOR)).ceil() as usize;
     let total_capacity = num_bins * SLOTS_PER_BIN;
     println!("  num_bins: {}", num_bins);
-    println!("  total capacity: {} (entries/capacity = {:.4})",
-        total_capacity, ENTRIES_PER_GROUP as f64 / total_capacity as f64);
+    println!(
+        "  total capacity: {} (entries/capacity = {:.4})",
+        total_capacity,
+        ENTRIES_PER_GROUP as f64 / total_capacity as f64
+    );
 
     let group_id = 0;
     let seed = 0x71a2ef38b4c90d15_u64;
@@ -87,9 +93,8 @@ fn test_index_cuckoo() {
 
     // Generate synthetic entry IDs: 0..ENTRIES_PER_GROUP
     for entry_id in 0..ENTRIES_PER_GROUP as u32 {
-        let bins: [usize; NUM_HASHES] = std::array::from_fn(|h| {
-            cuckoo_hash_int(entry_id, keys[h], num_bins)
-        });
+        let bins: [usize; NUM_HASHES] =
+            std::array::from_fn(|h| cuckoo_hash_int(entry_id, keys[h], num_bins));
 
         // Try to place in whichever bin has more space (2-choice hashing)
         let mut placed = false;
@@ -121,10 +126,13 @@ fn test_index_cuckoo() {
                 table[current_bin * SLOTS_PER_BIN + evict_slot] = current_id;
 
                 // Find alternative bin for evicted entry
-                let ev_bins: [usize; NUM_HASHES] = std::array::from_fn(|h| {
-                    cuckoo_hash_int(evicted, keys[h], num_bins)
-                });
-                let alt_bin = if ev_bins[0] == current_bin { ev_bins[1] } else { ev_bins[0] };
+                let ev_bins: [usize; NUM_HASHES] =
+                    std::array::from_fn(|h| cuckoo_hash_int(evicted, keys[h], num_bins));
+                let alt_bin = if ev_bins[0] == current_bin {
+                    ev_bins[1]
+                } else {
+                    ev_bins[0]
+                };
 
                 let alt_occ = bin_occupancy[alt_bin] as usize;
                 if alt_occ < SLOTS_PER_BIN {
@@ -163,18 +171,26 @@ fn test_index_cuckoo() {
 
     println!("\n  Results:");
     println!("    Build time:       {:.2?}", build_time);
-    println!("    Entries placed:   {} / {} ({:.4}%)",
-        total_placed, ENTRIES_PER_GROUP,
-        total_placed as f64 / ENTRIES_PER_GROUP as f64 * 100.0);
+    println!(
+        "    Entries placed:   {} / {} ({:.4}%)",
+        total_placed,
+        ENTRIES_PER_GROUP,
+        total_placed as f64 / ENTRIES_PER_GROUP as f64 * 100.0
+    );
     println!("    Stash:            {}", stash_count);
     println!("    Total kicks:      {}", total_kicks);
     println!("    Max kick chain:   {}", max_chain);
-    println!("    Bin occupancy:    min={}, max={}, avg={:.1}", min_occ, max_occ, avg_occ);
+    println!(
+        "    Bin occupancy:    min={}, max={}, avg={:.1}",
+        min_occ, max_occ, avg_occ
+    );
 
     // Show occupancy distribution (just the extremes)
     println!("\n    Occupancy distribution:");
     println!("      Empty bins (0 slots): {}", occ_histogram[0]);
-    let low = occ_histogram.iter().enumerate()
+    let low = occ_histogram
+        .iter()
+        .enumerate()
         .take(SLOTS_PER_BIN / 2)
         .filter(|(_, &c)| c > 0)
         .take(5);
@@ -182,7 +198,11 @@ fn test_index_cuckoo() {
         println!("      {} slots: {} bins", occ, count);
     }
     println!("      ...");
-    let high_start = if avg_occ > 10.0 { avg_occ as usize - 5 } else { 0 };
+    let high_start = if avg_occ > 10.0 {
+        avg_occ as usize - 5
+    } else {
+        0
+    };
     for (occ, &count) in occ_histogram.iter().enumerate().skip(high_start) {
         if count > 0 {
             println!("      {} slots: {} bins", occ, count);
@@ -195,9 +215,8 @@ fn test_index_cuckoo() {
     let mut found = 0usize;
     let mut not_found = 0usize;
     for entry_id in 0..ENTRIES_PER_GROUP as u32 {
-        let bins: [usize; NUM_HASHES] = std::array::from_fn(|h| {
-            cuckoo_hash_int(entry_id, keys[h], num_bins)
-        });
+        let bins: [usize; NUM_HASHES] =
+            std::array::from_fn(|h| cuckoo_hash_int(entry_id, keys[h], num_bins));
 
         let mut entry_found = false;
         for &bin in &bins {
@@ -208,7 +227,9 @@ fn test_index_cuckoo() {
                     break;
                 }
             }
-            if entry_found { break; }
+            if entry_found {
+                break;
+            }
         }
 
         if entry_found {
@@ -218,7 +239,10 @@ fn test_index_cuckoo() {
         }
     }
     println!("    Verify time:  {:.2?}", t_verify.elapsed());
-    println!("    Found: {}, Not found: {} (should be = stash count)", found, not_found);
+    println!(
+        "    Found: {}, Not found: {} (should be = stash count)",
+        found, not_found
+    );
 
     if stash_count == 0 {
         println!("    STATUS: PASS");
@@ -331,13 +355,18 @@ fn test_chunk_cuckoo() {
     const MAX_KICKS: usize = 10000;
     const ENTRIES_PER_GROUP: usize = 40_900; // ~1.09M × 3 / 80
 
-    println!("\n=== B) Chunk Cuckoo: {}-hash, slots_per_bin=1, LF={} ===",
-        NUM_HASHES, LOAD_FACTOR);
+    println!(
+        "\n=== B) Chunk Cuckoo: {}-hash, slots_per_bin=1, LF={} ===",
+        NUM_HASHES, LOAD_FACTOR
+    );
     println!("  Entries per group: {}", ENTRIES_PER_GROUP);
 
     let num_bins = (ENTRIES_PER_GROUP as f64 / LOAD_FACTOR).ceil() as usize;
     println!("  num_bins: {}", num_bins);
-    println!("  target fill: {:.4}%", ENTRIES_PER_GROUP as f64 / num_bins as f64 * 100.0);
+    println!(
+        "  target fill: {:.4}%",
+        ENTRIES_PER_GROUP as f64 / num_bins as f64 * 100.0
+    );
 
     let group_id = 0;
     let seed = 0xa3f7c2d918e4b065_u64; // chunk master seed
@@ -360,27 +389,36 @@ fn test_chunk_cuckoo() {
 
     let occupied1 = table1.iter().filter(|&&x| x != EMPTY).count();
     println!("    Build time:       {:.2?}", build1_time);
-    println!("    Entries placed:   {} / {} ({:.4}%)",
-        occupied1, ENTRIES_PER_GROUP,
-        occupied1 as f64 / ENTRIES_PER_GROUP as f64 * 100.0);
+    println!(
+        "    Entries placed:   {} / {} ({:.4}%)",
+        occupied1,
+        ENTRIES_PER_GROUP,
+        occupied1 as f64 / ENTRIES_PER_GROUP as f64 * 100.0
+    );
     println!("    Stash:            {}", stash1);
     println!("    Total kicks:      {}", kicks1);
     println!("    Max kick chain:   {}", max_chain1);
-    println!("    Fill rate:        {:.4}% ({}/{})",
-        occupied1 as f64 / num_bins as f64 * 100.0, occupied1, num_bins);
+    println!(
+        "    Fill rate:        {:.4}% ({}/{})",
+        occupied1 as f64 / num_bins as f64 * 100.0,
+        occupied1,
+        num_bins
+    );
 
     // ── Build 2: Client-side replay (must produce identical table) ───────
     println!("\n  [Build 2] Client-side replay (deterministic)...");
     let t2 = Instant::now();
-    let (table2, stash2, _, _) =
-        build_cuckoo_bs1(&entries, &keys, num_bins, MAX_KICKS);
+    let (table2, stash2, _, _) = build_cuckoo_bs1(&entries, &keys, num_bins, MAX_KICKS);
     let build2_time = t2.elapsed();
 
     println!("    Build time:       {:.2?}", build2_time);
 
     // Verify identical placement
     let identical = table1 == table2;
-    println!("    Tables identical: {}", if identical { "YES" } else { "NO !!!" });
+    println!(
+        "    Tables identical: {}",
+        if identical { "YES" } else { "NO !!!" }
+    );
     if stash1 != stash2 {
         println!("    Stash mismatch:   server={}, client={}", stash1, stash2);
     }
@@ -391,9 +429,20 @@ fn test_chunk_cuckoo() {
             if table1[i] != table2[i] {
                 diffs += 1;
                 if diffs <= 5 {
-                    println!("    bin {}: server={}, client={}", i,
-                        if table1[i] == EMPTY { "EMPTY".to_string() } else { table1[i].to_string() },
-                        if table2[i] == EMPTY { "EMPTY".to_string() } else { table2[i].to_string() });
+                    println!(
+                        "    bin {}: server={}, client={}",
+                        i,
+                        if table1[i] == EMPTY {
+                            "EMPTY".to_string()
+                        } else {
+                            table1[i].to_string()
+                        },
+                        if table2[i] == EMPTY {
+                            "EMPTY".to_string()
+                        } else {
+                            table2[i].to_string()
+                        }
+                    );
                 }
             }
         }
@@ -421,7 +470,10 @@ fn test_chunk_cuckoo() {
         }
     }
     println!("    Verify time:  {:.2?}", t_verify.elapsed());
-    println!("    Found: {}, Not found: {} (should be = stash count)", found, not_found);
+    println!(
+        "    Found: {}, Not found: {} (should be = stash count)",
+        found, not_found
+    );
 
     // ── Client lookup test: given an entry, client knows exact bin ────────
     println!("\n  [Client lookup] Client computes table, looks up specific entry...");
@@ -437,7 +489,10 @@ fn test_chunk_cuckoo() {
         }
     }
     match lookup_bin {
-        Some((h, bin)) => println!("    Entry {} found at bin {} (hash fn {})", test_entry, bin, h),
+        Some((h, bin)) => println!(
+            "    Entry {} found at bin {} (hash fn {})",
+            test_entry, bin, h
+        ),
         None => println!("    Entry {} NOT FOUND (in stash?)", test_entry),
     }
 
@@ -445,7 +500,10 @@ fn test_chunk_cuckoo() {
     if stash1 == 0 && identical {
         println!("\n    STATUS: PASS");
     } else if stash1 > 0 {
-        println!("\n    STATUS: FAIL ({} entries in stash — need larger table or more hash functions)", stash1);
+        println!(
+            "\n    STATUS: FAIL ({} entries in stash — need larger table or more hash functions)",
+            stash1
+        );
     } else {
         println!("\n    STATUS: FAIL (tables not identical — deterministic replay broken)");
     }

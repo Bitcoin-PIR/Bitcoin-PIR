@@ -73,7 +73,10 @@ fn parse_args() -> Args {
                 eprintln!("Usage: onion_leakage_dump --output <path> [--server <url>]");
                 eprintln!();
                 eprintln!("  --output, -o <path>  Path to write JSON corpus (required).");
-                eprintln!("  --server, -s <url>   Server URL (default: {}).", DEFAULT_SERVER);
+                eprintln!(
+                    "  --server, -s <url>   Server URL (default: {}).",
+                    DEFAULT_SERVER
+                );
                 std::process::exit(0);
             }
             _ => {}
@@ -85,7 +88,10 @@ fn parse_args() -> Args {
         eprintln!("Re-run with --help for usage.");
         std::process::exit(2);
     });
-    Args { server_url, output_path }
+    Args {
+        server_url,
+        output_path,
+    }
 }
 
 /// Fixed corpus: two not-found script-hashes that must produce
@@ -128,11 +134,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         client.connect().await?;
         let catalog = client.fetch_catalog().await?;
         let db_id = catalog.databases[0].db_id;
-        eprintln!(
-            "  query {} -> db_id={} (not-found path)",
-            hex(&sh),
-            db_id
-        );
+        eprintln!("  query {} -> db_id={} (not-found path)", hex(&sh), db_id);
         let _ = client.query_batch(&[sh], db_id).await?;
         client.disconnect().await?;
 
@@ -160,11 +162,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     let json = serde_json::to_string_pretty(&doc)?;
     std::fs::write(&args.output_path, json)?;
-    eprintln!(
-        "Wrote {} queries to {}",
-        entries.len(),
-        args.output_path,
-    );
+    eprintln!("Wrote {} queries to {}", entries.len(), args.output_path,);
     Ok(())
 }
 

@@ -999,7 +999,7 @@ use rayon::prelude::*;
 /// RESP_HARMONY_HINTS frame (ready to send on the wire).
 ///
 /// This is the same computation as `compute_hints_for_group()` in
-/// `unified_server.rs`, but returns the wire-ready frame directly.
+/// `unified_server/`, but returns the wire-ready frame directly.
 #[allow(clippy::too_many_arguments)] // Mirrors the wire computation's fixed inputs.
 fn compute_and_serialize_hint_frame(
     prp_key: &[u8; 16],

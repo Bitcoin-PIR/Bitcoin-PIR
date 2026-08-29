@@ -76,7 +76,12 @@ fn main() {
 
     println!("=== Bitcoin Block Size & Witness Analysis ===");
     println!("Chain height:  {}", chain_height);
-    println!("Analyzing:     blocks {} to {} ({} blocks)", start_height, chain_height, end_height - start_height);
+    println!(
+        "Analyzing:     blocks {} to {} ({} blocks)",
+        start_height,
+        chain_height,
+        end_height - start_height
+    );
     println!();
 
     // Stream blocks
@@ -96,9 +101,8 @@ fn main() {
         let num_tx = block.txdata.len();
 
         // Stripped size = 80-byte header + varint(num_tx) + sum of base_size per tx
-        let stripped_size: usize = 80
-            + varint_size(num_tx)
-            + block.txdata.iter().map(|tx| tx.base_size()).sum::<usize>();
+        let stripped_size: usize =
+            80 + varint_size(num_tx) + block.txdata.iter().map(|tx| tx.base_size()).sum::<usize>();
 
         let weight = block.weight().to_wu() as usize;
 
@@ -121,7 +125,11 @@ fn main() {
             };
             print!(
                 "\rStreaming: {}/{} blocks ({:.1}%) | {:.0} blk/s | ETA {:.0}s   ",
-                done, num_blocks, 100.0 * done as f64 / num_blocks as f64, rate, eta
+                done,
+                num_blocks,
+                100.0 * done as f64 / num_blocks as f64,
+                rate,
+                eta
             );
             io::stdout().flush().ok();
             last_print = Instant::now();
@@ -279,44 +287,16 @@ fn median(data: &[f64]) -> f64 {
 fn print_stats(prefix: &str, data: &[f64], divisor: f64, unit: &str) {
     let min_val = data.iter().cloned().fold(f64::MAX, f64::min);
     let max_val = data.iter().cloned().fold(f64::MIN, f64::max);
-    println!(
-        "{}Mean:    {:.3} {}",
-        prefix,
-        mean(data) / divisor,
-        unit
-    );
-    println!(
-        "{}Median:  {:.3} {}",
-        prefix,
-        median(data) / divisor,
-        unit
-    );
-    println!(
-        "{}Stdev:   {:.3} {}",
-        prefix,
-        stdev(data) / divisor,
-        unit
-    );
-    println!(
-        "{}Min:     {:.3} {}",
-        prefix,
-        min_val / divisor,
-        unit
-    );
-    println!(
-        "{}Max:     {:.3} {}",
-        prefix,
-        max_val / divisor,
-        unit
-    );
+    println!("{}Mean:    {:.3} {}", prefix, mean(data) / divisor, unit);
+    println!("{}Median:  {:.3} {}", prefix, median(data) / divisor, unit);
+    println!("{}Stdev:   {:.3} {}", prefix, stdev(data) / divisor, unit);
+    println!("{}Min:     {:.3} {}", prefix, min_val / divisor, unit);
+    println!("{}Max:     {:.3} {}", prefix, max_val / divisor, unit);
 }
 
 fn print_histogram(data: &[f64], buckets: &[(f64, f64, &str)]) {
     let n = data.len();
-    println!(
-        "  {:<12} {:>6} {:>7}  Bar",
-        "Bucket", "Count", "Pct"
-    );
+    println!("  {:<12} {:>6} {:>7}  Bar", "Bucket", "Count", "Pct");
     for &(lo, hi, label) in buckets {
         let count = data.iter().filter(|&&v| v >= lo && v < hi).count();
         let pct = 100.0 * count as f64 / n as f64;

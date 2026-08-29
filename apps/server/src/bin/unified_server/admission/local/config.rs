@@ -39,8 +39,12 @@ impl LocalAdmissionConfigV1 {
         };
         let raw = std::fs::read_to_string(path)
             .map_err(|e| format!("local admission config {}: {e}", path.display()))?;
-        let config: Self = toml::from_str(&raw)
-            .map_err(|e| format!("local admission config {} is invalid TOML: {e}", path.display()))?;
+        let config: Self = toml::from_str(&raw).map_err(|e| {
+            format!(
+                "local admission config {} is invalid TOML: {e}",
+                path.display()
+            )
+        })?;
         if let Some(url) = config.arc_issuer_url.as_deref() {
             if !(url.starts_with("https://") || url.starts_with("wss://")) {
                 return Err(format!(
@@ -66,12 +70,14 @@ mod tests {
 
     #[test]
     fn parses_full_document() {
-        let config: LocalAdmissionConfigV1 = toml::from_str(
-            "free_open = false\narc_issuer_url = \"https://issuer.example.com\"\n",
-        )
-        .expect("full toml parses");
+        let config: LocalAdmissionConfigV1 =
+            toml::from_str("free_open = false\narc_issuer_url = \"https://issuer.example.com\"\n")
+                .expect("full toml parses");
         assert!(!config.free_open);
-        assert_eq!(config.arc_issuer_url.as_deref(), Some("https://issuer.example.com"));
+        assert_eq!(
+            config.arc_issuer_url.as_deref(),
+            Some("https://issuer.example.com")
+        );
     }
 
     #[test]
@@ -93,6 +99,9 @@ mod tests {
     fn missing_file_is_an_error_not_a_silent_default() {
         let path = std::path::Path::new("/nonexistent/local-admission.toml");
         let error = LocalAdmissionConfigV1::load(Some(path)).unwrap_err();
-        assert!(error.contains("local admission config"), "unexpected error: {error}");
+        assert!(
+            error.contains("local admission config"),
+            "unexpected error: {error}"
+        );
     }
 }

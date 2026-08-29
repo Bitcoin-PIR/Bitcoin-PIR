@@ -14,7 +14,7 @@ publish = false
 
 [[bin]]
 name = "unified_server"
-path = "src/bin/unified_server.rs"
+path = "src/bin/unified_server/main.rs"
 
 [[bin]]
 name = "client"

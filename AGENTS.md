@@ -19,7 +19,32 @@ Documentation index: [`docs/README.md`](docs/README.md).
 
 - Pick checks by change class from [`docs/TESTING.md`](docs/TESTING.md).
   Run the narrowest matching check, not the whole world.
+- Start with `cargo check --locked --offline -p <crate>`. On failure, rerun
+  one test with `-- --exact <name> --nocapture`. Do not escalate to a wider
+  suite, a second crate, or a CI lane.
+- Forbidden unless the user names them: `gh run watch`, polling `gh run list`,
+  `sleep` loops waiting on CI, local `scripts/payment-v1-ci-lane.sh` full
+  matrix, production or browser tests, local EasyCrypt / formal-proof runs.
+- At most one background cargo job. Process e2e tests must be serial.
 - No production/browser tests unless the user explicitly asks.
+
+## Structure
+
+- Do not add new types or protocol arms to a `.rs` file already over 1500
+  lines. Extract a module first.
+- New tests go in `src/foo/tests.rs` or crate `tests/`, not in the
+  implementation file.
+- Do not refactor `crates/protocol/service/src/legacy/**` (scheduled
+  deletion).
+- Padding / Merkle-symmetry changes must run the existing symmetry tests,
+  not just `cargo check`.
+
+## Debug
+
+- Read rustc errors and `PirError::kind` first.
+- Do not add per-query logs on the production path.
+- Request-level logs only via the existing `test-only-unsafe-query-logging`
+  feature, and only when the user asks for local diagnostics.
 
 ## Bounded work
 

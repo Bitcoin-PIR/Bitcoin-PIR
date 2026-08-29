@@ -1086,7 +1086,6 @@ impl ProviderStore {
         }
         Ok(connection)
     }
-
 }
 
 fn open_raw_existing(path: &Path) -> StoreResult<Connection> {

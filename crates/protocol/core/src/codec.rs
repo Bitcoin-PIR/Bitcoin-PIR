@@ -257,7 +257,18 @@ mod tests {
 
     #[test]
     fn test_varint_roundtrip() {
-        for &val in &[0u64, 1, 127, 128, 255, 300, 16383, 16384, u32::MAX as u64, u64::MAX] {
+        for &val in &[
+            0u64,
+            1,
+            127,
+            128,
+            255,
+            300,
+            16383,
+            16384,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             let mut buf = Vec::new();
             write_varint(val, &mut buf);
             let (decoded, consumed) = read_varint(&buf);
@@ -297,8 +308,16 @@ mod tests {
         // A valid first entry followed by an entry whose amount varint is
         // cut mid-stream: keep the complete entry, drop the torn one.
         let entries = vec![
-            UtxoEntry { txid: [0xAA; 32], vout: 0, amount: 50000 },
-            UtxoEntry { txid: [0xBB; 32], vout: 1, amount: 100000 },
+            UtxoEntry {
+                txid: [0xAA; 32],
+                vout: 0,
+                amount: 50000,
+            },
+            UtxoEntry {
+                txid: [0xBB; 32],
+                vout: 1,
+                amount: 100000,
+            },
         ];
         let mut serialized = serialize_utxo_data(&entries);
         // Drop the amount's final byte, leaving a dangling continuation bit.
@@ -318,8 +337,16 @@ mod tests {
     #[test]
     fn test_utxo_roundtrip() {
         let entries = vec![
-            UtxoEntry { txid: [0xAA; 32], vout: 0, amount: 50000 },
-            UtxoEntry { txid: [0xBB; 32], vout: 1, amount: 100000 },
+            UtxoEntry {
+                txid: [0xAA; 32],
+                vout: 0,
+                amount: 50000,
+            },
+            UtxoEntry {
+                txid: [0xBB; 32],
+                vout: 1,
+                amount: 100000,
+            },
         ];
         let serialized = serialize_utxo_data(&entries);
         let parsed = parse_utxo_data(&serialized);
@@ -330,12 +357,20 @@ mod tests {
     fn test_delta_roundtrip() {
         let delta = DeltaData {
             spent: vec![
-                SpentEntry { txid: [0x11; 32], vout: 0 },
-                SpentEntry { txid: [0x22; 32], vout: 3 },
+                SpentEntry {
+                    txid: [0x11; 32],
+                    vout: 0,
+                },
+                SpentEntry {
+                    txid: [0x22; 32],
+                    vout: 3,
+                },
             ],
-            new_utxos: vec![
-                UtxoEntry { txid: [0x33; 32], vout: 0, amount: 75000 },
-            ],
+            new_utxos: vec![UtxoEntry {
+                txid: [0x33; 32],
+                vout: 0,
+                amount: 75000,
+            }],
         };
         let serialized = serialize_delta_data(&delta);
         let parsed = parse_delta_data(&serialized);

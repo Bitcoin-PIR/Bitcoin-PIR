@@ -32,7 +32,7 @@ on:
       - 'crates/trust/**'
       - 'apps/server/Cargo.toml'
       - 'apps/server/src/hint_pool.rs'
-      - 'apps/server/src/bin/unified_server.rs'
+      - 'apps/server/src/bin/unified_server/**'
       - '.github/workflows/pir-sdk-integration.yml'
   pull_request:
     branches: [main]
@@ -45,7 +45,7 @@ on:
       - 'crates/trust/**'
       - 'apps/server/Cargo.toml'
       - 'apps/server/src/hint_pool.rs'
-      - 'apps/server/src/bin/unified_server.rs'
+      - 'apps/server/src/bin/unified_server/**'
       - '.github/workflows/pir-sdk-integration.yml'
   workflow_dispatch:
   # Daily canary — catches breakage from server-side protocol changes

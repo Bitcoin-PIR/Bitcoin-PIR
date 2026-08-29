@@ -8,9 +8,9 @@
 //!   cargo run --release -p runtime --bin harmonypir_e2e_test
 
 use harmonypir::params::{Params, BETA};
-use harmonypir::prp::hoang::HoangPrp;
 #[cfg(feature = "fastprp")]
 use harmonypir::prp::fast::FastPrpWrapper;
+use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::{RelocationDS, EMPTY};
 use harmonypir::remote::{
@@ -29,7 +29,10 @@ fn hex(bytes: &[u8]) -> String {
         bytes.iter().map(|b| format!("{:02x}", b)).collect()
     } else {
         let head: String = bytes[..8].iter().map(|b| format!("{:02x}", b)).collect();
-        let tail: String = bytes[bytes.len()-4..].iter().map(|b| format!("{:02x}", b)).collect();
+        let tail: String = bytes[bytes.len() - 4..]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect();
         format!("{}...{} ({} bytes)", head, tail, bytes.len())
     }
 }
@@ -65,7 +68,10 @@ fn main() {
     println!("  M (segments): {} = 2*padded_N/T = {}/{}", m, domain, t);
     println!("  max_queries:  {} = padded_N/T", params.max_queries);
     println!("  domain:       {} = 2*padded_N", domain);
-    println!("  PRP rounds:   {} = ceil(log2({})) + 40, rounded to mult of {}", r, domain, BETA);
+    println!(
+        "  PRP rounds:   {} = ceil(log2({})) + 40, rounded to mult of {}",
+        r, domain, BETA
+    );
     println!("  master key:   {}", hex(&key));
     println!();
 
@@ -76,7 +82,9 @@ fn main() {
             let mut entry = vec![0u8; w_usize];
             let bytes = (i as u64).to_le_bytes();
             entry[..bytes.len().min(w_usize)].copy_from_slice(&bytes[..bytes.len().min(w_usize)]);
-            if w_usize > 8 { entry[8] = (i * 37) as u8; }
+            if w_usize > 8 {
+                entry[8] = (i * 37) as u8;
+            }
             entry
         })
         .collect();
@@ -118,14 +126,20 @@ fn main() {
             let cell = ds0.locate(v).unwrap();
             let seg = cell / t_usize;
             let pos = cell % t_usize;
-            println!("    value {} → cell {} (segment {}, position {})", v, cell, seg, pos);
+            println!(
+                "    value {} → cell {} (segment {}, position {})",
+                v, cell, seg, pos
+            );
         }
         println!("    ...");
         for v in [n_usize / 2, n_usize - 1] {
             let cell = ds0.locate(v).unwrap();
             let seg = cell / t_usize;
             let pos = cell % t_usize;
-            println!("    value {} → cell {} (segment {}, position {})", v, cell, seg, pos);
+            println!(
+                "    value {} → cell {} (segment {}, position {})",
+                v, cell, seg, pos
+            );
         }
     }
 
@@ -147,7 +161,12 @@ fn main() {
     if DEBUG {
         println!("\n  Hint parities (XOR of DB entries per segment):");
         for s in 0..4.min(m) {
-            println!("    H[{}] = {} ({} entries XOR'd in)", s, hex(&hints0[s]), entries_per_seg[s]);
+            println!(
+                "    H[{}] = {} ({} entries XOR'd in)",
+                s,
+                hex(&hints0[s]),
+                entries_per_seg[s]
+            );
         }
         println!("    ... ({} total segments)", m);
     }
@@ -162,7 +181,9 @@ fn main() {
         let cell = ds1.locate(k).unwrap();
         let seg = cell / t_usize;
         if k < n_usize {
-            for (d, s) in hints1[seg].iter_mut().zip(db[k].iter()) { *d ^= s; }
+            for (d, s) in hints1[seg].iter_mut().zip(db[k].iter()) {
+                *d ^= s;
+            }
         }
     }
 
@@ -185,8 +206,16 @@ fn main() {
     };
 
     let entries = vec![
-        GroupEntry { group_id: 0, level: 0, data: group0.serialize_legacy_state().unwrap() },
-        GroupEntry { group_id: 1, level: 0, data: group1.serialize_legacy_state().unwrap() },
+        GroupEntry {
+            group_id: 0,
+            level: 0,
+            data: group0.serialize_legacy_state().unwrap(),
+        },
+        GroupEntry {
+            group_id: 1,
+            level: 0,
+            data: group1.serialize_legacy_state().unwrap(),
+        },
     ];
     let mut file_buf: Vec<u8> = Vec::new();
     state::write_state_file(&mut file_buf, &header, &entries).unwrap();
@@ -195,15 +224,23 @@ fn main() {
     // ─── Reload from file ───────────────────────────────────────────────
     println!("[4] Loading state file and reconstructing groups...");
     let state = state::read_state_file(&mut Cursor::new(&file_buf)).unwrap();
-    let mut groups: Vec<HarmonyGroup> = state.groups.iter()
+    let mut groups: Vec<HarmonyGroup> = state
+        .groups
+        .iter()
         .map(|e| HarmonyGroup::deserialize_legacy_state(&e.data, &key, e.group_id).unwrap())
         .collect();
-    println!("  Loaded {} groups, {} queries remaining each\n",
-        groups.len(), groups[0].queries_remaining());
+    println!(
+        "  Loaded {} groups, {} queries remaining each\n",
+        groups.len(),
+        groups[0].queries_remaining()
+    );
 
     // ─── Phase 1: queries with verbose trace ────────────────────────────
     let queries = [0usize, 1, 128, 255];
-    println!("[5] Phase 1: querying {:?} with verbose trace...\n", queries);
+    println!(
+        "[5] Phase 1: querying {:?} with verbose trace...\n",
+        queries
+    );
 
     // We also need a standalone DS' for tracing (since HarmonyGroup's DS is private).
     let prp_trace: Box<dyn Prp> = Box::new(HoangPrp::new(domain, r, &derived_key_0));
@@ -217,7 +254,10 @@ fn main() {
         let c = ds_trace.locate(q).unwrap();
         let s = c / t_usize;
         let r_pos = c % t_usize;
-        println!("    Locate({}) = cell {} → segment s={}, position r={}", q, c, s, r_pos);
+        println!(
+            "    Locate({}) = cell {} → segment s={}, position r={}",
+            q, c, s, r_pos
+        );
 
         // Step 2: Build request Q.
         if DEBUG {
@@ -231,7 +271,12 @@ fn main() {
                     if val == EMPTY {
                         println!("      Q[{}] = Access(cell {}) = EMPTY", i, s * t_usize + i);
                     } else {
-                        println!("      Q[{}] = Access(cell {}) = {} (DB index)", i, s * t_usize + i, val);
+                        println!(
+                            "      Q[{}] = Access(cell {}) = {} (DB index)",
+                            i,
+                            s * t_usize + i,
+                            val
+                        );
                     }
                     shown += 1;
                 } else if shown == 4 {
@@ -243,17 +288,27 @@ fn main() {
 
         // Actually execute the query through HarmonyGroup.
         let req = groups[0].build_request(q as u32).unwrap();
-        println!("    HarmonyGroup.build_request({}) → segment={}, position={}", q, req.segment(), req.position());
+        println!(
+            "    HarmonyGroup.build_request({}) → segment={}, position={}",
+            q,
+            req.segment(),
+            req.position()
+        );
 
         // Parse request indices for display.
         let req_bytes = req.as_bytes();
         let count = req_bytes.len() / 4;
         if DEBUG {
-            println!("    Request: {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
-                count, t, (1.0 - count as f64 / t_usize as f64) * 100.0);
+            println!(
+                "    Request: {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
+                count,
+                t,
+                (1.0 - count as f64 / t_usize as f64) * 100.0
+            );
             if count > 0 {
                 let first_idx = u32::from_le_bytes(req_bytes[0..4].try_into().unwrap());
-                let last_idx = u32::from_le_bytes(req_bytes[(count-1)*4..count*4].try_into().unwrap());
+                let last_idx =
+                    u32::from_le_bytes(req_bytes[(count - 1) * 4..count * 4].try_into().unwrap());
                 println!("    Indices: [{}..{}] (sorted)", first_idx, last_idx);
             }
         }
@@ -261,22 +316,30 @@ fn main() {
         // Simulate Query Server: return entries for each sorted non-empty index.
         let mut response = Vec::with_capacity(count * w_usize);
         for j in 0..count {
-            let idx = u32::from_le_bytes(req_bytes[j*4..(j+1)*4].try_into().unwrap());
+            let idx = u32::from_le_bytes(req_bytes[j * 4..(j + 1) * 4].try_into().unwrap());
             if idx as usize >= n_usize {
                 response.extend(std::iter::repeat_n(0u8, w_usize));
             } else {
                 response.extend_from_slice(&db[idx as usize]);
             }
         }
-        println!("    Server response: {} bytes ({} entries × {}B)",
-            response.len(), count, w);
+        println!(
+            "    Server response: {} bytes ({} entries × {}B)",
+            response.len(),
+            count,
+            w
+        );
 
         // Process response (XOR with hints to recover answer).
         if DEBUG {
             // Show what the XOR computation looks like.
             // answer = H[s] XOR (all R[i] for i != r)
             println!("    Computing answer:");
-            println!("      H[s={}] = {}", req.segment(), hex(&hints0[req.segment() as usize]));
+            println!(
+                "      H[s={}] = {}",
+                req.segment(),
+                hex(&hints0[req.segment() as usize])
+            );
             println!("      answer = H[s] ⊕ Σ(R[i] for i≠r)");
         }
 
@@ -306,23 +369,42 @@ fn main() {
     // ─── Save and reload ────────────────────────────────────────────────
     println!("[6] Saving state after {} queries...", queries.len());
     let entries2 = vec![
-        GroupEntry { group_id: 0, level: 0, data: groups[0].serialize_legacy_state().unwrap() },
-        GroupEntry { group_id: 1, level: 0, data: groups[1].serialize_legacy_state().unwrap() },
+        GroupEntry {
+            group_id: 0,
+            level: 0,
+            data: groups[0].serialize_legacy_state().unwrap(),
+        },
+        GroupEntry {
+            group_id: 1,
+            level: 0,
+            data: groups[1].serialize_legacy_state().unwrap(),
+        },
     ];
     let mut file_buf2 = Vec::new();
     state::write_state_file(&mut file_buf2, &header, &entries2).unwrap();
-    println!("  State file: {} bytes (delta: +{} bytes from relocated segments)\n",
-        file_buf2.len(), file_buf2.len() as i64 - file_buf.len() as i64);
+    println!(
+        "  State file: {} bytes (delta: +{} bytes from relocated segments)\n",
+        file_buf2.len(),
+        file_buf2.len() as i64 - file_buf.len() as i64
+    );
 
     println!("[7] Reloading state file...");
     let state2 = state::read_state_file(&mut Cursor::new(&file_buf2)).unwrap();
-    let mut groups2: Vec<HarmonyGroup> = state2.groups.iter()
+    let mut groups2: Vec<HarmonyGroup> = state2
+        .groups
+        .iter()
         .map(|e| HarmonyGroup::deserialize_legacy_state(&e.data, &key, e.group_id).unwrap())
         .collect();
-    println!("  Bucket 0: {} queries used, {} remaining",
-        groups2[0].queries_used(), groups2[0].queries_remaining());
+    println!(
+        "  Bucket 0: {} queries used, {} remaining",
+        groups2[0].queries_used(),
+        groups2[0].queries_remaining()
+    );
     if DEBUG {
-        println!("  (DS' reconstructed by replaying {} segment relocations)", queries.len());
+        println!(
+            "  (DS' reconstructed by replaying {} segment relocations)",
+            queries.len()
+        );
     }
     println!();
 
@@ -333,7 +415,12 @@ fn main() {
     for &q in &queries2 {
         let result = do_query(&mut groups2[0], q as u32, &db);
         let correct = result == db[q];
-        println!("  query({:>3}) → {} {}", q, hex(&result[..8.min(result.len())]), if correct { "✓" } else { "✗" });
+        println!(
+            "  query({:>3}) → {} {}",
+            q,
+            hex(&result[..8.min(result.len())]),
+            if correct { "✓" } else { "✗" }
+        );
         assert!(correct, "Phase 2: query({}) FAILED!", q);
     }
     println!("\n  Phase 2: all {} queries correct!\n", queries2.len());
@@ -342,12 +429,20 @@ fn main() {
     println!("[9] Cross-group test: group 1, query(42)...");
     let result = do_query(&mut groups2[1], 42, &db);
     let correct = result == db[42];
-    println!("  query(42) → {} {}", hex(&result[..8.min(result.len())]), if correct { "✓" } else { "✗" });
+    println!(
+        "  query(42) → {} {}",
+        hex(&result[..8.min(result.len())]),
+        if correct { "✓" } else { "✗" }
+    );
     assert!(correct);
 
     println!("\n=== PASS: end-to-end test with {} ===", backend_name);
-    println!("  Total queries: {} (phase 1) + {} (phase 2) + 1 (cross-group) = {}",
-        queries.len(), queries2.len(), queries.len() + queries2.len() + 1);
+    println!(
+        "  Total queries: {} (phase 1) + {} (phase 2) + 1 (cross-group) = {}",
+        queries.len(),
+        queries2.len(),
+        queries.len() + queries2.len() + 1
+    );
     println!("  Serialize/deserialize round-trip: verified");
 
     // ═══════════════════════════════════════════════════════════════════
@@ -359,7 +454,11 @@ fn main() {
     {
         let t0 = Instant::now();
         let ok = verify_protocol_impl(256, 42, PRP_FASTPRP);
-        println!("[FastPRP]  N=256, w=42 → {} ({:.2?})", if ok { "PASS ✓" } else { "FAIL ✗" }, t0.elapsed());
+        println!(
+            "[FastPRP]  N=256, w=42 → {} ({:.2?})",
+            if ok { "PASS ✓" } else { "FAIL ✗" },
+            t0.elapsed()
+        );
         assert!(ok, "FastPRP test failed!");
     }
 
@@ -369,7 +468,11 @@ fn main() {
     {
         let t0 = Instant::now();
         let ok = verify_protocol_impl(1024, 42, PRP_HMR12);
-        println!("[HMR12]    N=1024, w=42 → {} ({:.2?})", if ok { "PASS ✓" } else { "FAIL ✗" }, t0.elapsed());
+        println!(
+            "[HMR12]    N=1024, w=42 → {} ({:.2?})",
+            if ok { "PASS ✓" } else { "FAIL ✗" },
+            t0.elapsed()
+        );
         assert!(ok, "HMR12 (large N) test failed!");
     }
 
@@ -463,7 +566,7 @@ fn do_query(group: &mut HarmonyGroup, q: u32, db: &[Vec<u8>]) -> Vec<u8> {
 
     let mut response = Vec::with_capacity(count * w);
     for j in 0..count {
-        let idx = u32::from_le_bytes(req_bytes[j*4..(j+1)*4].try_into().unwrap());
+        let idx = u32::from_le_bytes(req_bytes[j * 4..(j + 1) * 4].try_into().unwrap());
         if idx as usize >= n {
             response.extend(std::iter::repeat_n(0u8, w));
         } else {

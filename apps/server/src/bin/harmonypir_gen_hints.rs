@@ -26,8 +26,8 @@ use std::time::Instant;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let output_path = parse_arg(&args, "--output")
-        .unwrap_or_else(|| "/tmp/harmony_state.bin".to_string());
+    let output_path =
+        parse_arg(&args, "--output").unwrap_or_else(|| "/tmp/harmony_state.bin".to_string());
     let prp_key = parse_prp_key(&args);
 
     println!("=== HarmonyPIR Hint Generator ===\n");
@@ -40,53 +40,69 @@ fn main() {
     let index_mmap = unsafe { Mmap::map(&index_file) }.expect("mmap index cuckoo");
     let (index_bins_per_table, tag_seed) = read_cuckoo_header(&index_mmap);
     let index_entry_size = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
-    println!("  bins_per_table={}, entry_size={}B, tag_seed=0x{:016x}",
-        index_bins_per_table, index_entry_size, tag_seed);
+    println!(
+        "  bins_per_table={}, entry_size={}B, tag_seed=0x{:016x}",
+        index_bins_per_table, index_entry_size, tag_seed
+    );
 
     println!("[2] Loading chunk cuckoo: {}", CHUNK_CUCKOO_FILE);
     let chunk_file = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
     let chunk_mmap = unsafe { Mmap::map(&chunk_file) }.expect("mmap chunk cuckoo");
     let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_mmap);
     let chunk_entry_size = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE);
-    println!("  bins_per_table={}, entry_size={}B", chunk_bins_per_table, chunk_entry_size);
+    println!(
+        "  bins_per_table={}, entry_size={}B",
+        chunk_bins_per_table, chunk_entry_size
+    );
 
     // Compute hints for index groups.
-    println!("\n[3] Computing hints for {} index groups (N={}, w={})...",
-        K, index_bins_per_table, index_entry_size);
+    println!(
+        "\n[3] Computing hints for {} index groups (N={}, w={})...",
+        K, index_bins_per_table, index_entry_size
+    );
     let t_start = Instant::now();
 
     let index_entries: Vec<GroupEntry> = (0..K as u32)
         .into_par_iter()
         .map(|b| {
             compute_group_hints(
-                &prp_key, b, 0,
-                &index_mmap, HEADER_SIZE, index_bins_per_table, index_entry_size,
+                &prp_key,
+                b,
+                0,
+                &index_mmap,
+                HEADER_SIZE,
+                index_bins_per_table,
+                index_entry_size,
             )
         })
         .collect();
     println!("  Done in {:.2?}", t_start.elapsed());
 
     // Compute hints for chunk groups.
-    println!("[4] Computing hints for {} chunk groups (N={}, w={})...",
-        K_CHUNK, chunk_bins_per_table, chunk_entry_size);
+    println!(
+        "[4] Computing hints for {} chunk groups (N={}, w={})...",
+        K_CHUNK, chunk_bins_per_table, chunk_entry_size
+    );
     let t_start = Instant::now();
 
     let chunk_entries: Vec<GroupEntry> = (0..K_CHUNK as u32)
         .into_par_iter()
         .map(|b| {
             compute_group_hints(
-                &prp_key, K as u32 + b, 1,
-                &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins_per_table, chunk_entry_size,
+                &prp_key,
+                K as u32 + b,
+                1,
+                &chunk_mmap,
+                CHUNK_HEADER_SIZE,
+                chunk_bins_per_table,
+                chunk_entry_size,
             )
         })
         .collect();
     println!("  Done in {:.2?}", t_start.elapsed());
 
     // Write state file.
-    let all_entries: Vec<GroupEntry> = index_entries
-        .into_iter()
-        .chain(chunk_entries)
-        .collect();
+    let all_entries: Vec<GroupEntry> = index_entries.into_iter().chain(chunk_entries).collect();
 
     println!("\n[5] Writing state file ({} groups)...", all_entries.len());
     let header = StateFileHeader {
@@ -102,7 +118,11 @@ fn main() {
     state::write_state_file(&mut writer, &header, &all_entries).unwrap();
 
     let file_size = std::fs::metadata(&output_path).unwrap().len();
-    println!("  Written: {} ({:.2} MB)", output_path, file_size as f64 / (1024.0 * 1024.0));
+    println!(
+        "  Written: {} ({:.2} MB)",
+        output_path,
+        file_size as f64 / (1024.0 * 1024.0)
+    );
     println!("\n=== Done ===");
 }
 
@@ -134,7 +154,11 @@ fn compute_group_hints(
     // The group's cuckoo table within the file.
     // For level 0 (index): group_id is used directly.
     // For level 1 (chunk): group_id has K offset, so strip it.
-    let actual_group = if level == 1 { group_id - K as u32 } else { group_id };
+    let actual_group = if level == 1 {
+        group_id - K as u32
+    } else {
+        group_id
+    };
     let table_offset = header_size + actual_group as usize * bins_per_table * entry_size;
 
     for k in 0..n {
@@ -155,7 +179,8 @@ fn compute_group_hints(
         prp_key,
         group_id,
         PrpBackend::Hmr12,
-    ).expect("group creation");
+    )
+    .expect("group creation");
 
     let flat: Vec<u8> = hints.into_iter().flat_map(|h| h.into_iter()).collect();
     group.load_hints(&flat).expect("load hints");

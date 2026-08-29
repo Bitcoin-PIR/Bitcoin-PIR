@@ -350,7 +350,10 @@ fn assert_db0_found_and_not_found_verified(backend: &str, results: &[Option<Quer
 }
 
 fn assert_fresh_sync_verified(backend: &str, sync: &SyncResult) {
-    assert!(sync.was_fresh_sync, "{backend} did not execute a fresh sync");
+    assert!(
+        sync.was_fresh_sync,
+        "{backend} did not execute a fresh sync"
+    );
     assert_eq!(
         sync.synced_height, PRODUCTION_DATABASE_PINS[0].height,
         "{backend} fresh sync stopped at the wrong height",
@@ -387,7 +390,10 @@ async fn test_dpf_client_fetch_catalog() {
 
     let catalog = client.fetch_catalog().await.expect("fetch_catalog failed");
 
-    assert!(!catalog.databases.is_empty(), "catalog should have at least one database");
+    assert!(
+        !catalog.databases.is_empty(),
+        "catalog should have at least one database"
+    );
 
     let main_db = &catalog.databases[0];
     assert_eq!(main_db.db_id, 0);
@@ -409,7 +415,10 @@ async fn test_dpf_client_sync_empty() {
 
     // Sync with empty script hashes
     let script_hashes: Vec<ScriptHash> = vec![];
-    let result = client.sync(&script_hashes, None).await.expect("sync failed");
+    let result = client
+        .sync(&script_hashes, None)
+        .await
+        .expect("sync failed");
 
     assert!(result.results.is_empty());
     assert!(result.synced_height > 0);
@@ -432,7 +441,10 @@ async fn test_dpf_client_sync_single() {
         .expect("live DPF admission failed");
 
     let script_hashes = vec![test_script_hash()];
-    let result = client.sync(&script_hashes, None).await.expect("sync failed");
+    let result = client
+        .sync(&script_hashes, None)
+        .await
+        .expect("sync failed");
 
     assert_eq!(result.results.len(), 1);
     assert!(result.synced_height > 0);
@@ -458,7 +470,10 @@ async fn test_dpf_client_query_batch() {
         .expect("live DPF admission failed");
 
     let script_hashes = vec![test_script_hash()];
-    let results = client.query_batch(&script_hashes, 0).await.expect("query_batch failed");
+    let results = client
+        .query_batch(&script_hashes, 0)
+        .await
+        .expect("query_batch failed");
 
     assert_eq!(results.len(), 1);
 
@@ -502,7 +517,10 @@ async fn test_dpf_client_multiple_queries() {
         })
         .collect();
 
-    let result = client.sync(&script_hashes, None).await.expect("sync failed");
+    let result = client
+        .sync(&script_hashes, None)
+        .await
+        .expect("sync failed");
 
     assert_eq!(result.results.len(), 5);
 
@@ -525,7 +543,10 @@ async fn test_dpf_client_sync_with_cached_height() {
     let script_hashes = vec![test_script_hash()];
 
     // First sync
-    let result1 = client.sync(&script_hashes, None).await.expect("sync failed");
+    let result1 = client
+        .sync(&script_hashes, None)
+        .await
+        .expect("sync failed");
     let height = result1.synced_height;
     client.disconnect().await.unwrap();
 
@@ -539,7 +560,10 @@ async fn test_dpf_client_sync_with_cached_height() {
         .expect("live DPF admission failed (delta)");
 
     // Second sync with cached height (should use delta if available)
-    let result2 = client.sync(&script_hashes, Some(height)).await.expect("sync failed");
+    let result2 = client
+        .sync(&script_hashes, Some(height))
+        .await
+        .expect("sync failed");
 
     // Height should be >= previous
     assert!(result2.synced_height >= height);
@@ -556,14 +580,18 @@ async fn test_dpf_client_compute_sync_plan() {
     let catalog = client.fetch_catalog().await.expect("fetch_catalog failed");
 
     // Fresh sync (no prior height)
-    let plan = client.compute_sync_plan(&catalog, None).expect("compute_sync_plan failed");
+    let plan = client
+        .compute_sync_plan(&catalog, None)
+        .expect("compute_sync_plan failed");
     assert!(!plan.is_empty());
     assert!(plan.is_fresh_sync);
 
     // Delta sync (with prior height)
     let latest = catalog.latest_tip().unwrap_or(0);
     if latest > 1000 {
-        let plan = client.compute_sync_plan(&catalog, Some(latest - 1000)).expect("compute_sync_plan failed");
+        let plan = client
+            .compute_sync_plan(&catalog, Some(latest - 1000))
+            .expect("compute_sync_plan failed");
         println!("Delta plan: {:?}", plan);
     }
 
@@ -717,7 +745,10 @@ async fn test_harmony_client_fetch_catalog() {
 
     let catalog = client.fetch_catalog().await.expect("fetch_catalog failed");
 
-    assert!(!catalog.databases.is_empty(), "catalog should have at least one database");
+    assert!(
+        !catalog.databases.is_empty(),
+        "catalog should have at least one database"
+    );
     let main_db = &catalog.databases[0];
     assert_eq!(main_db.db_id, 0);
     assert!(main_db.index_bins > 0);
@@ -895,7 +926,10 @@ async fn test_wsconnection_reconnect_roundtrip() {
     // and re-handshakes. The new transport should still work.
     conn.reconnect().await.expect("reconnect failed");
 
-    let resp2 = conn.roundtrip(&req).await.expect("post-reconnect roundtrip failed");
+    let resp2 = conn
+        .roundtrip(&req)
+        .await
+        .expect("post-reconnect roundtrip failed");
     assert!(!resp2.is_empty(), "post-reconnect response empty");
     assert_eq!(resp2[0], 0x02, "expected RESP_DB_CATALOG after reconnect");
 
@@ -930,7 +964,10 @@ mod onion_tests {
 
         let catalog = client.fetch_catalog().await.expect("fetch_catalog failed");
 
-        assert!(!catalog.databases.is_empty(), "catalog should have at least one database");
+        assert!(
+            !catalog.databases.is_empty(),
+            "catalog should have at least one database"
+        );
         let main_db = &catalog.databases[0];
         assert_eq!(main_db.db_id, 0);
         assert!(main_db.index_bins > 0);
@@ -1103,7 +1140,9 @@ fn make_test_catalog() -> DatabaseCatalog {
             },
             DatabaseInfo {
                 db_id: 1,
-                kind: DatabaseKind::Delta { base_height: 900000 },
+                kind: DatabaseKind::Delta {
+                    base_height: 900000,
+                },
                 name: "delta_900000_910000".into(),
                 height: 910000,
                 index_bins: 100,
@@ -1121,7 +1160,9 @@ fn make_test_catalog() -> DatabaseCatalog {
             },
             DatabaseInfo {
                 db_id: 2,
-                kind: DatabaseKind::Delta { base_height: 910000 },
+                kind: DatabaseKind::Delta {
+                    base_height: 910000,
+                },
                 name: "delta_910000_920000".into(),
                 height: 920000,
                 index_bins: 100,
@@ -1236,17 +1277,19 @@ async fn test_announce_operator_identity_end_to_end() {
     // Skip gracefully when unconfigured: unlike the other --ignored tests
     // there is no sensible public default (the public servers don't serve
     // announce), so CI runs this as a no-op unless both env vars are set.
-    let (url, operator_pub_hex) =
-        match (std::env::var("PIR_ANNOUNCE_URL"), std::env::var("PIR_ANNOUNCE_OPERATOR_PUB")) {
-            (Ok(u), Ok(p)) => (u, p),
-            _ => {
-                eprintln!(
-                    "skipping test_announce_operator_identity_end_to_end: set PIR_ANNOUNCE_URL \
+    let (url, operator_pub_hex) = match (
+        std::env::var("PIR_ANNOUNCE_URL"),
+        std::env::var("PIR_ANNOUNCE_OPERATOR_PUB"),
+    ) {
+        (Ok(u), Ok(p)) => (u, p),
+        _ => {
+            eprintln!(
+                "skipping test_announce_operator_identity_end_to_end: set PIR_ANNOUNCE_URL \
                      + PIR_ANNOUNCE_OPERATOR_PUB (and optionally PIR_ANNOUNCE_SERVER_ID) to run"
-                );
-                return;
-            }
-        };
+            );
+            return;
+        }
+    };
     let operator_pub = parse_pubkey_hex(&operator_pub_hex);
 
     // 1. Plain announce: the bundle decodes and the in-bundle chain check
@@ -1288,7 +1331,12 @@ async fn test_announce_operator_identity_end_to_end() {
 /// Parse a 64-char hex Ed25519 pubkey into 32 bytes (test helper).
 fn parse_pubkey_hex(s: &str) -> [u8; 32] {
     let s = s.trim();
-    assert_eq!(s.len(), 64, "operator pubkey hex must be 64 chars, got {}", s.len());
+    assert_eq!(
+        s.len(),
+        64,
+        "operator pubkey hex must be 64 chars, got {}",
+        s.len()
+    );
     let mut out = [0u8; 32];
     for (i, b) in out.iter_mut().enumerate() {
         *b = u8::from_str_radix(&s[2 * i..2 * i + 2], 16).expect("invalid hex in operator pubkey");

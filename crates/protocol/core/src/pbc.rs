@@ -118,11 +118,7 @@ mod tests {
     #[test]
     fn test_pbc_cuckoo_place_simple() {
         // 3 items, 5 groups, each item has 2 candidate groups
-        let cands: Vec<Vec<usize>> = vec![
-            vec![0, 1],
-            vec![1, 2],
-            vec![2, 3],
-        ];
+        let cands: Vec<Vec<usize>> = vec![vec![0, 1], vec![1, 2], vec![2, 3]];
         let mut groups = vec![None; 5];
 
         assert!(pbc_cuckoo_place(&cands, &mut groups, 0, 100, 2));
@@ -137,19 +133,17 @@ mod tests {
     #[test]
     fn test_pbc_plan_rounds() {
         // 5 items, 3 groups — needs at least 2 rounds
-        let cands: Vec<Vec<usize>> = vec![
-            vec![0, 1],
-            vec![1, 2],
-            vec![0, 2],
-            vec![0, 1],
-            vec![1, 2],
-        ];
+        let cands: Vec<Vec<usize>> =
+            vec![vec![0, 1], vec![1, 2], vec![0, 2], vec![0, 1], vec![1, 2]];
 
         let rounds = pbc_plan_rounds(&cands, 3, 2, 100);
         assert!(rounds.len() >= 2);
 
         // All items should be placed
-        let mut all_items: Vec<usize> = rounds.iter().flat_map(|r| r.iter().map(|&(i, _)| i)).collect();
+        let mut all_items: Vec<usize> = rounds
+            .iter()
+            .flat_map(|r| r.iter().map(|&(i, _)| i))
+            .collect();
         all_items.sort();
         assert_eq!(all_items, vec![0, 1, 2, 3, 4]);
     }

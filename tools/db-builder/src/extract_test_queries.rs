@@ -50,8 +50,17 @@ fn main() {
 
     // Extract script_hashes and write to file
     println!("[2] Selected entries:");
-    println!("  {:>4}  {:>10}  {:>42}  Groups", "  # ", "Entry Idx", "Script Hash (hex)");
-    println!("  {}  {}  {}  {}", "-".repeat(4), "-".repeat(10), "-".repeat(42), "-".repeat(16));
+    println!(
+        "  {:>4}  {:>10}  {:>42}  Groups",
+        "  # ", "Entry Idx", "Script Hash (hex)"
+    );
+    println!(
+        "  {}  {}  {}  {}",
+        "-".repeat(4),
+        "-".repeat(10),
+        "-".repeat(42),
+        "-".repeat(16)
+    );
 
     let mut out_data = Vec::with_capacity(NUM_QUERIES * SCRIPT_HASH_SIZE);
 
@@ -62,10 +71,7 @@ fn main() {
 
         let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
         let groups = derive_groups(script_hash);
-        println!(
-            "  {:>4}  {:>10}  {}  {:?}",
-            i, idx, hex, groups
-        );
+        println!("  {:>4}  {:>10}  {}  {:?}", i, idx, hex, groups);
     }
 
     println!();

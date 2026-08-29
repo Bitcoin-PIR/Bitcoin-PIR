@@ -250,7 +250,9 @@ fn derive_chunk_groups(entry_id: u32) -> [usize; NUM_HASHES] {
                 break;
             }
         }
-        if dup { continue; }
+        if dup {
+            continue;
+        }
         groups[count] = group;
         count += 1;
     }
@@ -283,11 +285,7 @@ fn format_bytes(bytes: u64) -> String {
 
 // ─── Cuckoo table builder (6-hash, bs=1) ────────────────────────────────────
 
-fn build_cuckoo_bs1(
-    entries: &[u32],
-    keys: &[u64; CUCKOO_NUM_HASHES],
-    num_bins: usize,
-) -> Vec<u32> {
+fn build_cuckoo_bs1(entries: &[u32], keys: &[u64; CUCKOO_NUM_HASHES], num_bins: usize) -> Vec<u32> {
     let mut table = vec![EMPTY; num_bins];
 
     for &entry_id in entries {
@@ -300,7 +298,9 @@ fn build_cuckoo_bs1(
                 break;
             }
         }
-        if placed { continue; }
+        if placed {
+            continue;
+        }
 
         // Cuckoo eviction
         let mut current_id = entry_id;
@@ -316,7 +316,9 @@ fn build_cuckoo_bs1(
             for h in 0..CUCKOO_NUM_HASHES {
                 let try_h = (current_hash_fn + 1 + h) % CUCKOO_NUM_HASHES;
                 let bin = cuckoo_hash_int(evicted, keys[try_h], num_bins);
-                if bin == current_bin { continue; }
+                if bin == current_bin {
+                    continue;
+                }
                 if table[bin] == EMPTY {
                     table[bin] = evicted;
                     found_empty = true;
@@ -324,7 +326,9 @@ fn build_cuckoo_bs1(
                     break;
                 }
             }
-            if found_empty { break; }
+            if found_empty {
+                break;
+            }
 
             let alt_h = (current_hash_fn + 1 + kick % (CUCKOO_NUM_HASHES - 1)) % CUCKOO_NUM_HASHES;
             let alt_bin = cuckoo_hash_int(evicted, keys[alt_h], num_bins);
@@ -341,8 +345,11 @@ fn build_cuckoo_bs1(
         }
 
         if !success {
-            panic!("Cuckoo insertion failed for entry_id={} after {} kicks. \
-                    Increase num_bins or CUCKOO_MAX_KICKS.", entry_id, CUCKOO_MAX_KICKS);
+            panic!(
+                "Cuckoo insertion failed for entry_id={} after {} kicks. \
+                    Increase num_bins or CUCKOO_MAX_KICKS.",
+                entry_id, CUCKOO_MAX_KICKS
+            );
         }
     }
 
@@ -384,13 +391,19 @@ fn main() {
     let packed_file = File::open(&packed_file_path).expect("open packed entries file");
     let packed_mmap = unsafe { Mmap::map(&packed_file) }.expect("mmap packed entries");
     assert_eq!(
-        packed_mmap.len() % packed_entry_size, 0,
+        packed_mmap.len() % packed_entry_size,
+        0,
         "packed file not aligned: {} bytes, packed_entry_size={}",
-        packed_mmap.len(), packed_entry_size
+        packed_mmap.len(),
+        packed_entry_size
     );
     let num_entries = packed_mmap.len() / packed_entry_size;
-    println!("  {} entries ({:.2} GB), entry_size={} B", num_entries,
-        packed_mmap.len() as f64 / 1e9, packed_entry_size);
+    println!(
+        "  {} entries ({:.2} GB), entry_size={} B",
+        num_entries,
+        packed_mmap.len() as f64 / 1e9,
+        packed_entry_size
+    );
 
     // ── 2. Get OnionPIR params ──────────────────────────────────────────
     let p = onionpir::params_info(num_entries as u64);
@@ -399,10 +412,22 @@ fn main() {
     let entry_size_pt = p.entry_size as usize;
     let num_plaintexts = p.num_plaintexts as usize;
     println!("\n[2] OnionPIR params (post-port, BV key-switching):");
-    println!("  poly_degree:      {} (N — coeffs per pre-NTT plaintext)", poly_degree);
-    println!("  entry_size:       {} B (payload per plaintext)", entry_size_pt);
-    println!("  num_plaintexts:   {} (compiled-in DB slot count)", num_plaintexts);
-    println!("  coeff_val_cnt:    {} (post-NTT coeff count per plaintext)", coeff_val_cnt);
+    println!(
+        "  poly_degree:      {} (N — coeffs per pre-NTT plaintext)",
+        poly_degree
+    );
+    println!(
+        "  entry_size:       {} B (payload per plaintext)",
+        entry_size_pt
+    );
+    println!(
+        "  num_plaintexts:   {} (compiled-in DB slot count)",
+        num_plaintexts
+    );
+    println!(
+        "  coeff_val_cnt:    {} (post-NTT coeff count per plaintext)",
+        coeff_val_cnt
+    );
     assert_eq!(
         entry_size_pt, packed_entry_size,
         "params_info.entry_size ({}) != packed_entry_size ({}); a stale \
@@ -473,12 +498,7 @@ fn main() {
             );
             batch_coeffs.extend_from_slice(&coeffs);
         }
-        let ok = server.push_plaintexts(
-            &batch_coeffs,
-            n_this_batch as u64,
-            entry_id as u64,
-            &[],
-        );
+        let ok = server.push_plaintexts(&batch_coeffs, n_this_batch as u64, entry_id as u64, &[]);
         assert!(
             ok,
             "push_plaintexts failed at entry_id={} (batch size {})",
@@ -486,7 +506,10 @@ fn main() {
         );
         entry_id += n_this_batch;
         if one_percent > 0 && entry_id % (one_percent * 5).max(1) == 0 {
-            eprint!("\r  push_plaintexts: {}%", entry_id * 100 / num_entries.max(1));
+            eprint!(
+                "\r  push_plaintexts: {}%",
+                entry_id * 100 / num_entries.max(1)
+            );
             let _ = std::io::stderr().flush();
         }
     }
@@ -498,7 +521,10 @@ fn main() {
     // [u64 num_pt][u64 coeff_val_cnt][u64 data_bytes]`.
     let temp_path = format!("{}.savetmp", ntt_store_file);
     let t_save = Instant::now();
-    assert!(server.save_db(&temp_path), "save_db failed for temp NTT store");
+    assert!(
+        server.save_db(&temp_path),
+        "save_db failed for temp NTT store"
+    );
     println!("  save_db: {:.2?}", t_save.elapsed());
 
     let raw_save = std::fs::read(&temp_path).expect("read save_db output");
@@ -530,8 +556,10 @@ fn main() {
     );
 
     // ── 4. Assign entries to PBC groups ─────────────────────────────────
-    println!("\n[4] Assigning {} entries to {} PBC groups ({} copies each)...",
-        num_entries, K_CHUNK, NUM_HASHES);
+    println!(
+        "\n[4] Assigning {} entries to {} PBC groups ({} copies each)...",
+        num_entries, K_CHUNK, NUM_HASHES
+    );
     let t_assign = Instant::now();
 
     let expected_per_group = (num_entries * NUM_HASHES) / K_CHUNK + 1;
@@ -551,13 +579,18 @@ fn main() {
     let min_group = *group_sizes.iter().min().unwrap();
     let avg_group = group_sizes.iter().sum::<usize>() as f64 / K_CHUNK as f64;
     println!("  Done in {:.2?}", t_assign.elapsed());
-    println!("  Group sizes: min={}, max={}, avg={:.0}", min_group, max_group, avg_group);
+    println!(
+        "  Group sizes: min={}, max={}, avg={:.0}",
+        min_group, max_group, avg_group
+    );
 
     // ── 5. Build cuckoo tables per group ────────────────────────────────
     // Uniform bins_per_table from max group size
     let bins_per_table = (max_group as f64 / CUCKOO_LOAD_FACTOR).ceil() as usize;
-    println!("\n[5] Building cuckoo tables ({}-hash, bs=1, bins_per_table={})...",
-        CUCKOO_NUM_HASHES, bins_per_table);
+    println!(
+        "\n[5] Building cuckoo tables ({}-hash, bs=1, bins_per_table={})...",
+        CUCKOO_NUM_HASHES, bins_per_table
+    );
     let t_cuckoo = Instant::now();
 
     let mut all_cuckoo_tables: Vec<Vec<u32>> = Vec::with_capacity(K_CHUNK);
@@ -575,9 +608,14 @@ fn main() {
 
         let occupied = table.iter().filter(|&&x| x != EMPTY).count();
         if group_id % 20 == 0 || group_id + 1 == K_CHUNK {
-            eprintln!("  Group {}/{}: {} entries, {} bins, {:.2}% fill",
-                group_id + 1, K_CHUNK, entries.len(), bins_per_table,
-                occupied as f64 / bins_per_table as f64 * 100.0);
+            eprintln!(
+                "  Group {}/{}: {} entries, {} bins, {:.2}% fill",
+                group_id + 1,
+                K_CHUNK,
+                entries.len(),
+                bins_per_table,
+                occupied as f64 / bins_per_table as f64 * 100.0
+            );
         }
 
         all_cuckoo_tables.push(table);
@@ -599,10 +637,18 @@ fn main() {
         let magic = onion_chunk_magic_with_anchor(ONION_CHUNK_MAGIC, anchor);
         writer.write_all(&magic.to_le_bytes()).unwrap();
         writer.write_all(&(K_CHUNK as u32).to_le_bytes()).unwrap();
-        writer.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes()).unwrap();
-        writer.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
-        writer.write_all(&chunk_master_seed().to_le_bytes()).unwrap();
-        writer.write_all(&(num_entries as u32).to_le_bytes()).unwrap();
+        writer
+            .write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes())
+            .unwrap();
+        writer
+            .write_all(&(bins_per_table as u32).to_le_bytes())
+            .unwrap();
+        writer
+            .write_all(&chunk_master_seed().to_le_bytes())
+            .unwrap();
+        writer
+            .write_all(&(num_entries as u32).to_le_bytes())
+            .unwrap();
         // Padding to 40 bytes for alignment
         writer.write_all(&[0u8; 4]).unwrap();
         // v2 anchor extension (Phase C2): 36 or 72 trailing bytes.
@@ -623,8 +669,12 @@ fn main() {
     }
 
     let cuckoo_file_size = 40 + K_CHUNK * bins_per_table * 4;
-    println!("  Cuckoo file: {} (header 40B + {} groups × {} bins × 4B)",
-        format_bytes(cuckoo_file_size as u64), K_CHUNK, bins_per_table);
+    println!(
+        "  Cuckoo file: {} (header 40B + {} groups × {} bins × 4B)",
+        format_bytes(cuckoo_file_size as u64),
+        K_CHUNK,
+        bins_per_table
+    );
 
     // ── 7. Compute and write DATA bin hashes (for per-bin Merkle) ──────
     println!("\n[7] Computing DATA bin hashes for per-bin Merkle...");
@@ -660,8 +710,13 @@ fn main() {
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&bin_hashes).unwrap();
         w.flush().unwrap();
-        println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
-            total_bins, 8 + total_bins * 32, bin_hashes_file, t_hash.elapsed());
+        println!(
+            "  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
+            total_bins,
+            8 + total_bins * 32,
+            bin_hashes_file,
+            t_hash.elapsed()
+        );
     }
 
     // ── 8. Verify with test query ───────────────────────────────────────
@@ -670,9 +725,15 @@ fn main() {
     // Pick group 0, find a real entry in its cuckoo table
     let test_group = 0;
     let test_table = &all_cuckoo_tables[test_group];
-    let test_bin = test_table.iter().position(|&x| x != EMPTY).expect("no entries in group 0");
+    let test_bin = test_table
+        .iter()
+        .position(|&x| x != EMPTY)
+        .expect("no entries in group 0");
     let test_entry_id = test_table[test_bin];
-    println!("  Test: group={}, bin={}, entry_id={}", test_group, test_bin, test_entry_id);
+    println!(
+        "  Test: group={}, bin={}, entry_id={}",
+        test_group, test_bin, test_entry_id
+    );
 
     // Build index_table for this group (maps padded indices → shared store entry_ids)
     let p_group = onionpir::params_info(bins_per_table as u64);
@@ -757,17 +818,32 @@ fn main() {
     } else {
         println!("  Verification: FAIL!");
         println!("  Expected first 16B: {:?}", &expected[..16]);
-        println!("  Got first 16B:      {:?}", &decrypted[..16.min(decrypted.len())]);
+        println!(
+            "  Got first 16B:      {:?}",
+            &decrypted[..16.min(decrypted.len())]
+        );
     }
 
     // ── Summary ─────────────────────────────────────────────────────────
     println!("\n=== Summary ===");
-    println!("Packed entries:    {} ({:.2} GB)", num_entries, packed_mmap.len() as f64 / 1e9);
-    println!("NTT store:         {} (level-major × num_plaintexts)",
+    println!(
+        "Packed entries:    {} ({:.2} GB)",
+        num_entries,
+        packed_mmap.len() as f64 / 1e9
+    );
+    println!(
+        "NTT store:         {} (level-major × num_plaintexts)",
         format_bytes(
-            std::fs::metadata(&ntt_store_file).map(|m| m.len()).unwrap_or(0),
-        ));
-    println!("Cuckoo tables:     {} groups × {} bins = {}",
-        K_CHUNK, bins_per_table, format_bytes(cuckoo_file_size as u64));
+            std::fs::metadata(&ntt_store_file)
+                .map(|m| m.len())
+                .unwrap_or(0),
+        )
+    );
+    println!(
+        "Cuckoo tables:     {} groups × {} bins = {}",
+        K_CHUNK,
+        bins_per_table,
+        format_bytes(cuckoo_file_size as u64)
+    );
     println!("Total time:        {:.2?}", total_start.elapsed());
 }

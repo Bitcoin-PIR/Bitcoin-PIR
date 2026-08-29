@@ -92,7 +92,10 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
         let _ = chunk_idx;
     }
     server.gen_data(&[]); // random data + NTT in one call (test path)
-    println!("  populate time (test-path gen_data, populate+preprocess fused): {:.2?}", t_populate.elapsed());
+    println!(
+        "  populate time (test-path gen_data, populate+preprocess fused): {:.2?}",
+        t_populate.elapsed()
+    );
 
     // ── Preprocess (NTT) ────────────────────────────────────────────────────
     // OnionPIRv2 port: `preprocess()` removed; NTT runs inside `gen_data`
@@ -102,15 +105,20 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
     let t_preprocess = Instant::now();
     // No-op — gen_data above already preprocessed.
     let preprocess_time = t_preprocess.elapsed();
-    println!("  preprocess time (fused into populate above): {:.2?}", preprocess_time);
+    println!(
+        "  preprocess time (fused into populate above): {:.2?}",
+        preprocess_time
+    );
 
     // ── 3. Save and check file size ─────────────────────────────────────────
     println!("\n[3] Saving preprocessed DB to {}...", save_path);
     server.save_db(save_path);
-    let file_size = std::fs::metadata(save_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
-    println!("  file size: {} ({:.2} MB)", format_bytes(file_size as usize), file_size as f64 / 1_048_576.0);
+    let file_size = std::fs::metadata(save_path).map(|m| m.len()).unwrap_or(0);
+    println!(
+        "  file size: {} ({:.2} MB)",
+        format_bytes(file_size as usize),
+        file_size as f64 / 1_048_576.0
+    );
     println!(
         "  expansion vs logical: {:.2}x",
         file_size as f64 / (padded as f64 * entry_size as f64)
@@ -177,10 +185,7 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
         total_answer_time += t.elapsed();
     }
     let avg_answer_time = total_answer_time / TIMING_ROUNDS as u32;
-    println!(
-        "  response size:   {}",
-        format_bytes(response.len())
-    );
+    println!("  response size:   {}", format_bytes(response.len()));
     println!(
         "  answer_query avg: {:.2?} ({} rounds)",
         avg_answer_time, TIMING_ROUNDS
@@ -214,7 +219,10 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
     } else if decrypted.len() >= 8 {
         let got_idx = u64::from_le_bytes(decrypted[..8].try_into().unwrap());
         if got_idx == test_index {
-            println!("  verification:    OK (first 8 bytes match index={})", test_index);
+            println!(
+                "  verification:    OK (first 8 bytes match index={})",
+                test_index
+            );
         } else {
             println!(
                 "  verification:    MISMATCH! expected index={}, got={}",
@@ -222,7 +230,10 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
             );
         }
     } else {
-        println!("  verification:    FAILED (decrypted too short: {} bytes)", decrypted.len());
+        println!(
+            "  verification:    FAILED (decrypted too short: {} bytes)",
+            decrypted.len()
+        );
     }
 
     // ── Summary ─────────────────────────────────────────────────────────────
@@ -230,8 +241,14 @@ fn bench_config(label: &str, num_entries: u64, save_path: &str) -> (Vec<u8>, Vec
     println!("  Entries:         {} (padded to {})", num_entries, padded);
     println!("  Entry size:      {} bytes", entry_size);
     println!("  Preprocess:      {:.2?}", preprocess_time);
-    println!("  DB file:         {:.2} MB", file_size as f64 / 1_048_576.0);
-    println!("  Keys total:      {}", format_bytes(galois_keys.len() + gsw_keys.len()));
+    println!(
+        "  DB file:         {:.2} MB",
+        file_size as f64 / 1_048_576.0
+    );
+    println!(
+        "  Keys total:      {}",
+        format_bytes(galois_keys.len() + gsw_keys.len())
+    );
     println!("  Query size:      {}", format_bytes(query.len()));
     println!("  Response size:   {}", format_bytes(response.len()));
     println!("  Query time:      {:.2?} avg", avg_answer_time);
@@ -247,8 +264,10 @@ fn main() {
     println!("OnionPIR Benchmark");
     println!("==================");
     println!("Testing at two database sizes matching our PBC group estimates.");
-    println!("Index level: {} entries/group, Chunk level: {} entries/group",
-        INDEX_NUM_ENTRIES, CHUNK_NUM_ENTRIES);
+    println!(
+        "Index level: {} entries/group, Chunk level: {} entries/group",
+        INDEX_NUM_ENTRIES, CHUNK_NUM_ENTRIES
+    );
 
     // Benchmark index-level config
     let (index_gk, index_gsw) = bench_config(
@@ -268,8 +287,10 @@ fn main() {
     println!("\n{}", "=".repeat(60));
     println!("=== Key Reusability Test ===");
     println!("{}", "=".repeat(60));
-    println!("\nTesting: can keys generated for num_entries={} work on a server with num_entries={}?",
-        INDEX_NUM_ENTRIES, CHUNK_NUM_ENTRIES);
+    println!(
+        "\nTesting: can keys generated for num_entries={} work on a server with num_entries={}?",
+        INDEX_NUM_ENTRIES, CHUNK_NUM_ENTRIES
+    );
 
     let mut cross_server = PirServer::new(CHUNK_NUM_ENTRIES);
     // Populate with minimal dummy data so it can answer queries
@@ -302,16 +323,23 @@ fn main() {
             }));
             match answer_result {
                 Ok(_resp) => println!("  answer_query with cross keys: OK (returned response)"),
-                Err(_) => println!("  answer_query with cross keys: PANIC (keys registered but query failed)"),
+                Err(_) => println!(
+                    "  answer_query with cross keys: PANIC (keys registered but query failed)"
+                ),
             }
         }
         Err(_) => {
-            println!("  Key registration: PANIC (keys are NOT reusable across different num_entries)");
+            println!(
+                "  Key registration: PANIC (keys are NOT reusable across different num_entries)"
+            );
         }
     }
 
     // Also test: same num_entries, same keys = should always work
-    println!("\nControl test: keys from num_entries={} on server with same num_entries...", CHUNK_NUM_ENTRIES);
+    println!(
+        "\nControl test: keys from num_entries={} on server with same num_entries...",
+        CHUNK_NUM_ENTRIES
+    );
     let mut control_server = PirServer::new(CHUNK_NUM_ENTRIES);
     // OnionPIRv2 port stub: see populate-loop comment in main bench above.
     for chunk_idx in 0..(p.other_dim_sz as usize) {

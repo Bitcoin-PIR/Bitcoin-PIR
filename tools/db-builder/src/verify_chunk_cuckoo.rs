@@ -190,10 +190,7 @@ fn main() {
 
     // ── Verify random lookups ────────────────────────────────────────────
     let verify_count = NUM_VERIFY.min(n);
-    println!(
-        "[4] Verifying {} random chunk lookups...",
-        verify_count
-    );
+    println!("[4] Verifying {} random chunk lookups...", verify_count);
     let verify_start = Instant::now();
 
     let mut rng_state: u64 = 0xdeadbeefcafe1234;
@@ -208,7 +205,15 @@ fn main() {
 
         let mut entry_found = false;
         for &group_id in &assigned {
-            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes, master_seed) {
+            if lookup_in_group(
+                &cuckoo_mmap,
+                group_id,
+                chunk_id,
+                bins_per_table,
+                slots_per_bin,
+                num_hashes,
+                master_seed,
+            ) {
                 entry_found = true;
                 break;
             }
@@ -259,7 +264,15 @@ fn main() {
 
         let mut entry_found = false;
         for &group_id in &assigned {
-            if lookup_in_group(&cuckoo_mmap, group_id, chunk_id, bins_per_table, slots_per_bin, num_hashes, master_seed) {
+            if lookup_in_group(
+                &cuckoo_mmap,
+                group_id,
+                chunk_id,
+                bins_per_table,
+                slots_per_bin,
+                num_hashes,
+                master_seed,
+            ) {
                 entry_found = true;
                 break;
             }

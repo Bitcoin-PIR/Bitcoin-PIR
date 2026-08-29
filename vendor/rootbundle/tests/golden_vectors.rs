@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use rootbundle::{
-    sign_root_bundle, BuildKind, BuildParamsV2, ChainAnchor, NamedRoot,
-    RootBundlePayload, SignedRootBundle,
+    sign_root_bundle, BuildKind, BuildParamsV2, ChainAnchor, NamedRoot, RootBundlePayload,
+    SignedRootBundle,
 };
 
 fn payload() -> RootBundlePayload {
@@ -56,7 +56,10 @@ fn v1_payload_and_signed_bundle_are_byte_stable() {
 
     let expected_payload = include_str!("../testdata/v1_payload.hex").trim();
     let expected_bundle = include_str!("../testdata/v1_bundle.hex").trim();
-    assert_eq!(hex::encode(bundle.payload.encode().unwrap()), expected_payload);
+    assert_eq!(
+        hex::encode(bundle.payload.encode().unwrap()),
+        expected_payload
+    );
     assert_eq!(hex::encode(bundle.encode().unwrap()), expected_bundle);
 
     let decoded = SignedRootBundle::decode(&hex::decode(expected_bundle).unwrap()).unwrap();

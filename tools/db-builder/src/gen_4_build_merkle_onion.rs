@@ -187,7 +187,10 @@ fn build_group_sibling_db(
 
     // `save_db` only writes to a path; round-trip through a temp file to
     // get the blob bytes, then concatenate into the consolidated file.
-    let temp = format!("{}/.merkle_onion_sib_{}_g{}.savetmp", data_dir, tree_kind, group_id);
+    let temp = format!(
+        "{}/.merkle_onion_sib_{}_g{}.savetmp",
+        data_dir, tree_kind, group_id
+    );
     assert!(
         server.save_db(&temp),
         "save_db failed for {} group {}",
@@ -285,7 +288,10 @@ fn build_tree_kind(
 
     // 3. Build the k per-group sibling NTT DBs (serial — each NTT uses all
     //    cores internally; the DBs are tiny so the loop is fast).
-    println!("  [{}] building {} per-group sibling NTT DBs...", tree_kind, k);
+    println!(
+        "  [{}] building {} per-group sibling NTT DBs...",
+        tree_kind, k
+    );
     let t_sib = Instant::now();
     let blobs: Vec<Vec<u8>> = (0..k)
         .map(|g| {
@@ -372,7 +378,12 @@ fn write_tree_tops(
     w.flush().unwrap();
 
     let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    println!("  tree-tops: {} trees, {:.2} MB → {}", num_trees, size as f64 / 1e6, path);
+    println!(
+        "  tree-tops: {} trees, {:.2} MB → {}",
+        num_trees,
+        size as f64 / 1e6,
+        path
+    );
 }
 
 fn write_one_tree_top(w: &mut impl IoWrite, tree: &PerGroupTree, arity: usize) {
@@ -416,7 +427,11 @@ fn write_roots(data_dir: &str, index_trees: &[PerGroupTree], data_trees: &[PerGr
     let super_root_path = format!("{}/merkle_onion_root.bin", data_dir);
     std::fs::write(&super_root_path, super_root).expect("write super-root");
 
-    let hex: String = super_root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
+    let hex: String = super_root
+        .iter()
+        .take(8)
+        .map(|b| format!("{:02x}", b))
+        .collect();
     println!("  roots: {} per-group roots → {}", roots.len(), roots_path);
     println!("  super-root: {}... → {}", hex, super_root_path);
 }
@@ -471,7 +486,10 @@ fn main() {
     println!();
     println!("=== Summary ===");
     println!("Arity:        {}", arity);
-    println!("INDEX:        {} trees, {} leaves/group", index_k, index_bins);
+    println!(
+        "INDEX:        {} trees, {} leaves/group",
+        index_k, index_bins
+    );
     println!("DATA:         {} trees, {} leaves/group", data_k, data_bins);
     println!("Total trees:  {}", index_k + data_k);
     println!("Total time:   {:.1}s", t_total.elapsed().as_secs_f64());

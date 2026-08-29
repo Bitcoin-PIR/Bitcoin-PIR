@@ -9,13 +9,13 @@
 //!     --server0 ws://localhost:8091 --server1 ws://localhost:8092 \
 //!     --hash <40-char hex script hash>
 
-use runtime::eval;
-use runtime::protocol::{BatchQuery, Request, Response};
 use build::common::*;
-use pir_core::merkle;
-use pir_core::params::compute_dpf_n;
 use futures_util::{SinkExt, StreamExt};
 use libdpf::Dpf;
+use pir_core::merkle;
+use pir_core::params::compute_dpf_n;
+use runtime::eval;
+use runtime::protocol::{BatchQuery, Request, Response};
 use std::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -38,9 +38,18 @@ fn parse_args() -> Args {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--server0" | "-s0" => { server0 = args[i + 1].clone(); i += 1; }
-            "--server1" | "-s1" => { server1 = args[i + 1].clone(); i += 1; }
-            "--hash" | "-h" => { hash_hex = args[i + 1].clone(); i += 1; }
+            "--server0" | "-s0" => {
+                server0 = args[i + 1].clone();
+                i += 1;
+            }
+            "--server1" | "-s1" => {
+                server1 = args[i + 1].clone();
+                i += 1;
+            }
+            "--hash" | "-h" => {
+                hash_hex = args[i + 1].clone();
+                i += 1;
+            }
             "--db-id" | "--db" => {
                 db_id = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 i += 1;
@@ -62,16 +71,23 @@ fn parse_args() -> Args {
 
     let mut script_hash = [0u8; SCRIPT_HASH_SIZE];
     for j in 0..SCRIPT_HASH_SIZE {
-        script_hash[j] = u8::from_str_radix(&hash_hex[j * 2..j * 2 + 2], 16)
-            .expect("invalid hex in --hash");
+        script_hash[j] =
+            u8::from_str_radix(&hash_hex[j * 2..j * 2 + 2], 16).expect("invalid hex in --hash");
     }
 
-    Args { server0, server1, script_hash, db_id }
+    Args {
+        server0,
+        server1,
+        script_hash,
+        db_id,
+    }
 }
 
 // ─── PRNG for dummy queries ─────────────────────────────────────────────────
 
-struct DummyRng { state: u64 }
+struct DummyRng {
+    state: u64,
+}
 
 impl DummyRng {
     fn new() -> Self {
@@ -79,7 +95,9 @@ impl DummyRng {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        Self { state: splitmix64(seed) }
+        Self {
+            state: splitmix64(seed),
+        }
     }
     fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
@@ -108,7 +126,11 @@ async fn ws_roundtrip(
     sink.send(Message::Binary(encoded)).await.expect("send");
 
     loop {
-        let msg = stream.next().await.expect("no response").expect("read error");
+        let msg = stream
+            .next()
+            .await
+            .expect("no response")
+            .expect("read error");
         match msg {
             Message::Binary(b) => {
                 let payload = &b[4..]; // skip length prefix
@@ -151,7 +173,11 @@ fn plan_chunk_rounds(chunk_ids: &[u32]) -> Vec<Vec<(u32, u8)>> {
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    let hash_hex: String = args.script_hash.iter().map(|b| format!("{:02x}", b)).collect();
+    let hash_hex: String = args
+        .script_hash
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
 
     let db_id = args.db_id;
 
@@ -174,10 +200,14 @@ async fn main() {
         max_frame_size: Some(256 * 1024 * 1024),
         ..Default::default()
     };
-    let (ws0, _) = tokio_tungstenite::connect_async_with_config(&args.server0, Some(ws_config), false)
-        .await.expect("connect server0");
-    let (ws1, _) = tokio_tungstenite::connect_async_with_config(&args.server1, Some(ws_config), false)
-        .await.expect("connect server1");
+    let (ws0, _) =
+        tokio_tungstenite::connect_async_with_config(&args.server0, Some(ws_config), false)
+            .await
+            .expect("connect server0");
+    let (ws1, _) =
+        tokio_tungstenite::connect_async_with_config(&args.server1, Some(ws_config), false)
+            .await
+            .expect("connect server1");
     let (mut sink0, mut stream0) = ws0.split();
     let (mut sink1, mut stream1) = ws1.split();
     println!("  Connected.");
@@ -189,8 +219,14 @@ async fn main() {
     let info0 = ws_roundtrip(&mut sink0, &mut stream0, &info_req).await;
     let info = match info0 {
         Response::Info(i) => i,
-        Response::Error(e) => { eprintln!("Server error: {}", e); return; }
-        _ => { eprintln!("Unexpected response"); return; }
+        Response::Error(e) => {
+            eprintln!("Server error: {}", e);
+            return;
+        }
+        _ => {
+            eprintln!("Unexpected response");
+            return;
+        }
     };
     // Also get info from server1 (just to verify, don't need it)
     let _ = ws_roundtrip(&mut sink1, &mut stream1, &info_req).await;
@@ -222,20 +258,35 @@ async fn main() {
                         if entry.db_type == 0 { "full" } else { "delta" },
                         entry.base_height, entry.height, entry.has_bucket_merkle);
                 } else {
-                    eprintln!("ERROR: db_id={} not found in catalog (available: {:?})",
-                        db_id, cat.databases.iter().map(|e| e.db_id).collect::<Vec<_>>());
+                    eprintln!(
+                        "ERROR: db_id={} not found in catalog (available: {:?})",
+                        db_id,
+                        cat.databases.iter().map(|e| e.db_id).collect::<Vec<_>>()
+                    );
                     return;
                 }
             }
-            Response::Error(e) => { eprintln!("Catalog error: {}", e); return; }
-            _ => { eprintln!("Unexpected catalog response"); return; }
+            Response::Error(e) => {
+                eprintln!("Catalog error: {}", e);
+                return;
+            }
+            _ => {
+                eprintln!("Unexpected catalog response");
+                return;
+            }
         }
     }
 
     let index_dpf_n = compute_dpf_n(index_bins);
     let chunk_dpf_n = compute_dpf_n(chunk_bins);
-    println!("  Index: K={}, bins_per_table={}, dpf_n={}", info.index_k, index_bins, index_dpf_n);
-    println!("  Chunk: K={}, bins_per_table={}, dpf_n={}", info.chunk_k, chunk_bins, chunk_dpf_n);
+    println!(
+        "  Index: K={}, bins_per_table={}, dpf_n={}",
+        info.index_k, index_bins, index_dpf_n
+    );
+    println!(
+        "  Chunk: K={}, bins_per_table={}, dpf_n={}",
+        info.chunk_k, chunk_bins, chunk_dpf_n
+    );
     println!("  tag_seed: 0x{:016x}", tag_seed);
     println!();
 
@@ -284,8 +335,18 @@ async fn main() {
     }
 
     // Send to both servers concurrently
-    let req0 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, db_id, keys: s0_keys });
-    let req1 = Request::IndexBatch(BatchQuery { level: 0, round_id: 0, db_id, keys: s1_keys });
+    let req0 = Request::IndexBatch(BatchQuery {
+        level: 0,
+        round_id: 0,
+        db_id,
+        keys: s0_keys,
+    });
+    let req1 = Request::IndexBatch(BatchQuery {
+        level: 0,
+        round_id: 0,
+        db_id,
+        keys: s1_keys,
+    });
 
     let enc0 = req0.encode();
     let enc1 = req1.encode();
@@ -299,7 +360,10 @@ async fn main() {
 
     let (r0, r1) = match (resp0, resp1) {
         (Response::IndexBatch(a), Response::IndexBatch(b)) => (a, b),
-        _ => { eprintln!("Unexpected response type for index batch"); return; }
+        _ => {
+            eprintln!("Unexpected response type for index batch");
+            return;
+        }
     };
 
     // Compute fingerprint tag for our script hash
@@ -322,16 +386,21 @@ async fn main() {
     }
 
     // Find our entry
-    let (start_chunk, num_chunks) = found_entry
-        .unwrap_or_else(|| {
-            eprintln!("ERROR: script hash not found in index PIR result!");
-            std::process::exit(1);
-        });
+    let (start_chunk, num_chunks) = found_entry.unwrap_or_else(|| {
+        eprintln!("ERROR: script hash not found in index PIR result!");
+        std::process::exit(1);
+    });
 
     let num_units = (num_chunks as usize).div_ceil(CHUNKS_PER_UNIT);
 
-    println!("  Found: start_chunk={}, num_chunks={}", start_chunk, num_chunks);
-    println!("  Units to fetch: {} (CHUNKS_PER_UNIT={})", num_units, CHUNKS_PER_UNIT);
+    println!(
+        "  Found: start_chunk={}, num_chunks={}",
+        start_chunk, num_chunks
+    );
+    println!(
+        "  Units to fetch: {} (CHUNKS_PER_UNIT={})",
+        num_units, CHUNKS_PER_UNIT
+    );
     println!("  Level 1 time: {:.2?}", l1_start.elapsed());
     println!();
 
@@ -403,8 +472,18 @@ async fn main() {
         }
 
         // Send to both servers
-        let req0 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, db_id, keys: s0_keys });
-        let req1 = Request::ChunkBatch(BatchQuery { level: 1, round_id: ri as u16, db_id, keys: s1_keys });
+        let req0 = Request::ChunkBatch(BatchQuery {
+            level: 1,
+            round_id: ri as u16,
+            db_id,
+            keys: s0_keys,
+        });
+        let req1 = Request::ChunkBatch(BatchQuery {
+            level: 1,
+            round_id: ri as u16,
+            db_id,
+            keys: s1_keys,
+        });
 
         let enc0 = req0.encode();
         let enc1 = req1.encode();
@@ -417,7 +496,10 @@ async fn main() {
 
         let (cr0, cr1) = match (resp0, resp1) {
             (Response::ChunkBatch(a), Response::ChunkBatch(b)) => (a, b),
-            _ => { eprintln!("Unexpected response for chunk batch"); return; }
+            _ => {
+                eprintln!("Unexpected response for chunk batch");
+                return;
+            }
         };
 
         // XOR and extract
@@ -441,13 +523,21 @@ async fn main() {
             }
 
             if !found {
-                eprintln!("  WARNING: chunk {} not found in round {} group {}", chunk_id, ri, b);
+                eprintln!(
+                    "  WARNING: chunk {} not found in round {} group {}",
+                    chunk_id, ri, b
+                );
             }
         }
 
         if (ri + 1) % 10 == 0 || ri + 1 == rounds.len() {
-            println!("  Round {}/{}: recovered {}/{} chunks so far",
-                ri + 1, rounds.len(), recovered_chunks.len(), chunk_ids.len());
+            println!(
+                "  Round {}/{}: recovered {}/{} chunks so far",
+                ri + 1,
+                rounds.len(),
+                recovered_chunks.len(),
+                chunk_ids.len()
+            );
         }
     }
 
@@ -480,9 +570,15 @@ async fn main() {
 
         // Compute INDEX leaf hash: SHA256(bin_index_u32_LE || bin_content)
         let index_leaf = merkle::compute_bin_leaf_hash(index_bin_index as u32, &index_bin_content);
-        println!("  INDEX leaf: group={}, bin={}, hash={:02x}{:02x}{:02x}{:02x}...",
-            assigned_group, index_bin_index,
-            index_leaf[0], index_leaf[1], index_leaf[2], index_leaf[3]);
+        println!(
+            "  INDEX leaf: group={}, bin={}, hash={:02x}{:02x}{:02x}{:02x}...",
+            assigned_group,
+            index_bin_index,
+            index_leaf[0],
+            index_leaf[1],
+            index_leaf[2],
+            index_leaf[3]
+        );
 
         // Fetch tree-top caches from server (0x34), with optional db_id byte
         let top_req = if db_id != 0 {
@@ -497,7 +593,10 @@ async fn main() {
             m.extend_from_slice(&top_req);
             m
         };
-        sink0.send(Message::Binary(top_msg)).await.expect("send tree-top req");
+        sink0
+            .send(Message::Binary(top_msg))
+            .await
+            .expect("send tree-top req");
         let top_resp = recv_raw(&mut stream0).await;
         // Response: [4B len][1B variant=0x34][tree_tops_bytes...]
         let tree_tops_data = if top_resp.len() >= 6 && top_resp[4] == 0x34 {
@@ -510,24 +609,35 @@ async fn main() {
         if !tree_tops_data.is_empty() {
             // Parse tree-tops: [4B num_trees][per tree: header + level data]
             let num_trees = u32::from_le_bytes(tree_tops_data[0..4].try_into().unwrap()) as usize;
-            println!("  Tree-tops: {} trees, {} bytes", num_trees, tree_tops_data.len());
+            println!(
+                "  Tree-tops: {} trees, {} bytes",
+                num_trees,
+                tree_tops_data.len()
+            );
 
             // Skip to the tree for our INDEX group
             let mut off = 4usize;
             let mut target_top: Option<(usize, Vec<Vec<[u8; 32]>>)> = None;
             for t_idx in 0..num_trees {
-                let cache_from = tree_tops_data[off] as usize; off += 1;
-                let _total_nodes = u32::from_le_bytes(tree_tops_data[off..off+4].try_into().unwrap()); off += 4;
-                let _arity = u16::from_le_bytes(tree_tops_data[off..off+2].try_into().unwrap()); off += 2;
-                let num_levels = tree_tops_data[off] as usize; off += 1;
+                let cache_from = tree_tops_data[off] as usize;
+                off += 1;
+                let _total_nodes =
+                    u32::from_le_bytes(tree_tops_data[off..off + 4].try_into().unwrap());
+                off += 4;
+                let _arity = u16::from_le_bytes(tree_tops_data[off..off + 2].try_into().unwrap());
+                off += 2;
+                let num_levels = tree_tops_data[off] as usize;
+                off += 1;
 
                 let mut levels: Vec<Vec<[u8; 32]>> = Vec::new();
                 for _ in 0..num_levels {
-                    let n = u32::from_le_bytes(tree_tops_data[off..off+4].try_into().unwrap()) as usize; off += 4;
+                    let n = u32::from_le_bytes(tree_tops_data[off..off + 4].try_into().unwrap())
+                        as usize;
+                    off += 4;
                     let mut level = Vec::with_capacity(n);
                     for _ in 0..n {
                         let mut h = [0u8; 32];
-                        h.copy_from_slice(&tree_tops_data[off..off+32]);
+                        h.copy_from_slice(&tree_tops_data[off..off + 32]);
                         level.push(h);
                         off += 32;
                     }
@@ -556,7 +666,12 @@ async fn main() {
                     nodes = groups;
                 }
 
-                println!("  Sibling levels: {} (groups: {:?}), cache_from={}", sib_level_groups.len(), sib_level_groups, cache_from);
+                println!(
+                    "  Sibling levels: {} (groups: {:?}), cache_from={}",
+                    sib_level_groups.len(),
+                    sib_level_groups,
+                    cache_from
+                );
 
                 for (level, &num_groups) in sib_level_groups.iter().enumerate() {
                     let group_id = node_idx / merkle_arity;
@@ -580,26 +695,44 @@ async fn main() {
                     // round_id = table_type * 100 + level (table_type=0 for INDEX)
                     let round_id = level as u16;
                     let req0 = Request::BucketMerkleSibBatch(BatchQuery {
-                        level: 2, round_id, db_id, keys: s0_keys,
+                        level: 2,
+                        round_id,
+                        db_id,
+                        keys: s0_keys,
                     });
                     let req1 = Request::BucketMerkleSibBatch(BatchQuery {
-                        level: 2, round_id, db_id, keys: s1_keys,
+                        level: 2,
+                        round_id,
+                        db_id,
+                        keys: s1_keys,
                     });
 
-                    sink0.send(Message::Binary(req0.encode())).await.expect("send s0 sib");
-                    sink1.send(Message::Binary(req1.encode())).await.expect("send s1 sib");
+                    sink0
+                        .send(Message::Binary(req0.encode()))
+                        .await
+                        .expect("send s0 sib");
+                    sink1
+                        .send(Message::Binary(req1.encode()))
+                        .await
+                        .expect("send s1 sib");
 
                     let resp0 = recv_response(&mut stream0, &mut sink0).await;
                     let resp1 = recv_response(&mut stream1, &mut sink1).await;
 
                     let (sr0, sr1) = match (resp0, resp1) {
-                        (Response::BucketMerkleSibBatch(a), Response::BucketMerkleSibBatch(b)) => (a, b),
+                        (Response::BucketMerkleSibBatch(a), Response::BucketMerkleSibBatch(b)) => {
+                            (a, b)
+                        }
                         (Response::Error(e), _) | (_, Response::Error(e)) => {
                             println!("  Bucket Merkle not supported: {}", e);
                             merkle_ok = false;
                             break;
                         }
-                        _ => { println!("  Unexpected response for bucket merkle sib"); merkle_ok = false; break; }
+                        _ => {
+                            println!("  Unexpected response for bucket merkle sib");
+                            merkle_ok = false;
+                            break;
+                        }
                     };
 
                     // XOR to get sibling row (256 bytes = 8 × 32B child hashes)
@@ -656,7 +789,8 @@ async fn main() {
                     }
 
                     // The root is the last level's single entry in the tree-top.
-                    let expected_root = cached_levels.last()
+                    let expected_root = cached_levels
+                        .last()
                         .and_then(|level| level.first().copied())
                         .unwrap_or(merkle::ZERO_HASH);
 
@@ -666,16 +800,23 @@ async fn main() {
                             current_hash[0], current_hash[1], current_hash[2], current_hash[3]);
                     } else {
                         println!("  INDEX Merkle FAILED for group {}!", assigned_group);
-                        println!("    Expected: {:02x}{:02x}{:02x}{:02x}...",
-                            expected_root[0], expected_root[1], expected_root[2], expected_root[3]);
-                        println!("    Got:      {:02x}{:02x}{:02x}{:02x}...",
-                            current_hash[0], current_hash[1], current_hash[2], current_hash[3]);
+                        println!(
+                            "    Expected: {:02x}{:02x}{:02x}{:02x}...",
+                            expected_root[0], expected_root[1], expected_root[2], expected_root[3]
+                        );
+                        println!(
+                            "    Got:      {:02x}{:02x}{:02x}{:02x}...",
+                            current_hash[0], current_hash[1], current_hash[2], current_hash[3]
+                        );
                     }
                 }
 
                 println!("  Merkle verification time: {:.2?}", l3_start.elapsed());
             } else {
-                println!("  Could not find tree-top for INDEX group {}", assigned_group);
+                println!(
+                    "  Could not find tree-top for INDEX group {}",
+                    assigned_group
+                );
             }
         }
         println!();
@@ -698,7 +839,11 @@ async fn main() {
         }
     }
 
-    println!("  Recovered: {}/{} units", chunk_ids.len() - missing, chunk_ids.len());
+    println!(
+        "  Recovered: {}/{} units",
+        chunk_ids.len() - missing,
+        chunk_ids.len()
+    );
     if missing > 0 {
         println!("  WARNING: {} units missing!", missing);
     }
@@ -724,7 +869,9 @@ async fn main() {
             let txid_bytes = &full_data[pos..pos + 32];
             pos += 32;
             let mut txid_rev = [0u8; 32];
-            for j in 0..32 { txid_rev[j] = txid_bytes[31 - j]; }
+            for j in 0..32 {
+                txid_rev[j] = txid_bytes[31 - j];
+            }
             let txid_hex: String = txid_rev.iter().map(|b| format!("{:02x}", b)).collect();
             let (vout, vr) = read_varint(&full_data[pos..]);
             pos += vr;
@@ -743,7 +890,9 @@ async fn main() {
             let txid_bytes = &full_data[pos..pos + 32];
             pos += 32;
             let mut txid_rev = [0u8; 32];
-            for j in 0..32 { txid_rev[j] = txid_bytes[31 - j]; }
+            for j in 0..32 {
+                txid_rev[j] = txid_bytes[31 - j];
+            }
             let txid_hex: String = txid_rev.iter().map(|b| format!("{:02x}", b)).collect();
             let (vout, vr) = read_varint(&full_data[pos..]);
             pos += vr;
@@ -751,12 +900,21 @@ async fn main() {
             pos += ar;
             total_sats += amount;
             let btc = amount as f64 / 100_000_000.0;
-            println!("    NEW  #{}: {}:{} — {} sats ({:.8} BTC)", i + 1, txid_hex, vout, amount, btc);
+            println!(
+                "    NEW  #{}: {}:{} — {} sats ({:.8} BTC)",
+                i + 1,
+                txid_hex,
+                vout,
+                amount,
+                btc
+            );
         }
 
         println!();
-        println!("  Delta: {} spent, {} new, {} sats in new UTXOs",
-            num_spent, num_new, total_sats);
+        println!(
+            "  Delta: {} spent, {} new, {} sats in new UTXOs",
+            num_spent, num_new, total_sats
+        );
     } else {
         // ── Full UTXO data format ──────────────────────────────────────
         println!("[6] Decoding UTXO entries:");
@@ -789,14 +947,22 @@ async fn main() {
 
             total_sats += amount;
             let btc = amount as f64 / 100_000_000.0;
-            println!("  UTXO #{}: {}:{} — {} sats ({:.8} BTC)",
-                i + 1, txid_hex, vout, amount, btc);
+            println!(
+                "  UTXO #{}: {}:{} — {} sats ({:.8} BTC)",
+                i + 1,
+                txid_hex,
+                vout,
+                amount,
+                btc
+            );
         }
 
         println!();
         let total_btc = total_sats as f64 / 100_000_000.0;
-        println!("  Total: {} sats ({:.8} BTC) across {} UTXOs",
-            total_sats, total_btc, num_entries);
+        println!(
+            "  Total: {} sats ({:.8} BTC) across {} UTXOs",
+            total_sats, total_btc, num_entries
+        );
     }
 
     println!();
@@ -823,7 +989,11 @@ async fn recv_response(
     >,
 ) -> Response {
     loop {
-        let msg = stream.next().await.expect("no response").expect("read error");
+        let msg = stream
+            .next()
+            .await
+            .expect("no response")
+            .expect("read error");
         match msg {
             Message::Binary(b) => {
                 let payload = &b[4..];
@@ -846,7 +1016,11 @@ async fn recv_raw(
     >,
 ) -> Vec<u8> {
     loop {
-        let msg = stream.next().await.expect("no response").expect("read error");
+        let msg = stream
+            .next()
+            .await
+            .expect("no response")
+            .expect("read error");
         match msg {
             Message::Binary(b) => return b.to_vec(),
             _ => continue,

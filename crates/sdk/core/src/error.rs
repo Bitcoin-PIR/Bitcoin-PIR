@@ -78,7 +78,6 @@ pub enum ErrorKind {
 #[derive(Error, Debug)]
 pub enum PirError {
     // ─── Connection errors ──────────────────────────────────────────────────
-
     /// Failed to connect to a PIR server.
     #[error("connection failed: {0}")]
     ConnectionFailed(String),
@@ -114,7 +113,6 @@ pub enum PirError {
     },
 
     // ─── Protocol errors ────────────────────────────────────────────────────
-
     /// Invalid protocol message received. Use for wire-format violations
     /// within the agreed protocol — if the mismatch is a version or
     /// feature gap, prefer [`PirError::ProtocolSkew`].
@@ -160,7 +158,6 @@ pub enum PirError {
     SessionEvicted(String),
 
     // ─── Database errors ────────────────────────────────────────────────────
-
     /// Database not found.
     #[error("database not found: db_id={0}")]
     DatabaseNotFound(u8),
@@ -174,7 +171,6 @@ pub enum PirError {
     NoSyncPath(String),
 
     // ─── Query errors ───────────────────────────────────────────────────────
-
     /// Invalid script hash.
     #[error("invalid script hash: {0}")]
     InvalidScriptHash(String),
@@ -203,7 +199,6 @@ pub enum PirError {
     MerkleVerificationFailed(String),
 
     // ─── State errors ───────────────────────────────────────────────────────
-
     /// Client is in invalid state for this operation.
     #[error("invalid state: {0}")]
     InvalidState(String),
@@ -213,7 +208,6 @@ pub enum PirError {
     BackendState(String),
 
     // ─── Configuration errors ───────────────────────────────────────────────
-
     /// Invalid configuration.
     #[error("configuration error: {0}")]
     Config(String),
@@ -223,13 +217,11 @@ pub enum PirError {
     MissingServer(String),
 
     // ─── I/O errors ─────────────────────────────────────────────────────────
-
     /// I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
     // ─── Codec errors ───────────────────────────────────────────────────────
-
     /// Failed to decode data.
     #[error("decode error: {0}")]
     Decode(String),
@@ -239,13 +231,11 @@ pub enum PirError {
     Encode(String),
 
     // ─── Delta merge errors ─────────────────────────────────────────────────
-
     /// Failed to merge delta into snapshot.
     #[error("merge error: {0}")]
     MergeError(String),
 
     // ─── Internal errors ────────────────────────────────────────────────────
-
     /// Internal error (bug).
     #[error("internal error: {0}")]
     Internal(String),
@@ -526,10 +516,7 @@ mod tests {
             PirError::Decode("short".into()).kind(),
             ErrorKind::DataError
         );
-        assert_eq!(
-            PirError::Encode("huh".into()).kind(),
-            ErrorKind::DataError
-        );
+        assert_eq!(PirError::Encode("huh".into()).kind(), ErrorKind::DataError);
         assert_eq!(
             PirError::MergeError("conflict".into()).kind(),
             ErrorKind::DataError
@@ -540,10 +527,7 @@ mod tests {
     fn kind_classifies_other() {
         let io_err = io::Error::new(io::ErrorKind::Other, "oops");
         assert_eq!(PirError::Io(io_err).kind(), ErrorKind::Other);
-        assert_eq!(
-            PirError::Internal("bug".into()).kind(),
-            ErrorKind::Other
-        );
+        assert_eq!(PirError::Internal("bug".into()).kind(), ErrorKind::Other);
     }
 
     #[test]

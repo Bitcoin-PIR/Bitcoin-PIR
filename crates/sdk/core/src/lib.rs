@@ -36,22 +36,21 @@
 //! }
 //! ```
 
-pub mod types;
-pub mod error;
 pub mod backend;
 pub mod client;
+pub mod error;
 pub mod leakage;
 pub mod metrics;
 pub mod sync;
+pub mod types;
 
 // Re-export main types at crate root
-pub use types::*;
-pub use error::{ErrorKind, PirError, PirResult};
 pub use backend::PirBackend;
 pub use client::{
     ConnectionState, NoProgress, PirClient, PirClientConfig, PrintProgress, StateListener,
     SyncProgress,
 };
+pub use error::{ErrorKind, PirError, PirResult};
 pub use leakage::{
     BufferingLeakageRecorder, LeakageProfile, LeakageRecorder, NoopLeakageRecorder, RoundKind,
     RoundProfile,
@@ -63,6 +62,7 @@ pub use sync::{
     compute_sync_plan, decode_delta_data, merge_delta, merge_delta_batch, DeltaData, SyncPlan,
     SyncPlanner, SyncStep, MAX_DELTA_CHAIN_LENGTH,
 };
+pub use types::*;
 
 // Re-export pir-core for convenience
 pub use pir_core;

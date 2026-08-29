@@ -16,7 +16,9 @@ use memmap2::Mmap;
 use pir_core::cuckoo::{self, HeaderAnchor};
 use pir_core::hash;
 use pir_core::params::*;
-use pir_core::seeds::{ChainAnchor, DeltaAnchor, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES, SnapshotSeeds, DeltaSeeds};
+use pir_core::seeds::{
+    ChainAnchor, DeltaAnchor, DeltaSeeds, SnapshotSeeds, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES,
+};
 use rayon::prelude::*;
 use std::env;
 use std::fs::File;
@@ -60,7 +62,11 @@ fn resolve_seeds(anchor_path: Option<&PathBuf>) -> ResolvedAnchor {
                         std::process::exit(1);
                     });
                     let s = SnapshotSeeds::derive(&a);
-                    println!("Anchor: {} (snapshot, height={})", path.display(), a.block_height);
+                    println!(
+                        "Anchor: {} (snapshot, height={})",
+                        path.display(),
+                        a.block_height
+                    );
                     ResolvedAnchor {
                         anchor: Some(HeaderAnchor::Snapshot(a)),
                         index_master: s.index_master,
@@ -74,8 +80,12 @@ fn resolve_seeds(anchor_path: Option<&PathBuf>) -> ResolvedAnchor {
                         std::process::exit(1);
                     });
                     let s = DeltaSeeds::derive(&a);
-                    println!("Anchor: {} (delta, {}→{})", path.display(),
-                        a.from.block_height, a.to.block_height);
+                    println!(
+                        "Anchor: {} (delta, {}→{})",
+                        path.display(),
+                        a.from.block_height,
+                        a.to.block_height
+                    );
                     ResolvedAnchor {
                         anchor: Some(HeaderAnchor::Delta(a)),
                         index_master: s.index_master,
@@ -84,8 +94,13 @@ fn resolve_seeds(anchor_path: Option<&PathBuf>) -> ResolvedAnchor {
                     }
                 }
                 n => {
-                    eprintln!("error: anchor {} has unknown size {} (expected {} or {})",
-                        path.display(), n, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES);
+                    eprintln!(
+                        "error: anchor {} has unknown size {} (expected {} or {})",
+                        path.display(),
+                        n,
+                        CHAIN_ANCHOR_BYTES,
+                        DELTA_ANCHOR_BYTES
+                    );
                     std::process::exit(1);
                 }
             }
@@ -105,8 +120,14 @@ fn resolve_seeds(anchor_path: Option<&PathBuf>) -> ResolvedAnchor {
 
 fn print_usage(prog: &str) {
     eprintln!("Usage:");
-    eprintln!("  {} index <index_file> <output_file> [--anchor <anchor.bin>]", prog);
-    eprintln!("  {} chunk <chunks_file> <index_file> <output_file> [--anchor <anchor.bin>]", prog);
+    eprintln!(
+        "  {} index <index_file> <output_file> [--anchor <anchor.bin>]",
+        prog
+    );
+    eprintln!(
+        "  {} chunk <chunks_file> <index_file> <output_file> [--anchor <anchor.bin>]",
+        prog
+    );
 }
 
 fn main() {
@@ -145,14 +166,20 @@ fn main() {
     match positional[0].as_str() {
         "index" => {
             if positional.len() != 3 {
-                eprintln!("Usage: {} index <index_file> <output_file> [--anchor <path>]", args[0]);
+                eprintln!(
+                    "Usage: {} index <index_file> <output_file> [--anchor <path>]",
+                    args[0]
+                );
                 std::process::exit(1);
             }
             build_index_cuckoo(&positional[1], &positional[2], &seeds);
         }
         "chunk" => {
             if positional.len() != 4 {
-                eprintln!("Usage: {} chunk <chunks_file> <index_file> <output_file> [--anchor <path>]", args[0]);
+                eprintln!(
+                    "Usage: {} chunk <chunks_file> <index_file> <output_file> [--anchor <path>]",
+                    args[0]
+                );
                 std::process::exit(1);
             }
             build_chunk_cuckoo(&positional[1], &positional[2], &positional[3], &seeds);
@@ -174,16 +201,25 @@ fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAncho
     println!("=== Generic Index Cuckoo Builder ===");
     println!("Input:  {}", index_file);
     println!("Output: {}", output_file);
-    println!("K={}, slots_per_bin={}, slot_size={}, num_hashes={}",
-        params.k, params.slots_per_bin, params.slot_size, params.num_hashes);
-    println!("master_seed=0x{:016x}, tag_seed=0x{:016x}", params.master_seed, tag_seed);
+    println!(
+        "K={}, slots_per_bin={}, slot_size={}, num_hashes={}",
+        params.k, params.slots_per_bin, params.slot_size, params.num_hashes
+    );
+    println!(
+        "master_seed=0x{:016x}, tag_seed=0x{:016x}",
+        params.master_seed, tag_seed
+    );
     println!();
 
     // Memory-map input
     let f = File::open(index_file).expect("open index file");
     let mmap = unsafe { Mmap::map(&f) }.expect("mmap index file");
     let n = mmap.len() / INDEX_RECORD_SIZE;
-    println!("[1] Loaded {} index entries ({:.1} MB)", n, mmap.len() as f64 / 1e6);
+    println!(
+        "[1] Loaded {} index entries ({:.1} MB)",
+        n,
+        mmap.len() as f64 / 1e6
+    );
 
     // Step 2: Assign entries to groups
     println!("[2] Assigning entries to {} groups...", params.k);
@@ -201,7 +237,10 @@ fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAncho
 
     let max_load = group_entries.iter().map(|v| v.len()).max().unwrap_or(0);
     let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.slots_per_bin);
-    println!("    Max group load: {}, bins_per_table: {}", max_load, bins_per_table);
+    println!(
+        "    Max group load: {}, bins_per_table: {}",
+        max_load, bins_per_table
+    );
     println!("    Done in {:.2?}", t.elapsed());
 
     // Step 3: Build cuckoo tables in parallel
@@ -218,7 +257,8 @@ fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAncho
                 .map(|&i| &mmap[i * INDEX_RECORD_SIZE..i * INDEX_RECORD_SIZE + SCRIPT_HASH_SIZE])
                 .collect();
 
-            let table = cuckoo::build_byte_keyed_table(&script_hashes, group_id, params, bins_per_table);
+            let table =
+                cuckoo::build_byte_keyed_table(&script_hashes, group_id, params, bins_per_table);
 
             let d = done_count.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(10) || d == params.k {
@@ -235,7 +275,8 @@ fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAncho
     println!("[4] Serializing to {}...", output_file);
     let t = Instant::now();
 
-    let header = cuckoo::write_header_with_anchor(params, bins_per_table, tag_seed, seeds.anchor.as_ref());
+    let header =
+        cuckoo::write_header_with_anchor(params, bins_per_table, tag_seed, seeds.anchor.as_ref());
     let f = File::create(output_file).expect("create output file");
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
     w.write_all(&header).unwrap();
@@ -257,21 +298,31 @@ fn build_index_cuckoo(index_file: &str, output_file: &str, seeds: &ResolvedAncho
                 let tag = hash::compute_tag(tag_seed, script_hash);
                 w.write_all(&tag.to_le_bytes()).unwrap();
                 // start_chunk_id (4B) + num_chunks (1B)
-                w.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE]).unwrap();
+                w.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE])
+                    .unwrap();
             }
         }
     }
 
     w.flush().unwrap();
     let file_size = std::fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    println!("    Written {:.2} GB in {:.2?}", file_size as f64 / 1e9, t.elapsed());
+    println!(
+        "    Written {:.2} GB in {:.2?}",
+        file_size as f64 / 1e9,
+        t.elapsed()
+    );
     println!();
     println!("Done.");
 }
 
 // ─── CHUNK-level cuckoo builder ─────────────────────────────────────────────
 
-fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, seeds: &ResolvedAnchor) {
+fn build_chunk_cuckoo(
+    chunks_file: &str,
+    index_file: &str,
+    output_file: &str,
+    seeds: &ResolvedAnchor,
+) {
     let _ = index_file; // referenced by the binary's CLI but currently unused here
     let params = CHUNK_PARAMS.with_master_seed(seeds.chunk_master);
     let params = &params;
@@ -280,7 +331,10 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, se
     println!("Chunks: {}", chunks_file);
     println!("Index:  {}", index_file);
     println!("Output: {}", output_file);
-    println!("K={}, slots_per_bin={}, num_hashes={}", params.k, params.slots_per_bin, params.num_hashes);
+    println!(
+        "K={}, slots_per_bin={}, num_hashes={}",
+        params.k, params.slots_per_bin, params.num_hashes
+    );
     println!("master_seed=0x{:016x}", params.master_seed);
     println!();
 
@@ -288,10 +342,17 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, se
     let f = File::open(chunks_file).expect("open chunks file");
     let chunks_mmap = unsafe { Mmap::map(&f) }.expect("mmap chunks file");
     let num_chunks = chunks_mmap.len() / CHUNK_SIZE;
-    println!("[1] Loaded {} chunks ({:.1} MB)", num_chunks, chunks_mmap.len() as f64 / 1e6);
+    println!(
+        "[1] Loaded {} chunks ({:.1} MB)",
+        num_chunks,
+        chunks_mmap.len() as f64 / 1e6
+    );
 
     // Step 2: Assign chunks to groups
-    println!("[2] Assigning {} chunks to {} groups...", num_chunks, params.k);
+    println!(
+        "[2] Assigning {} chunks to {} groups...",
+        num_chunks, params.k
+    );
     let t = Instant::now();
 
     let mut group_chunks: Vec<Vec<u32>> = vec![Vec::new(); params.k];
@@ -304,7 +365,10 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, se
 
     let max_load = group_chunks.iter().map(|v| v.len()).max().unwrap_or(0);
     let bins_per_table = cuckoo::compute_bins_per_table(max_load, params.slots_per_bin);
-    println!("    Max group load: {}, bins_per_table: {}", max_load, bins_per_table);
+    println!(
+        "    Max group load: {}, bins_per_table: {}",
+        max_load, bins_per_table
+    );
     println!("    Done in {:.2?}", t.elapsed());
 
     // Step 3: Build cuckoo tables in parallel
@@ -362,7 +426,11 @@ fn build_chunk_cuckoo(chunks_file: &str, index_file: &str, output_file: &str, se
 
     w.flush().unwrap();
     let file_size = std::fs::metadata(output_file).map(|m| m.len()).unwrap_or(0);
-    println!("    Written {:.2} GB in {:.2?}", file_size as f64 / 1e9, t.elapsed());
+    println!(
+        "    Written {:.2} GB in {:.2?}",
+        file_size as f64 / 1e9,
+        t.elapsed()
+    );
     println!();
     println!("Done.");
 }

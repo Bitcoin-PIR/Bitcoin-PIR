@@ -178,7 +178,11 @@ fn build_cuckoo_for_group(
 
 /// Compute all cuckoo bin positions for a chunk_id.
 #[inline]
-fn compute_bins(chunk_id: u32, keys: &[u64; CUCKOO_NUM_HASHES], num_bins: usize) -> [usize; CUCKOO_NUM_HASHES] {
+fn compute_bins(
+    chunk_id: u32,
+    keys: &[u64; CUCKOO_NUM_HASHES],
+    num_bins: usize,
+) -> [usize; CUCKOO_NUM_HASHES] {
     let mut bins = [0usize; CUCKOO_NUM_HASHES];
     for h in 0..CUCKOO_NUM_HASHES {
         bins[h] = cuckoo_hash_int(chunk_id, keys[h], num_bins);
@@ -222,8 +226,12 @@ fn cuckoo_insert(
         let mut placed = false;
         let mut first_alt = current_bin;
         for &b in &ev_bins {
-            if b == current_bin { continue; }
-            if first_alt == current_bin { first_alt = b; }
+            if b == current_bin {
+                continue;
+            }
+            if first_alt == current_bin {
+                first_alt = b;
+            }
             let alt_base = b * SLOTS_PER_BIN;
             for s in 0..SLOTS_PER_BIN {
                 if table[alt_base + s] == EMPTY {
@@ -232,7 +240,9 @@ fn cuckoo_insert(
                     break;
                 }
             }
-            if placed { break; }
+            if placed {
+                break;
+            }
         }
 
         if placed {
@@ -240,8 +250,16 @@ fn cuckoo_insert(
         }
 
         // Continue evicting — rotate through alternatives
-        let alts: Vec<usize> = ev_bins.iter().filter(|&&b| b != current_bin).copied().collect();
-        let alt_bin = if alts.is_empty() { current_bin } else { alts[kick % alts.len()] };
+        let alts: Vec<usize> = ev_bins
+            .iter()
+            .filter(|&&b| b != current_bin)
+            .copied()
+            .collect();
+        let alt_bin = if alts.is_empty() {
+            current_bin
+        } else {
+            alts[kick % alts.len()]
+        };
         current_id = evicted_id;
         current_bin = alt_bin;
     }
@@ -335,8 +353,7 @@ fn main() {
 
     println!(
         "[3] Building Cuckoo tables ({} hash fns, slots_per_bin={}, load={}, uniform bins={})...",
-        CUCKOO_NUM_HASHES,
-        SLOTS_PER_BIN, CUCKOO_LOAD_FACTOR, bins_per_table
+        CUCKOO_NUM_HASHES, SLOTS_PER_BIN, CUCKOO_LOAD_FACTOR, bins_per_table
     );
     let cuckoo_start = Instant::now();
 
@@ -466,7 +483,9 @@ fn main() {
             } else {
                 writer.write_all(&slot.to_le_bytes()).unwrap();
                 let data_offset = slot as usize * CHUNK_SIZE;
-                writer.write_all(&chunks_mmap[data_offset..data_offset + CHUNK_SIZE]).unwrap();
+                writer
+                    .write_all(&chunks_mmap[data_offset..data_offset + CHUNK_SIZE])
+                    .unwrap();
             }
         }
     }

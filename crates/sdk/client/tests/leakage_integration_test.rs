@@ -143,13 +143,20 @@ fn assert_pir_k_padding(profile: &LeakageProfile, k_index: usize, k_chunk: usize
     for (i, r) in profile.rounds.iter().enumerate() {
         match r.kind {
             RoundKind::Index => assert_eq!(
-                r.items.len(), k_index,
-                "round[{}] Index: items.len()={}, expected K={}", i, r.items.len(), k_index,
+                r.items.len(),
+                k_index,
+                "round[{}] Index: items.len()={}, expected K={}",
+                i,
+                r.items.len(),
+                k_index,
             ),
             RoundKind::Chunk => assert_eq!(
-                r.items.len(), k_chunk,
+                r.items.len(),
+                k_chunk,
                 "round[{}] Chunk: items.len()={}, expected K_CHUNK={}",
-                i, r.items.len(), k_chunk,
+                i,
+                r.items.len(),
+                k_chunk,
             ),
             // Merkle-level rounds covered by `assert_merkle_per_level_uniform`.
             _ => {}
@@ -181,10 +188,14 @@ fn assert_merkle_per_level_uniform(profile: &LeakageProfile) {
                 }
                 std::collections::hash_map::Entry::Occupied(e) => {
                     assert_eq!(
-                        *e.get(), n,
+                        *e.get(),
+                        n,
                         "round[{}] {:?}: items.len()={}, expected {} \
                          (mismatched K-padding within Merkle level)",
-                        i, r.kind, n, *e.get(),
+                        i,
+                        r.kind,
+                        n,
+                        *e.get(),
                     );
                 }
             }
@@ -224,20 +235,29 @@ fn assert_per_round_uniform(profile: &LeakageProfile, kind_match: &RoundKind) {
 /// finding.
 fn assert_profiles_equivalent(a: &LeakageProfile, b: &LeakageProfile) {
     assert_eq!(
-        a.rounds.len(), b.rounds.len(),
-        "round count mismatch: {} vs {}", a.rounds.len(), b.rounds.len(),
+        a.rounds.len(),
+        b.rounds.len(),
+        "round count mismatch: {} vs {}",
+        a.rounds.len(),
+        b.rounds.len(),
     );
     for (i, (ra, rb)) in a.rounds.iter().zip(b.rounds.iter()).enumerate() {
         assert_eq!(ra.kind, rb.kind, "round[{}] kind mismatch", i);
-        assert_eq!(ra.server_id, rb.server_id, "round[{}] server_id mismatch", i);
+        assert_eq!(
+            ra.server_id, rb.server_id,
+            "round[{}] server_id mismatch",
+            i
+        );
         assert_eq!(ra.db_id, rb.db_id, "round[{}] db_id mismatch", i);
         assert_eq!(
             ra.request_bytes, rb.request_bytes,
-            "round[{}] request_bytes mismatch ({:?})", i, ra.kind,
+            "round[{}] request_bytes mismatch ({:?})",
+            i, ra.kind,
         );
         assert_eq!(
             ra.response_bytes, rb.response_bytes,
-            "round[{}] response_bytes mismatch ({:?})", i, ra.kind,
+            "round[{}] response_bytes mismatch ({:?})",
+            i, ra.kind,
         );
         assert_eq!(ra.items, rb.items, "round[{}] items mismatch", i);
     }
@@ -327,13 +347,16 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         client.connect().await?;
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
-        let (k_index, k_chunk, db_id) =
-            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
         // The public deployment enforces Payment-V1 admission.
         common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
-        Ok(QueryProfile { profile: recorder.take_profile("dpf"), k_index, k_chunk })
+        Ok(QueryProfile {
+            profile: recorder.take_profile("dpf"),
+            k_index,
+            k_chunk,
+        })
     })
     .await
 }
@@ -351,8 +374,7 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         client.connect().await?;
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
-        let (k_index, k_chunk, db_id) =
-            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
         // The public deployment enforces Payment-V1 admission.
         common::admit_harmony_live(
             &mut client,
@@ -363,7 +385,11 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
-        Ok(QueryProfile { profile: recorder.take_profile("harmony"), k_index, k_chunk })
+        Ok(QueryProfile {
+            profile: recorder.take_profile("harmony"),
+            k_index,
+            k_chunk,
+        })
     })
     .await
 }
@@ -382,14 +408,21 @@ async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         client.connect().await?;
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
-        let (k_index, k_chunk, db_id) =
-            (main.index_k as usize, main.chunk_k as usize, main.db_id);
+        let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
         // The public deployment enforces Payment-V1 admission.
-        common::admit_onion_live(&mut client, db_id, &common::production_db0_onion_v2_proof_policy())
-            .await?;
+        common::admit_onion_live(
+            &mut client,
+            db_id,
+            &common::production_db0_onion_v2_proof_policy(),
+        )
+        .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
-        Ok(QueryProfile { profile: recorder.take_profile("onion"), k_index, k_chunk })
+        Ok(QueryProfile {
+            profile: recorder.take_profile("onion"),
+            k_index,
+            k_chunk,
+        })
     })
     .await
 }
@@ -482,7 +515,11 @@ async fn dpf_amortization_bench() {
 #[ignore = "requires running PIR servers"]
 async fn dpf_per_message_invariants_not_found() {
     let (sh, _) = not_found_pair();
-    let QueryProfile { profile, k_index, k_chunk } = dpf_query_profile(&[sh]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = dpf_query_profile(&[sh]).await;
     println!(
         "dpf not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -511,9 +548,11 @@ async fn dpf_per_message_invariants_not_found() {
     // explicit since it is the invariant the symmetry fix preserves.
     for r in profile.rounds_of_kind(&RoundKind::Chunk) {
         assert_eq!(
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
             "DPF not-found Chunk round items.len()={}, expected K_CHUNK={}",
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
         );
     }
 
@@ -524,7 +563,8 @@ async fn dpf_per_message_invariants_not_found() {
         assert!(
             r.items_uniform(k_index, 2),
             "DPF Index round violates items_uniform(K={}, 2): {:?}",
-            k_index, r.items,
+            k_index,
+            r.items,
         );
     }
     // DPF Merkle sibling shape: items[g] = 1 (one DPF key per group per pass).
@@ -533,7 +573,8 @@ async fn dpf_per_message_invariants_not_found() {
         assert!(
             r.items_uniform(k_index, 1),
             "DPF IndexMerkleSiblings round violates items_uniform(K={}, 1): {:?}",
-            k_index, r.items,
+            k_index,
+            r.items,
         );
     }
     assert_per_round_uniform(&profile, &RoundKind::Index);
@@ -579,22 +620,24 @@ async fn run_dpf_single_query(sh: ScriptHash) -> LeakageProfile {
 #[ignore = "requires running PIR servers"]
 async fn dpf_per_message_invariants_batch_2_not_found() {
     let (sh_a, sh_b) = not_found_pair();
-    let QueryProfile { profile, k_index, k_chunk } =
-        dpf_query_profile(&[sh_a, sh_b]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = dpf_query_profile(&[sh_a, sh_b]).await;
     println!(
         "dpf 2-query not-found profile: {} rounds — kinds: {:?}",
         profile.rounds.len(),
         profile.rounds.iter().map(|r| r.kind).collect::<Vec<_>>()
     );
-    let merkle_index_rounds_per_level: std::collections::HashMap<u8, usize> =
-        profile
-            .rounds_of_kind(&RoundKind::IndexMerkleSiblings { level: 0 })
-            .fold(std::collections::HashMap::new(), |mut acc, r| {
-                if let RoundKind::IndexMerkleSiblings { level } = r.kind {
-                    *acc.entry(level).or_insert(0) += 1;
-                }
-                acc
-            });
+    let merkle_index_rounds_per_level: std::collections::HashMap<u8, usize> = profile
+        .rounds_of_kind(&RoundKind::IndexMerkleSiblings { level: 0 })
+        .fold(std::collections::HashMap::new(), |mut acc, r| {
+            if let RoundKind::IndexMerkleSiblings { level } = r.kind {
+                *acc.entry(level).or_insert(0) += 1;
+            }
+            acc
+        });
     println!(
         "dpf 2-query IndexMerkleSiblings per level: {:?} \
          (per-level pass count = leak.index_max_items_per_group_per_level × 2 servers)",
@@ -611,7 +654,8 @@ async fn dpf_per_message_invariants_batch_2_not_found() {
         assert!(
             r.items_uniform(k_index, 2),
             "DPF Index round violates items_uniform(K={}, 2): {:?}",
-            k_index, r.items,
+            k_index,
+            r.items,
         );
     }
 }
@@ -753,8 +797,12 @@ async fn dpf_simulator_property_multi_query_collision() {
     println!(
         "dpf multi-query collision (post-closure): total rounds A={} B={} C={}; \
          IndexMerkleSiblings A={} B={} C={}",
-        profile_a.rounds.len(), profile_b.rounds.len(), profile_c.rounds.len(),
-        a_merkle, b_merkle, c_merkle,
+        profile_a.rounds.len(),
+        profile_b.rounds.len(),
+        profile_c.rounds.len(),
+        a_merkle,
+        b_merkle,
+        c_merkle,
     );
 
     // Post-closure: all three profiles must be byte-identical. The PBC
@@ -842,13 +890,22 @@ async fn harmony_amortization_bench() {
             .collect();
 
         let cold = harmony_cold_batch_query(&scripthashes[..1], db_id).await?;
-        println!("[BENCH] 1st query (cold session, hint download): {:.2?}", cold);
+        println!(
+            "[BENCH] 1st query (cold session, hint download): {:.2?}",
+            cold
+        );
 
         let warm_single = harmony_cold_batch_query(&scripthashes[1..2], db_id).await?;
-        println!("[BENCH] 2nd query (cold session again): {:.2?}", warm_single);
+        println!(
+            "[BENCH] 2nd query (cold session again): {:.2?}",
+            warm_single
+        );
 
         let batch_of_8 = harmony_cold_batch_query(&scripthashes[2..], db_id).await?;
-        println!("[BENCH] 8-batch query (cold session again): {:.2?}", batch_of_8);
+        println!(
+            "[BENCH] 8-batch query (cold session again): {:.2?}",
+            batch_of_8
+        );
         println!(
             "[BENCH] per-scripthash: cold={:.2?}, second-cold={:.2?}, batch-of-8={:.2?}/sh",
             cold,
@@ -865,7 +922,11 @@ async fn harmony_amortization_bench() {
 #[ignore = "requires running PIR servers"]
 async fn harmony_per_message_invariants_not_found() {
     let (sh, _) = not_found_pair();
-    let QueryProfile { profile, k_index, k_chunk } = harmony_query_profile(&[sh]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = harmony_query_profile(&[sh]).await;
     println!(
         "harmony not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -900,7 +961,9 @@ async fn harmony_per_message_invariants_not_found() {
             assert!(
                 r.items_uniform(k_index, t_minus_1),
                 "Harmony Index round violates items_uniform(K={}, T-1={}): {:?}",
-                k_index, t_minus_1, r.items,
+                k_index,
+                t_minus_1,
+                r.items,
             );
         }
     }
@@ -965,8 +1028,12 @@ async fn harmony_simulator_property_multi_query_collision() {
     println!(
         "harmony multi-query collision (post-closure): total rounds A={} B={} C={}; \
          IndexMerkleSiblings A={} B={} C={}",
-        profile_a.rounds.len(), profile_b.rounds.len(), profile_c.rounds.len(),
-        a_merkle, b_merkle, c_merkle,
+        profile_a.rounds.len(),
+        profile_b.rounds.len(),
+        profile_c.rounds.len(),
+        a_merkle,
+        b_merkle,
+        c_merkle,
     );
 
     // Post-closure: all three profiles must be byte-identical.
@@ -1049,7 +1116,11 @@ async fn harmony_found_vs_not_found_have_byte_identical_profiles() {
 #[ignore = "requires running PIR servers"]
 async fn onion_per_message_invariants_not_found() {
     let (sh, _) = not_found_pair();
-    let QueryProfile { profile, k_index, k_chunk } = onion_query_profile(&[sh]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = onion_query_profile(&[sh]).await;
     println!(
         "onion not-found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1076,9 +1147,11 @@ async fn onion_per_message_invariants_not_found() {
     );
     for r in profile.rounds_of_kind(&RoundKind::Chunk) {
         assert_eq!(
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
             "OnionPIR not-found Chunk round items.len()={}, expected K_CHUNK={}",
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
         );
     }
 
@@ -1091,7 +1164,8 @@ async fn onion_per_message_invariants_not_found() {
         assert!(
             r.items_uniform(k_index, 2),
             "OnionPIR Index round violates items_uniform(K={}, 2): {:?}",
-            k_index, r.items,
+            k_index,
+            r.items,
         );
     }
     // OnionPIR sibling round: items[g] = 1 (one FHE query per group).
@@ -1195,7 +1269,9 @@ async fn onion_simulator_property_multi_query_collision() {
 
     println!(
         "onion multi-query collision: total rounds A={} B={} C={}",
-        profile_a.rounds.len(), profile_b.rounds.len(), profile_c.rounds.len(),
+        profile_a.rounds.len(),
+        profile_b.rounds.len(),
+        profile_c.rounds.len(),
     );
     println!("  IndexMerkleSiblings per level:");
     for (level, &a_lvl) in &hist_a {
@@ -1253,7 +1329,11 @@ async fn onion_simulator_property_multi_query_collision() {
 #[ignore = "requires running PIR servers"]
 async fn dpf_found_query_includes_chunk_rounds() {
     let (sh, _) = found_pair();
-    let QueryProfile { profile, k_index, k_chunk } = dpf_query_profile(&[sh]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = dpf_query_profile(&[sh]).await;
     println!(
         "dpf found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1277,7 +1357,8 @@ async fn dpf_found_query_includes_chunk_rounds() {
         assert!(
             r.items_uniform(k_index, 2),
             "DPF Index round violates items_uniform(K={}, 2): {:?}",
-            k_index, r.items,
+            k_index,
+            r.items,
         );
     }
     for r in profile.rounds_of_kind(&RoundKind::Chunk) {
@@ -1286,9 +1367,11 @@ async fn dpf_found_query_includes_chunk_rounds() {
         // only assert items.len() == K_CHUNK here; the per-group count
         // is intentionally non-uniform.
         assert_eq!(
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
             "DPF Chunk round items.len()={}, expected K_CHUNK={}",
-            r.items.len(), k_chunk,
+            r.items.len(),
+            k_chunk,
         );
     }
 }
@@ -1371,10 +1454,12 @@ async fn dpf_found_vs_not_found_have_same_round_count() {
         found_cms, nf_cms,
     );
     assert_eq!(
-        p_found.rounds.len(), p_not_found.rounds.len(),
+        p_found.rounds.len(),
+        p_not_found.rounds.len(),
         "found and not-found total round counts diverge ({} vs {}) \
          — round-presence regressed, or the found example is large",
-        p_found.rounds.len(), p_not_found.rounds.len(),
+        p_found.rounds.len(),
+        p_not_found.rounds.len(),
     );
 }
 
@@ -1480,7 +1565,8 @@ async fn dpf_two_found_queries_both_follow_found_shape() {
         assert!(
             chunks >= 2,
             "found query {} emitted {} CHUNK rounds; expected ≥2 (one per server)",
-            label, chunks,
+            label,
+            chunks,
         );
         assert!(p.count_of_kind(&RoundKind::Index) >= 2);
     }
@@ -1524,7 +1610,11 @@ async fn dpf_two_found_queries_both_follow_found_shape() {
 #[ignore = "requires running PIR servers"]
 async fn onion_found_query_includes_chunk_rounds() {
     let (sh, _) = found_pair();
-    let QueryProfile { profile, k_index, k_chunk } = onion_query_profile(&[sh]).await;
+    let QueryProfile {
+        profile,
+        k_index,
+        k_chunk,
+    } = onion_query_profile(&[sh]).await;
     println!(
         "onion found profile: {} rounds — {:?}",
         profile.rounds.len(),
@@ -1610,10 +1700,12 @@ async fn onion_found_vs_not_found_have_same_round_count() {
         found_cms, nf_cms,
     );
     assert_eq!(
-        p_found.rounds.len(), p_not_found.rounds.len(),
+        p_found.rounds.len(),
+        p_not_found.rounds.len(),
         "OnionPIR found and not-found total round counts diverge ({} vs {}) \
          — CHUNK Round-Presence Symmetry regressed",
-        p_found.rounds.len(), p_not_found.rounds.len(),
+        p_found.rounds.len(),
+        p_not_found.rounds.len(),
     );
 }
 
@@ -1765,7 +1857,7 @@ async fn harmony_data_correctness_diagnostic() {
 
     let labels = [
         ("sh_a (HASH160 of 76a914...88ac, P2PKH)", sh_a),
-        ("sh_b (HASH160 of 0014...7b8b, P2WPKH)",  sh_b),
+        ("sh_b (HASH160 of 0014...7b8b, P2WPKH)", sh_b),
     ];
     for (i, res) in results.iter().enumerate() {
         let (label, sh) = labels[i];
@@ -1776,11 +1868,15 @@ async fn harmony_data_correctness_diagnostic() {
             Some(qr) => {
                 eprintln!(
                     "    -> entries={} merkle_verified={} is_whale={}",
-                    qr.entries.len(), qr.merkle_verified, qr.is_whale,
+                    qr.entries.len(),
+                    qr.merkle_verified,
+                    qr.is_whale,
                 );
                 for (j, e) in qr.entries.iter().enumerate() {
-                    let txid_internal: String = e.txid.iter().map(|b| format!("{:02x}", b)).collect();
-                    let txid_display: String = e.txid.iter().rev().map(|b| format!("{:02x}", b)).collect();
+                    let txid_internal: String =
+                        e.txid.iter().map(|b| format!("{:02x}", b)).collect();
+                    let txid_display: String =
+                        e.txid.iter().rev().map(|b| format!("{:02x}", b)).collect();
                     eprintln!(
                         "      entry[{}] txid_internal={} txid_display={} vout={} amount_sats={}",
                         j, txid_internal, txid_display, e.vout, e.amount_sats,

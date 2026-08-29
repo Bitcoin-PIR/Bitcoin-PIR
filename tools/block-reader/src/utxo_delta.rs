@@ -28,13 +28,25 @@ fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 4 {
-        eprintln!("Usage: {} <bitcoin_datadir> <start_height> <end_height>", args[0]);
-        eprintln!("Example: {} /Volumes/Bitcoin/bitcoin 938612 940612", args[0]);
+        eprintln!(
+            "Usage: {} <bitcoin_datadir> <start_height> <end_height>",
+            args[0]
+        );
+        eprintln!(
+            "Example: {} /Volumes/Bitcoin/bitcoin 938612 940612",
+            args[0]
+        );
         eprintln!();
         eprintln!("Computes the UTXO delta for the inclusive block range [start, end].");
         eprintln!("Outputs:");
-        eprintln!("  {}/utxo_delta_minus.bin  — 36B entries: [32B txid][4B vout]", OUTPUT_DIR);
-        eprintln!("  {}/utxo_delta_plus.bin   — 44B entries: [32B txid][4B vout][8B amount]", OUTPUT_DIR);
+        eprintln!(
+            "  {}/utxo_delta_minus.bin  — 36B entries: [32B txid][4B vout]",
+            OUTPUT_DIR
+        );
+        eprintln!(
+            "  {}/utxo_delta_plus.bin   — 44B entries: [32B txid][4B vout][8B amount]",
+            OUTPUT_DIR
+        );
         std::process::exit(1);
     }
 
@@ -43,7 +55,10 @@ fn main() {
     let end_height: u64 = args[3].parse().expect("end_height must be a number");
 
     if start_height > end_height {
-        eprintln!("Error: start_height ({}) > end_height ({})", start_height, end_height);
+        eprintln!(
+            "Error: start_height ({}) > end_height ({})",
+            start_height, end_height
+        );
         std::process::exit(1);
     }
 
@@ -76,7 +91,10 @@ fn main() {
 
     println!("=== UTXO Delta Computation ===");
     println!("Chain height:  {}", chain_height);
-    println!("Range:         {} to {} ({} blocks, inclusive)", start_height, end_height, num_blocks);
+    println!(
+        "Range:         {} to {} ({} blocks, inclusive)",
+        start_height, end_height, num_blocks
+    );
     println!();
 
     // Data structures
@@ -185,9 +203,15 @@ fn main() {
     println!();
     println!("MINUS (pre-range spent):     {}", minus_count);
     println!("PLUS  (new, still unspent):  {}", plus_count);
-    println!("  Total BTC in PLUS:         {:.8} BTC", plus_total_sats as f64 / 1e8);
+    println!(
+        "  Total BTC in PLUS:         {:.8} BTC",
+        plus_total_sats as f64 / 1e8
+    );
     println!("Created & consumed (excluded): {}", created_and_consumed);
-    println!("Dust filtered (amt <= {}):     {}", DUST_THRESHOLD, dust_filtered);
+    println!(
+        "Dust filtered (amt <= {}):     {}",
+        DUST_THRESHOLD, dust_filtered
+    );
     println!();
 
     // Sanity check: total_outputs = plus_count + created_and_consumed + dust_filtered

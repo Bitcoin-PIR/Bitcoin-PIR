@@ -22,7 +22,10 @@ fn main() {
     println!();
 
     // ── 1. Load first-level PIR results ──────────────────────────────────
-    println!("[1] Loading first-level PIR results: {}", BATCH_PIR_RESULTS_FILE);
+    println!(
+        "[1] Loading first-level PIR results: {}",
+        BATCH_PIR_RESULTS_FILE
+    );
     let data = fs::read(BATCH_PIR_RESULTS_FILE).unwrap_or_else(|e| {
         eprintln!("Failed to read results file: {}", e);
         std::process::exit(1);
@@ -41,9 +44,7 @@ fn main() {
 
     for i in 0..num_queries {
         let base = i * INDEX_RECORD_SIZE;
-        let start_chunk = u32::from_le_bytes(
-            data[base + 20..base + 24].try_into().unwrap(),
-        );
+        let start_chunk = u32::from_le_bytes(data[base + 20..base + 24].try_into().unwrap());
         let num_chunks = data[base + 24] as u32;
 
         if num_chunks == 0 {
@@ -76,7 +77,11 @@ fn main() {
         } else {
             println!(
                 "    q{:>3}: {} → chunks {}..{} ({} chunks)",
-                i, hex, start, start + nc - 1, nc
+                i,
+                hex,
+                start,
+                start + nc - 1,
+                nc
             );
         }
     }
@@ -89,7 +94,10 @@ fn main() {
         std::process::exit(1);
     });
     let (bins_per_table, master_seed) = read_chunk_cuckoo_header_full(&cuckoo_data);
-    println!("  bins_per_table = {}, master_seed = 0x{:016x}", bins_per_table, master_seed);
+    println!(
+        "  bins_per_table = {}, master_seed = 0x{:016x}",
+        bins_per_table, master_seed
+    );
     println!();
 
     // ── 4. Compute candidate groups ─────────────────────────────────────
@@ -109,8 +117,10 @@ fn main() {
     let mut success = true;
     for (i, &chunk_id) in chunk_queries.iter().enumerate() {
         if !pbc_cuckoo_place(&candidates, &mut groups, i, MAX_KICKS, NUM_HASHES) {
-            eprintln!("  FAILED to place chunk query {} (chunk_id={}) after {} kicks",
-                i, chunk_id, MAX_KICKS);
+            eprintln!(
+                "  FAILED to place chunk query {} (chunk_id={}) after {} kicks",
+                i, chunk_id, MAX_KICKS
+            );
             success = false;
             break;
         }
@@ -121,7 +131,10 @@ fn main() {
         std::process::exit(1);
     }
 
-    println!("  All {} chunk queries placed successfully!", num_chunk_queries);
+    println!(
+        "  All {} chunk queries placed successfully!",
+        num_chunk_queries
+    );
     println!();
 
     // ── 6. Build reverse map ─────────────────────────────────────────────
@@ -168,7 +181,12 @@ fn main() {
 
         println!(
             "  {:>6}  {:>10}  {:>6}  {:>8}  {:>8}  {}",
-            i, chunk_id, assigned_group, loc0, loc1, candidates_str.join(", ")
+            i,
+            chunk_id,
+            assigned_group,
+            loc0,
+            loc1,
+            candidates_str.join(", ")
         );
     }
     println!();
@@ -181,7 +199,10 @@ fn main() {
     println!("  Unique chunk queries:    {}", num_chunk_queries);
     println!("  Groups used:            {} / {}", used, K_CHUNK);
     println!("  Groups empty:           {}", empty);
-    println!("  Utilization:             {:.1}%", used as f64 / K_CHUNK as f64 * 100.0);
+    println!(
+        "  Utilization:             {:.1}%",
+        used as f64 / K_CHUNK as f64 * 100.0
+    );
     println!("  bins_per_table:          {}", bins_per_table);
     println!();
 

@@ -41,9 +41,18 @@ fn main() {
     let start_height: u64 = args[1].parse().expect("start_height");
     let end_height: u64 = args[2].parse().expect("end_height");
 
-    let input_path = format!("{}/delta_grouped_{}_{}.bin", DATA_DIR, start_height, end_height);
-    let chunks_path = format!("{}/delta_chunks_{}_{}.bin", DATA_DIR, start_height, end_height);
-    let index_path = format!("{}/delta_index_{}_{}.bin", DATA_DIR, start_height, end_height);
+    let input_path = format!(
+        "{}/delta_grouped_{}_{}.bin",
+        DATA_DIR, start_height, end_height
+    );
+    let chunks_path = format!(
+        "{}/delta_chunks_{}_{}.bin",
+        DATA_DIR, start_height, end_height
+    );
+    let index_path = format!(
+        "{}/delta_index_{}_{}.bin",
+        DATA_DIR, start_height, end_height
+    );
 
     println!("=== Delta Gen 1: Build Delta Chunks + Index ===");
     println!("Input:  {}", input_path);
@@ -137,7 +146,12 @@ fn main() {
         total_chunks += num_blocks as u64;
 
         if (i + 1) % 100_000 == 0 {
-            print!("\r    {}/{} scripthashes, {} chunks   ", i + 1, num_scripts, total_chunks);
+            print!(
+                "\r    {}/{} scripthashes, {} chunks   ",
+                i + 1,
+                num_scripts,
+                total_chunks
+            );
             io::stdout().flush().ok();
         }
     }
@@ -145,15 +159,28 @@ fn main() {
     chunks_w.flush().unwrap();
     index_w.flush().unwrap();
 
-    let chunks_size = std::fs::metadata(&chunks_path).map(|m| m.len()).unwrap_or(0);
+    let chunks_size = std::fs::metadata(&chunks_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     let index_size = std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
 
-    println!("\r    Done: {} scripthashes processed                           ", num_scripts);
+    println!(
+        "\r    Done: {} scripthashes processed                           ",
+        num_scripts
+    );
     println!();
     println!("=== Summary ===");
     println!("Scripthashes:    {}", num_scripts);
-    println!("Total chunks:    {} ({:.2} MB)", total_chunks, chunks_size as f64 / 1e6);
-    println!("Index entries:   {} ({:.2} MB)", num_scripts, index_size as f64 / 1e6);
+    println!(
+        "Total chunks:    {} ({:.2} MB)",
+        total_chunks,
+        chunks_size as f64 / 1e6
+    );
+    println!(
+        "Index entries:   {} ({:.2} MB)",
+        num_scripts,
+        index_size as f64 / 1e6
+    );
     println!("Skipped (>255):  {}", skipped_too_large);
     println!("Time:            {:.1}s", t.elapsed().as_secs_f64());
     println!();

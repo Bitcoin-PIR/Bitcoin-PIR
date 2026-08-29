@@ -10,10 +10,7 @@ use pir_issuer_service::{
     ensure_shared_clearing_binding_material_v1, IssuerAcquisitionServiceV1, IssuerServiceErrorV1,
     QuoteSigningMaterialV1,
 };
-use pir_issuer_store::{
-    BatKeyLineageRegistration, IssuerStore, QuoteState,
-    StoreOptions,
-};
+use pir_issuer_store::{BatKeyLineageRegistration, IssuerStore, QuoteState, StoreOptions};
 use pir_lightning_backend::FakeLightningNodeV1;
 use pir_payment_crypto::{
     blind_cashu_message_v1, sign_bip340_prehash_v1, K256CashuDleqVerifierV1, K256CashuMintKeyringV1,

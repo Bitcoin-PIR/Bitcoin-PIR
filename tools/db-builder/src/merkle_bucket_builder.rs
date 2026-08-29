@@ -29,9 +29,7 @@ const TREE_TOP_THRESHOLD: usize = 1024;
 /// Magic numbers for bucket Merkle sibling tables.
 /// Format: 0xBA7C_B0TT_00LL_0000 where TT=table_type (00=idx, 01=chunk), LL=level.
 fn bucket_sib_magic(table_type: u8, level: u8) -> u64 {
-    0xBA7C_B000_0000_0000u64
-        | ((table_type as u64) << 40)
-        | ((level as u64) << 16)
+    0xBA7C_B000_0000_0000u64 | ((table_type as u64) << 40) | ((level as u64) << 16)
 }
 
 /// Build per-bucket Merkle trees for both INDEX and CHUNK tables.
@@ -57,7 +55,10 @@ pub fn build_bucket_merkle(data_dir: &str) {
     // verification fails. Mirrors MappedSubTable::data_offset.
     let index_data_offset = index_header.header_size;
     let index_bin_size = INDEX_PARAMS.bin_size();
-    println!("[INDEX] bins_per_table={}, bin_size={}B, K={}", index_bins, index_bin_size, INDEX_PARAMS.k);
+    println!(
+        "[INDEX] bins_per_table={}, bin_size={}B, K={}",
+        index_bins, index_bin_size, INDEX_PARAMS.k
+    );
 
     // Load CHUNK cuckoo table
     let chunk_path = Path::new(data_dir).join("chunk_pir_cuckoo.bin");
@@ -67,11 +68,17 @@ pub fn build_bucket_merkle(data_dir: &str) {
     let chunk_bins = chunk_header.bins_per_table;
     let chunk_data_offset = chunk_header.header_size;
     let chunk_bin_size = CHUNK_PARAMS.bin_size();
-    println!("[CHUNK] bins_per_table={}, bin_size={}B, K={}", chunk_bins, chunk_bin_size, CHUNK_PARAMS.k);
+    println!(
+        "[CHUNK] bins_per_table={}, bin_size={}B, K={}",
+        chunk_bins, chunk_bin_size, CHUNK_PARAMS.k
+    );
     println!();
 
     // Build trees for INDEX groups
-    println!("[1] Building INDEX Merkle trees ({} groups, {} bins each)...", INDEX_PARAMS.k, index_bins);
+    println!(
+        "[1] Building INDEX Merkle trees ({} groups, {} bins each)...",
+        INDEX_PARAMS.k, index_bins
+    );
     let t = Instant::now();
     let index_trees: Vec<PerGroupTree> = (0..INDEX_PARAMS.k)
         .into_par_iter()
@@ -88,7 +95,10 @@ pub fn build_bucket_merkle(data_dir: &str) {
     println!("    Done in {:.2?}", t.elapsed());
 
     // Build trees for CHUNK groups
-    println!("[2] Building CHUNK Merkle trees ({} groups, {} bins each)...", CHUNK_PARAMS.k, chunk_bins);
+    println!(
+        "[2] Building CHUNK Merkle trees ({} groups, {} bins each)...",
+        CHUNK_PARAMS.k, chunk_bins
+    );
     let t = Instant::now();
     let chunk_trees: Vec<PerGroupTree> = (0..CHUNK_PARAMS.k)
         .into_par_iter()
@@ -108,10 +118,16 @@ pub fn build_bucket_merkle(data_dir: &str) {
     let index_sib_levels = compute_sibling_levels(index_bins);
     let chunk_sib_levels = compute_sibling_levels(chunk_bins);
     println!();
-    println!("INDEX sibling levels: {} (groups: {:?})", index_sib_levels.len(),
-        index_sib_levels);
-    println!("CHUNK sibling levels: {} (groups: {:?})", chunk_sib_levels.len(),
-        chunk_sib_levels);
+    println!(
+        "INDEX sibling levels: {} (groups: {:?})",
+        index_sib_levels.len(),
+        index_sib_levels
+    );
+    println!(
+        "CHUNK sibling levels: {} (groups: {:?})",
+        chunk_sib_levels.len(),
+        chunk_sib_levels
+    );
 
     // Write sibling tables
     println!();
@@ -120,19 +136,39 @@ pub fn build_bucket_merkle(data_dir: &str) {
     for (level_idx, &num_groups) in index_sib_levels.iter().enumerate() {
         let path = Path::new(data_dir).join(format!("merkle_bucket_index_sib_L{}.bin", level_idx));
         let magic = bucket_sib_magic(0, level_idx as u8);
-        write_flat_sibling_table(&path, &index_trees, level_idx, num_groups, INDEX_PARAMS.k, magic);
+        write_flat_sibling_table(
+            &path,
+            &index_trees,
+            level_idx,
+            num_groups,
+            INDEX_PARAMS.k,
+            magic,
+        );
     }
 
     for (level_idx, &num_groups) in chunk_sib_levels.iter().enumerate() {
         let path = Path::new(data_dir).join(format!("merkle_bucket_chunk_sib_L{}.bin", level_idx));
         let magic = bucket_sib_magic(1, level_idx as u8);
-        write_flat_sibling_table(&path, &chunk_trees, level_idx, num_groups, CHUNK_PARAMS.k, magic);
+        write_flat_sibling_table(
+            &path,
+            &chunk_trees,
+            level_idx,
+            num_groups,
+            CHUNK_PARAMS.k,
+            magic,
+        );
     }
 
     // Write tree-top caches (all 155 trees concatenated)
     println!("[4] Writing tree-top caches...");
     let tree_tops_path = Path::new(data_dir).join("merkle_bucket_tree_tops.bin");
-    write_tree_tops(&tree_tops_path, &index_trees, &chunk_trees, &index_sib_levels, &chunk_sib_levels);
+    write_tree_tops(
+        &tree_tops_path,
+        &index_trees,
+        &chunk_trees,
+        &index_sib_levels,
+        &chunk_sib_levels,
+    );
 
     // Write roots
     println!("[5] Writing roots...");
@@ -150,7 +186,11 @@ pub fn build_bucket_merkle(data_dir: &str) {
         f.write_all(root).unwrap();
     }
     f.flush().unwrap();
-    println!("    {} roots ({} bytes)", all_roots.len(), all_roots.len() * 32);
+    println!(
+        "    {} roots ({} bytes)",
+        all_roots.len(),
+        all_roots.len() * 32
+    );
 
     // Compute and write super-root
     let mut super_preimage = Vec::with_capacity(all_roots.len() * 32);
@@ -161,7 +201,10 @@ pub fn build_bucket_merkle(data_dir: &str) {
 
     let super_root_path = Path::new(data_dir).join("merkle_bucket_root.bin");
     std::fs::write(&super_root_path, super_root).expect("write super root");
-    println!("    Super-root: {:02x}{:02x}{:02x}{:02x}...", super_root[0], super_root[1], super_root[2], super_root[3]);
+    println!(
+        "    Super-root: {:02x}{:02x}{:02x}{:02x}...",
+        super_root[0], super_root[1], super_root[2], super_root[3]
+    );
 
     println!();
     println!("=== Done in {:.2?} ===", t0.elapsed());
@@ -169,17 +212,35 @@ pub fn build_bucket_merkle(data_dir: &str) {
     // Summary
     println!();
     println!("Summary:");
-    println!("  INDEX: {} groups, {} bins/group, {} sibling levels", INDEX_PARAMS.k, index_bins, index_sib_levels.len());
-    println!("  CHUNK: {} groups, {} bins/group, {} sibling levels", CHUNK_PARAMS.k, chunk_bins, chunk_sib_levels.len());
+    println!(
+        "  INDEX: {} groups, {} bins/group, {} sibling levels",
+        INDEX_PARAMS.k,
+        index_bins,
+        index_sib_levels.len()
+    );
+    println!(
+        "  CHUNK: {} groups, {} bins/group, {} sibling levels",
+        CHUNK_PARAMS.k,
+        chunk_bins,
+        chunk_sib_levels.len()
+    );
     for (level_idx, &num_groups) in index_sib_levels.iter().enumerate() {
         let file_size = INDEX_PARAMS.k * num_groups * SIB_ROW_SIZE + 32;
-        println!("  merkle_bucket_index_sib_L{}: {} groups/tree, {:.1} MB",
-            level_idx, num_groups, file_size as f64 / 1e6);
+        println!(
+            "  merkle_bucket_index_sib_L{}: {} groups/tree, {:.1} MB",
+            level_idx,
+            num_groups,
+            file_size as f64 / 1e6
+        );
     }
     for (level_idx, &num_groups) in chunk_sib_levels.iter().enumerate() {
         let file_size = CHUNK_PARAMS.k * num_groups * SIB_ROW_SIZE + 32;
-        println!("  merkle_bucket_chunk_sib_L{}: {} groups/tree, {:.1} MB",
-            level_idx, num_groups, file_size as f64 / 1e6);
+        println!(
+            "  merkle_bucket_chunk_sib_L{}: {} groups/tree, {:.1} MB",
+            level_idx,
+            num_groups,
+            file_size as f64 / 1e6
+        );
     }
 }
 
@@ -225,7 +286,9 @@ fn build_group_tree(
 
     loop {
         let prev = levels.last().unwrap();
-        if prev.len() <= 1 { break; }
+        if prev.len() <= 1 {
+            break;
+        }
         let next_len = prev.len().div_ceil(ARITY);
         let mut next_level = Vec::with_capacity(next_len);
         for i in 0..next_len {
@@ -285,12 +348,12 @@ fn write_flat_sibling_table(
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, f);
 
     // Write 32-byte header (cuckoo-compatible)
-    w.write_all(&magic.to_le_bytes()).unwrap();        // 0-7: magic
-    w.write_all(&(k as u32).to_le_bytes()).unwrap();   // 8-11: k
-    w.write_all(&1u32.to_le_bytes()).unwrap();          // 12-15: slots_per_bin = 1
+    w.write_all(&magic.to_le_bytes()).unwrap(); // 0-7: magic
+    w.write_all(&(k as u32).to_le_bytes()).unwrap(); // 8-11: k
+    w.write_all(&1u32.to_le_bytes()).unwrap(); // 12-15: slots_per_bin = 1
     w.write_all(&(num_groups as u32).to_le_bytes()).unwrap(); // 16-19: bins_per_table = num_groups
-    w.write_all(&0u32.to_le_bytes()).unwrap();          // 20-23: num_hashes = 0 (flat, no cuckoo)
-    w.write_all(&0u64.to_le_bytes()).unwrap();          // 24-31: master_seed = 0
+    w.write_all(&0u32.to_le_bytes()).unwrap(); // 20-23: num_hashes = 0 (flat, no cuckoo)
+    w.write_all(&0u64.to_le_bytes()).unwrap(); // 24-31: master_seed = 0
 
     // Write body: k groups × num_groups rows × 256B per row
     // For level L of the tree, level_idx maps to tree.levels[level_idx].
@@ -326,9 +389,14 @@ fn write_flat_sibling_table(
 
     w.flush().unwrap();
     let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    println!("    {} — {} groups × {} rows × 256B = {:.1} MB ({:.2?})",
+    println!(
+        "    {} — {} groups × {} rows × 256B = {:.1} MB ({:.2?})",
         path.file_name().unwrap().to_str().unwrap(),
-        k, num_groups, file_size as f64 / 1e6, t.elapsed());
+        k,
+        num_groups,
+        file_size as f64 / 1e6,
+        t.elapsed()
+    );
 }
 
 // ─── Tree-top cache writer ────────────────────────────────────────────────
@@ -365,12 +433,19 @@ fn write_tree_tops(
 
     w.flush().unwrap();
     let file_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    println!("    tree_tops: {} trees, {:.1} MB", num_trees, file_size as f64 / 1e6);
+    println!(
+        "    tree_tops: {} trees, {:.1} MB",
+        num_trees,
+        file_size as f64 / 1e6
+    );
 }
 
 fn write_one_tree_top(w: &mut impl Write, tree: &PerGroupTree, cache_from_level: usize) {
     let num_cached_levels = tree.levels.len().saturating_sub(cache_from_level);
-    let total_nodes: usize = tree.levels[cache_from_level..].iter().map(|l| l.len()).sum();
+    let total_nodes: usize = tree.levels[cache_from_level..]
+        .iter()
+        .map(|l| l.len())
+        .sum();
 
     w.write_all(&[cache_from_level as u8]).unwrap();
     w.write_all(&(total_nodes as u32).to_le_bytes()).unwrap();

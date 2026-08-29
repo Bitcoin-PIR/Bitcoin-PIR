@@ -13,7 +13,7 @@ tables through `CuckooTableAccess`.
 
 Important code paths:
 
-- `apps/server/src/bin/unified_server.rs`
+- `apps/server/src/bin/unified_server/oram.rs`
   - `CuckooOramTable::append_entries`
   - `CuckooOramTable::finish_request`
   - `cuckoo_native_lookup_batch_from_tables_with_dummy`
@@ -96,7 +96,7 @@ guard does not need to make the ORAM controller state trustworthy across reboot;
 it only needs to keep the current process from serving after an incomplete
 mutation.
 
-Implementation status: `apps/server/src/bin/unified_server.rs` now tracks whether a
+Implementation status: `apps/server/src/bin/unified_server/` now tracks whether a
 `CuckooOramTable` has performed a real ORAM read in the current request. If a
 post-mutation read, flush, state-save, or request-abort path fails, the table is
 marked poisoned and later reads are rejected until restart/regeneration.

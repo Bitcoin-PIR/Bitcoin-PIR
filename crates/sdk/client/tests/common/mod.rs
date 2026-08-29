@@ -77,7 +77,12 @@ fn fresh_32() -> PirResult<[u8; 32]> {
 async fn open_dpf_server_channel(client: &mut DpfClient, server_index: u8) -> PirResult<()> {
     let nonce = fresh_32()?;
     let attestation = client.attest(server_index, nonce).await?;
-    if attestation.response.server_static_pub.iter().all(|b| *b == 0) {
+    if attestation
+        .response
+        .server_static_pub
+        .iter()
+        .all(|b| *b == 0)
+    {
         return Err(PirError::VerificationFailed(format!(
             "server{server_index} attestation returned all-zero server static pubkey"
         )));
@@ -116,7 +121,12 @@ pub async fn admit_dpf_live(
 async fn open_harmony_leg_channel(client: &mut HarmonyClient, provider_index: u8) -> PirResult<()> {
     let nonce = fresh_32()?;
     let attestation = client.attest(provider_index, nonce).await?;
-    if attestation.response.server_static_pub.iter().all(|b| *b == 0) {
+    if attestation
+        .response
+        .server_static_pub
+        .iter()
+        .all(|b| *b == 0)
+    {
         return Err(PirError::VerificationFailed(format!(
             "Harmony provider{provider_index} attestation returned all-zero server static pubkey"
         )));
@@ -188,7 +198,12 @@ pub async fn admit_onion_live(
 
     let nonce = fresh_32()?;
     let attestation = client.attest(nonce).await?;
-    if attestation.response.server_static_pub.iter().all(|b| *b == 0) {
+    if attestation
+        .response
+        .server_static_pub
+        .iter()
+        .all(|b| *b == 0)
+    {
         return Err(PirError::VerificationFailed(
             "OnionPIR attestation returned all-zero server static pubkey".into(),
         ));
@@ -196,7 +211,11 @@ pub async fn admit_onion_live(
     let eph_seed = fresh_32()?;
     let hs_nonce = fresh_32()?;
     client
-        .upgrade_to_secure_channel_with_seeds(attestation.response.server_static_pub, eph_seed, hs_nonce)
+        .upgrade_to_secure_channel_with_seeds(
+            attestation.response.server_static_pub,
+            eph_seed,
+            hs_nonce,
+        )
         .await?;
     Ok(())
 }

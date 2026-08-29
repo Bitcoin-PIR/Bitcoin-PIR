@@ -391,7 +391,11 @@ mod tests {
             ..PolicyRequirements::default()
         };
         let err = verify_policy(&r, &req).unwrap_err();
-        assert!(matches!(err, PolicyError::TcbBelowMinimum { .. }), "{:?}", err);
+        assert!(
+            matches!(err, PolicyError::TcbBelowMinimum { .. }),
+            "{:?}",
+            err
+        );
     }
 
     #[test]
@@ -448,7 +452,11 @@ mod tests {
             ..PolicyRequirements::default()
         };
         let err = verify_policy(&r, &req).unwrap_err();
-        assert!(matches!(err, PolicyError::FamilyIdMismatch { .. }), "{:?}", err);
+        assert!(
+            matches!(err, PolicyError::FamilyIdMismatch { .. }),
+            "{:?}",
+            err
+        );
     }
 
     #[test]
@@ -460,7 +468,11 @@ mod tests {
             ..PolicyRequirements::default()
         };
         let err = verify_policy(&r, &req).unwrap_err();
-        assert!(matches!(err, PolicyError::ImageIdMismatch { .. }), "{:?}", err);
+        assert!(
+            matches!(err, PolicyError::ImageIdMismatch { .. }),
+            "{:?}",
+            err
+        );
     }
 
     #[test]

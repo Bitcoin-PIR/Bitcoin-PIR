@@ -136,7 +136,10 @@ impl SyncPlan {
 /// and call [`SyncPlanner::plan`] per query — the `SyncPlanner` keeps the
 /// adjacency map cached across plan computations, paying the build cost
 /// once instead of per-call.
-pub fn compute_sync_plan(catalog: &DatabaseCatalog, last_height: Option<u32>) -> PirResult<SyncPlan> {
+pub fn compute_sync_plan(
+    catalog: &DatabaseCatalog,
+    last_height: Option<u32>,
+) -> PirResult<SyncPlan> {
     // Fast path: catalog already at-tip. Skip the adjacency-map build
     // entirely — this is the dominant case for polling clients. We
     // re-do the cheap checks here that `SyncPlanner::plan` does, so
@@ -295,7 +298,10 @@ impl<'a> SyncPlanner<'a> {
             // the tip might be the snapshot height in this case.
         }
 
-        let target_height = steps.last().map(|s| s.tip_height).unwrap_or(best_full.height);
+        let target_height = steps
+            .last()
+            .map(|s| s.tip_height)
+            .unwrap_or(best_full.height);
         Ok(SyncPlan {
             steps,
             is_fresh_sync: true,
@@ -334,7 +340,11 @@ impl<'a> SyncPlanner<'a> {
     /// because the only way to enqueue a height was through the
     /// `delta.height >= end_height` early-return below — that branch
     /// already returns the chain before enqueuing. We drop it.
-    fn find_delta_chain(&self, start_height: u32, end_height: u32) -> Option<Vec<&'a DatabaseInfo>> {
+    fn find_delta_chain(
+        &self,
+        start_height: u32,
+        end_height: u32,
+    ) -> Option<Vec<&'a DatabaseInfo>> {
         if start_height >= end_height {
             return Some(Vec::new());
         }
@@ -494,7 +504,11 @@ pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
         let (amount_sats, consumed) = read_varint(&raw[pos..])?;
         pos += consumed;
 
-        new_utxos.push(UtxoEntry { txid, vout: vout as u32, amount_sats });
+        new_utxos.push(UtxoEntry {
+            txid,
+            vout: vout as u32,
+            amount_sats,
+        });
     }
 
     Ok(DeltaData { spent, new_utxos })
@@ -668,7 +682,11 @@ mod tests {
     fn make_entry(txid_byte: u8, vout: u32, amount: u64) -> UtxoEntry {
         let mut txid = [0u8; 32];
         txid[0] = txid_byte;
-        UtxoEntry { txid, vout, amount_sats: amount }
+        UtxoEntry {
+            txid,
+            vout,
+            amount_sats: amount,
+        }
     }
 
     #[test]
@@ -837,10 +855,10 @@ mod tests {
                 dpf_n_index: 8,
                 dpf_n_chunk: 9,
                 has_bucket_merkle: false,
-            index_master_seed: 0,
-            chunk_master_seed: 0,
-            anchor_kind: 0,
-            anchor_bytes: Vec::new(),
+                index_master_seed: 0,
+                chunk_master_seed: 0,
+                anchor_kind: 0,
+                anchor_bytes: Vec::new(),
             });
             prev = next;
         }
@@ -981,7 +999,11 @@ mod tests {
             anchor_bytes: Vec::new(),
         });
         // 3-step scenic route (1m → 1.005m → 1.010m → 1.020m).
-        for (id, base, tip) in [(1, 1_000_000, 1_005_000), (2, 1_005_000, 1_010_000), (3, 1_010_000, 1_020_000)] {
+        for (id, base, tip) in [
+            (1, 1_000_000, 1_005_000),
+            (2, 1_005_000, 1_010_000),
+            (3, 1_010_000, 1_020_000),
+        ] {
             catalog.databases.push(DatabaseInfo {
                 db_id: id,
                 kind: DatabaseKind::Delta { base_height: base },
@@ -995,16 +1017,18 @@ mod tests {
                 dpf_n_index: 8,
                 dpf_n_chunk: 9,
                 has_bucket_merkle: false,
-            index_master_seed: 0,
-            chunk_master_seed: 0,
-            anchor_kind: 0,
-            anchor_bytes: Vec::new(),
+                index_master_seed: 0,
+                chunk_master_seed: 0,
+                anchor_kind: 0,
+                anchor_bytes: Vec::new(),
             });
         }
         // 1-step shortcut (1m → 1.020m).
         catalog.databases.push(DatabaseInfo {
             db_id: 4,
-            kind: DatabaseKind::Delta { base_height: 1_000_000 },
+            kind: DatabaseKind::Delta {
+                base_height: 1_000_000,
+            },
             name: "shortcut_1000000_1020000".into(),
             height: 1_020_000,
             index_bins: 256,
@@ -1058,7 +1082,9 @@ mod tests {
         // catalog reachable from last_height).
         catalog.databases.push(DatabaseInfo {
             db_id: 1,
-            kind: DatabaseKind::Delta { base_height: 999_999 },
+            kind: DatabaseKind::Delta {
+                base_height: 999_999,
+            },
             name: "orphan".into(),
             height: 1_010_000,
             index_bins: 256,
@@ -1241,7 +1267,7 @@ mod tests {
         };
         let new2 = UtxoEntry {
             txid: [0xCCu8; 32],
-            vout: 500, // > 127 to force a 2-byte varint
+            vout: 500,                // > 127 to force a 2-byte varint
             amount_sats: 100_000_000, // 1 BTC — multi-byte varint
         };
 

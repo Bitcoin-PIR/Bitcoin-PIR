@@ -137,7 +137,10 @@ fn inline_table_fields(value: &str) -> BTreeMap<String, String> {
         let (key, value) = part
             .split_once('=')
             .unwrap_or_else(|| panic!("unparseable inline table field: {part}"));
-        fields.insert(key.trim().to_string(), value.trim().trim_matches('"').to_string());
+        fields.insert(
+            key.trim().to_string(),
+            value.trim().trim_matches('"').to_string(),
+        );
     }
     fields
 }
@@ -166,9 +169,7 @@ fn consumer_lock_matches_the_vendored_rootbundle() {
     assert_eq!(lock["golden_bundle_sha256"], GOLDEN_BUNDLE_SHA256);
     assert_eq!(
         lock["production_payload_sha256"],
-        serde_json::json!([
-            "cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f"
-        ]),
+        serde_json::json!(["cfbd67fd10d4f7cbaa29b82ffa1a60aa35229655bb24cdac8883547b221fca6f"]),
         "every locked production payload hash must be covered by a fixture"
     );
 
@@ -190,9 +191,8 @@ fn consumer_lock_matches_the_vendored_rootbundle() {
 
     // The vendored manifest is version 0.1.0, matching the locked release tag.
     let vendor_dir = repo.join("vendor/rootbundle");
-    let vendor_manifest = parse_manifest(
-        &fs::read_to_string(vendor_dir.join("Cargo.toml")).unwrap(),
-    );
+    let vendor_manifest =
+        parse_manifest(&fs::read_to_string(vendor_dir.join("Cargo.toml")).unwrap());
     assert_eq!(vendor_manifest["package"]["name"], "\"rootbundle\"");
     assert_eq!(vendor_manifest["package"]["version"], "\"0.1.0\"");
 
@@ -207,10 +207,9 @@ fn consumer_lock_matches_the_vendored_rootbundle() {
     // The mirror's Cargo checksum manifest must cover exactly the same set
     // with the same digests; ignored files such as .DS_Store are not part of
     // the release set and are never read.
-    let checksums: serde_json::Value = serde_json::from_slice(
-        &fs::read(vendor_dir.join(".cargo-checksum.json")).unwrap(),
-    )
-    .unwrap();
+    let checksums: serde_json::Value =
+        serde_json::from_slice(&fs::read(vendor_dir.join(".cargo-checksum.json")).unwrap())
+            .unwrap();
     let checksum_files = checksums["files"].as_object().unwrap();
     assert_eq!(
         checksum_files.len(),
@@ -233,8 +232,8 @@ fn consumer_lock_matches_the_vendored_rootbundle() {
     // Every expected file exists on disk as a regular file matching the lock.
     for relative in VENDORED_FILES {
         let path = vendor_dir.join(relative);
-        let meta = fs::metadata(&path)
-            .unwrap_or_else(|_| panic!("vendored file missing: {relative}"));
+        let meta =
+            fs::metadata(&path).unwrap_or_else(|_| panic!("vendored file missing: {relative}"));
         assert!(meta.is_file(), "{relative} must be a regular file");
         let bytes = fs::read(&path).unwrap();
         assert_eq!(
@@ -259,10 +258,8 @@ fn consumer_lock_matches_the_vendored_rootbundle() {
 
 #[test]
 fn upstream_release_golden_bundle_decodes_reencodes_and_verifies() {
-    let bytes = hex::decode(
-        include_str!("../testdata/rootbundle-v0.1.0-bundle.hex").trim(),
-    )
-    .unwrap();
+    let bytes =
+        hex::decode(include_str!("../testdata/rootbundle-v0.1.0-bundle.hex").trim()).unwrap();
     assert_eq!(hex::encode(Sha256::digest(&bytes)), GOLDEN_BUNDLE_SHA256);
     let bundle = SignedRootBundle::decode(&bytes).unwrap();
     assert_eq!(bundle.encode().unwrap(), bytes);

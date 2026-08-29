@@ -90,8 +90,7 @@ pub fn derive_attest_nonce(
     client_eph_pub: [u8; X25519_PUBKEY_LEN],
     random_32: [u8; 32],
 ) -> [u8; 32] {
-    let mut preimage =
-        Vec::with_capacity(ATTEST_NONCE_DOMAIN_TAG.len() + X25519_PUBKEY_LEN + 32);
+    let mut preimage = Vec::with_capacity(ATTEST_NONCE_DOMAIN_TAG.len() + X25519_PUBKEY_LEN + 32);
     preimage.extend_from_slice(ATTEST_NONCE_DOMAIN_TAG);
     preimage.extend_from_slice(&client_eph_pub);
     preimage.extend_from_slice(&random_32);
@@ -138,9 +137,8 @@ pub fn build_report_data(
 ) -> [u8; 64] {
     let combined_root = combine_manifest_roots(manifest_roots);
 
-    let mut preimage = Vec::with_capacity(
-        REPORT_DATA_DOMAIN_TAG.len() + 32 + 32 + 32 + 32 + git_rev.len(),
-    );
+    let mut preimage =
+        Vec::with_capacity(REPORT_DATA_DOMAIN_TAG.len() + 32 + 32 + 32 + 32 + git_rev.len());
     preimage.extend_from_slice(REPORT_DATA_DOMAIN_TAG);
     preimage.extend_from_slice(&nonce);
     preimage.extend_from_slice(&combined_root);
@@ -281,10 +279,7 @@ mod tests {
     fn derive_attest_nonce_is_deterministic() {
         let eph = [0xCCu8; 32];
         let rnd = [0xDDu8; 32];
-        assert_eq!(
-            derive_attest_nonce(eph, rnd),
-            derive_attest_nonce(eph, rnd)
-        );
+        assert_eq!(derive_attest_nonce(eph, rnd), derive_attest_nonce(eph, rnd));
     }
 
     #[test]

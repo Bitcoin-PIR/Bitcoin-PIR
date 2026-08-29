@@ -69,7 +69,10 @@ fn main() {
     }
 
     // ── Cuckoo assign queries to groups ─────────────────────────────────
-    println!("[3] Running Cuckoo assignment ({} queries → {} groups)...", num_queries, K);
+    println!(
+        "[3] Running Cuckoo assignment ({} queries → {} groups)...",
+        num_queries, K
+    );
 
     let mut groups: [Option<usize>; K] = [None; K];
 
@@ -141,7 +144,12 @@ fn main() {
 
         println!(
             "  {:>4}  {:>6}  {:>8}  {:>8}  {}  {}",
-            i, assigned_group, loc0, loc1, hex, candidates_str.join(", ")
+            i,
+            assigned_group,
+            loc0,
+            loc1,
+            hex,
+            candidates_str.join(", ")
         );
     }
 

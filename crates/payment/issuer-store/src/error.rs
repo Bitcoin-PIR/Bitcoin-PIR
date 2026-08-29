@@ -104,7 +104,10 @@ impl fmt::Display for StoreError {
             Self::NetworkMismatch => write!(f, "issuer database Lightning network mismatch"),
             Self::QuoteMissing => write!(f, "quote is missing"),
             Self::QuoteProtocolMismatch => {
-                write!(f, "quote or claim belongs to a different acquisition protocol")
+                write!(
+                    f,
+                    "quote or claim belongs to a different acquisition protocol"
+                )
             }
             Self::QuoteConflict => write!(f, "quote id conflicts with durable state"),
             Self::QuoteCapacityExceeded => {
@@ -139,7 +142,10 @@ impl fmt::Display for StoreError {
             Self::QuoteNotSettled => write!(f, "quote is not in a claimable settled state"),
             Self::ClaimDeadlineExpired => write!(f, "new claim is past the durable claim deadline"),
             Self::ClaimProtocolMismatch => {
-                write!(f, "claim or issuance envelope does not bind the durable quote")
+                write!(
+                    f,
+                    "claim or issuance envelope does not bind the durable quote"
+                )
             }
             Self::BadClaimCryptography => write!(
                 f,
@@ -187,10 +193,9 @@ impl fmt::Display for StoreError {
                 f,
                 "different BAT V2 class artifact at an accepted key epoch rejected"
             ),
-            Self::BatV2ClassTermsConflict => write!(
-                f,
-                "BAT V2 common terms changed under an existing class ID"
-            ),
+            Self::BatV2ClassTermsConflict => {
+                write!(f, "BAT V2 common terms changed under an existing class ID")
+            }
             Self::BatV2ClassMemberMismatch => write!(
                 f,
                 "BAT V2 class member does not match a current exact provider policy"
@@ -200,14 +205,20 @@ impl fmt::Display for StoreError {
                 "BAT raw key is already owned by another V1 or V2 lineage"
             ),
             Self::ArcKeyLineageConflict => {
-                write!(f, "experimental ARC raw key conflicts with immutable lineage")
+                write!(
+                    f,
+                    "experimental ARC raw key conflicts with immutable lineage"
+                )
             }
             Self::SettlementKeyLineageConflict => write!(
                 f,
                 "settlement denomination raw key conflicts with immutable keyset lineage"
             ),
             Self::ProviderRegistrationRollback => {
-                write!(f, "provider settlement registration epoch rollback rejected")
+                write!(
+                    f,
+                    "provider settlement registration epoch rollback rejected"
+                )
             }
             Self::ProviderRegistrationFork => write!(
                 f,
@@ -236,10 +247,9 @@ impl fmt::Display for StoreError {
                 f,
                 "BAT V2 clearing authorization epoch reservation rollback rejected"
             ),
-            Self::BatV2ClearingReservationExists => write!(
-                f,
-                "BAT V2 clearing authorization epoch is already reserved"
-            ),
+            Self::BatV2ClearingReservationExists => {
+                write!(f, "BAT V2 clearing authorization epoch is already reserved")
+            }
             Self::BatV2ClearingReservationMissing => write!(
                 f,
                 "BAT V2 clearing authorization activation has no durable reservation"
@@ -262,16 +272,25 @@ impl fmt::Display for StoreError {
                 write!(f, "provider ledger balance would exceed the protocol bound")
             }
             Self::SettlementDepositIdempotencyConflict => {
-                write!(f, "settlement deposit idempotency key conflicts with durable state")
+                write!(
+                    f,
+                    "settlement deposit idempotency key conflicts with durable state"
+                )
             }
             Self::SettlementNoteAlreadySpent => {
                 write!(f, "blind settlement note was already deposited")
             }
             Self::SettlementLedgerSequenceConflict => {
-                write!(f, "provider ledger sequence changed before settlement commit")
+                write!(
+                    f,
+                    "provider ledger sequence changed before settlement commit"
+                )
             }
             Self::PayoutIntentIdempotencyConflict => {
-                write!(f, "payout intent idempotency key conflicts with durable state")
+                write!(
+                    f,
+                    "payout intent idempotency key conflicts with durable state"
+                )
             }
             Self::PayoutIntentAlreadyConsumed => {
                 write!(f, "payout intent was already consumed")
