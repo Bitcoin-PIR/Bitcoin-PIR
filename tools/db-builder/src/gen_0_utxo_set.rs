@@ -113,15 +113,22 @@ fn process_utxo_snapshot(
     // `--anchor-height`.
     if let Some(height) = anchor_height {
         let block_hash = dump.block_hash.to_byte_array();
-        let anchor = ChainAnchor { block_hash, block_height: height };
+        let anchor = ChainAnchor {
+            block_hash,
+            block_height: height,
+        };
         let anchor_path = output_file
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join(CHAIN_ANCHOR_FILENAME);
-        anchor.save(&anchor_path).map_err(|e| {
-            format!("Failed to write {}: {}", anchor_path.display(), e)
-        })?;
-        println!("    Wrote chain anchor: {} (height {})", anchor_path.display(), height);
+        anchor
+            .save(&anchor_path)
+            .map_err(|e| format!("Failed to write {}: {}", anchor_path.display(), e))?;
+        println!(
+            "    Wrote chain anchor: {} (height {})",
+            anchor_path.display(),
+            height
+        );
     } else {
         eprintln!("    WARNING: --anchor-height not supplied — chain_anchor.bin NOT written.");
         eprintln!("    Downstream stages will fall back to legacy hardcoded seeds.");
@@ -133,8 +140,13 @@ fn process_utxo_snapshot(
     println!();
     println!("[2] Opening output file: {}", output_file.display());
     if let Some(parent) = output_file.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create output directory {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            format!(
+                "Failed to create output directory {}: {}",
+                parent.display(),
+                e
+            )
+        })?;
     }
     let out_handle =
         File::create(output_file).map_err(|e| format!("Failed to create output file: {}", e))?;
@@ -193,12 +205,22 @@ fn process_utxo_snapshot(
         let script_hash_array: [u8; 20] = hash160.to_byte_array();
 
         let height = txout.height;
-        if height > max_height { max_height = height; }
-        if height < min_height { min_height = height; }
+        if height > max_height {
+            max_height = height;
+        }
+        if height < min_height {
+            min_height = height;
+        }
 
         // Write UTXO entry
-        if let Err(e) = write_utxo_entry(&mut writer, &script_hash_array, &txid_bytes, vout, amount, height)
-        {
+        if let Err(e) = write_utxo_entry(
+            &mut writer,
+            &script_hash_array,
+            &txid_bytes,
+            vout,
+            amount,
+            height,
+        ) {
             return Err(format!("Failed to write UTXO entry: {}", e));
         }
 
@@ -221,7 +243,10 @@ fn process_utxo_snapshot(
     println!("=== Summary ===");
     println!("Total entries processed: {}", entry_count);
     println!("Total UTXOs written: {}", total_utxos);
-    println!("Height range: {} .. {} (snapshot height: {})", min_height, max_height, max_height);
+    println!(
+        "Height range: {} .. {} (snapshot height: {})",
+        min_height, max_height, max_height
+    );
     println!(
         "Total amount: {:.8} BTC",
         total_amount as f64 / 100_000_000.0
@@ -283,7 +308,10 @@ fn main() {
                     args[0]
                 );
                 println!();
-                println!("Writes <dir>/utxo_set.bin (default dir: {}).", DEFAULT_DATA_DIR);
+                println!(
+                    "Writes <dir>/utxo_set.bin (default dir: {}).",
+                    DEFAULT_DATA_DIR
+                );
                 println!("With --anchor-height, also writes <dir>/chain_anchor.bin for");
                 println!("chain-derived seeds (see docs/history/BUILD_REPRODUCIBILITY.md).");
                 println!("Create a UTXO snapshot with: bitcoin-cli dumptxoutset <path>");

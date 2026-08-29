@@ -18,12 +18,14 @@ fn main() {
     let mut targets: HashSet<[u8; 20]> = HashSet::new();
     let whale_data = std::fs::read_to_string(WHALE_FILE).expect("read whale file");
     for line in whale_data.lines() {
-        if line.starts_with('#') { continue; }
+        if line.starts_with('#') {
+            continue;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             let mut h = [0u8; 20];
             for j in 0..20 {
-                h[j] = u8::from_str_radix(&parts[0][j*2..j*2+2], 16).unwrap();
+                h[j] = u8::from_str_radix(&parts[0][j * 2..j * 2 + 2], 16).unwrap();
             }
             targets.insert(h);
             if targets.len() >= 10 {
@@ -34,8 +36,7 @@ fn main() {
     println!("  Looking for {} whale hashes", targets.len());
 
     // Scan snapshot
-    let dump = Dump::new(SNAPSHOT_FILE, txoutset::ComputeAddresses::No)
-        .expect("open snapshot");
+    let dump = Dump::new(SNAPSHOT_FILE, txoutset::ComputeAddresses::No).expect("open snapshot");
 
     let mut found: HashMap<[u8; 20], String> = HashMap::new();
     let mut count = 0u64;
@@ -43,8 +44,12 @@ fn main() {
     for txout in dump {
         count += 1;
         if count.is_multiple_of(20_000_000) {
-            eprintln!("  Scanned {}M entries, found {}/{}...",
-                count / 1_000_000, found.len(), targets.len());
+            eprintln!(
+                "  Scanned {}M entries, found {}/{}...",
+                count / 1_000_000,
+                found.len(),
+                targets.len()
+            );
         }
 
         let script = txout.script_pubkey;
@@ -58,9 +63,13 @@ fn main() {
         if targets.contains(&h) && !found.contains_key(&h) {
             let spk_hex: String = script_bytes.iter().map(|b| format!("{:02x}", b)).collect();
             let h_hex: String = h.iter().map(|b| format!("{:02x}", b)).collect();
-            println!("  FOUND: hash={} spk_len={} spk={:.120}{}",
-                h_hex, script_bytes.len(), spk_hex,
-                if spk_hex.len() > 120 { "..." } else { "" });
+            println!(
+                "  FOUND: hash={} spk_len={} spk={:.120}{}",
+                h_hex,
+                script_bytes.len(),
+                spk_hex,
+                if spk_hex.len() > 120 { "..." } else { "" }
+            );
             found.insert(h, spk_hex);
             if found.len() == targets.len() {
                 break;
@@ -74,7 +83,9 @@ fn main() {
     // Re-read whale file to get counts
     let mut whale_counts: HashMap<String, String> = HashMap::new();
     for line in whale_data.lines() {
-        if line.starts_with('#') { continue; }
+        if line.starts_with('#') {
+            continue;
+        }
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
             whale_counts.insert(parts[0].to_string(), parts[1].to_string());

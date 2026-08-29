@@ -30,6 +30,7 @@ mod error;
 mod grant_claim;
 #[path = "legacy/issuance.rs"]
 mod issuance;
+mod operation;
 #[path = "legacy/policy.rs"]
 mod policy;
 mod proof;
@@ -39,7 +40,6 @@ mod quote;
 mod quote_wasm;
 #[path = "legacy/receipt.rs"]
 mod receipt;
-mod operation;
 mod scope;
 #[path = "legacy/settlement.rs"]
 mod settlement;
@@ -49,8 +49,8 @@ mod settlement_http;
 pub use auth::{
     AuthBeginV1, AuthGrantedV1, AuthRejectCode, AuthRejectedV1, AuthResultV1, HarmonyHintSideV1,
     HintTransport, OperationStartV1, ServicePolicyRequestV1, ServicePolicyResponseV1,
-    AUTH_FRAME_CLASS_V1,
-    MAX_AUTH_KEY_ID_LEN, MAX_AUTH_PROOF_LEN, MAX_POLICY_WIRE_LEN, OPERATION_START_DIGEST_DOMAIN,
+    AUTH_FRAME_CLASS_V1, MAX_AUTH_KEY_ID_LEN, MAX_AUTH_PROOF_LEN, MAX_POLICY_WIRE_LEN,
+    OPERATION_START_DIGEST_DOMAIN,
 };
 pub use auth_verify::{
     bind_auth_begin_v1, BoundAuthAttemptV1, TrustedCatalogResolutionV1, TrustedServiceCatalogV1,

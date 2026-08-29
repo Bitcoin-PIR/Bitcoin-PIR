@@ -2866,7 +2866,7 @@ pub fn prp_fastprp() -> u8 {
     PRP_FASTPRP
 }
 
-// PRP_ALF (= 2) was removed 2026-05-12 — see crates/sdk/client/src/harmony.rs:81.
+// PRP_ALF (= 2) was removed 2026-05-12 — see crates/sdk/client/src/harmony/mod.rs.
 // The JS-side `PRP_ALF` accessor is intentionally removed. JS callers that
 // pass `2` will hit `validate_prp_backend` and get a clean error.
 

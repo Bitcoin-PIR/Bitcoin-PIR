@@ -114,7 +114,12 @@ fn synthetic_chunks(n: usize) -> Vec<u8> {
 /// Sequential (no rayon) — the production builder collects rayon results
 /// positionally into a `Vec<Vec<u32>>`, so the serialized bytes are
 /// identical to a sequential build by construction.
-fn build_index_cuckoo_bytes(records: &[u8], index_master: u64, index_tag: u64, anchor: &HeaderAnchor) -> Vec<u8> {
+fn build_index_cuckoo_bytes(
+    records: &[u8],
+    index_master: u64,
+    index_tag: u64,
+    anchor: &HeaderAnchor,
+) -> Vec<u8> {
     let params = INDEX_PARAMS.with_master_seed(index_master);
     let params = &params;
     let n = records.len() / INDEX_RECORD_SIZE;
@@ -180,7 +185,9 @@ fn build_chunk_cuckoo_bytes(chunks: &[u8], chunk_master: u64, anchor: &HeaderAnc
     let bins_per_table = fixture_bins_per_table(max_load, params.slots_per_bin);
 
     let tables: Vec<Vec<u32>> = (0..params.k)
-        .map(|group_id| cuckoo::build_int_keyed_table(&group_chunks[group_id], group_id, params, bins_per_table))
+        .map(|group_id| {
+            cuckoo::build_int_keyed_table(&group_chunks[group_id], group_id, params, bins_per_table)
+        })
         .collect();
 
     let slot_size = 4 + CHUNK_SIZE;
@@ -270,7 +277,10 @@ fn index_delta_build_is_byte_reproducible() {
     // Exercise the delta-anchored header variant (72-byte trailer, delta
     // MAGIC) end-to-end through the same INDEX build path.
     let records = synthetic_index_records(FIXTURE_N);
-    let danchor = DeltaAnchor { from: anchor_a(), to: anchor_b() };
+    let danchor = DeltaAnchor {
+        from: anchor_a(),
+        to: anchor_b(),
+    };
     let s = DeltaSeeds::derive(&danchor);
     let anchor = HeaderAnchor::Delta(danchor);
 
@@ -293,14 +303,34 @@ fn index_build_is_anchor_sensitive() {
 
     let sa = SnapshotSeeds::derive(&anchor_a());
     let sb = SnapshotSeeds::derive(&anchor_b());
-    assert_ne!(sa.index_master, sb.index_master, "anchors must derive distinct master seeds");
-    assert_ne!(sa.index_tag, sb.index_tag, "anchors must derive distinct tag seeds");
+    assert_ne!(
+        sa.index_master, sb.index_master,
+        "anchors must derive distinct master seeds"
+    );
+    assert_ne!(
+        sa.index_tag, sb.index_tag,
+        "anchors must derive distinct tag seeds"
+    );
 
-    let build_a = build_index_cuckoo_bytes(&records, sa.index_master, sa.index_tag, &HeaderAnchor::Snapshot(anchor_a()));
-    let build_b = build_index_cuckoo_bytes(&records, sb.index_master, sb.index_tag, &HeaderAnchor::Snapshot(anchor_b()));
+    let build_a = build_index_cuckoo_bytes(
+        &records,
+        sa.index_master,
+        sa.index_tag,
+        &HeaderAnchor::Snapshot(anchor_a()),
+    );
+    let build_b = build_index_cuckoo_bytes(
+        &records,
+        sb.index_master,
+        sb.index_tag,
+        &HeaderAnchor::Snapshot(anchor_b()),
+    );
 
     let hlen = index_snapshot_header_len();
-    assert_eq!(build_a.len(), build_b.len(), "body length is seed-independent (depends only on group load)");
+    assert_eq!(
+        build_a.len(),
+        build_b.len(),
+        "body length is seed-independent (depends only on group load)"
+    );
     assert_ne!(
         &build_a[hlen..],
         &build_b[hlen..],
@@ -321,9 +351,23 @@ fn index_build_is_height_sensitive() {
     let s2 = SnapshotSeeds::derive(&a2);
     assert_ne!(s1.index_master, s2.index_master);
 
-    let b1 = build_index_cuckoo_bytes(&records, s1.index_master, s1.index_tag, &HeaderAnchor::Snapshot(a1));
-    let b2 = build_index_cuckoo_bytes(&records, s2.index_master, s2.index_tag, &HeaderAnchor::Snapshot(a2));
+    let b1 = build_index_cuckoo_bytes(
+        &records,
+        s1.index_master,
+        s1.index_tag,
+        &HeaderAnchor::Snapshot(a1),
+    );
+    let b2 = build_index_cuckoo_bytes(
+        &records,
+        s2.index_master,
+        s2.index_tag,
+        &HeaderAnchor::Snapshot(a2),
+    );
 
     let hlen = index_snapshot_header_len();
-    assert_ne!(&b1[hlen..], &b2[hlen..], "block height must participate in the build");
+    assert_ne!(
+        &b1[hlen..],
+        &b2[hlen..],
+        "block height must participate in the build"
+    );
 }

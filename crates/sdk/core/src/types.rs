@@ -45,7 +45,11 @@ pub struct BucketRef {
 impl UtxoEntry {
     /// Create a new UTXO entry.
     pub fn new(txid: [u8; 32], vout: u32, amount_sats: u64) -> Self {
-        Self { txid, vout, amount_sats }
+        Self {
+            txid,
+            vout,
+            amount_sats,
+        }
     }
 
     /// Returns the outpoint as a 36-byte array (txid || vout_le).
@@ -256,7 +260,9 @@ pub struct DatabaseCatalog {
 impl DatabaseCatalog {
     /// Create an empty catalog.
     pub fn new() -> Self {
-        Self { databases: Vec::new() }
+        Self {
+            databases: Vec::new(),
+        }
     }
 
     /// Find a database by ID.

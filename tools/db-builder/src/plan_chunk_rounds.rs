@@ -36,9 +36,9 @@ struct SpkState {
     start_chunk: u32,
     num_chunks: u32,
     num_units: usize,
-    served: Vec<bool>,  // per unit
-    cursor: usize,      // first potentially unserved unit
-    remaining: usize,   // unserved units
+    served: Vec<bool>, // per unit
+    cursor: usize,     // first potentially unserved unit
+    remaining: usize,  // unserved units
 }
 
 impl SpkState {
@@ -129,13 +129,19 @@ fn try_place(
 
 fn main() {
     println!("=== Chunk PIR Multi-Round Simulation (unit-based) ===");
-    println!("  CHUNKS_PER_UNIT = {} ({} bytes/unit)", CHUNKS_PER_UNIT, UNIT_DATA_SIZE);
+    println!(
+        "  CHUNKS_PER_UNIT = {} ({} bytes/unit)",
+        CHUNKS_PER_UNIT, UNIT_DATA_SIZE
+    );
     println!();
 
     let start = Instant::now();
 
     // ── 1. Load first-level PIR results ──────────────────────────────────
-    println!("[1] Loading first-level PIR results: {}", BATCH_PIR_RESULTS_FILE);
+    println!(
+        "[1] Loading first-level PIR results: {}",
+        BATCH_PIR_RESULTS_FILE
+    );
     let results_data = std::fs::read(BATCH_PIR_RESULTS_FILE).unwrap_or_else(|e| {
         eprintln!("Failed to read: {}", e);
         std::process::exit(1);
@@ -167,8 +173,8 @@ fn main() {
     println!();
     println!("[2] Adding whale address...");
     let whale_sh: [u8; SCRIPT_HASH_SIZE] = [
-        0x20, 0xd9, 0x20, 0x10, 0x3e, 0xcb, 0x72, 0x16, 0x38, 0xeb,
-        0x43, 0xf3, 0xe7, 0xa2, 0x7c, 0x7b, 0x8e, 0xd3, 0x92, 0x5b,
+        0x20, 0xd9, 0x20, 0x10, 0x3e, 0xcb, 0x72, 0x16, 0x38, 0xeb, 0x43, 0xf3, 0xe7, 0xa2, 0x7c,
+        0x7b, 0x8e, 0xd3, 0x92, 0x5b,
     ];
     let whale_hex: String = whale_sh.iter().map(|b| format!("{:02x}", b)).collect();
 
@@ -187,10 +193,13 @@ fn main() {
             if already {
                 println!("  Whale {} already in query set", whale_hex);
             } else {
-                println!("  Whale: {} ({} chunks → {} units, start_chunk={})",
-                    whale_hex, num_chunks,
+                println!(
+                    "  Whale: {} ({} chunks → {} units, start_chunk={})",
+                    whale_hex,
+                    num_chunks,
                     (num_chunks as usize).div_ceil(CHUNKS_PER_UNIT),
-                    start_chunk);
+                    start_chunk
+                );
                 spks.push(SpkState::new(whale_sh, start_chunk, num_chunks));
                 println!("  Added as scriptpubkey #{}", spks.len() - 1);
             }
@@ -199,7 +208,10 @@ fn main() {
         }
     }
     if !whale_found {
-        println!("  WARNING: whale {} not found in index (skipped by gen_1?)", whale_hex);
+        println!(
+            "  WARNING: whale {} not found in index (skipped by gen_1?)",
+            whale_hex
+        );
     }
 
     let num_spks = spks.len();
@@ -243,9 +255,7 @@ fn main() {
 
     // ── 4. Simulate rounds ───────────────────────────────────────────────
     println!("[4] Simulating rounds...");
-    println!(
-        "  Adaptive max_kicks: >100 rounds left → 3, 10-100 → 20, 2-10 → 100, last → 500"
-    );
+    println!("  Adaptive max_kicks: >100 rounds left → 3, 10-100 → 20, 2-10 → 100, last → 500");
     println!();
     let sim_start = Instant::now();
 
@@ -395,7 +405,8 @@ fn main() {
 
     w.write_all(&PLAN_MAGIC.to_le_bytes()).unwrap();
     w.write_all(&(num_spks as u32).to_le_bytes()).unwrap();
-    w.write_all(&(plan_rounds.len() as u32).to_le_bytes()).unwrap();
+    w.write_all(&(plan_rounds.len() as u32).to_le_bytes())
+        .unwrap();
     w.write_all(&(total_served as u32).to_le_bytes()).unwrap();
 
     // SPK table
@@ -415,8 +426,8 @@ fn main() {
     }
     w.flush().unwrap();
 
-    let plan_size = 8 + 12 + num_spks * 28
-        + plan_rounds.iter().map(|r| 1 + r.len() * 5).sum::<usize>();
+    let plan_size =
+        8 + 12 + num_spks * 28 + plan_rounds.iter().map(|r| 1 + r.len() * 5).sum::<usize>();
     println!(
         "  Written {} bytes ({:.1} KB), {} rounds",
         plan_size,
@@ -436,12 +447,14 @@ fn main() {
         "  Avg units per round:          {:.1}",
         total_served as f64 / round as f64
     );
-    println!("  Total placement failures:     {}", total_failed_placements);
+    println!(
+        "  Total placement failures:     {}",
+        total_failed_placements
+    );
     if total_served + total_failed_placements > 0 {
         println!(
             "  Failure rate:                 {:.4}%",
-            total_failed_placements as f64
-                / (total_served + total_failed_placements) as f64
+            total_failed_placements as f64 / (total_served + total_failed_placements) as f64
                 * 100.0
         );
     }

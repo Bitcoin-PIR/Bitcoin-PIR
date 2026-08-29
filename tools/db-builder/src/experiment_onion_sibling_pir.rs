@@ -59,7 +59,10 @@ fn main() {
 
     // ── Phase 2: full round-trip per target n ──
     let targets: Vec<u64> = {
-        let args: Vec<u64> = std::env::args().skip(1).filter_map(|a| a.parse().ok()).collect();
+        let args: Vec<u64> = std::env::args()
+            .skip(1)
+            .filter_map(|a| a.parse().ok())
+            .collect();
         if args.is_empty() {
             vec![99, 364]
         } else {
@@ -79,7 +82,12 @@ fn main() {
 
     println!("\n=== SUMMARY ===");
     for (n, ok, line) in &summary {
-        println!("  n={:<6} {}  {}", n, if *ok { "PASS" } else { "FAIL" }, line);
+        println!(
+            "  n={:<6} {}  {}",
+            n,
+            if *ok { "PASS" } else { "FAIL" },
+            line
+        );
     }
     if summary.iter().all(|(_, ok, _)| *ok) {
         println!("\nAll round-trips correct — small-n OnionPIR PIR works.");
@@ -139,7 +147,10 @@ fn run_round_trip(n: u64) -> Result<String, String> {
             return Err(format!("pt {}: empty decrypted plaintext", pt));
         }
         if expected.is_empty() {
-            return Err(format!("pt {}: server returned empty original plaintext", pt));
+            return Err(format!(
+                "pt {}: server returned empty original plaintext",
+                pt
+            ));
         }
         if decrypted != expected {
             let same_len = decrypted.len() == expected.len();
@@ -148,7 +159,11 @@ fn run_round_trip(n: u64) -> Result<String, String> {
                 pt,
                 decrypted.len(),
                 expected.len(),
-                if same_len { " (equal length, content differs)" } else { "" },
+                if same_len {
+                    " (equal length, content differs)"
+                } else {
+                    ""
+                },
             ));
         }
     }

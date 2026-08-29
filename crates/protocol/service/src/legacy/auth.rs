@@ -11,7 +11,7 @@ use crate::{
 };
 
 pub use crate::operation::{
-    AUTH_FRAME_CLASS_V1, HarmonyHintSideV1, HintTransport, OperationStartV1, MAX_AUTH_PROOF_LEN,
+    HarmonyHintSideV1, HintTransport, OperationStartV1, AUTH_FRAME_CLASS_V1, MAX_AUTH_PROOF_LEN,
     OPERATION_START_DIGEST_DOMAIN,
 };
 
@@ -494,7 +494,6 @@ mod tests {
         });
         assert!(zero_token.encode_padded().is_err());
     }
-
 
     #[test]
     fn auth_results_roundtrip_and_reject_trailing() {

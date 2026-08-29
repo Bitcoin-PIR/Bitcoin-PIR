@@ -4,7 +4,7 @@
 //! for the OnionPIR request/response messages (key registration, batched
 //! queries, Merkle sibling queries). It is consumed by:
 //!
-//!   - `bin/unified_server.rs` — the production server, which owns its own
+//!   - `bin/unified_server/` — the production server, which owns its own
 //!     `PirServer` setup via consolidated `onion_index_all.bin` mmap +
 //!     shared NTT store, and only uses this module for wire formats.
 //!   - `bin/onionpir_client.rs` — the CLI client, which uses the same wire
@@ -13,7 +13,7 @@
 //! The older `GroupServers::load` / `populate_server` helper that built
 //! one `PirServer` per PBC group from a cuckoo table file was removed
 //! after the INDEX layout migrated to the consolidated `onion_index_all.bin`
-//! format (see `gen_3_onion` + `unified_server.rs` INDEX load path).
+//! format (see `gen_3_onion` + `unified_server/` INDEX load path).
 
 // ─── Wire protocol constants for OnionPIR messages ──────────────────────────
 
@@ -73,26 +73,39 @@ impl RegisterKeysMsg {
     pub fn decode(data: &[u8]) -> std::io::Result<Self> {
         // data starts after the variant byte
         if data.len() < 8 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "keys msg too short"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "keys msg too short",
+            ));
         }
         let mut pos = 0;
         let gk_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
         if pos + gk_len + 4 > data.len() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated galois keys"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "truncated galois keys",
+            ));
         }
         let galois_keys = data[pos..pos + gk_len].to_vec();
         pos += gk_len;
         let gsw_len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
         pos += 4;
         if pos + gsw_len > data.len() {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated gsw keys"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "truncated gsw keys",
+            ));
         }
         let gsw_keys = data[pos..pos + gsw_len].to_vec();
         pos += gsw_len;
         // Read trailing db_id if present (backward compatible: old clients don't send it).
         let db_id = if pos < data.len() { data[pos] } else { 0 };
-        Ok(RegisterKeysMsg { galois_keys, gsw_keys, db_id })
+        Ok(RegisterKeysMsg {
+            galois_keys,
+            gsw_keys,
+            db_id,
+        })
     }
 }
 
@@ -135,7 +148,10 @@ impl OnionPirBatchQuery {
     pub fn decode(data: &[u8]) -> std::io::Result<Self> {
         // data starts after the variant byte
         if data.len() < 3 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "query batch too short"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "query batch too short",
+            ));
         }
         let mut pos = 0;
         let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
@@ -145,19 +161,29 @@ impl OnionPirBatchQuery {
         let mut queries = Vec::with_capacity(num_groups);
         for _ in 0..num_groups {
             if pos + 4 > data.len() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated query"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "truncated query",
+                ));
             }
             let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + len > data.len() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated query data"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "truncated query data",
+                ));
             }
             queries.push(data[pos..pos + len].to_vec());
             pos += len;
         }
         // Read trailing db_id if present (backward compatible: old clients don't send it).
         let db_id = if pos < data.len() { data[pos] } else { 0 };
-        Ok(OnionPirBatchQuery { round_id, queries, db_id })
+        Ok(OnionPirBatchQuery {
+            round_id,
+            queries,
+            db_id,
+        })
     }
 }
 
@@ -188,7 +214,10 @@ impl OnionPirBatchResult {
     pub fn decode(data: &[u8]) -> std::io::Result<Self> {
         // data starts after the variant byte
         if data.len() < 3 {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "result batch too short"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "result batch too short",
+            ));
         }
         let mut pos = 0;
         let round_id = u16::from_le_bytes(data[pos..pos + 2].try_into().unwrap());
@@ -198,12 +227,18 @@ impl OnionPirBatchResult {
         let mut results = Vec::with_capacity(num_buckets);
         for _ in 0..num_buckets {
             if pos + 4 > data.len() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated result"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "truncated result",
+                ));
             }
             let len = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
             pos += 4;
             if pos + len > data.len() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated result data"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "truncated result data",
+                ));
             }
             results.push(data[pos..pos + len].to_vec());
             pos += len;

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use super::*;
 use arc::group::serialize_scalar;
 use arc::{make_presentation_state, present, setup_server};
 use ed25519_dalek::SigningKey;
@@ -21,7 +22,6 @@ use pir_service_store::{
     VerifiedOfferNamespaceInstallOutcomeV1,
 };
 use rand_chacha::{rand_core::SeedableRng, ChaCha20Rng};
-use super::*;
 
 const NOW: u64 = 1_500;
 struct Fixture {
@@ -1092,12 +1092,9 @@ fn real_arc_adapter_installs_namespace_spends_once_and_survives_restart() {
         1
     );
 
-    let reopened = ProviderStore::open_existing(
-        &path,
-        fixture.policy.provider_id,
-        StoreOptions::default(),
-    )
-    .unwrap();
+    let reopened =
+        ProviderStore::open_existing(&path, fixture.policy.provider_id, StoreOptions::default())
+            .unwrap();
     let replay = verify_provider_local_arc_spend_v1(&bound, NOW, &fixture.keyring).unwrap();
     assert!(matches!(
         reopened.spend_verified_arc_provider_local_v1(replay),

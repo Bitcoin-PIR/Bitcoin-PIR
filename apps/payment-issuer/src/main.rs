@@ -1047,7 +1047,11 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
         incomplete_init_error_v1("secure issuer store permissions", &store_path, &error)
     })?;
     validate_existing_private_database_path(&store_path, "issuer store").map_err(|error| {
-        incomplete_init_error_v1("self-check issuer store ownership/path", &store_path, &error)
+        incomplete_init_error_v1(
+            "self-check issuer store ownership/path",
+            &store_path,
+            &error,
+        )
     })?;
 
     let identity = store.identity().map_err(|error| {
@@ -1075,9 +1079,10 @@ fn init_store(args: InitStoreArgs) -> Result<(), String> {
 
     // Initialization succeeds only when the same production open-existing
     // path accepts the exact file after every creation handle is dropped.
-    let reopened = IssuerStore::open_existing(&store_path, issuer_id, network, options).map_err(
-        |error| incomplete_init_error_v1("reopen issuer store", &store_path, &error.to_string()),
-    )?;
+    let reopened =
+        IssuerStore::open_existing(&store_path, issuer_id, network, options).map_err(|error| {
+            incomplete_init_error_v1("reopen issuer store", &store_path, &error.to_string())
+        })?;
     if reopened.identity().map_err(|error| {
         incomplete_init_error_v1(
             "read reopened issuer store identity",
@@ -3026,8 +3031,8 @@ mod tests {
         WorkloadId,
     };
     use pir_service_store::{
-        verify_provider_local_bearer_spend_v1, ProviderStore,
-        StoreError as ProviderStoreError, StoreOptions as ProviderStoreOptions,
+        verify_provider_local_bearer_spend_v1, ProviderStore, StoreError as ProviderStoreError,
+        StoreOptions as ProviderStoreOptions,
     };
 
     fn http_exchange(
@@ -4678,10 +4683,7 @@ mod tests {
         let hard_link = private.join("authority.sqlite3");
         fs::hard_link(&file, &hard_link).unwrap();
         assert!(validate_existing_private_database_path(&file, "issuer store").is_err());
-        assert!(
-            validate_existing_private_database_path(&hard_link, "issuer database")
-                .is_err()
-        );
+        assert!(validate_existing_private_database_path(&hard_link, "issuer database").is_err());
     }
 
     #[test]

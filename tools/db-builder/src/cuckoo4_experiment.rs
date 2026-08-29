@@ -73,9 +73,14 @@ fn derive_groups(sh: &[u8]) -> [usize; NUM_BATCH_HASHES] {
         nonce += 1;
         let mut dup = false;
         for &g in groups.iter().take(count) {
-            if g == group { dup = true; break; }
+            if g == group {
+                dup = true;
+                break;
+            }
         }
-        if dup { continue; }
+        if dup {
+            continue;
+        }
         groups[count] = group;
         count += 1;
     }
@@ -156,9 +161,13 @@ fn build_cuckoo_for_group(
                     break;
                 }
             }
-            if placed { break; }
+            if placed {
+                break;
+            }
         }
-        if placed { continue; }
+        if placed {
+            continue;
+        }
 
         // Cuckoo kick — match production eviction strategy
         let mut current_idx = idx;
@@ -181,8 +190,12 @@ fn build_cuckoo_for_group(
             let mut placed = false;
             let mut first_alt = current_bin; // fallback for continued eviction
             for &b in &ev_bins {
-                if b == current_bin { continue; }
-                if first_alt == current_bin { first_alt = b; }
+                if b == current_bin {
+                    continue;
+                }
+                if first_alt == current_bin {
+                    first_alt = b;
+                }
                 let alt_base = b * SLOTS_PER_BIN;
                 for s in 0..SLOTS_PER_BIN {
                     if table[alt_base + s] == EMPTY {
@@ -191,7 +204,9 @@ fn build_cuckoo_for_group(
                         break;
                     }
                 }
-                if placed { break; }
+                if placed {
+                    break;
+                }
             }
 
             if placed {
@@ -205,7 +220,11 @@ fn build_cuckoo_for_group(
             let mut alt_bin = first_alt;
             if CUCKOO_NUM_HASHES > 2 {
                 // Rotate through alternatives based on kick count
-                let alts: Vec<usize> = ev_bins.iter().filter(|&&b| b != current_bin).copied().collect();
+                let alts: Vec<usize> = ev_bins
+                    .iter()
+                    .filter(|&&b| b != current_bin)
+                    .copied()
+                    .collect();
                 if !alts.is_empty() {
                     alt_bin = alts[kick % alts.len()];
                 }
@@ -229,7 +248,9 @@ fn build_cuckoo_for_group(
     let mut occupancy_counts = vec![0u64; SLOTS_PER_BIN + 1];
     for bin in 0..num_bins {
         let base = bin * SLOTS_PER_BIN;
-        let occ = (0..SLOTS_PER_BIN).filter(|&s| table[base + s] != EMPTY).count();
+        let occ = (0..SLOTS_PER_BIN)
+            .filter(|&s| table[base + s] != EMPTY)
+            .count();
         occupancy_counts[occ] += 1;
     }
 
@@ -241,7 +262,9 @@ fn build_cuckoo_for_group(
         let base = bin * SLOTS_PER_BIN;
         for s in 0..SLOTS_PER_BIN {
             let idx = table[base + s];
-            if idx == EMPTY { continue; }
+            if idx == EMPTY {
+                continue;
+            }
             let sh = get_sh(idx);
             let bins = compute_bins(sh);
             for h in 0..CUCKOO_NUM_HASHES {
@@ -266,8 +289,10 @@ fn build_cuckoo_for_group(
 }
 
 fn main() {
-    println!("=== Cuckoo Experiment: 75-group split, {} cuckoo hashes, slots_per_bin={}, LF={} ===\n",
-        CUCKOO_NUM_HASHES, SLOTS_PER_BIN, CUCKOO_LOAD_FACTOR);
+    println!(
+        "=== Cuckoo Experiment: 75-group split, {} cuckoo hashes, slots_per_bin={}, LF={} ===\n",
+        CUCKOO_NUM_HASHES, SLOTS_PER_BIN, CUCKOO_LOAD_FACTOR
+    );
     let start = Instant::now();
 
     // ── Load index ───────────────────────────────────────────────────────
@@ -278,11 +303,16 @@ fn main() {
     println!("  Entries: {}\n", n);
 
     // ── Assign to 75 groups ──────────────────────────────────────────────
-    println!("[2] Assigning entries to {} groups ({} copies each)...", K, NUM_BATCH_HASHES);
+    println!(
+        "[2] Assigning entries to {} groups ({} copies each)...",
+        K, NUM_BATCH_HASHES
+    );
     let assign_start = Instant::now();
 
     let expected_per_group = (n * NUM_BATCH_HASHES) / K + 1;
-    let mut groups: Vec<Vec<u32>> = (0..K).map(|_| Vec::with_capacity(expected_per_group)).collect();
+    let mut groups: Vec<Vec<u32>> = (0..K)
+        .map(|_| Vec::with_capacity(expected_per_group))
+        .collect();
 
     for i in 0..n {
         let base = i * INDEX_RECORD_SIZE;
@@ -299,12 +329,19 @@ fn main() {
     let avg_load = group_loads.iter().sum::<usize>() as f64 / K as f64;
 
     println!("  Done in {:.2?}", assign_start.elapsed());
-    println!("  Group loads: min={}, max={}, avg={:.0}", min_load, max_load, avg_load);
+    println!(
+        "  Group loads: min={}, max={}, avg={:.0}",
+        min_load, max_load, avg_load
+    );
 
     // Uniform bins_per_table from max load
-    let bins_per_table = ((max_load as f64) / (SLOTS_PER_BIN as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
+    let bins_per_table =
+        ((max_load as f64) / (SLOTS_PER_BIN as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
     let slots_per_table = bins_per_table * SLOTS_PER_BIN;
-    println!("  Bins per table: {} (slots: {})\n", bins_per_table, slots_per_table);
+    println!(
+        "  Bins per table: {} (slots: {})\n",
+        bins_per_table, slots_per_table
+    );
 
     // ── Build cuckoo tables in parallel ──────────────────────────────────
     println!("[3] Building cuckoo tables for {} groups in parallel...", K);
@@ -343,7 +380,12 @@ fn main() {
     println!("  Groups with stash > 0: {}", groups_with_stash);
     println!("  Total kicks: {}", total_kicks);
     println!("  Max kick chain: {}", global_max_kick);
-    println!("  Fill rate: {:.4}% ({} / {} slots)", total_occupied as f64 / total_slots as f64 * 100.0, total_occupied, total_slots);
+    println!(
+        "  Fill rate: {:.4}% ({} / {} slots)",
+        total_occupied as f64 / total_slots as f64 * 100.0,
+        total_occupied,
+        total_slots
+    );
 
     // Aggregate occupancy
     let mut agg_occupancy = [0u64; SLOTS_PER_BIN + 1];
@@ -353,11 +395,18 @@ fn main() {
         }
     }
     let total_bins = K * bins_per_table;
-    println!("\n[5] Bin occupancy (across all {} groups, {} total bins):", K, total_bins);
+    println!(
+        "\n[5] Bin occupancy (across all {} groups, {} total bins):",
+        K, total_bins
+    );
     for (occ, &count) in agg_occupancy.iter().enumerate() {
-        println!("  {}/{} slots used: {} bins ({:.2}%)",
-            occ, SLOTS_PER_BIN, count,
-            count as f64 / total_bins as f64 * 100.0);
+        println!(
+            "  {}/{} slots used: {} bins ({:.2}%)",
+            occ,
+            SLOTS_PER_BIN,
+            count,
+            count as f64 / total_bins as f64 * 100.0
+        );
     }
 
     // Show worst groups
@@ -366,8 +415,10 @@ fn main() {
     if !worst.is_empty() {
         println!("\n[6] Worst groups (stash > 0):");
         for r in worst.iter().take(10) {
-            println!("  Group {}: {} entries, stash={}, kicks={}, max_chain={}",
-                r.group_id, r.num_entries, r.stash_size, r.total_kicks, r.max_kick_chain);
+            println!(
+                "  Group {}: {} entries, stash={}, kicks={}, max_chain={}",
+                r.group_id, r.num_entries, r.stash_size, r.total_kicks, r.max_kick_chain
+            );
         }
     }
 
@@ -380,8 +431,12 @@ fn main() {
     }
     println!("\n[6] Hash location distribution (which hash fn each entry landed in):");
     for (h, &count) in agg_hash_loc.iter().enumerate() {
-        println!("  Hash {}: {} entries ({:.2}%)",
-            h, count, count as f64 / total_occupied as f64 * 100.0);
+        println!(
+            "  Hash {}: {} entries ({:.2}%)",
+            h,
+            count,
+            count as f64 / total_occupied as f64 * 100.0
+        );
     }
 
     // Show worst groups
@@ -390,16 +445,23 @@ fn main() {
     if !worst.is_empty() {
         println!("\n[7] Worst groups (stash > 0):");
         for r in worst.iter().take(10) {
-            println!("  Group {}: {} entries, stash={}, kicks={}, max_chain={}",
-                r.group_id, r.num_entries, r.stash_size, r.total_kicks, r.max_kick_chain);
+            println!(
+                "  Group {}: {} entries, stash={}, kicks={}, max_chain={}",
+                r.group_id, r.num_entries, r.stash_size, r.total_kicks, r.max_kick_chain
+            );
         }
     }
 
     // File size estimate
     let file_bytes = total_slots * 4; // each slot is a u32
     println!("\n[8] Storage estimate:");
-    println!("  Cuckoo tables: {:.2} MB ({} groups x {} bins x {} slots x 4B)",
-        file_bytes as f64 / (1024.0 * 1024.0), K, bins_per_table, SLOTS_PER_BIN);
+    println!(
+        "  Cuckoo tables: {:.2} MB ({} groups x {} bins x {} slots x 4B)",
+        file_bytes as f64 / (1024.0 * 1024.0),
+        K,
+        bins_per_table,
+        SLOTS_PER_BIN
+    );
 
     println!("\n  Total time: {:.2?}", start.elapsed());
 }

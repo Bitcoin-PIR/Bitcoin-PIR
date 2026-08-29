@@ -15,10 +15,10 @@ mod common;
 
 use common::*;
 use libdpf::{Block, Dpf, DpfKey};
+use rayon::prelude::*;
 use std::fs;
 use std::io::Write;
 use std::time::Instant;
-use rayon::prelude::*;
 
 const QUERIES_FILE: &str = "/Volumes/Bitcoin/data/intermediate/test_queries_50.bin";
 const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/batch_pir_results.bin";
@@ -26,7 +26,7 @@ const OUTPUT_FILE: &str = "/Volumes/Bitcoin/data/intermediate/batch_pir_results.
 /// Each cuckoo bin has 3 slots, each a 13-byte inlined tagged entry.
 /// Result per DPF query = 3 * 13 = 39 bytes.
 const SLOT_SIZE: usize = INDEX_SLOT_SIZE; // 13
-const SLOTS: usize = INDEX_SLOTS_PER_BIN;  // 3
+const SLOTS: usize = INDEX_SLOTS_PER_BIN; // 3
 const RESULT_SIZE: usize = SLOTS * SLOT_SIZE; // 42
 
 // dpf_n is computed from bins_per_table at runtime via pir_core::params::compute_dpf_n
@@ -160,9 +160,7 @@ fn server_process(
 
 const MAX_KICKS: usize = 1000;
 
-fn cuckoo_assign(
-    queries: &[[usize; NUM_HASHES]],
-) -> Result<[Option<usize>; K], &'static str> {
+fn cuckoo_assign(queries: &[[usize; NUM_HASHES]]) -> Result<[Option<usize>; K], &'static str> {
     let mut groups: [Option<usize>; K] = [None; K];
     let num = queries.len();
 
@@ -188,8 +186,14 @@ fn main() {
     let (bins_per_table, header_master_seed, tag_seed) = read_cuckoo_header_full(&cuckoo_data);
     let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
     let table_byte_size = bins_per_table * SLOTS * SLOT_SIZE;
-    println!("  Cuckoo: bins_per_table = {}, dpf_n = {}, tag_seed = 0x{:016x}", bins_per_table, dpf_n, tag_seed);
-    println!("  Table size per group: {:.2} MB", table_byte_size as f64 / (1024.0 * 1024.0));
+    println!(
+        "  Cuckoo: bins_per_table = {}, dpf_n = {}, tag_seed = 0x{:016x}",
+        bins_per_table, dpf_n, tag_seed
+    );
+    println!(
+        "  Table size per group: {:.2} MB",
+        table_byte_size as f64 / (1024.0 * 1024.0)
+    );
 
     let query_data = fs::read(QUERIES_FILE).expect("read queries");
     let num_queries = query_data.len() / SCRIPT_HASH_SIZE;
@@ -197,7 +201,10 @@ fn main() {
     println!();
 
     // ── 2. Assign queries to groups ─────────────────────────────────────
-    println!("[2] Cuckoo-assigning {} queries to {} groups...", num_queries, K);
+    println!(
+        "[2] Cuckoo-assigning {} queries to {} groups...",
+        num_queries, K
+    );
 
     let mut candidate_groups: Vec<[usize; NUM_HASHES]> = Vec::with_capacity(num_queries);
     for i in 0..num_queries {
@@ -231,7 +238,12 @@ fn main() {
     println!();
 
     // ── 3. Generate DPF keys ─────────────────────────────────────────────
-    println!("[3] Generating DPF keys (n={}, domain=2^{} = {})...", dpf_n, dpf_n, 1u64 << dpf_n);
+    println!(
+        "[3] Generating DPF keys (n={}, domain=2^{} = {})...",
+        dpf_n,
+        dpf_n,
+        1u64 << dpf_n
+    );
     let dpf = Dpf::with_default_key();
     let gen_start = Instant::now();
 
@@ -252,7 +264,11 @@ fn main() {
         server1_keys.push((k1_q0, k1_q1));
     }
 
-    println!("  Generated {} key pairs in {:.2?}", K * 2, gen_start.elapsed());
+    println!(
+        "  Generated {} key pairs in {:.2?}",
+        K * 2,
+        gen_start.elapsed()
+    );
     println!();
 
     // ── 4. Server 0 processing ───────────────────────────────────────────
@@ -293,9 +309,7 @@ fn main() {
         // Check if our tag appears in either result
         let mut matched = false;
         for result in [&result_q0, &result_q1] {
-            if let Some((start_chunk_id, num_chunks)) =
-                find_entry_in_result(result, expected_tag)
-            {
+            if let Some((start_chunk_id, num_chunks)) = find_entry_in_result(result, expected_tag) {
                 output_entries.push((sh.to_vec(), start_chunk_id, num_chunks));
                 matched = true;
                 found += 1;
@@ -367,10 +381,7 @@ fn main() {
 
 /// Find the expected tag in the result's slots and return (start_chunk_id bytes, num_chunks).
 /// Slot layout: [8B tag | 4B start_chunk_id | 1B num_chunks]
-fn find_entry_in_result(
-    result: &[u8; RESULT_SIZE],
-    expected_tag: u64,
-) -> Option<([u8; 4], u8)> {
+fn find_entry_in_result(result: &[u8; RESULT_SIZE], expected_tag: u64) -> Option<([u8; 4], u8)> {
     for slot in 0..SLOTS {
         let base = slot * SLOT_SIZE;
         let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());

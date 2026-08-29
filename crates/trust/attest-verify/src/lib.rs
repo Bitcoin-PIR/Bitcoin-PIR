@@ -313,8 +313,8 @@ impl std::error::Error for FullVerifyError {}
 /// pass it to [`verify_chain`] as `expected_ark_fingerprint`.
 fn ark_fingerprint_sha256(ark_pem: &[u8]) -> Result<[u8; 32], VerifyError> {
     // Strip PEM armor → DER bytes → SHA-256.
-    let der = pem_to_der(ark_pem)
-        .map_err(|e| VerifyError::MalformedArk(format!("PEM→DER: {e}")))?;
+    let der =
+        pem_to_der(ark_pem).map_err(|e| VerifyError::MalformedArk(format!("PEM→DER: {e}")))?;
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
     h.update(&der);
@@ -425,7 +425,10 @@ mod tests {
         // The two lines concatenate to "U0dWc2JHOHNJRmR2Y214a0lR==" which
         // decodes to "SGVsbG8sIFdvcmxkIQ" (no quote, partial — confirms multi-line
         // concatenation works rather than being a strict assertion of contents).
-        assert!(!der.is_empty(), "multi-line PEM should produce non-empty DER");
+        assert!(
+            !der.is_empty(),
+            "multi-line PEM should produce non-empty DER"
+        );
     }
 
     #[test]
@@ -466,16 +469,18 @@ mod tests {
         // well-known constant. Compare against a clearly-different
         // expectation.
         let empty_sha256 = [
-            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
-            0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
-            0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
-            0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
         ];
         let expected = [0xFFu8; 32];
         // Not-PEM (no BEGIN/END tags) produces empty DER → SHA-256 of empty.
         let err = verify_chain(b"garbage", b"garbage", b"garbage", Some(expected)).unwrap_err();
         match err {
-            VerifyError::ArkFingerprintMismatch { actual, expected: e } => {
+            VerifyError::ArkFingerprintMismatch {
+                actual,
+                expected: e,
+            } => {
                 assert_eq!(actual, empty_sha256);
                 assert_eq!(e, expected);
             }

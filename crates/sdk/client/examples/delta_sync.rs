@@ -68,7 +68,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Fetch catalog
     let catalog = client.fetch_catalog().await?;
-    println!("Connected! Latest tip: {}", catalog.latest_tip().unwrap_or(0));
+    println!(
+        "Connected! Latest tip: {}",
+        catalog.latest_tip().unwrap_or(0)
+    );
     println!();
 
     // Generate test addresses
@@ -78,9 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // === First Sync (Fresh) ===
     println!("=== First Sync (Fresh) ===");
     let plan = client.compute_sync_plan(&catalog, wallet.last_height)?;
-    println!("Sync plan: {} step(s), fresh_sync={}", plan.steps.len(), plan.is_fresh_sync);
+    println!(
+        "Sync plan: {} step(s), fresh_sync={}",
+        plan.steps.len(),
+        plan.is_fresh_sync
+    );
     for step in &plan.steps {
-        println!("  - {} (db_id={}, height={})", step.name, step.db_id, step.tip_height);
+        println!(
+            "  - {} (db_id={}, height={})",
+            step.name, step.db_id, step.tip_height
+        );
     }
 
     let result = client.sync(&addresses, wallet.last_height).await?;
@@ -93,11 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|r| r.total_balance())
             .unwrap_or(0);
         wallet.update(*addr, balance, result.synced_height);
-        println!(
-            "  Address {}: {} sats",
-            hex::encode(&addr[0..4]),
-            balance
-        );
+        println!("  Address {}: {} sats", hex::encode(&addr[0..4]), balance);
     }
 
     // === Second Sync (Delta) ===
@@ -109,11 +115,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let plan = client.compute_sync_plan(&catalog, wallet.last_height)?;
 
     if plan.is_empty() {
-        println!("Already synced to latest height {}", wallet.last_height.unwrap_or(0));
+        println!(
+            "Already synced to latest height {}",
+            wallet.last_height.unwrap_or(0)
+        );
     } else {
-        println!("Sync plan: {} step(s), fresh_sync={}", plan.steps.len(), plan.is_fresh_sync);
+        println!(
+            "Sync plan: {} step(s), fresh_sync={}",
+            plan.steps.len(),
+            plan.is_fresh_sync
+        );
         for step in &plan.steps {
-            println!("  - {} (db_id={}, height={})", step.name, step.db_id, step.tip_height);
+            println!(
+                "  - {} (db_id={}, height={})",
+                step.name, step.db_id, step.tip_height
+            );
         }
 
         // Use sync_with_plan to pass cached results for delta merging
@@ -121,9 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .iter()
             .map(|addr| {
                 wallet.balances.get(addr).map(|&balance| {
-                    QueryResult::with_entries(vec![
-                        UtxoEntry::new([0; 32], 0, balance),
-                    ])
+                    QueryResult::with_entries(vec![UtxoEntry::new([0; 32], 0, balance)])
                 })
             })
             .collect();
@@ -165,7 +179,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Final Wallet State ===");
     println!("Last synced height: {}", wallet.last_height.unwrap_or(0));
     let total: u64 = wallet.balances.values().sum();
-    println!("Total balance: {} sats ({} addresses)", total, wallet.balances.len());
+    println!(
+        "Total balance: {} sats ({} addresses)",
+        total,
+        wallet.balances.len()
+    );
 
     client.disconnect().await?;
     println!();

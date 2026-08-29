@@ -226,9 +226,21 @@ mod tests {
     fn test_dpf_n_covers_bins() {
         for bins in [1, 2, 100, 1000, 565684, 1064454, 2_000_000] {
             let n = compute_dpf_n(bins);
-            assert!((1usize << n) >= bins, "2^{} = {} < {}", n, 1usize << n, bins);
+            assert!(
+                (1usize << n) >= bins,
+                "2^{} = {} < {}",
+                n,
+                1usize << n,
+                bins
+            );
             if n > 1 {
-                assert!((1usize << (n - 1)) < bins, "2^{} = {} >= {}", n - 1, 1usize << (n - 1), bins);
+                assert!(
+                    (1usize << (n - 1)) < bins,
+                    "2^{} = {} >= {}",
+                    n - 1,
+                    1usize << (n - 1),
+                    bins
+                );
             }
         }
     }

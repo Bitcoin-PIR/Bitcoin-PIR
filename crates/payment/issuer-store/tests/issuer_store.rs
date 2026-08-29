@@ -4,10 +4,10 @@ use k256::{ProjectivePoint, Scalar};
 use pir_issuer_store::{
     BatKeyLineageRegistration, BatV2ClaimCryptographicVerificationInputV2, BatV2ClaimWrite,
     BatV2ClearingEpochReservationV2, BatV2QuoteReservation, ClaimCryptographicVerificationInput,
-    ClaimWrite, DelegationAdvance, IssuerStore,
-    ProviderSettlementRegistrationWriteV1, QuoteCapacityV1, QuoteExpiry, QuoteFinalization,
-    QuoteReservation, QuoteSettlement, QuoteState, QuoteStatusBip340Input,
-    SettlementKeyLineageRegistration, StoreError, StoreOptions, WriteDisposition, SCHEMA_VERSION,
+    ClaimWrite, DelegationAdvance, IssuerStore, ProviderSettlementRegistrationWriteV1,
+    QuoteCapacityV1, QuoteExpiry, QuoteFinalization, QuoteReservation, QuoteSettlement, QuoteState,
+    QuoteStatusBip340Input, SettlementKeyLineageRegistration, StoreError, StoreOptions,
+    WriteDisposition, SCHEMA_VERSION,
 };
 use pir_service_protocol::{
     derive_bat_key_id_v1, derive_cashu_keyset_id_v2, derive_issuer_id, paid_receipt_key_id,

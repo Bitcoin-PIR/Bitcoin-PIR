@@ -12,17 +12,17 @@
 
 use build::common::*;
 use harmonypir::params::Params;
-use harmonypir::prp::hoang::HoangPrp;
 #[cfg(feature = "fastprp")]
 use harmonypir::prp::fast::FastPrpWrapper;
+use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
 use harmonypir::relocation::RelocationDS;
+#[cfg(feature = "fastprp")]
+use harmonypir::remote::PRP_FASTPRP;
 use harmonypir::remote::{
     compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PrpBackend,
     RemoteClient as HarmonyGroup, PRP_HMR12,
 };
-#[cfg(feature = "fastprp")]
-use harmonypir::remote::PRP_FASTPRP;
 
 use memmap2::Mmap;
 use std::fs::File;
@@ -36,7 +36,12 @@ fn hex_short(bytes: &[u8]) -> String {
     if bytes.len() <= 20 {
         hex(bytes)
     } else {
-        format!("{}...{} ({} B)", hex(&bytes[..10]), hex(&bytes[bytes.len()-4..]), bytes.len())
+        format!(
+            "{}...{} ({} B)",
+            hex(&bytes[..10]),
+            hex(&bytes[bytes.len() - 4..]),
+            bytes.len()
+        )
     }
 }
 
@@ -86,14 +91,27 @@ fn main() {
     let chunk_bins = read_chunk_cuckoo_header(&chunk_mmap);
     let chunk_w = CHUNK_SLOTS_PER_BIN * (4 + CHUNK_SIZE); // 3 × 44 = 132
 
-    println!("  Index cuckoo: {} ({:.2} GB)", CUCKOO_FILE,
-        idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    N={} bins, w={}B per bin ({} slots × {}B), tag_seed=0x{:016x}",
-        index_bins, index_w, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, tag_seed);
-    println!("  Chunk cuckoo: {} ({:.2} GB)", CHUNK_CUCKOO_FILE,
-        chunk_mmap.len() as f64 / (1024.0*1024.0*1024.0));
-    println!("    N={} bins, w={}B per bin ({} slots × {}B)\n",
-        chunk_bins, chunk_w, CHUNK_SLOTS_PER_BIN, 4 + CHUNK_SIZE);
+    println!(
+        "  Index cuckoo: {} ({:.2} GB)",
+        CUCKOO_FILE,
+        idx_mmap.len() as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!(
+        "    N={} bins, w={}B per bin ({} slots × {}B), tag_seed=0x{:016x}",
+        index_bins, index_w, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, tag_seed
+    );
+    println!(
+        "  Chunk cuckoo: {} ({:.2} GB)",
+        CHUNK_CUCKOO_FILE,
+        chunk_mmap.len() as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
+    println!(
+        "    N={} bins, w={}B per bin ({} slots × {}B)\n",
+        chunk_bins,
+        chunk_w,
+        CHUNK_SLOTS_PER_BIN,
+        4 + CHUNK_SIZE
+    );
 
     // ═══════════════════════════════════════════════════════════════════
     // All PRP backends to test
@@ -111,20 +129,36 @@ fn main() {
 
         // INDEX BUCKET
         run_narrative(
-            "INDEX", &key, 0,
-            &idx_mmap, HEADER_SIZE, index_bins, index_w,
-            INDEX_SLOT_SIZE, INDEX_SLOTS_PER_BIN, true,
-            backend, backend_name,
+            "INDEX",
+            &key,
+            0,
+            &idx_mmap,
+            HEADER_SIZE,
+            index_bins,
+            index_w,
+            INDEX_SLOT_SIZE,
+            INDEX_SLOTS_PER_BIN,
+            true,
+            backend,
+            backend_name,
         );
 
         println!();
 
         // CHUNK BUCKET
         run_narrative(
-            "CHUNK", &key, K as u32,
-            &chunk_mmap, CHUNK_HEADER_SIZE, chunk_bins, chunk_w,
-            4 + CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, false,
-            backend, backend_name,
+            "CHUNK",
+            &key,
+            K as u32,
+            &chunk_mmap,
+            CHUNK_HEADER_SIZE,
+            chunk_bins,
+            chunk_w,
+            4 + CHUNK_SIZE,
+            CHUNK_SLOTS_PER_BIN,
+            false,
+            backend,
+            backend_name,
         );
     }
 
@@ -148,8 +182,8 @@ fn run_narrative(
     backend_name: &str,
 ) {
     let t_val = find_best_t(n as u32);
-    let (padded_n, t_val) = pad_n_for_t(n as u32, t_val)
-        .expect("validated non-zero HarmonyPIR table dimensions");
+    let (padded_n, t_val) =
+        pad_n_for_t(n as u32, t_val).expect("validated non-zero HarmonyPIR table dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
     let domain = 2 * pn;
@@ -157,7 +191,11 @@ fn run_narrative(
     let params = Params::new(pn, w, t).unwrap();
     let m = params.m;
     let derived_key = derive_group_key(master_key, group_id);
-    let actual_group = if group_id >= K as u32 { (group_id - K as u32) as usize } else { group_id as usize };
+    let actual_group = if group_id >= K as u32 {
+        (group_id - K as u32) as usize
+    } else {
+        group_id as usize
+    };
     let table_offset = header_size + actual_group * n * w;
 
     println!("━━━ {label} GROUP {actual_group}: FULL PROTOCOL NARRATIVE ━━━\n");
@@ -171,12 +209,24 @@ fn run_narrative(
 
     println!("  PRP:        {} (backend={})", backend_name, backend);
     println!("  Master key: {}", hex(master_key));
-    println!("  Group key: {} (master XOR group_id={})", hex(&derived_key), group_id);
+    println!(
+        "  Group key: {} (master XOR group_id={})",
+        hex(&derived_key),
+        group_id
+    );
     println!("  Domain:     {} = 2 × padded_N", domain);
-    println!("  Rounds:     {} = ceil(log2({})) + 40, rounded to mult of 4", r, domain);
+    println!(
+        "  Rounds:     {} = ceil(log2({})) + 40, rounded to mult of 4",
+        r, domain
+    );
     println!("  real_N:     {} (actual DB rows)", n);
     println!("  padded_N:   {} (+{} virtual empty rows)", pn, pn - n);
-    println!("  T:          {} ≈ sqrt(2×{}) = {:.0}", t, pn, (2.0 * pn as f64).sqrt());
+    println!(
+        "  T:          {} ≈ sqrt(2×{}) = {:.0}",
+        t,
+        pn,
+        (2.0 * pn as f64).sqrt()
+    );
     println!("  M:          {} segments = 2×padded_N / T", m);
     println!("  max_queries: {} = padded_N / T\n", params.max_queries);
 
@@ -187,7 +237,10 @@ fn run_narrative(
     // Hint generation only needs P(v) for v in 0..padded_N to find each value's segment.
     // No RelocationDS needed — the relocation history is empty at init time.
     // Use batch_forward() when available (FastPRP, ALF), else sequential forward().
-    println!("  [Hint Server] Computing cell assignments via P(v) for v in 0..{}...", pn);
+    println!(
+        "  [Hint Server] Computing cell assignments via P(v) for v in 0..{}...",
+        pn
+    );
     println!("    For each entry k: cell = P(k), segment = cell/T, H[segment] ^= DB[k]\n");
 
     // Build cell assignment: cell_of[v] = P(v) for all v in domain.
@@ -227,8 +280,12 @@ fn run_narrative(
         if k < n {
             let start = table_offset + k * w;
             let entry = &table_mmap[start..start + w];
-            if !entry.iter().all(|&b| b == 0) { non_empty += 1; }
-            for (d, s) in hints[seg].iter_mut().zip(entry.iter()) { *d ^= s; }
+            if !entry.iter().all(|&b| b == 0) {
+                non_empty += 1;
+            }
+            for (d, s) in hints[seg].iter_mut().zip(entry.iter()) {
+                *d ^= s;
+            }
         }
     }
 
@@ -237,17 +294,32 @@ fn run_narrative(
 
     println!("  [Hint Server] Hint generation complete.");
     println!("    Time:           {:.2?}", hint_time);
-    println!("    Non-empty rows: {}/{} ({:.1}%)", non_empty, n, non_empty as f64 / n as f64 * 100.0);
+    println!(
+        "    Non-empty rows: {}/{} ({:.1}%)",
+        non_empty,
+        n,
+        non_empty as f64 / n as f64 * 100.0
+    );
     println!("    Segments:       {} (each covers T={} cells)", m, t);
-    println!("    Entries/seg:    min={}, max={}, avg={:.0}",
+    println!(
+        "    Entries/seg:    min={}, max={}, avg={:.0}",
         entries_per_seg.iter().min().unwrap(),
         entries_per_seg.iter().max().unwrap(),
-        pn as f64 / m as f64);
-    println!("    Total hints:    {} bytes ({:.1} KB)\n",
-        hints_bytes, hints_bytes as f64 / 1024.0);
+        pn as f64 / m as f64
+    );
+    println!(
+        "    Total hints:    {} bytes ({:.1} KB)\n",
+        hints_bytes,
+        hints_bytes as f64 / 1024.0
+    );
     println!("    Sample hints:");
     for s in 0..3.min(m) {
-        println!("      H[{:>4}] = {} ({} entries XOR'd)", s, hex_short(&hints[s]), entries_per_seg[s]);
+        println!(
+            "      H[{:>4}] = {} ({} entries XOR'd)",
+            s,
+            hex_short(&hints[s]),
+            entries_per_seg[s]
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -264,21 +336,37 @@ fn run_narrative(
         master_key,
         group_id,
         PrpBackend::try_from(backend).expect("known HarmonyPIR backend"),
-    ).unwrap();
+    )
+    .unwrap();
     let flat: Vec<u8> = hints.iter().flat_map(|h| h.iter().copied()).collect();
     group.load_hints(&flat).unwrap();
 
     println!("  Client created HarmonyGroup:");
-    println!("    real_N={}, padded_N={}, w={}, T={}, M={}", group.real_n(), group.padded_n(), w, t, m);
+    println!(
+        "    real_N={}, padded_N={}, w={}, T={}, M={}",
+        group.real_n(),
+        group.padded_n(),
+        w,
+        t,
+        m
+    );
     println!("    Hints loaded: {} bytes", flat.len());
 
     let state_bytes = group.serialize_legacy_state().unwrap();
-    println!("  State file serialized: {} bytes ({:.1} KB)", state_bytes.len(), state_bytes.len() as f64 / 1024.0);
-    println!("    Contents: params + 0 relocated segments + 0 PRP cache + {} hint bytes", hints_bytes);
+    println!(
+        "  State file serialized: {} bytes ({:.1} KB)",
+        state_bytes.len(),
+        state_bytes.len() as f64 / 1024.0
+    );
+    println!(
+        "    Contents: params + 0 relocated segments + 0 PRP cache + {} hint bytes",
+        hints_bytes
+    );
     println!("    queries_remaining = {}\n", group.queries_remaining());
 
     // Deserialize to prove round-trip.
-    let mut group = HarmonyGroup::deserialize_legacy_state(&state_bytes, master_key, group_id).unwrap();
+    let mut group =
+        HarmonyGroup::deserialize_legacy_state(&state_bytes, master_key, group_id).unwrap();
     println!("  State file reloaded OK (simulating client restart).\n");
 
     // ═══════════════════════════════════════════════════════════════════
@@ -291,7 +379,9 @@ fn run_narrative(
     // Pick targets: first 3 non-empty rows.
     let mut targets: Vec<usize> = Vec::new();
     for row in 0..n {
-        if targets.len() >= 3 { break; }
+        if targets.len() >= 3 {
+            break;
+        }
         let start = table_offset + row * w;
         let entry = &table_mmap[start..start + w];
         if !entry.iter().all(|&b| b == 0) {
@@ -319,9 +409,14 @@ fn run_narrative(
                 if is_empty {
                     println!("      slot[{}]: (empty)", s);
                 } else {
-                    println!("      slot[{}]: tag=0x{:016x} start_chunk={} num_chunks={}{}",
-                        s, tag, chunk_start, num_chunks,
-                        if num_chunks == 0 { " [WHALE]" } else { "" });
+                    println!(
+                        "      slot[{}]: tag=0x{:016x} start_chunk={} num_chunks={}{}",
+                        s,
+                        tag,
+                        chunk_start,
+                        num_chunks,
+                        if num_chunks == 0 { " [WHALE]" } else { "" }
+                    );
                 }
             }
         } else {
@@ -333,7 +428,12 @@ fn run_narrative(
                 if is_empty {
                     println!("      slot[{}]: (empty)", s);
                 } else {
-                    println!("      slot[{}]: chunk_id={} data={}", s, chunk_id, hex_short(data));
+                    println!(
+                        "      slot[{}]: chunk_id={} data={}",
+                        s,
+                        chunk_id,
+                        hex_short(data)
+                    );
                 }
             }
         }
@@ -348,26 +448,37 @@ fn run_narrative(
         println!("      position r = {} mod {} = {}", cell, t, pos);
 
         // Step 2: Build request (sorted non-empty indices, no dummy).
-        println!("    [Client] Step 2 — Build request Q", );
+        println!("    [Client] Step 2 — Build request Q",);
         let hint_before = group.serialize_legacy_state().unwrap(); // snapshot for comparison
         let req = group.build_request(q as u32).unwrap();
         let req_bytes = req.as_bytes();
         let count = req_bytes.len() / 4;
 
-        println!("      Q has {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
-            count, t, (1.0 - count as f64 / t as f64) * 100.0);
+        println!(
+            "      Q has {} sorted non-empty indices (T={}, ~{:.0}% reduction)",
+            count,
+            t,
+            (1.0 - count as f64 / t as f64) * 100.0
+        );
         if count > 0 {
             let first_idx = u32::from_le_bytes(req_bytes[0..4].try_into().unwrap());
-            let last_idx = u32::from_le_bytes(req_bytes[(count-1)*4..count*4].try_into().unwrap());
+            let last_idx =
+                u32::from_le_bytes(req_bytes[(count - 1) * 4..count * 4].try_into().unwrap());
             println!("      Sorted range: [{}..{}]", first_idx, last_idx);
         }
-        println!("      Position r={} (query target) omitted from request", pos);
+        println!(
+            "      Position r={} (query target) omitted from request",
+            pos
+        );
 
         // Step 3: Server answers.
-        println!("    [Query Server] Step 3 — Look up {} entries from cuckoo table", count);
+        println!(
+            "    [Query Server] Step 3 — Look up {} entries from cuckoo table",
+            count
+        );
         let mut response = Vec::with_capacity(count * w);
         for j in 0..count {
-            let idx = u32::from_le_bytes(req_bytes[j*4..(j+1)*4].try_into().unwrap());
+            let idx = u32::from_le_bytes(req_bytes[j * 4..(j + 1) * 4].try_into().unwrap());
             if idx as usize >= n {
                 response.extend(std::iter::repeat_n(0u8, w));
             } else {
@@ -375,10 +486,18 @@ fn run_narrative(
                 response.extend_from_slice(&table_mmap[s..s + w]);
             }
         }
-        println!("      Response: {} bytes ({} entries × {}B)", response.len(), count, w);
+        println!(
+            "      Response: {} bytes ({} entries × {}B)",
+            response.len(),
+            count,
+            w
+        );
 
         // Step 4: Client recovers answer.
-        println!("    [Client] Step 4 — Recover answer: A = H[s={}] ⊕ Σ(R[i] for i≠r)", seg);
+        println!(
+            "    [Client] Step 4 — Recover answer: A = H[s={}] ⊕ Σ(R[i] for i≠r)",
+            seg
+        );
         println!("      H[{}] before = {}", seg, hex_short(&hints[seg]));
 
         let t_q = Instant::now();
@@ -388,7 +507,11 @@ fn run_narrative(
         let correct = answer.as_slice() == expected;
         println!("      Answer     = {}", hex_short(&answer));
         println!("      Expected   = {}", hex_short(expected));
-        println!("      Match: {} ({:.2?})", if correct { "YES ✓" } else { "NO ✗" }, query_time);
+        println!(
+            "      Match: {} ({:.2?})",
+            if correct { "YES ✓" } else { "NO ✗" },
+            query_time
+        );
 
         if is_index {
             println!("\n    [Client] Decoded answer (3 index slots):");
@@ -397,8 +520,10 @@ fn run_narrative(
                 let (tag, chunk_start, num_chunks) = decode_index_slot(slot);
                 let is_empty = tag == 0 && chunk_start == 0 && num_chunks == 0;
                 if !is_empty {
-                    println!("      slot[{}]: tag=0x{:016x} start_chunk={} num_chunks={}",
-                        s, tag, chunk_start, num_chunks);
+                    println!(
+                        "      slot[{}]: tag=0x{:016x} start_chunk={} num_chunks={}",
+                        s, tag, chunk_start, num_chunks
+                    );
                 }
             }
         } else {
@@ -407,22 +532,36 @@ fn run_narrative(
                 let slot = &answer[s * slot_size..(s + 1) * slot_size];
                 let (chunk_id, data) = decode_chunk_slot(slot);
                 if chunk_id != 0 || !data.iter().all(|&b| b == 0) {
-                    println!("      slot[{}]: chunk_id={} data={}", s, chunk_id, hex_short(data));
+                    println!(
+                        "      slot[{}]: chunk_id={} data={}",
+                        s,
+                        chunk_id,
+                        hex_short(data)
+                    );
                 }
             }
         }
 
         // Step 5: Relocation + hint update.
-        println!("\n    [Client] Step 5 — RelocateSegment(s={}) + update hints", seg);
+        println!(
+            "\n    [Client] Step 5 — RelocateSegment(s={}) + update hints",
+            seg
+        );
         println!("      Segment {} values moved to random empty cells", seg);
         println!("      Hint parities updated for destination segments");
 
         // Compare serialized state to show growth.
         let state_after = group.serialize_legacy_state().unwrap();
         let delta = state_after.len() as i64 - hint_before.len() as i64;
-        println!("      State delta: +{} bytes (relocated segment ID stored)", delta);
-        println!("      queries_used={}, queries_remaining={}\n",
-            group.queries_used(), group.queries_remaining());
+        println!(
+            "      State delta: +{} bytes (relocated segment ID stored)",
+            delta
+        );
+        println!(
+            "      queries_used={}, queries_remaining={}\n",
+            group.queries_used(),
+            group.queries_remaining()
+        );
 
         ds_trace.relocate_segment(seg).unwrap();
         assert!(correct, "Query {} FAILED!", q);
@@ -436,13 +575,21 @@ fn run_narrative(
     println!("  └─────────────────────────────────────────────────────────┘\n");
 
     let final_state = group.serialize_legacy_state().unwrap();
-    println!("    Final state: {} bytes ({:.1} KB)", final_state.len(), final_state.len() as f64 / 1024.0);
-    println!("    queries_used = {}, queries_remaining = {}",
-        group.queries_used(), group.queries_remaining());
+    println!(
+        "    Final state: {} bytes ({:.1} KB)",
+        final_state.len(),
+        final_state.len() as f64 / 1024.0
+    );
+    println!(
+        "    queries_used = {}, queries_remaining = {}",
+        group.queries_used(),
+        group.queries_remaining()
+    );
     println!("    {} relocated segments stored\n", group.queries_used());
 
     // Verify reload.
-    let restored = HarmonyGroup::deserialize_legacy_state(&final_state, master_key, group_id).unwrap();
+    let restored =
+        HarmonyGroup::deserialize_legacy_state(&final_state, master_key, group_id).unwrap();
     assert_eq!(restored.queries_used(), group.queries_used());
     println!("    Reload verified: state survives serialize/deserialize ✓");
     println!("\n  [{label}] PASS ✓");

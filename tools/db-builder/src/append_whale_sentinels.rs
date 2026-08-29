@@ -38,10 +38,17 @@ fn main() {
     let mmap = unsafe { Mmap::map(&input_file) }.expect("mmap");
     let entry_count = mmap.len() / ENTRY_SIZE;
     assert_eq!(mmap.len() % ENTRY_SIZE, 0);
-    println!("  {} entries ({:.2} GB)", entry_count, mmap.len() as f64 / 1e9);
+    println!(
+        "  {} entries ({:.2} GB)",
+        entry_count,
+        mmap.len() as f64 / 1e9
+    );
 
     // ── 2. Count non-dust UTXOs per script hash ─────────────────────────
-    println!("[2] Counting UTXOs per script hash (skipping dust <= {} sats)...", DUST_THRESHOLD);
+    println!(
+        "[2] Counting UTXOs per script hash (skipping dust <= {} sats)...",
+        DUST_THRESHOLD
+    );
     let scan_start = Instant::now();
 
     let mut counts: HashMap<[u8; SCRIPT_HASH_SIZE], usize> = HashMap::with_capacity(80_000_000);
@@ -64,14 +71,22 @@ fn main() {
 
         let current_pct = (i as u64 + 1) / one_percent as u64;
         if current_pct > last_pct && current_pct <= 100 {
-            eprint!("\r  Scanning: {}% | {} entries | {} unique hashes",
-                current_pct, i + 1, counts.len());
+            eprint!(
+                "\r  Scanning: {}% | {} entries | {} unique hashes",
+                current_pct,
+                i + 1,
+                counts.len()
+            );
             let _ = io::stderr().flush();
             last_pct = current_pct;
         }
     }
     eprintln!();
-    println!("  Scanned in {:.2?}, {} unique script hashes", scan_start.elapsed(), counts.len());
+    println!(
+        "  Scanned in {:.2?}, {} unique script hashes",
+        scan_start.elapsed(),
+        counts.len()
+    );
 
     // ── 3. Find whales ──────────────────────────────────────────────────
     let mut whale_entries: Vec<([u8; SCRIPT_HASH_SIZE], usize)> = counts
@@ -81,7 +96,11 @@ fn main() {
         .collect();
     whale_entries.sort_by(|a, b| b.1.cmp(&a.1));
 
-    println!("  Found {} whale addresses (>{} UTXOs)", whale_entries.len(), MAX_UTXOS_PER_SPK);
+    println!(
+        "  Found {} whale addresses (>{} UTXOs)",
+        whale_entries.len(),
+        MAX_UTXOS_PER_SPK
+    );
 
     if whale_entries.is_empty() {
         println!("  No whales found. Nothing to do.");
@@ -103,7 +122,8 @@ fn main() {
         existing_hashes.insert(sh);
     }
 
-    let new_whales: Vec<_> = whale_entries.iter()
+    let new_whales: Vec<_> = whale_entries
+        .iter()
         .filter(|(hash, _)| {
             if existing_hashes.contains(hash) {
                 already_present += 1;
@@ -121,7 +141,11 @@ fn main() {
 
     // ── 5. Append sentinel entries ──────────────────────────────────────
     if !new_whales.is_empty() {
-        println!("[4] Appending {} sentinel entries to {}...", new_whales.len(), INDEX_FILE);
+        println!(
+            "[4] Appending {} sentinel entries to {}...",
+            new_whales.len(),
+            INDEX_FILE
+        );
         let index_file = OpenOptions::new()
             .append(true)
             .open(INDEX_FILE)
@@ -129,15 +153,18 @@ fn main() {
         let mut writer = BufWriter::new(index_file);
 
         for (script_hash, _count) in &new_whales {
-            writer.write_all(script_hash).unwrap();          // 20B script_hash
-            writer.write_all(&0u32.to_le_bytes()).unwrap();   // 4B start_chunk_id = 0
-            writer.write_all(&[0u8]).unwrap();                // 1B num_chunks = 0
+            writer.write_all(script_hash).unwrap(); // 20B script_hash
+            writer.write_all(&0u32.to_le_bytes()).unwrap(); // 4B start_chunk_id = 0
+            writer.write_all(&[0u8]).unwrap(); // 1B num_chunks = 0
         }
         writer.flush().unwrap();
 
         let new_total = existing_entries + new_whales.len();
-        println!("  Done. Index now has {} entries ({} bytes)",
-            new_total, new_total * INDEX_RECORD_SIZE);
+        println!(
+            "  Done. Index now has {} entries ({} bytes)",
+            new_total,
+            new_total * INDEX_RECORD_SIZE
+        );
     }
 
     // ── 6. Write whale addresses file ───────────────────────────────────
@@ -145,7 +172,12 @@ fn main() {
     {
         let whale_file = File::create(WHALES_FILE).expect("create whale addresses file");
         let mut w = BufWriter::new(whale_file);
-        writeln!(w, "# Excluded whale addresses (>{} UTXOs per scriptPubKey)", MAX_UTXOS_PER_SPK).unwrap();
+        writeln!(
+            w,
+            "# Excluded whale addresses (>{} UTXOs per scriptPubKey)",
+            MAX_UTXOS_PER_SPK
+        )
+        .unwrap();
         writeln!(w, "# Format: script_hash_hex  utxo_count").unwrap();
         for (script_hash, count) in &whale_entries {
             let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();

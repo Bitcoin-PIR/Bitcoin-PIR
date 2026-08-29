@@ -196,10 +196,7 @@ fn main() {
     let master_seed = read_u64(&cuckoo_mmap, 24);
 
     if magic != MAGIC {
-        eprintln!(
-            "Bad magic: expected 0x{:016X}, got 0x{:016X}",
-            MAGIC, magic
-        );
+        eprintln!("Bad magic: expected 0x{:016X}, got 0x{:016X}", MAGIC, magic);
         std::process::exit(1);
     }
 
@@ -285,10 +282,7 @@ fn main() {
 
     // ── Verify random lookups ────────────────────────────────────────────
     let verify_count = NUM_VERIFY.min(n);
-    println!(
-        "[4] Verifying {} random entry lookups...",
-        verify_count
-    );
+    println!("[4] Verifying {} random entry lookups...", verify_count);
     let verify_start = Instant::now();
 
     // Deterministic pseudo-random sampling using splitmix64

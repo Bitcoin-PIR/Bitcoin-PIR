@@ -8,15 +8,13 @@
 
 use build::common::*;
 use harmonypir::params::Params;
-use harmonypir::prp::hoang::HoangPrp;
 #[cfg(feature = "fastprp")]
 use harmonypir::prp::fast::FastPrpWrapper;
+use harmonypir::prp::hoang::HoangPrp;
 use harmonypir::prp::Prp;
-use harmonypir::remote::{
-    compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PRP_HMR12,
-};
 #[cfg(feature = "fastprp")]
 use harmonypir::remote::PRP_FASTPRP;
+use harmonypir::remote::{compute_rounds, derive_group_key, find_best_t, pad_n_for_t, PRP_HMR12};
 
 use memmap2::Mmap;
 use rayon::prelude::*;
@@ -45,17 +43,11 @@ fn generate_hints_single_group(
 
     // Build PRP.
     let prp: Box<dyn Prp> = match backend {
-        PRP_HMR12 => {
-            Box::new(HoangPrp::new(domain, rounds, &derived_key))
-        }
+        PRP_HMR12 => Box::new(HoangPrp::new(domain, rounds, &derived_key)),
         #[cfg(feature = "fastprp")]
-        PRP_FASTPRP => {
-            Box::new(FastPrpWrapper::new(&derived_key, domain))
-        }
+        PRP_FASTPRP => Box::new(FastPrpWrapper::new(&derived_key, domain)),
         // ALF is not part of the remote-client wire contract.
-        _ => {
-            Box::new(HoangPrp::new(domain, rounds, &derived_key))
-        }
+        _ => Box::new(HoangPrp::new(domain, rounds, &derived_key)),
     };
 
     // Compute cell assignments — single-threaded.
@@ -77,10 +69,10 @@ fn generate_hints_single_group(
             let mut i = 0;
             while i + 4 <= padded_n {
                 let ys = prp.forward_4([i, i + 1, i + 2, i + 3]);
-                result[i]   = ys[0];
-                result[i+1] = ys[1];
-                result[i+2] = ys[2];
-                result[i+3] = ys[3];
+                result[i] = ys[0];
+                result[i + 1] = ys[1];
+                result[i + 2] = ys[2];
+                result[i + 3] = ys[3];
                 i += 4;
             }
             while i < padded_n {
@@ -104,9 +96,14 @@ fn generate_hints_single_group(
         if k < n {
             let start = table_offset + k * w;
             let entry = &table_mmap[start..start + w];
-            if !entry.iter().all(|&b| b == 0) { non_empty += 1; }
+            if !entry.iter().all(|&b| b == 0) {
+                non_empty += 1;
+            }
             let hint_start = seg * w;
-            for (d, s) in hints[hint_start..hint_start + w].iter_mut().zip(entry.iter()) {
+            for (d, s) in hints[hint_start..hint_start + w]
+                .iter_mut()
+                .zip(entry.iter())
+            {
                 *d ^= s;
             }
         }
@@ -140,12 +137,8 @@ fn generate_hints_inner_rayon(
     // Build PRP — same as before.
     // ALF is not part of the remote-client wire contract.
     let prp: Box<dyn BatchPrp> = match backend {
-        PRP_HMR12 => {
-            Box::new(HoangPrp::new(domain, rounds, &derived_key))
-        }
-        _ => {
-            Box::new(HoangPrp::new(domain, rounds, &derived_key))
-        }
+        PRP_HMR12 => Box::new(HoangPrp::new(domain, rounds, &derived_key)),
+        _ => Box::new(HoangPrp::new(domain, rounds, &derived_key)),
     };
 
     // batch_forward() uses rayon internally (par_chunks_mut for HMR12, par_iter for ALF).
@@ -161,9 +154,14 @@ fn generate_hints_inner_rayon(
         if k < n {
             let start = table_offset + k * w;
             let entry = &table_mmap[start..start + w];
-            if !entry.iter().all(|&b| b == 0) { non_empty += 1; }
+            if !entry.iter().all(|&b| b == 0) {
+                non_empty += 1;
+            }
             let hint_start = seg * w;
-            for (d, s) in hints[hint_start..hint_start + w].iter_mut().zip(entry.iter()) {
+            for (d, s) in hints[hint_start..hint_start + w]
+                .iter_mut()
+                .zip(entry.iter())
+            {
                 *d ^= s;
             }
         }
@@ -188,8 +186,8 @@ fn main() {
 
     let n = index_bins;
     let t_raw = find_best_t(n as u32);
-    let (padded_n, t_val) = pad_n_for_t(n as u32, t_raw)
-        .expect("validated non-zero HarmonyPIR benchmark dimensions");
+    let (padded_n, t_val) =
+        pad_n_for_t(n as u32, t_raw).expect("validated non-zero HarmonyPIR benchmark dimensions");
     let pn = padded_n as usize;
     let t = t_val as usize;
     let domain = 2 * pn;
@@ -197,8 +195,11 @@ fn main() {
     let params = Params::new(pn, index_w, t).unwrap();
     let m = params.m;
 
-    println!("  Database:   {} ({:.2} GB)", CUCKOO_FILE,
-        idx_mmap.len() as f64 / (1024.0*1024.0*1024.0));
+    println!(
+        "  Database:   {} ({:.2} GB)",
+        CUCKOO_FILE,
+        idx_mmap.len() as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
     println!("  Buckets:    K={}", K);
     println!("  N={} bins, padded_N={}, T={}, M={} segments", n, pn, t, m);
     println!("  w={}B per bin, domain={}", index_w, domain);
@@ -207,7 +208,10 @@ fn main() {
     let backends: Vec<(u8, &str)> = vec![
         (PRP_HMR12, "HMR12 (4-way AES, single-threaded per group)"),
         #[cfg(feature = "fastprp")]
-        (PRP_FASTPRP, "FastPRP (batch_permute, single-threaded per group)"),
+        (
+            PRP_FASTPRP,
+            "FastPRP (batch_permute, single-threaded per group)",
+        ),
     ];
 
     for &(backend, backend_name) in &backends {
@@ -216,9 +220,18 @@ fn main() {
         // ── Single group (group 0) for baseline ──
         let t0 = Instant::now();
         let (_hints, _ne) = generate_hints_single_group(
-            backend, &key, 0,
-            &idx_mmap, HEADER_SIZE, n, index_w,
-            pn, t, m, domain, rounds,
+            backend,
+            &key,
+            0,
+            &idx_mmap,
+            HEADER_SIZE,
+            n,
+            index_w,
+            pn,
+            t,
+            m,
+            domain,
+            rounds,
         );
         let single = t0.elapsed();
         println!("    1 group (single-threaded):  {:.2?}", single);
@@ -227,9 +240,18 @@ fn main() {
         let t0 = Instant::now();
         for b in 0..K as u32 {
             let _ = generate_hints_single_group(
-                backend, &key, b,
-                &idx_mmap, HEADER_SIZE, n, index_w,
-                pn, t, m, domain, rounds,
+                backend,
+                &key,
+                b,
+                &idx_mmap,
+                HEADER_SIZE,
+                n,
+                index_w,
+                pn,
+                t,
+                m,
+                domain,
+                rounds,
             );
         }
         let sequential = t0.elapsed();
@@ -241,17 +263,28 @@ fn main() {
             .into_par_iter()
             .map(|b| {
                 generate_hints_single_group(
-                    backend, &key, b,
-                    &idx_mmap, HEADER_SIZE, n, index_w,
-                    pn, t, m, domain, rounds,
+                    backend,
+                    &key,
+                    b,
+                    &idx_mmap,
+                    HEADER_SIZE,
+                    n,
+                    index_w,
+                    pn,
+                    t,
+                    m,
+                    domain,
+                    rounds,
                 )
             })
             .collect();
         let parallel = t0.elapsed();
 
         let speedup = sequential.as_secs_f64() / parallel.as_secs_f64();
-        println!("    {} groups (outer rayon):   {:.2?}  ({:.1}× speedup, {} threads)\n",
-            K, parallel, speedup, num_threads);
+        println!(
+            "    {} groups (outer rayon):   {:.2?}  ({:.1}× speedup, {} threads)\n",
+            K, parallel, speedup, num_threads
+        );
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -260,9 +293,8 @@ fn main() {
     println!("  ════════════════════════════════════════════");
     println!("  Inner-only rayon (sequential over groups, rayon inside batch_forward)\n");
 
-    let inner_backends: Vec<(u8, &str)> = vec![
-        (PRP_HMR12, "HMR12 (inner rayon par_chunks_mut(4))"),
-    ];
+    let inner_backends: Vec<(u8, &str)> =
+        vec![(PRP_HMR12, "HMR12 (inner rayon par_chunks_mut(4))")];
 
     for &(backend, backend_name) in &inner_backends {
         println!("  ─── {} ───", backend_name);
@@ -270,9 +302,18 @@ fn main() {
         // ── 1 group with inner rayon ──
         let t0 = Instant::now();
         let _ = generate_hints_inner_rayon(
-            backend, &key, 0,
-            &idx_mmap, HEADER_SIZE, n, index_w,
-            pn, t, m, domain, rounds,
+            backend,
+            &key,
+            0,
+            &idx_mmap,
+            HEADER_SIZE,
+            n,
+            index_w,
+            pn,
+            t,
+            m,
+            domain,
+            rounds,
         );
         let single_inner = t0.elapsed();
         println!("    1 group (inner rayon):      {:.2?}", single_inner);
@@ -281,13 +322,25 @@ fn main() {
         let t0 = Instant::now();
         for b in 0..K as u32 {
             let _ = generate_hints_inner_rayon(
-                backend, &key, b,
-                &idx_mmap, HEADER_SIZE, n, index_w,
-                pn, t, m, domain, rounds,
+                backend,
+                &key,
+                b,
+                &idx_mmap,
+                HEADER_SIZE,
+                n,
+                index_w,
+                pn,
+                t,
+                m,
+                domain,
+                rounds,
             );
         }
         let inner_sequential = t0.elapsed();
-        println!("    {} groups (inner-only):     {:.2?}\n", K, inner_sequential);
+        println!(
+            "    {} groups (inner-only):     {:.2?}\n",
+            K, inner_sequential
+        );
     }
 
     println!("  Done.");

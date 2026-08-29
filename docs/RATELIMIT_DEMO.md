@@ -116,4 +116,4 @@ and signed, provider-bound credential protocol are documented separately in
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |
 | Demo page | [`web/ratelimit-demo.html`](../web/ratelimit-demo.html), [`web/src/ratelimit-demo.ts`](../web/src/ratelimit-demo.ts) |
-| Legacy/demo server gate | [`apps/server/src/bin/unified_server.rs`](../apps/server/src/bin/unified_server.rs) (`--allow-experimental-arc --require-arc` / `--require-cashu`) |
+| Legacy/demo server gate | [`apps/server/src/bin/unified_server/`](../apps/server/src/bin/unified_server/) (`--allow-experimental-arc --require-arc` / `--require-cashu`) |

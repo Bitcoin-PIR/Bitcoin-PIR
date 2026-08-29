@@ -35,7 +35,10 @@ fn main() {
 
     let n = mmap.len() / INDEX_RECORD_SIZE;
     println!("  Entries: {}", n);
-    println!("  File size: {:.2} MB", mmap.len() as f64 / (1024.0 * 1024.0));
+    println!(
+        "  File size: {:.2} MB",
+        mmap.len() as f64 / (1024.0 * 1024.0)
+    );
     println!();
 
     // ── Scan ─────────────────────────────────────────────────────────────
@@ -97,8 +100,16 @@ fn main() {
         total_chunks as f64 / n as f64
     );
     println!("  Max chunks:            {}", max_chunks);
-    println!("  Single-chunk addrs:    {} ({:.2}%)", single_chunk, single_chunk as f64 / n as f64 * 100.0);
-    println!("  Multi-chunk addrs:     {} ({:.2}%)", multi_chunk, multi_chunk as f64 / n as f64 * 100.0);
+    println!(
+        "  Single-chunk addrs:    {} ({:.2}%)",
+        single_chunk,
+        single_chunk as f64 / n as f64 * 100.0
+    );
+    println!(
+        "  Multi-chunk addrs:     {} ({:.2}%)",
+        multi_chunk,
+        multi_chunk as f64 / n as f64 * 100.0
+    );
     println!();
 
     // ── Chunk count distribution ─────────────────────────────────────────
@@ -194,9 +205,7 @@ fn main() {
     for (rank, &(nc, idx)) in top.iter().enumerate() {
         let base = idx * INDEX_RECORD_SIZE;
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
-        let start_chunk_id = u32::from_le_bytes(
-            mmap[base + 20..base + 24].try_into().unwrap(),
-        );
+        let start_chunk_id = u32::from_le_bytes(mmap[base + 20..base + 24].try_into().unwrap());
         let hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
         let data_bytes = nc as u64 * CHUNK_SIZE as u64;
 

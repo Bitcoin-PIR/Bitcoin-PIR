@@ -5,10 +5,7 @@ use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
 use pir_issuer_service::{BatV2IssuerRedemptionServiceV2, IssuerServiceErrorV1};
-use pir_issuer_store::{
-    BatV2ClearingEpochReservationV2, IssuerStore,
-    StoreOptions,
-};
+use pir_issuer_store::{BatV2ClearingEpochReservationV2, IssuerStore, StoreOptions};
 use pir_payment_crypto::{
     blind_cashu_message_v1, verify_and_unblind_cashu_promise_v1, K256CashuMintKeyringV1,
 };

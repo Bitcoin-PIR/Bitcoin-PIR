@@ -24,7 +24,7 @@
 //! under `<D>/`. Use this for delta DB builds.
 
 use memmap2::Mmap;
-use onionpir::{self, Server as PirServer, Client as PirClient};
+use onionpir::{self, Client as PirClient, Server as PirServer};
 use pir_core::cuckoo::{HeaderAnchor, ANCHOR_MAGIC_DELTA_XOR, ANCHOR_MAGIC_SNAPSHOT_XOR};
 use pir_core::seeds::{AnchorSeeds, CHAIN_ANCHOR_BYTES, DELTA_ANCHOR_BYTES};
 use rayon::prelude::*;
@@ -32,8 +32,8 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Instant;
 
 // ─── Default paths (used when --data-dir is not specified) ──────────────────
@@ -85,10 +85,10 @@ fn write_onion_index_all_anchor_trailer<W: Write>(w: &mut W, anchor: Option<&Hea
 /// Paths resolved from optional `--data-dir <D>` argument.
 struct GenPaths {
     index_file: String,
-    output_dir: PathBuf,     // per-group dir (used as scratch)
+    output_dir: PathBuf, // per-group dir (used as scratch)
     meta_file: String,
     bin_hashes_file: String,
-    index_all_file: String,  // NEW: consolidated single-file output
+    index_all_file: String, // NEW: consolidated single-file output
 }
 
 struct GenArgs {
@@ -152,7 +152,11 @@ fn resolve_paths() -> GenArgs {
             index_all_file: DEFAULT_INDEX_ALL_FILE.to_string(),
         },
     };
-    GenArgs { paths, consolidate_only, anchor_file }
+    GenArgs {
+        paths,
+        consolidate_only,
+        anchor_file,
+    }
 }
 
 // ─── Chain-derived seeds (with legacy fallback) ─────────────────────────────
@@ -206,7 +210,11 @@ fn init_index_seeds(anchor: Option<&PathBuf>) {
                         path.display(),
                         a.block_height
                     );
-                    (s.index_master(), s.index_tag(), Some(HeaderAnchor::Snapshot(a)))
+                    (
+                        s.index_master(),
+                        s.index_tag(),
+                        Some(HeaderAnchor::Snapshot(a)),
+                    )
                 }
                 DELTA_ANCHOR_BYTES => {
                     let a = pir_core::seeds::DeltaAnchor::from_bytes(&bytes).unwrap_or_else(|e| {
@@ -220,7 +228,11 @@ fn init_index_seeds(anchor: Option<&PathBuf>) {
                         a.from.block_height,
                         a.to.block_height
                     );
-                    (s.index_master(), s.index_tag(), Some(HeaderAnchor::Delta(a)))
+                    (
+                        s.index_master(),
+                        s.index_tag(),
+                        Some(HeaderAnchor::Delta(a)),
+                    )
                 }
                 n => {
                     eprintln!(
@@ -240,8 +252,12 @@ fn init_index_seeds(anchor: Option<&PathBuf>) {
             (LEGACY_INDEX_MASTER_SEED, LEGACY_INDEX_TAG_SEED, None)
         }
     };
-    INDEX_MASTER_CELL.set(master).expect("init_index_seeds called twice");
-    INDEX_TAG_CELL.set(tag).expect("init_index_seeds called twice");
+    INDEX_MASTER_CELL
+        .set(master)
+        .expect("init_index_seeds called twice");
+    INDEX_TAG_CELL
+        .set(tag)
+        .expect("init_index_seeds called twice");
     INDEX_ANCHOR_CELL
         .set(header_anchor)
         .expect("init_index_seeds called twice");
@@ -338,9 +354,14 @@ fn derive_groups(sh: &[u8]) -> [usize; NUM_HASHES] {
         nonce += 1;
         let mut dup = false;
         for &existing in groups.iter().take(count) {
-            if existing == group { dup = true; break; }
+            if existing == group {
+                dup = true;
+                break;
+            }
         }
-        if dup { continue; }
+        if dup {
+            continue;
+        }
         groups[count] = group;
         count += 1;
     }
@@ -453,7 +474,11 @@ fn build_index_cuckoo(
             let ev_sh = get_sh(evicted);
             let ev_bin0 = cuckoo_hash(ev_sh, key0, num_bins);
             let ev_bin1 = cuckoo_hash(ev_sh, key1, num_bins);
-            let alt_bin = if ev_bin0 == current_bin { ev_bin1 } else { ev_bin0 };
+            let alt_bin = if ev_bin0 == current_bin {
+                ev_bin1
+            } else {
+                ev_bin0
+            };
 
             let alt_occ = bin_occupancy[alt_bin] as usize;
             if alt_occ < slots_per_bin {
@@ -524,12 +549,11 @@ fn serialize_cuckoo_bin(
 /// `index_all_file` and remove the scratch directory. Used by the
 /// `--consolidate-only` flag to retrofit existing preprocessed snapshots
 /// into the new single-file layout without re-running NTT preprocessing.
-fn consolidate_only_main(
-    output_dir: &Path,
-    index_all_file: &str,
-    total_start: Instant,
-) {
-    println!("[consolidate-only] Scanning {} for group_*.bin files...", output_dir.display());
+fn consolidate_only_main(output_dir: &Path, index_all_file: &str, total_start: Instant) {
+    println!(
+        "[consolidate-only] Scanning {} for group_*.bin files...",
+        output_dir.display()
+    );
 
     // Discover K by counting group_N.bin files. We require them to be
     // contiguously numbered 0..K-1, all the same size.
@@ -560,7 +584,8 @@ fn consolidate_only_main(
         format_bytes(per_group_bytes as u64),
     );
 
-    let total_bytes = ONION_INDEX_ALL_HEADER_BYTES + k_found * per_group_bytes
+    let total_bytes = ONION_INDEX_ALL_HEADER_BYTES
+        + k_found * per_group_bytes
         + onion_index_all_anchor_len(index_anchor());
     println!(
         "[consolidate-only] Total output: {} bytes ({})",
@@ -572,9 +597,11 @@ fn consolidate_only_main(
     let mut w = BufWriter::with_capacity(16 * 1024 * 1024, out);
 
     // Master header (32 bytes); magic gains the v2 marker when anchored.
-    w.write_all(&onion_index_all_magic(index_anchor()).to_le_bytes()).unwrap();
+    w.write_all(&onion_index_all_magic(index_anchor()).to_le_bytes())
+        .unwrap();
     w.write_all(&(k_found as u64).to_le_bytes()).unwrap();
-    w.write_all(&(per_group_bytes as u64).to_le_bytes()).unwrap();
+    w.write_all(&(per_group_bytes as u64).to_le_bytes())
+        .unwrap();
     w.write_all(&0u64.to_le_bytes()).unwrap();
 
     let mut written: u64 = 0;
@@ -584,7 +611,9 @@ fn consolidate_only_main(
             meta.len() as usize,
             per_group_bytes,
             "group_{}.bin size mismatch: expected {}, got {}",
-            b, per_group_bytes, meta.len(),
+            b,
+            per_group_bytes,
+            meta.len(),
         );
         let bytes = fs::read(path).expect("read group file");
         w.write_all(&bytes).unwrap();
@@ -605,13 +634,25 @@ fn consolidate_only_main(
         "onion_index_all.bin size mismatch: expected {}, got {}",
         total_bytes, actual_size
     );
-    println!("[consolidate-only] Wrote {} bytes; removing scratch dir {}", written, output_dir.display());
+    println!(
+        "[consolidate-only] Wrote {} bytes; removing scratch dir {}",
+        written,
+        output_dir.display()
+    );
     fs::remove_dir_all(output_dir).expect("remove per-group dir");
 
     println!("\n=== Summary (consolidate-only) ===");
     println!("Consolidated K:    {}", k_found);
-    println!("Per-group bytes:   {} ({})", per_group_bytes, format_bytes(per_group_bytes as u64));
-    println!("Total output:      {} ({})", total_bytes, format_bytes(total_bytes as u64));
+    println!(
+        "Per-group bytes:   {} ({})",
+        per_group_bytes,
+        format_bytes(per_group_bytes as u64)
+    );
+    println!(
+        "Total output:      {} ({})",
+        total_bytes,
+        format_bytes(total_bytes as u64)
+    );
     println!("Total time:        {:.2?}", total_start.elapsed());
 }
 
@@ -625,13 +666,17 @@ fn main() {
     assert!(
         slots_per_bin * INDEX_SLOT_SIZE <= onionpir_entry_size,
         "slots_per_bin * slot_size must fit within OnionPIR entry size ({}*{}={} > {})",
-        slots_per_bin, INDEX_SLOT_SIZE,
-        slots_per_bin * INDEX_SLOT_SIZE, onionpir_entry_size,
+        slots_per_bin,
+        INDEX_SLOT_SIZE,
+        slots_per_bin * INDEX_SLOT_SIZE,
+        onionpir_entry_size,
     );
 
     println!("=== gen_3_onion: Build OnionPIR Index Database ===\n");
-    println!("OnionPIR shape (from params_info): entry_size={} B, slots_per_bin={}, slot_size={} B",
-        onionpir_entry_size, slots_per_bin, INDEX_SLOT_SIZE);
+    println!(
+        "OnionPIR shape (from params_info): entry_size={} B, slots_per_bin={}, slot_size={} B",
+        onionpir_entry_size, slots_per_bin, INDEX_SLOT_SIZE
+    );
     let total_start = Instant::now();
 
     let gen_args = resolve_paths();
@@ -676,7 +721,11 @@ fn main() {
     let file = File::open(index_file_path).expect("open index file");
     let mmap = unsafe { Mmap::map(&file) }.expect("mmap index");
     let n = mmap.len() / ONION_INDEX_RECORD_SIZE;
-    assert_eq!(mmap.len() % ONION_INDEX_RECORD_SIZE, 0, "index file not aligned");
+    assert_eq!(
+        mmap.len() % ONION_INDEX_RECORD_SIZE,
+        0,
+        "index file not aligned"
+    );
     println!("  {} entries ({})", n, format_bytes(mmap.len() as u64));
 
     // Count non-whale entries
@@ -684,14 +733,18 @@ fn main() {
     for i in 0..n {
         let base = i * ONION_INDEX_RECORD_SIZE;
         let num_entries_byte = mmap[base + 26]; // last byte = num_entries or FLAG_WHALE
-        // Whale entries have num_entries = FLAG_WHALE (0x40) from gen_1_onion
-        // Actually, gen_1_onion writes: entry_id=0, offset=0, num_entries=FLAG_WHALE
-        // So the last byte (num_entries field) is 0x40 for whales
+                                                // Whale entries have num_entries = FLAG_WHALE (0x40) from gen_1_onion
+                                                // Actually, gen_1_onion writes: entry_id=0, offset=0, num_entries=FLAG_WHALE
+                                                // So the last byte (num_entries field) is 0x40 for whales
         if num_entries_byte != FLAG_WHALE {
             non_whale += 1;
         }
     }
-    println!("  Non-whale entries: {} (whale: {})", non_whale, n - non_whale);
+    println!(
+        "  Non-whale entries: {} (whale: {})",
+        non_whale,
+        n - non_whale
+    );
 
     // ── 2. Assign entries to PBC groups ─────────────────────────────────
     println!("\n[2] Assigning entries to {} PBC groups...", K);
@@ -718,14 +771,19 @@ fn main() {
     let min_group = *group_sizes.iter().min().unwrap();
     let avg_group = group_sizes.iter().sum::<usize>() as f64 / K as f64;
     println!("  Done in {:.2?}", t_assign.elapsed());
-    println!("  Group sizes: min={}, max={}, avg={:.0}", min_group, max_group, avg_group);
+    println!(
+        "  Group sizes: min={}, max={}, avg={:.0}",
+        min_group, max_group, avg_group
+    );
 
     // ── 3. Build cuckoo tables in parallel ──────────────────────────────
     let bins_per_table =
         ((max_group as f64) / (slots_per_bin as f64 * CUCKOO_LOAD_FACTOR)).ceil() as usize;
 
-    println!("\n[3] Building cuckoo tables ({}-hash, bs={}, bins_per_table={})...",
-        CUCKOO_NUM_HASHES, slots_per_bin, bins_per_table);
+    println!(
+        "\n[3] Building cuckoo tables ({}-hash, bs={}, bins_per_table={})...",
+        CUCKOO_NUM_HASHES, slots_per_bin, bins_per_table
+    );
     let t_cuckoo = Instant::now();
 
     let mmap_slice: &[u8] = &mmap;
@@ -736,7 +794,11 @@ fn main() {
         .enumerate()
         .map(|(group_id, entries)| {
             let (table, success) = build_index_cuckoo(
-                group_id, &entries, mmap_slice, bins_per_table, slots_per_bin,
+                group_id,
+                &entries,
+                mmap_slice,
+                bins_per_table,
+                slots_per_bin,
             );
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             if done.is_multiple_of(10) || done == K {
@@ -770,10 +832,16 @@ fn main() {
     let fst_dim = p.fst_dim_sz as usize;
     let other_dim = p.other_dim_sz as usize;
 
-    println!("  OnionPIR params: padded={}, entry_size={}, fst_dim={}, other_dim={}",
-        padded_num, entry_size, fst_dim, other_dim);
+    println!(
+        "  OnionPIR params: padded={}, entry_size={}, fst_dim={}, other_dim={}",
+        padded_num, entry_size, fst_dim, other_dim
+    );
     println!("  Physical size per group: {:.2} MB", p.physical_size_mb);
-    println!("  Total for {} groups: {:.2} GB", K, p.physical_size_mb * K as f64 / 1024.0);
+    println!(
+        "  Total for {} groups: {:.2} GB",
+        K,
+        p.physical_size_mb * K as f64 / 1024.0
+    );
 
     // OnionPIRv2 port (commit 3b + 5b): per-group build uses
     // `push_plaintexts` + `save_db`. The pre-port `push_chunk` +
@@ -832,12 +900,7 @@ fn main() {
                 batch_coeffs.extend_from_slice(&coeffs);
             }
             let plaintext_offset = (chunk_idx * fst_dim) as u64;
-            let ok = server.push_plaintexts(
-                &batch_coeffs,
-                fst_dim as u64,
-                plaintext_offset,
-                &[],
-            );
+            let ok = server.push_plaintexts(&batch_coeffs, fst_dim as u64, plaintext_offset, &[]);
             assert!(
                 ok,
                 "push_plaintexts failed (group={} chunk_idx={} offset={})",
@@ -853,7 +916,12 @@ fn main() {
         );
 
         if *group_id % 10 == 0 || *group_id + 1 == K {
-            eprintln!("  Group {}/{} preprocessed in {:.2?}", group_id + 1, K, t_group.elapsed());
+            eprintln!(
+                "  Group {}/{} preprocessed in {:.2?}",
+                group_id + 1,
+                K,
+                t_group.elapsed()
+            );
         }
     }
     println!("  All groups built in {:.2?}", t_pir.elapsed());
@@ -872,12 +940,14 @@ fn main() {
         let magic = onion_index_meta_magic_with_anchor(ONION_INDEX_META_MAGIC, anchor);
         w.write_all(&magic.to_le_bytes()).unwrap();
         w.write_all(&(K as u32).to_le_bytes()).unwrap();
-        w.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes()).unwrap();
+        w.write_all(&(CUCKOO_NUM_HASHES as u32).to_le_bytes())
+            .unwrap();
         w.write_all(&(slots_per_bin as u32).to_le_bytes()).unwrap();
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&master_seed().to_le_bytes()).unwrap();
         w.write_all(&tag_seed().to_le_bytes()).unwrap();
-        w.write_all(&(INDEX_SLOT_SIZE as u32).to_le_bytes()).unwrap();
+        w.write_all(&(INDEX_SLOT_SIZE as u32).to_le_bytes())
+            .unwrap();
         if let Some(a) = anchor {
             match a {
                 HeaderAnchor::Snapshot(c) => w.write_all(&c.to_bytes()).unwrap(),
@@ -896,9 +966,8 @@ fn main() {
         let mut bin_hashes = Vec::with_capacity(total_bins * 32);
         for (group_id, table, _) in &cuckoo_results {
             for bin in 0..bins_per_table {
-                let entry_bytes = serialize_cuckoo_bin(
-                    table, bin, mmap_slice, slots_per_bin, entry_size,
-                );
+                let entry_bytes =
+                    serialize_cuckoo_bin(table, bin, mmap_slice, slots_per_bin, entry_size);
                 let hash = pir_core::merkle::sha256(&entry_bytes);
                 bin_hashes.extend_from_slice(&hash);
             }
@@ -915,8 +984,13 @@ fn main() {
         w.write_all(&(bins_per_table as u32).to_le_bytes()).unwrap();
         w.write_all(&bin_hashes).unwrap();
         w.flush().unwrap();
-        println!("  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
-            total_bins, 8 + total_bins * 32, bin_hashes_file, t_hash.elapsed());
+        println!(
+            "  Wrote {} bin hashes ({} bytes) to {} in {:.2?}",
+            total_bins,
+            8 + total_bins * 32,
+            bin_hashes_file,
+            t_hash.elapsed()
+        );
     }
 
     // ── 7. Verify with test query ───────────────────────────────────────
@@ -926,7 +1000,9 @@ fn main() {
     let mut test_idx = None;
     for i in 0..n {
         let base = i * ONION_INDEX_RECORD_SIZE;
-        if mmap[base + 26] == FLAG_WHALE { continue; }
+        if mmap[base + 26] == FLAG_WHALE {
+            continue;
+        }
         let sh = &mmap[base..base + SCRIPT_HASH_SIZE];
         let assigned = derive_groups(sh);
         if assigned.contains(&0) {
@@ -955,16 +1031,24 @@ fn main() {
                 break;
             }
         }
-        if found_bin.is_some() { break; }
+        if found_bin.is_some() {
+            break;
+        }
     }
     let test_bin = found_bin.expect("test entry not found in cuckoo table");
 
-    println!("  Test entry: index={}, bin={}, tag=0x{:016x}", test_idx, test_bin, test_tag);
+    println!(
+        "  Test entry: index={}, bin={}, tag=0x{:016x}",
+        test_idx, test_bin, test_tag
+    );
 
     // Load the preprocessed database and query
     let preproc_path = output_dir.join("group_0.bin");
     let mut server = PirServer::new(bins_per_table as u64);
-    assert!(server.load_db(preproc_path.to_str().unwrap()), "failed to load group_0.bin");
+    assert!(
+        server.load_db(preproc_path.to_str().unwrap()),
+        "failed to load group_0.bin"
+    );
 
     let client = PirClient::new(bins_per_table as u64);
     let client_id = client.id();
@@ -989,32 +1073,46 @@ fn main() {
     let mut tag_found = false;
     for slot in 0..slots_per_bin {
         let offset = slot * INDEX_SLOT_SIZE;
-        if offset + 8 > decrypted.len() { break; }
+        if offset + 8 > decrypted.len() {
+            break;
+        }
         let slot_tag = u64::from_le_bytes(decrypted[offset..offset + 8].try_into().unwrap());
         if slot_tag == test_tag {
-            let entry_id = u32::from_le_bytes(decrypted[offset + 8..offset + 12].try_into().unwrap());
-            let byte_offset = u16::from_le_bytes(decrypted[offset + 12..offset + 14].try_into().unwrap());
+            let entry_id =
+                u32::from_le_bytes(decrypted[offset + 8..offset + 12].try_into().unwrap());
+            let byte_offset =
+                u16::from_le_bytes(decrypted[offset + 12..offset + 14].try_into().unwrap());
             let num_entries = decrypted[offset + 14];
-            println!("  Tag match at slot {}: entry_id={}, offset={}, num_entries={}",
-                slot, entry_id, byte_offset, num_entries);
+            println!(
+                "  Tag match at slot {}: entry_id={}, offset={}, num_entries={}",
+                slot, entry_id, byte_offset, num_entries
+            );
 
             // Verify against original index entry
-            let orig_entry_id = u32::from_le_bytes(mmap[test_base + 20..test_base + 24].try_into().unwrap());
-            let orig_offset = u16::from_le_bytes(mmap[test_base + 24..test_base + 26].try_into().unwrap());
+            let orig_entry_id =
+                u32::from_le_bytes(mmap[test_base + 20..test_base + 24].try_into().unwrap());
+            let orig_offset =
+                u16::from_le_bytes(mmap[test_base + 24..test_base + 26].try_into().unwrap());
             let orig_num = mmap[test_base + 26];
 
             if entry_id == orig_entry_id && byte_offset == orig_offset && num_entries == orig_num {
                 println!("  Verification: PASS (matches original index entry)");
             } else {
                 println!("  Verification: MISMATCH!");
-                println!("    Expected: entry_id={}, offset={}, num={}", orig_entry_id, orig_offset, orig_num);
+                println!(
+                    "    Expected: entry_id={}, offset={}, num={}",
+                    orig_entry_id, orig_offset, orig_num
+                );
             }
             tag_found = true;
             break;
         }
     }
     if !tag_found {
-        println!("  Verification: FAIL (tag 0x{:016x} not found in decrypted bin)", test_tag);
+        println!(
+            "  Verification: FAIL (tag 0x{:016x} not found in decrypted bin)",
+            test_tag
+        );
     }
 
     // ── 8. Consolidate per-group files into one onion_index_all.bin ─────
@@ -1025,28 +1123,40 @@ fn main() {
     // per_group_bytes u64 | reserved u64]. Each group payload is whatever
     // OnionPIR's save_db_to_file produced — server-side mmaps the whole
     // file once and passes a per-group slice to load_db_from_bytes().
-    println!("\n[8] Consolidating {} per-group files into {}...", K, index_all_file);
+    println!(
+        "\n[8] Consolidating {} per-group files into {}...",
+        K, index_all_file
+    );
     let t_consolidate = Instant::now();
     {
         // All groups have identical size because they share params.
         // Read the first group's size and assert the rest match.
         let first_path = output_dir.join("group_0.bin");
-        let per_group_bytes = fs::metadata(&first_path)
-            .expect("stat group_0.bin")
-            .len() as usize;
-        println!("  Per-group bytes: {} ({})", per_group_bytes, format_bytes(per_group_bytes as u64));
+        let per_group_bytes = fs::metadata(&first_path).expect("stat group_0.bin").len() as usize;
+        println!(
+            "  Per-group bytes: {} ({})",
+            per_group_bytes,
+            format_bytes(per_group_bytes as u64)
+        );
 
-        let total_bytes = ONION_INDEX_ALL_HEADER_BYTES + K * per_group_bytes
+        let total_bytes = ONION_INDEX_ALL_HEADER_BYTES
+            + K * per_group_bytes
             + onion_index_all_anchor_len(index_anchor());
-        println!("  Total output:    {} ({})", total_bytes, format_bytes(total_bytes as u64));
+        println!(
+            "  Total output:    {} ({})",
+            total_bytes,
+            format_bytes(total_bytes as u64)
+        );
 
         let out = File::create(index_all_file).expect("create onion_index_all.bin");
         let mut w = BufWriter::with_capacity(16 * 1024 * 1024, out);
 
         // Master header (32 bytes); magic gains the v2 marker when anchored.
-        w.write_all(&onion_index_all_magic(index_anchor()).to_le_bytes()).unwrap();
+        w.write_all(&onion_index_all_magic(index_anchor()).to_le_bytes())
+            .unwrap();
         w.write_all(&(K as u64).to_le_bytes()).unwrap();
-        w.write_all(&(per_group_bytes as u64).to_le_bytes()).unwrap();
+        w.write_all(&(per_group_bytes as u64).to_le_bytes())
+            .unwrap();
         w.write_all(&0u64.to_le_bytes()).unwrap();
 
         // Append each group's preprocessed bytes in order.
@@ -1058,7 +1168,9 @@ fn main() {
                 meta.len() as usize,
                 per_group_bytes,
                 "group_{}.bin size mismatch: expected {}, got {}",
-                b, per_group_bytes, meta.len()
+                b,
+                per_group_bytes,
+                meta.len()
             );
             let bytes = fs::read(&path).expect("read group file");
             w.write_all(&bytes).unwrap();
@@ -1084,7 +1196,11 @@ fn main() {
         // it so subsequent runs don't mix stale per-group files with the new
         // consolidated layout. The server's load path is fully switched to
         // the consolidated file.
-        println!("  Wrote {} bytes; removing scratch dir {}", written, output_dir.display());
+        println!(
+            "  Wrote {} bytes; removing scratch dir {}",
+            written,
+            output_dir.display()
+        );
         fs::remove_dir_all(output_dir).expect("remove per-group dir");
     }
     println!("  Consolidated in {:.2?}", t_consolidate.elapsed());
@@ -1093,9 +1209,17 @@ fn main() {
     println!("\n=== Summary ===");
     println!("Index entries:     {} ({} non-whale)", n, non_whale);
     println!("PBC groups:        {}", K);
-    println!("Bins per table:    {} ({} slots × {} bytes = {} B/bin)",
-        bins_per_table, slots_per_bin, INDEX_SLOT_SIZE, onionpir_entry_size);
-    println!("OnionPIR per group: {:.2} MB (NTT-expanded)", p.physical_size_mb);
-    println!("Total NTT storage: {:.2} GB", p.physical_size_mb * K as f64 / 1024.0);
+    println!(
+        "Bins per table:    {} ({} slots × {} bytes = {} B/bin)",
+        bins_per_table, slots_per_bin, INDEX_SLOT_SIZE, onionpir_entry_size
+    );
+    println!(
+        "OnionPIR per group: {:.2} MB (NTT-expanded)",
+        p.physical_size_mb
+    );
+    println!(
+        "Total NTT storage: {:.2} GB",
+        p.physical_size_mb * K as f64 / 1024.0
+    );
     println!("Total time:        {:.2?}", total_start.elapsed());
 }

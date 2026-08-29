@@ -29,8 +29,14 @@ pub const CUCKOO_KEY_MIX: u64 = 0x517cc1b727220a95;
 #[inline]
 pub fn sh_a(script_hash: &[u8]) -> u64 {
     u64::from_le_bytes([
-        script_hash[0], script_hash[1], script_hash[2], script_hash[3],
-        script_hash[4], script_hash[5], script_hash[6], script_hash[7],
+        script_hash[0],
+        script_hash[1],
+        script_hash[2],
+        script_hash[3],
+        script_hash[4],
+        script_hash[5],
+        script_hash[6],
+        script_hash[7],
     ])
 }
 
@@ -38,8 +44,14 @@ pub fn sh_a(script_hash: &[u8]) -> u64 {
 #[inline]
 pub fn sh_b(script_hash: &[u8]) -> u64 {
     u64::from_le_bytes([
-        script_hash[8], script_hash[9], script_hash[10], script_hash[11],
-        script_hash[12], script_hash[13], script_hash[14], script_hash[15],
+        script_hash[8],
+        script_hash[9],
+        script_hash[10],
+        script_hash[11],
+        script_hash[12],
+        script_hash[13],
+        script_hash[14],
+        script_hash[15],
     ])
 }
 
@@ -47,7 +59,10 @@ pub fn sh_b(script_hash: &[u8]) -> u64 {
 #[inline]
 pub fn sh_c(script_hash: &[u8]) -> u64 {
     u32::from_le_bytes([
-        script_hash[16], script_hash[17], script_hash[18], script_hash[19],
+        script_hash[16],
+        script_hash[17],
+        script_hash[18],
+        script_hash[19],
     ]) as u64
 }
 
@@ -201,10 +216,19 @@ pub fn compute_tag(tag_seed: u64, script_hash: &[u8]) -> u64 {
 ///
 /// The header layout at offset 16 always contains bins_per_table as u32 LE.
 /// If `has_tag_seed` is true, tag_seed is at offset 32 as u64 LE.
-pub fn read_cuckoo_header(data: &[u8], expected_magic: u64, header_size: usize, has_tag_seed: bool) -> (usize, u64) {
+pub fn read_cuckoo_header(
+    data: &[u8],
+    expected_magic: u64,
+    header_size: usize,
+    has_tag_seed: bool,
+) -> (usize, u64) {
     assert!(data.len() >= header_size, "File too small for header");
     let magic = u64::from_le_bytes(data[0..8].try_into().unwrap());
-    assert_eq!(magic, expected_magic, "Bad magic number: expected 0x{:016x}, got 0x{:016x}", expected_magic, magic);
+    assert_eq!(
+        magic, expected_magic,
+        "Bad magic number: expected 0x{:016x}, got 0x{:016x}",
+        expected_magic, magic
+    );
     let bins_per_table = u32::from_le_bytes(data[16..20].try_into().unwrap()) as usize;
     let tag_seed = if has_tag_seed {
         u64::from_le_bytes(data[32..40].try_into().unwrap())
@@ -219,7 +243,12 @@ pub fn read_cuckoo_header(data: &[u8], expected_magic: u64, header_size: usize, 
 /// Convenience wrapper using INDEX_PARAMS defaults.
 pub fn read_index_cuckoo_header(data: &[u8]) -> (usize, u64) {
     use crate::params::INDEX_PARAMS;
-    read_cuckoo_header(data, INDEX_PARAMS.magic, INDEX_PARAMS.header_size, INDEX_PARAMS.has_tag_seed)
+    read_cuckoo_header(
+        data,
+        INDEX_PARAMS.magic,
+        INDEX_PARAMS.header_size,
+        INDEX_PARAMS.has_tag_seed,
+    )
 }
 
 /// Read bins_per_table from a CHUNK-level cuckoo header.
@@ -227,7 +256,12 @@ pub fn read_index_cuckoo_header(data: &[u8]) -> (usize, u64) {
 /// Convenience wrapper using CHUNK_PARAMS defaults. Returns (bins_per_table, 0).
 pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
     use crate::params::CHUNK_PARAMS;
-    let (bins, _) = read_cuckoo_header(data, CHUNK_PARAMS.magic, CHUNK_PARAMS.header_size, CHUNK_PARAMS.has_tag_seed);
+    let (bins, _) = read_cuckoo_header(
+        data,
+        CHUNK_PARAMS.magic,
+        CHUNK_PARAMS.header_size,
+        CHUNK_PARAMS.has_tag_seed,
+    );
     bins
 }
 

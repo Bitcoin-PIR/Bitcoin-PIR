@@ -62,7 +62,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     chunk_payload[..raw_utxo.len()].copy_from_slice(&raw_utxo);
 
     let mut chunk_bytes = empty_table(&chunk_params, 0);
-    insert_chunk_record(&mut chunk_bytes, &chunk_params, START_CHUNK_ID, &chunk_payload);
+    insert_chunk_record(
+        &mut chunk_bytes,
+        &chunk_params,
+        START_CHUNK_ID,
+        &chunk_payload,
+    );
 
     std::fs::write(out_dir.join("batch_pir_cuckoo.bin"), index_bytes)?;
     std::fs::write(out_dir.join("chunk_pir_cuckoo.bin"), chunk_bytes)?;

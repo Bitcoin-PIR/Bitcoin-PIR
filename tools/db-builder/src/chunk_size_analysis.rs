@@ -25,18 +25,24 @@ fn main() {
     for i in 0..num_entries {
         let base = i * INDEX_RECORD_SIZE;
         let num_chunks = index_data[base + 24] as usize;
-        if num_chunks == 0 { continue; }
+        if num_chunks == 0 {
+            continue;
+        }
         let offset_half = u32::from_le_bytes(index_data[base + 20..base + 24].try_into().unwrap());
         let offset = offset_half as usize * 2;
         let padded_size = num_chunks * CHUNK_SIZE;
-        if offset + padded_size > chunks_mmap.len() { continue; }
+        if offset + padded_size > chunks_mmap.len() {
+            continue;
+        }
 
         let group_data = &chunks_mmap[offset..offset + padded_size];
         let (entry_count, mut pos) = read_varint(group_data);
         for _ in 0..entry_count {
             pos += 32;
-            let (_, vl) = read_varint(&group_data[pos..]); pos += vl;
-            let (_, al) = read_varint(&group_data[pos..]); pos += al;
+            let (_, vl) = read_varint(&group_data[pos..]);
+            pos += vl;
+            let (_, al) = read_varint(&group_data[pos..]);
+            pos += al;
         }
         data_sizes.push(pos);
     }
@@ -48,8 +54,15 @@ fn main() {
     sorted.sort_unstable();
     let median_useful = sorted[total_groups / 2];
 
-    println!("Groups: {}   Total useful data: {:.2} GB", total_groups, total_useful as f64 / 1e9);
-    println!("Useful data per query: median={} B, mean={:.1} B", median_useful, mean_useful);
+    println!(
+        "Groups: {}   Total useful data: {:.2} GB",
+        total_groups,
+        total_useful as f64 / 1e9
+    );
+    println!(
+        "Useful data per query: median={} B, mean={:.1} B",
+        median_useful, mean_useful
+    );
     println!();
 
     // ════════════════════════════════════════════════════════════════════
@@ -67,8 +80,10 @@ fn main() {
 
     let block_sizes = [37, 40, 48, 56, 64, 72, 80, 96, 112, 128, 160, 192, 256, 512];
 
-    println!("{:>6}  {:>10}  {:>10}  {:>8}  {:>10}  {:>10}",
-        "block", "blk_fetched", "useful", "ratio", "med_ratio", "wasted/q");
+    println!(
+        "{:>6}  {:>10}  {:>10}  {:>8}  {:>10}  {:>10}",
+        "block", "blk_fetched", "useful", "ratio", "med_ratio", "wasted/q"
+    );
 
     for &bs in &block_sizes {
         let mut total_fetched: u64 = 0;
@@ -86,9 +101,15 @@ fn main() {
         let avg_ratio = total_useful as f64 / total_fetched as f64;
         let avg_wasted = (total_fetched - total_useful) as f64 / total_groups as f64;
 
-        println!("{:>5}B  {:>7.2} GB  {:>7.2} GB  {:>6.1}%   {:>7.1}%   {:>7.1} B",
-            bs, total_fetched as f64 / 1e9, total_useful as f64 / 1e9,
-            avg_ratio * 100.0, median_ratio * 100.0, avg_wasted);
+        println!(
+            "{:>5}B  {:>7.2} GB  {:>7.2} GB  {:>6.1}%   {:>7.1}%   {:>7.1} B",
+            bs,
+            total_fetched as f64 / 1e9,
+            total_useful as f64 / 1e9,
+            avg_ratio * 100.0,
+            median_ratio * 100.0,
+            avg_wasted
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -108,8 +129,10 @@ fn main() {
     // Isolated model
     println!("  --- Isolated (each group = own blocks) ---");
     println!();
-    println!("{:>6}  {:>8}  {:>8}  {:>10}  {:>12}  {:>12}  {:>10}",
-        "block", "avg_rnd", "bw/rnd", "avg_bw/q", "useful/q", "ratio", "useful/MB");
+    println!(
+        "{:>6}  {:>8}  {:>8}  {:>10}  {:>12}  {:>12}  {:>10}",
+        "block", "avg_rnd", "bw/rnd", "avg_bw/q", "useful/q", "ratio", "useful/MB"
+    );
 
     for &bs in &block_sizes {
         let mut total_blocks: u64 = 0;
@@ -119,25 +142,34 @@ fn main() {
             total_blocks += n;
             total_rounds += n;
         }
-        let bins = (total_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
+        let bins = (total_blocks as f64 / K_CHUNK as f64 / (CHUNK_SLOTS_PER_BIN as f64 * 0.95))
+            .ceil() as u64;
         let bw_per_round = bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let avg_rounds = total_rounds as f64 / total_groups as f64;
         let avg_bw = avg_rounds * bw_per_round;
         let ratio = mean_useful / avg_bw;
         let useful_per_mb = mean_useful / (avg_bw / 1e6);
 
-        println!("{:>5}B  {:>6.3}   {:>5.1}MB  {:>8.1}MB  {:>8.1}B     {:>8.2e}  {:>7.2}B",
-            bs, avg_rounds, bw_per_round / 1e6, avg_bw / 1e6,
-            mean_useful, ratio, useful_per_mb);
+        println!(
+            "{:>5}B  {:>6.3}   {:>5.1}MB  {:>8.1}MB  {:>8.1}B     {:>8.2e}  {:>7.2}B",
+            bs,
+            avg_rounds,
+            bw_per_round / 1e6,
+            avg_bw / 1e6,
+            mean_useful,
+            ratio,
+            useful_per_mb
+        );
     }
 
     // Packed model
     println!();
     println!("  --- Packed (multiple groups per block, no spanning) ---");
     println!();
-    println!("{:>6}  {:>8}  {:>8}  {:>10}  {:>12}  {:>12}  {:>10}",
-        "block", "avg_rnd", "bw/rnd", "avg_bw/q", "useful/q", "ratio", "useful/MB");
+    println!(
+        "{:>6}  {:>8}  {:>8}  {:>10}  {:>12}  {:>12}  {:>10}",
+        "block", "avg_rnd", "bw/rnd", "avg_bw/q", "useful/q", "ratio", "useful/MB"
+    );
 
     let mut sorted_for_packing = data_sizes.clone();
     sorted_for_packing.sort_unstable();
@@ -149,17 +181,25 @@ fn main() {
         let mut started = false;
         for &sz in &sorted_for_packing {
             if sz > bs {
-                if started && cur > 0 { pk_blocks += 1; }
+                if started && cur > 0 {
+                    pk_blocks += 1;
+                }
                 pk_blocks += sz.div_ceil(bs) as u64;
-                cur = 0; started = false;
+                cur = 0;
+                started = false;
             } else if !started || cur + sz > bs {
-                if started && cur > 0 { pk_blocks += 1; }
-                cur = sz; started = true;
+                if started && cur > 0 {
+                    pk_blocks += 1;
+                }
+                cur = sz;
+                started = true;
             } else {
                 cur += sz;
             }
         }
-        if started && cur > 0 { pk_blocks += 1; }
+        if started && cur > 0 {
+            pk_blocks += 1;
+        }
 
         // Rounds per query is still based on individual group size
         let mut total_rounds: u64 = 0;
@@ -167,17 +207,24 @@ fn main() {
             total_rounds += sz.div_ceil(bs) as u64;
         }
 
-        let bins = (pk_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
+        let bins =
+            (pk_blocks as f64 / K_CHUNK as f64 / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
         let bw_per_round = bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let avg_rounds = total_rounds as f64 / total_groups as f64;
         let avg_bw = avg_rounds * bw_per_round;
         let ratio = mean_useful / avg_bw;
         let useful_per_mb = mean_useful / (avg_bw / 1e6);
 
-        println!("{:>5}B  {:>6.3}   {:>5.1}MB  {:>8.1}MB  {:>8.1}B     {:>8.2e}  {:>7.2}B",
-            bs, avg_rounds, bw_per_round / 1e6, avg_bw / 1e6,
-            mean_useful, ratio, useful_per_mb);
+        println!(
+            "{:>5}B  {:>6.3}   {:>5.1}MB  {:>8.1}MB  {:>8.1}B     {:>8.2e}  {:>7.2}B",
+            bs,
+            avg_rounds,
+            bw_per_round / 1e6,
+            avg_bw / 1e6,
+            mean_useful,
+            ratio,
+            useful_per_mb
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -185,13 +232,21 @@ fn main() {
     // ════════════════════════════════════════════════════════════════════
     println!();
     println!("================================================================");
-    println!("  METRIC 3: Breakdown for MEDIAN query ({} bytes useful)", median_useful);
-    println!("  \"I need {} bytes. What do I actually receive/pay?\"", median_useful);
+    println!(
+        "  METRIC 3: Breakdown for MEDIAN query ({} bytes useful)",
+        median_useful
+    );
+    println!(
+        "  \"I need {} bytes. What do I actually receive/pay?\"",
+        median_useful
+    );
     println!("================================================================");
     println!();
 
-    println!("{:>6} {:>5}  {:>8}  {:>10}  {:>14}  {:>12}  {:>8}",
-        "block", "model", "rounds", "blk_bytes", "PIR_bw", "useful", "util%");
+    println!(
+        "{:>6} {:>5}  {:>8}  {:>10}  {:>14}  {:>12}  {:>8}",
+        "block", "model", "rounds", "blk_bytes", "PIR_bw", "useful", "util%"
+    );
 
     for &bs in &[40, 48, 64, 80, 128, 256] {
         let rounds_med = median_useful.div_ceil(bs);
@@ -202,14 +257,21 @@ fn main() {
         for &sz in &data_sizes {
             iso_blocks += sz.div_ceil(bs) as u64;
         }
-        let iso_bins = (iso_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
-        let iso_bw = rounds_med as f64 * iso_bins as f64
-            * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
+        let iso_bins = (iso_blocks as f64 / K_CHUNK as f64 / (CHUNK_SLOTS_PER_BIN as f64 * 0.95))
+            .ceil() as u64;
+        let iso_bw = rounds_med as f64 * iso_bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let iso_pct = median_useful as f64 / iso_bw * 100.0;
 
-        println!("{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",
-            bs, "iso", rounds_med, blk_bytes, iso_bw / 1e6, median_useful, iso_pct);
+        println!(
+            "{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",
+            bs,
+            "iso",
+            rounds_med,
+            blk_bytes,
+            iso_bw / 1e6,
+            median_useful,
+            iso_pct
+        );
 
         // Packed
         let mut pk_blocks: u64 = 0;
@@ -217,26 +279,41 @@ fn main() {
         let mut started = false;
         for &sz in &sorted_for_packing {
             if sz > bs {
-                if started && cur > 0 { pk_blocks += 1; }
+                if started && cur > 0 {
+                    pk_blocks += 1;
+                }
                 pk_blocks += sz.div_ceil(bs) as u64;
-                cur = 0; started = false;
+                cur = 0;
+                started = false;
             } else if !started || cur + sz > bs {
-                if started && cur > 0 { pk_blocks += 1; }
-                cur = sz; started = true;
+                if started && cur > 0 {
+                    pk_blocks += 1;
+                }
+                cur = sz;
+                started = true;
             } else {
                 cur += sz;
             }
         }
-        if started && cur > 0 { pk_blocks += 1; }
+        if started && cur > 0 {
+            pk_blocks += 1;
+        }
 
-        let pk_bins = (pk_blocks as f64 / K_CHUNK as f64
-            / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
-        let pk_bw = rounds_med as f64 * pk_bins as f64
-            * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
+        let pk_bins =
+            (pk_blocks as f64 / K_CHUNK as f64 / (CHUNK_SLOTS_PER_BIN as f64 * 0.95)).ceil() as u64;
+        let pk_bw = rounds_med as f64 * pk_bins as f64 * CHUNK_SLOTS_PER_BIN as f64 * bs as f64;
         let pk_pct = median_useful as f64 / pk_bw * 100.0;
 
-        println!("{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",
-            bs, "pack", rounds_med, blk_bytes, pk_bw / 1e6, median_useful, pk_pct);
+        println!(
+            "{:>5}B {:>5}  {:>6}    {:>6}B    {:>10.1}MB  {:>8}B    {:>5.2e}%",
+            bs,
+            "pack",
+            rounds_med,
+            blk_bytes,
+            pk_bw / 1e6,
+            median_useful,
+            pk_pct
+        );
         println!();
     }
 

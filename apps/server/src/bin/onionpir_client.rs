@@ -14,12 +14,12 @@
 //!   Or with a file (one hex hash per line):
 //!     --file addresses.txt
 
-use runtime::onionpir::*;
 use build::common::*;
 use futures_util::{SinkExt, StreamExt};
 use onionpir::Client as PirClient;
 use pir_core::merkle;
 use pir_core::onion_unpack;
+use runtime::onionpir::*;
 use std::collections::HashMap;
 use std::time::Instant;
 use tokio_tungstenite::connect_async;
@@ -53,13 +53,19 @@ struct Args {
 
 fn parse_hex_hash(hex: &str) -> [u8; SCRIPT_HASH_SIZE] {
     if hex.len() != 40 {
-        eprintln!("Error: hash must be 40 hex chars, got {}: '{}'", hex.len(), hex);
+        eprintln!(
+            "Error: hash must be 40 hex chars, got {}: '{}'",
+            hex.len(),
+            hex
+        );
         std::process::exit(1);
     }
     let mut hash = [0u8; SCRIPT_HASH_SIZE];
     for j in 0..SCRIPT_HASH_SIZE {
-        hash[j] = u8::from_str_radix(&hex[j * 2..j * 2 + 2], 16)
-            .unwrap_or_else(|_| { eprintln!("Invalid hex: {}", hex); std::process::exit(1); });
+        hash[j] = u8::from_str_radix(&hex[j * 2..j * 2 + 2], 16).unwrap_or_else(|_| {
+            eprintln!("Invalid hex: {}", hex);
+            std::process::exit(1);
+        });
     }
     hash
 }
@@ -74,13 +80,21 @@ fn parse_args() -> Args {
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--server" | "-s" => { server = args[i + 1].clone(); i += 1; }
+            "--server" | "-s" => {
+                server = args[i + 1].clone();
+                i += 1;
+            }
             "--hash" | "-h" => {
                 hashes.push(parse_hex_hash(&args[i + 1]));
                 i += 1;
             }
-            "--file" | "-f" => { file_path = Some(args[i + 1].clone()); i += 1; }
-            "--verify" | "-v" => { verify = true; }
+            "--file" | "-f" => {
+                file_path = Some(args[i + 1].clone());
+                i += 1;
+            }
+            "--verify" | "-v" => {
+                verify = true;
+            }
             "--help" => {
                 println!("Usage: onionpir_client [--hash <hex>]... [--file <path>] [--server URL] [--verify]");
                 std::process::exit(0);
@@ -91,8 +105,10 @@ fn parse_args() -> Args {
     }
 
     if let Some(path) = file_path {
-        let contents = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| { eprintln!("Error reading {}: {}", path, e); std::process::exit(1); });
+        let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!("Error reading {}: {}", path, e);
+            std::process::exit(1);
+        });
         for line in contents.lines() {
             let trimmed = line.trim();
             if !trimmed.is_empty() && !trimmed.starts_with('#') {
@@ -106,29 +122,35 @@ fn parse_args() -> Args {
         std::process::exit(1);
     }
 
-    Args { server, script_hashes: hashes, verify }
+    Args {
+        server,
+        script_hashes: hashes,
+        verify,
+    }
 }
 
 // ─── WebSocket helpers ──────────────────────────────────────────────────────
 
 type WsSink = futures_util::stream::SplitSink<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     Message,
 >;
 type WsStream = futures_util::stream::SplitStream<
-    tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    >,
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
 >;
 
 async fn recv_binary(stream: &mut WsStream, sink: &mut WsSink) -> Vec<u8> {
     loop {
-        let msg = stream.next().await.expect("no response").expect("read error");
+        let msg = stream
+            .next()
+            .await
+            .expect("no response")
+            .expect("read error");
         match msg {
             Message::Binary(b) => return b.to_vec(),
-            Message::Ping(p) => { let _ = sink.send(Message::Pong(p)).await; }
+            Message::Ping(p) => {
+                let _ = sink.send(Message::Pong(p)).await;
+            }
             _ => continue,
         }
     }
@@ -136,14 +158,19 @@ async fn recv_binary(stream: &mut WsStream, sink: &mut WsSink) -> Vec<u8> {
 
 // ─── PRNG for dummy queries ─────────────────────────────────────────────────
 
-struct DummyRng { state: u64 }
+struct DummyRng {
+    state: u64,
+}
 
 impl DummyRng {
     fn new() -> Self {
         let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
             .as_nanos() as u64;
-        Self { state: splitmix64(seed) }
+        Self {
+            state: splitmix64(seed),
+        }
     }
     fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
@@ -158,7 +185,9 @@ impl DummyRng {
 /// Extract a JSON number value for a given key (simple substring search).
 fn json_u64(json: &str, key: &str) -> u64 {
     let needle = format!("\"{}\":", key);
-    let pos = json.find(&needle).unwrap_or_else(|| panic!("missing JSON key: {}", key));
+    let pos = json
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing JSON key: {}", key));
     let start = pos + needle.len();
     let rest = json[start..].trim_start();
     // Parse digits (or quoted hex string for tag_seed)
@@ -168,8 +197,12 @@ fn json_u64(json: &str, key: &str) -> u64 {
         let hex = &rest[1..end];
         u64::from_str_radix(hex.trim_start_matches("0x"), 16).expect("bad hex")
     } else {
-        let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-        rest[..end].parse().unwrap_or_else(|_| panic!("bad number for key {}", key))
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end]
+            .parse()
+            .unwrap_or_else(|_| panic!("bad number for key {}", key))
     }
 }
 
@@ -177,7 +210,9 @@ fn json_u64(json: &str, key: &str) -> u64 {
 /// falling back to top-level DPF params.
 ///
 /// Returns: (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, slots_per_bin, slot_size, index_master_seed)
-fn parse_server_info_json(json: &str) -> (usize, usize, usize, usize, u64, usize, usize, usize, u64) {
+fn parse_server_info_json(
+    json: &str,
+) -> (usize, usize, usize, usize, u64, usize, usize, usize, u64) {
     // Check for OnionPIR sub-object
     if let Some(opi_start) = json.find("\"onionpir\"") {
         // Find the opening brace of the onionpir object
@@ -266,8 +301,14 @@ fn parse_sub_tree(section: &str) -> Option<OnionMerkleSubTree> {
         let levels_section = &section[levels_start..];
         let mut pos = 0;
         for _ in 0..num_levels {
-            let obj_start = match levels_section[pos..].find('{') { Some(p) => p + pos, None => break };
-            let obj_end = match levels_section[obj_start..].find('}') { Some(p) => obj_start + p + 1, None => break };
+            let obj_start = match levels_section[pos..].find('{') {
+                Some(p) => p + pos,
+                None => break,
+            };
+            let obj_end = match levels_section[obj_start..].find('}') {
+                Some(p) => obj_start + p + 1,
+                None => break,
+            };
             let obj = &levels_section[obj_start..obj_end];
             levels.push(OnionMerkleLevelInfo {
                 k: json_u64(obj, "k") as usize,
@@ -289,7 +330,17 @@ fn extract_json_object<'a>(json: &'a str, key: &str) -> Option<&'a str> {
     let mut depth = 0;
     let mut end = brace;
     for (i, c) in json[brace..].char_indices() {
-        match c { '{' => depth += 1, '}' => { depth -= 1; if depth == 0 { end = brace + i + 1; break; } } _ => {} }
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = brace + i + 1;
+                    break;
+                }
+            }
+            _ => {}
+        }
     }
     Some(&json[brace..end])
 }
@@ -317,7 +368,7 @@ const SIB_CUCKOO_MAX_KICKS: usize = 10000;
 fn sib_level_master_seed(tree_kind: &str, level: usize) -> u64 {
     let base = match tree_kind {
         "index" => 0xBA7C_51B1_FEED_0100u64,
-        "data"  => 0xBA7C_51B1_FEED_0200u64,
+        "data" => 0xBA7C_51B1_FEED_0200u64,
         _ => panic!("unknown tree_kind: {}", tree_kind),
     };
     base.wrapping_add(level as u64)
@@ -344,7 +395,10 @@ fn derive_sib_pbc_groups(entry_id: u32, k: usize) -> [usize; 3] {
         let h = splitmix64((entry_id as u64).wrapping_add(nonce.wrapping_mul(0x9e3779b97f4a7c15)));
         let b = (h % k as u64) as usize;
         nonce += 1;
-        if count == 0 || (count == 1 && b != groups[0]) || (count == 2 && b != groups[0] && b != groups[1]) {
+        if count == 0
+            || (count == 1 && b != groups[0])
+            || (count == 2 && b != groups[0] && b != groups[1])
+        {
             groups[count] = b;
             count += 1;
         }
@@ -371,9 +425,15 @@ fn build_sib_cuckoo_for_group(
         let mut placed = false;
         for h in 0..SIB_CUCKOO_NUM_HASHES {
             let bin = sib_cuckoo_hash(entry_id, keys[h], bins_per_table);
-            if table[bin] == EMPTY { table[bin] = entry_id; placed = true; break; }
+            if table[bin] == EMPTY {
+                table[bin] = entry_id;
+                placed = true;
+                break;
+            }
         }
-        if placed { continue; }
+        if placed {
+            continue;
+        }
 
         let mut current_id = entry_id;
         let mut current_hash_fn = 0;
@@ -385,33 +445,57 @@ fn build_sib_cuckoo_for_group(
             for h in 0..SIB_CUCKOO_NUM_HASHES {
                 let try_h = (current_hash_fn + 1 + h) % SIB_CUCKOO_NUM_HASHES;
                 let bin = sib_cuckoo_hash(evicted, keys[try_h], bins_per_table);
-                if bin == current_bin { continue; }
-                if table[bin] == EMPTY { table[bin] = evicted; success = true; break; }
+                if bin == current_bin {
+                    continue;
+                }
+                if table[bin] == EMPTY {
+                    table[bin] = evicted;
+                    success = true;
+                    break;
+                }
             }
-            if success { break; }
-            let alt_h = (current_hash_fn + 1 + kick % (SIB_CUCKOO_NUM_HASHES - 1)) % SIB_CUCKOO_NUM_HASHES;
+            if success {
+                break;
+            }
+            let alt_h =
+                (current_hash_fn + 1 + kick % (SIB_CUCKOO_NUM_HASHES - 1)) % SIB_CUCKOO_NUM_HASHES;
             let alt_bin = sib_cuckoo_hash(evicted, keys[alt_h], bins_per_table);
             let final_bin = if alt_bin == current_bin {
-                sib_cuckoo_hash(evicted, keys[(alt_h + 1) % SIB_CUCKOO_NUM_HASHES], bins_per_table)
-            } else { alt_bin };
+                sib_cuckoo_hash(
+                    evicted,
+                    keys[(alt_h + 1) % SIB_CUCKOO_NUM_HASHES],
+                    bins_per_table,
+                )
+            } else {
+                alt_bin
+            };
             current_id = evicted;
             current_hash_fn = alt_h;
             current_bin = final_bin;
         }
-        if !success { panic!("Sibling cuckoo failed for entry_id={}", entry_id); }
+        if !success {
+            panic!("Sibling cuckoo failed for entry_id={}", entry_id);
+        }
     }
     table
 }
 
 /// Find entry_id's bin in a cuckoo table.
 fn find_in_sib_cuckoo(
-    table: &[u32], entry_id: u32, tree_kind: &str, level: usize, group_id: usize, bins_per_table: usize,
+    table: &[u32],
+    entry_id: u32,
+    tree_kind: &str,
+    level: usize,
+    group_id: usize,
+    bins_per_table: usize,
 ) -> Option<usize> {
     let master_seed = sib_level_master_seed(tree_kind, level);
     for h in 0..SIB_CUCKOO_NUM_HASHES {
         let key = sib_derive_cuckoo_key(master_seed, group_id, h);
         let bin = sib_cuckoo_hash(entry_id, key, bins_per_table);
-        if table[bin] == entry_id { return Some(bin); }
+        if table[bin] == entry_id {
+            return Some(bin);
+        }
     }
     None
 }
@@ -472,7 +556,9 @@ fn build_chunk_cuckoo_for_group(
                 break;
             }
         }
-        if placed { continue; }
+        if placed {
+            continue;
+        }
 
         let mut current_id = entry_id;
         let mut current_hash_fn = 0;
@@ -486,16 +572,21 @@ fn build_chunk_cuckoo_for_group(
             for h in 0..CHUNK_CUCKOO_NUM_HASHES {
                 let try_h = (current_hash_fn + 1 + h) % CHUNK_CUCKOO_NUM_HASHES;
                 let bin = chunk_cuckoo_hash(evicted, keys[try_h], bins_per_table);
-                if bin == current_bin { continue; }
+                if bin == current_bin {
+                    continue;
+                }
                 if table[bin] == EMPTY {
                     table[bin] = evicted;
                     success = true;
                     break;
                 }
             }
-            if success { break; }
+            if success {
+                break;
+            }
 
-            let alt_h = (current_hash_fn + 1 + kick % (CHUNK_CUCKOO_NUM_HASHES - 1)) % CHUNK_CUCKOO_NUM_HASHES;
+            let alt_h = (current_hash_fn + 1 + kick % (CHUNK_CUCKOO_NUM_HASHES - 1))
+                % CHUNK_CUCKOO_NUM_HASHES;
             let alt_bin = chunk_cuckoo_hash(evicted, keys[alt_h], bins_per_table);
             let final_bin = if alt_bin == current_bin {
                 let h2 = (alt_h + 1) % CHUNK_CUCKOO_NUM_HASHES;
@@ -553,13 +644,20 @@ fn scan_index_bin(
 ) -> Option<IndexResult> {
     for slot in 0..slots_per_bin {
         let off = slot * slot_size;
-        if off + slot_size > entry_bytes.len() { break; }
+        if off + slot_size > entry_bytes.len() {
+            break;
+        }
         let slot_tag = u64::from_le_bytes(entry_bytes[off..off + 8].try_into().unwrap());
         if slot_tag == tag && slot_tag != 0 {
             let entry_id = u32::from_le_bytes(entry_bytes[off + 8..off + 12].try_into().unwrap());
-            let byte_offset = u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().unwrap());
+            let byte_offset =
+                u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().unwrap());
             let num_entries = entry_bytes[off + 14];
-            return Some(IndexResult { entry_id, byte_offset, num_entries });
+            return Some(IndexResult {
+                entry_id,
+                byte_offset,
+                num_entries,
+            });
         }
     }
     None
@@ -572,8 +670,11 @@ async fn main() {
     let args = parse_args();
     let num_addresses = args.script_hashes.len();
 
-    println!("=== OnionPIR v2 Client ({} address{}) ===",
-        num_addresses, if num_addresses == 1 { "" } else { "es" });
+    println!(
+        "=== OnionPIR v2 Client ({} address{}) ===",
+        num_addresses,
+        if num_addresses == 1 { "" } else { "es" }
+    );
     println!("  Server: {}", args.server);
     for (i, sh) in args.script_hashes.iter().enumerate() {
         let hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
@@ -599,14 +700,29 @@ async fn main() {
     }
     let info_bytes = recv_binary(&mut stream, &mut sink).await;
     // Response: [4B len LE][1B variant=0x03][JSON bytes...]
-    let json_str = std::str::from_utf8(&info_bytes[5..]).expect("invalid UTF-8 in server info JSON");
+    let json_str =
+        std::str::from_utf8(&info_bytes[5..]).expect("invalid UTF-8 in server info JSON");
 
-    let (index_k, chunk_k, index_bins, chunk_bins, tag_seed, total_packed, index_slots_per_bin, index_slot_size, index_master_seed) =
-        parse_server_info_json(json_str);
+    let (
+        index_k,
+        chunk_k,
+        index_bins,
+        chunk_bins,
+        tag_seed,
+        total_packed,
+        index_slots_per_bin,
+        index_slot_size,
+        index_master_seed,
+    ) = parse_server_info_json(json_str);
 
-    println!("  Index: K={}, bins={}, slots_per_bin={}, slot_size={}",
-        index_k, index_bins, index_slots_per_bin, index_slot_size);
-    println!("  Chunk: K={}, bins={}, total_packed={}", chunk_k, chunk_bins, total_packed);
+    println!(
+        "  Index: K={}, bins={}, slots_per_bin={}, slot_size={}",
+        index_k, index_bins, index_slots_per_bin, index_slot_size
+    );
+    println!(
+        "  Chunk: K={}, bins={}, total_packed={}",
+        chunk_k, chunk_bins, total_packed
+    );
     println!();
 
     // ── 3. Create PIR client and register keys (single registration) ────
@@ -625,14 +741,10 @@ async fn main() {
     // Create per-level clients sharing the same secret key.
     // OnionPIRv2 port: rename `new_from_secret_key` → `from_secret_key`,
     // returns `Option<Self>` now.
-    let index_client = PirClient::from_secret_key(
-        index_bins as u64, client_id, &secret_key,
-    )
-    .expect("freshly-generated secret key must round-trip (index)");
-    let chunk_client = PirClient::from_secret_key(
-        chunk_bins as u64, client_id, &secret_key,
-    )
-    .expect("freshly-generated secret key must round-trip (chunk)");
+    let index_client = PirClient::from_secret_key(index_bins as u64, client_id, &secret_key)
+        .expect("freshly-generated secret key must round-trip (index)");
+    let chunk_client = PirClient::from_secret_key(chunk_bins as u64, client_id, &secret_key)
+        .expect("freshly-generated secret key must round-trip (chunk)");
 
     // Register keys once — shared across all levels
     let reg_msg = RegisterKeysMsg {
@@ -640,7 +752,9 @@ async fn main() {
         gsw_keys: gsw,
         db_id: 0,
     };
-    sink.send(Message::Binary(reg_msg.encode())).await.expect("send keys");
+    sink.send(Message::Binary(reg_msg.encode()))
+        .await
+        .expect("send keys");
     let ack = recv_binary(&mut stream, &mut sink).await;
     assert_eq!(ack[4], RESP_KEYS_ACK);
     println!("  Keys registered (single registration, shared secret key).\n");
@@ -656,12 +770,14 @@ async fn main() {
         tag: u64,
         groups: [usize; NUM_HASHES],
     }
-    let addr_infos: Vec<AddrInfo> = args.script_hashes.iter().map(|sh| {
-        AddrInfo {
+    let addr_infos: Vec<AddrInfo> = args
+        .script_hashes
+        .iter()
+        .map(|sh| AddrInfo {
             tag: compute_tag(tag_seed, sh),
             groups: derive_groups(sh),
-        }
-    }).collect();
+        })
+        .collect();
 
     let mut index_results: Vec<Option<IndexResult>> = (0..num_addresses).map(|_| None).collect();
     // Per-bin Merkle: store bin hashes and leaf positions
@@ -675,9 +791,12 @@ async fn main() {
     // PBC place all addresses into groups
     let all_groups: Vec<[usize; NUM_HASHES]> = addr_infos.iter().map(|a| a.groups).collect();
     let index_rounds = pbc_plan_rounds(&all_groups, index_k, NUM_HASHES, 500);
-    println!("  PBC placement: {} addresses → {} round{}",
-        num_addresses, index_rounds.len(),
-        if index_rounds.len() == 1 { "" } else { "s" });
+    println!(
+        "  PBC placement: {} addresses → {} round{}",
+        num_addresses,
+        index_rounds.len(),
+        if index_rounds.len() == 1 { "" } else { "s" }
+    );
 
     // Each round: 2 queries per group (hash0 + hash1 bins), matching DPF approach
     for round in &index_rounds {
@@ -702,8 +821,14 @@ async fn main() {
             }
         }
 
-        let batch = OnionPirBatchQuery { round_id: total_index_rounds, queries, db_id: 0 };
-        sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_INDEX_QUERY))).await.expect("send");
+        let batch = OnionPirBatchQuery {
+            round_id: total_index_rounds,
+            queries,
+            db_id: 0,
+        };
+        sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_INDEX_QUERY)))
+            .await
+            .expect("send");
         total_index_rounds += 1;
 
         let resp_bytes = recv_binary(&mut stream, &mut sink).await;
@@ -723,9 +848,7 @@ async fn main() {
                 // slicing will produce wrong-but-non-panicking bytes
                 // until commit 5 (capacity math) lands.
                 let _ = bin;
-                let raw_pt = index_client.decrypt_response(
-                    &result_batch.results[qi],
-                );
+                let raw_pt = index_client.decrypt_response(&result_batch.results[qi]);
                 let pinfo = onionpir::params_info(index_bins as u64);
                 let entry_bytes = onion_unpack::unpack_onion_plaintext(
                     &raw_pt,
@@ -734,7 +857,12 @@ async fn main() {
                 )
                 .expect("onion_unpack rejected INDEX plaintext from server");
 
-                if let Some(ir) = scan_index_bin(&entry_bytes, addr_infos[addr_idx].tag, index_slots_per_bin, index_slot_size) {
+                if let Some(ir) = scan_index_bin(
+                    &entry_bytes,
+                    addr_infos[addr_idx].tag,
+                    index_slots_per_bin,
+                    index_slot_size,
+                ) {
                     // Per-bin Merkle: hash the full decrypted bin, record leaf position.
                     // OnionPIRv2 port (commit 5): bin length equals
                     // params.entry_size (3328 default). Pre-port this
@@ -758,12 +886,22 @@ async fn main() {
 
     // Report index results
     let found_count = index_results.iter().filter(|r| r.is_some()).count();
-    let whale_count = index_results.iter().filter(|r| {
-        matches!(r, Some(ir) if ir.num_entries == 0)
-    }).count();
-    println!("  Found: {}/{} addresses ({} whale, {} not found)",
-        found_count, num_addresses, whale_count, num_addresses - found_count);
-    println!("  Level 1: {} rounds in {:.2?}", total_index_rounds, l1_start.elapsed());
+    let whale_count = index_results
+        .iter()
+        .filter(|r| matches!(r, Some(ir) if ir.num_entries == 0))
+        .count();
+    println!(
+        "  Found: {}/{} addresses ({} whale, {} not found)",
+        found_count,
+        num_addresses,
+        whale_count,
+        num_addresses - found_count
+    );
+    println!(
+        "  Level 1: {} rounds in {:.2?}",
+        total_index_rounds,
+        l1_start.elapsed()
+    );
     println!();
 
     // ══════════════════════════════════════════════════════════════════════
@@ -798,119 +936,141 @@ async fn main() {
     if unique_entry_ids.is_empty() {
         println!("  No entries to fetch — skipping chunk phase.");
     } else {
-    // Build reverse index once: group → entry_ids (single pass over all entries)
-    let t_rev = Instant::now();
-    let reverse_index = build_chunk_reverse_index(total_packed);
-    println!("  Reverse index built in {:.2?}", t_rev.elapsed());
+        // Build reverse index once: group → entry_ids (single pass over all entries)
+        let t_rev = Instant::now();
+        let reverse_index = build_chunk_reverse_index(total_packed);
+        println!("  Reverse index built in {:.2?}", t_rev.elapsed());
 
-    // PBC place entries into chunk groups
-    let entry_pbc_groups: Vec<[usize; NUM_HASHES]> = unique_entry_ids.iter()
-        .map(|&eid| derive_chunk_groups(eid))
-        .collect();
-    let chunk_rounds = pbc_plan_rounds(&entry_pbc_groups, chunk_k, NUM_HASHES, 500);
+        // PBC place entries into chunk groups
+        let entry_pbc_groups: Vec<[usize; NUM_HASHES]> = unique_entry_ids
+            .iter()
+            .map(|&eid| derive_chunk_groups(eid))
+            .collect();
+        let chunk_rounds = pbc_plan_rounds(&entry_pbc_groups, chunk_k, NUM_HASHES, 500);
 
-    println!("  {} unique entries → {} chunk round{}",
-        unique_entry_ids.len(), chunk_rounds.len(),
-        if chunk_rounds.len() == 1 { "" } else { "s" });
+        println!(
+            "  {} unique entries → {} chunk round{}",
+            unique_entry_ids.len(),
+            chunk_rounds.len(),
+            if chunk_rounds.len() == 1 { "" } else { "s" }
+        );
 
-    // Cuckoo table cache (group_id → table)
-    let mut cuckoo_cache: HashMap<usize, Vec<u32>> = HashMap::new();
+        // Cuckoo table cache (group_id → table)
+        let mut cuckoo_cache: HashMap<usize, Vec<u32>> = HashMap::new();
 
-    for (ri, round) in chunk_rounds.iter().enumerate() {
-        // For each entry in this round, build cuckoo table if needed and find bin
-        struct ChunkQuery {
-            entry_id: u32,
-            group: usize,
-            bin: usize,
-        }
-        let mut chunk_queries: Vec<ChunkQuery> = Vec::new();
-        let mut group_to_qi: HashMap<usize, usize> = HashMap::new();
+        for (ri, round) in chunk_rounds.iter().enumerate() {
+            // For each entry in this round, build cuckoo table if needed and find bin
+            struct ChunkQuery {
+                entry_id: u32,
+                group: usize,
+                bin: usize,
+            }
+            let mut chunk_queries: Vec<ChunkQuery> = Vec::new();
+            let mut group_to_qi: HashMap<usize, usize> = HashMap::new();
 
-        let t_cuckoo = Instant::now();
-        let mut tables_built = 0usize;
+            let t_cuckoo = Instant::now();
+            let mut tables_built = 0usize;
 
-        for &(ei, group) in round {
-            let eid = unique_entry_ids[ei];
+            for &(ei, group) in round {
+                let eid = unique_entry_ids[ei];
 
-            if let std::collections::hash_map::Entry::Vacant(e) = cuckoo_cache.entry(group) {
-                let table = build_chunk_cuckoo_for_group(group, &reverse_index, chunk_bins);
-                e.insert(table);
-                tables_built += 1;
+                if let std::collections::hash_map::Entry::Vacant(e) = cuckoo_cache.entry(group) {
+                    let table = build_chunk_cuckoo_for_group(group, &reverse_index, chunk_bins);
+                    e.insert(table);
+                    tables_built += 1;
+                }
+
+                let mut keys = [0u64; CHUNK_CUCKOO_NUM_HASHES];
+                for h in 0..CHUNK_CUCKOO_NUM_HASHES {
+                    keys[h] = chunk_derive_cuckoo_key(group, h);
+                }
+                let bin =
+                    find_entry_in_cuckoo(cuckoo_cache.get(&group).unwrap(), eid, &keys, chunk_bins)
+                        .unwrap_or_else(|| {
+                            panic!("entry_id {} not in cuckoo table for group {}", eid, group)
+                        });
+
+                let qi = chunk_queries.len();
+                chunk_queries.push(ChunkQuery {
+                    entry_id: eid,
+                    group,
+                    bin,
+                });
+                group_to_qi.insert(group, qi);
             }
 
-            let mut keys = [0u64; CHUNK_CUCKOO_NUM_HASHES];
-            for h in 0..CHUNK_CUCKOO_NUM_HASHES {
-                keys[h] = chunk_derive_cuckoo_key(group, h);
+            if tables_built > 0 {
+                println!(
+                    "  Round {}: built {} cuckoo table{} in {:.2?}",
+                    ri + 1,
+                    tables_built,
+                    if tables_built == 1 { "" } else { "s" },
+                    t_cuckoo.elapsed()
+                );
             }
-            let bin = find_entry_in_cuckoo(cuckoo_cache.get(&group).unwrap(), eid, &keys, chunk_bins)
-                .unwrap_or_else(|| panic!("entry_id {} not in cuckoo table for group {}", eid, group));
 
-            let qi = chunk_queries.len();
-            chunk_queries.push(ChunkQuery { entry_id: eid, group, bin });
-            group_to_qi.insert(group, qi);
-        }
+            // Generate 80 queries (real for assigned groups, dummy for rest)
+            let mut queries = Vec::with_capacity(chunk_k);
+            for g in 0..chunk_k {
+                let idx = if let Some(&qi) = group_to_qi.get(&g) {
+                    chunk_queries[qi].bin as u64
+                } else {
+                    rng.next_u64() % chunk_bins as u64
+                };
+                queries.push(chunk_client.generate_query(idx));
+            }
 
-        if tables_built > 0 {
-            println!("  Round {}: built {} cuckoo table{} in {:.2?}",
-                ri + 1, tables_built,
-                if tables_built == 1 { "" } else { "s" },
-                t_cuckoo.elapsed());
-        }
-
-        // Generate 80 queries (real for assigned groups, dummy for rest)
-        let mut queries = Vec::with_capacity(chunk_k);
-        for g in 0..chunk_k {
-            let idx = if let Some(&qi) = group_to_qi.get(&g) {
-                chunk_queries[qi].bin as u64
-            } else {
-                rng.next_u64() % chunk_bins as u64
+            let batch = OnionPirBatchQuery {
+                round_id: ri as u16,
+                queries,
+                db_id: 0,
             };
-            queries.push(chunk_client.generate_query(idx));
+            sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_CHUNK_QUERY)))
+                .await
+                .expect("send");
+
+            let resp_bytes = recv_binary(&mut stream, &mut sink).await;
+            let resp_payload = &resp_bytes[4..];
+            assert_eq!(resp_payload[0], RESP_ONIONPIR_CHUNK_RESULT);
+            let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode");
+
+            // Decrypt and store entries
+            for cq in &chunk_queries {
+                // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext.
+                let _ = cq.bin;
+                let raw_pt = chunk_client.decrypt_response(&result_batch.results[cq.group]);
+                let pinfo = onionpir::params_info(chunk_bins as u64);
+                let entry_bytes = onion_unpack::unpack_onion_plaintext(
+                    &raw_pt,
+                    pinfo.poly_degree as usize,
+                    pinfo.entry_size as usize,
+                )
+                .expect("onion_unpack rejected CHUNK plaintext from server");
+                // OnionPIRv2 port (commit 5): entry_bytes is exactly
+                // `pinfo.entry_size` bytes (3328 default). Use a length cap
+                // so this binary stays correct under any ACTIVE_CONFIG
+                // (`CONFIG_N4096_K2_MP` is 19968).
+                let pes = packed_entry_size();
+                let bin_slice = if entry_bytes.len() >= pes {
+                    &entry_bytes[..pes]
+                } else {
+                    &entry_bytes[..]
+                };
+                decrypted_entries.insert(cq.entry_id, bin_slice.to_vec());
+                // Per-bin Merkle: hash the full decrypted data bin
+                data_bin_hashes.insert(cq.entry_id, merkle::sha256(bin_slice));
+                data_leaf_positions.insert(cq.entry_id, cq.group * chunk_bins + cq.bin);
+            }
         }
 
-        let batch = OnionPirBatchQuery { round_id: ri as u16, queries, db_id: 0 };
-        sink.send(Message::Binary(batch.encode(REQ_ONIONPIR_CHUNK_QUERY))).await.expect("send");
-
-        let resp_bytes = recv_binary(&mut stream, &mut sink).await;
-        let resp_payload = &resp_bytes[4..];
-        assert_eq!(resp_payload[0], RESP_ONIONPIR_CHUNK_RESULT);
-        let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode");
-
-        // Decrypt and store entries
-        for cq in &chunk_queries {
-            // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext.
-            let _ = cq.bin;
-            let raw_pt = chunk_client.decrypt_response(
-                &result_batch.results[cq.group],
-            );
-            let pinfo = onionpir::params_info(chunk_bins as u64);
-            let entry_bytes = onion_unpack::unpack_onion_plaintext(
-                &raw_pt,
-                pinfo.poly_degree as usize,
-                pinfo.entry_size as usize,
-            )
-            .expect("onion_unpack rejected CHUNK plaintext from server");
-            // OnionPIRv2 port (commit 5): entry_bytes is exactly
-            // `pinfo.entry_size` bytes (3328 default). Use a length cap
-            // so this binary stays correct under any ACTIVE_CONFIG
-            // (`CONFIG_N4096_K2_MP` is 19968).
-            let pes = packed_entry_size();
-            let bin_slice = if entry_bytes.len() >= pes {
-                &entry_bytes[..pes]
-            } else {
-                &entry_bytes[..]
-            };
-            decrypted_entries.insert(cq.entry_id, bin_slice.to_vec());
-            // Per-bin Merkle: hash the full decrypted data bin
-            data_bin_hashes.insert(cq.entry_id, merkle::sha256(bin_slice));
-            data_leaf_positions.insert(cq.entry_id, cq.group * chunk_bins + cq.bin);
-        }
-    }
-
-    chunk_rounds_count = chunk_rounds.len();
+        chunk_rounds_count = chunk_rounds.len();
     } // end if unique_entry_ids not empty
 
-    println!("  Level 2: {} rounds in {:.2?}", chunk_rounds_count, l2_start.elapsed());
+    println!(
+        "  Level 2: {} rounds in {:.2?}",
+        chunk_rounds_count,
+        l2_start.elapsed()
+    );
     println!();
 
     // ══════════════════════════════════════════════════════════════════════
@@ -924,13 +1084,23 @@ async fn main() {
         let ir = match &index_results[addr_idx] {
             Some(ir) => ir,
             None => {
-                println!("  Address {}/{}: {} — NOT FOUND\n", addr_idx + 1, num_addresses, hex);
+                println!(
+                    "  Address {}/{}: {} — NOT FOUND\n",
+                    addr_idx + 1,
+                    num_addresses,
+                    hex
+                );
                 continue;
             }
         };
 
         if ir.num_entries == 0 {
-            println!("  Address {}/{}: {} — WHALE (excluded)\n", addr_idx + 1, num_addresses, hex);
+            println!(
+                "  Address {}/{}: {} — WHALE (excluded)\n",
+                addr_idx + 1,
+                num_addresses,
+                hex
+            );
             continue;
         }
 
@@ -938,7 +1108,8 @@ async fn main() {
         let mut full_data = Vec::new();
         for i in 0..ir.num_entries as u32 {
             let eid = ir.entry_id + i;
-            let entry = decrypted_entries.get(&eid)
+            let entry = decrypted_entries
+                .get(&eid)
                 .unwrap_or_else(|| panic!("missing entry_id {}", eid));
 
             if i == 0 {
@@ -954,7 +1125,13 @@ async fn main() {
         let (num_utxos, vr) = read_varint(&full_data[pos..]);
         pos += vr;
 
-        println!("  Address {}/{}: {} ({} UTXOs)", addr_idx + 1, num_addresses, hex, num_utxos);
+        println!(
+            "  Address {}/{}: {} ({} UTXOs)",
+            addr_idx + 1,
+            num_addresses,
+            hex,
+            num_utxos
+        );
 
         let mut total_sats: u64 = 0;
         for i in 0..num_utxos as usize {
@@ -966,7 +1143,9 @@ async fn main() {
             pos += 32;
 
             let mut txid_rev = [0u8; 32];
-            for j in 0..32 { txid_rev[j] = txid_bytes[31 - j]; }
+            for j in 0..32 {
+                txid_rev[j] = txid_bytes[31 - j];
+            }
             let txid_hex: String = txid_rev.iter().map(|b| format!("{:02x}", b)).collect();
 
             let (vout, vr) = read_varint(&full_data[pos..]);
@@ -976,7 +1155,14 @@ async fn main() {
 
             total_sats += amount;
             let btc = amount as f64 / 100_000_000.0;
-            println!("    UTXO #{}: {}:{} — {} sats ({:.8} BTC)", i + 1, txid_hex, vout, amount, btc);
+            println!(
+                "    UTXO #{}: {}:{} — {} sats ({:.8} BTC)",
+                i + 1,
+                txid_hex,
+                vout,
+                amount,
+                btc
+            );
         }
 
         let total_btc = total_sats as f64 / 100_000_000.0;
@@ -995,18 +1181,38 @@ async fn main() {
 
     let merkle_info = parse_onionpir_merkle(json_str);
     if let Some(ref mi) = merkle_info {
-        let index_root_hex: String = mi.index_tree.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-        let data_root_hex: String = mi.data_tree.root.iter().take(8).map(|b| format!("{:02x}", b)).collect();
-        println!("[7] Per-Bin Merkle Verification (arity={})...",  mi.arity);
-        println!("  INDEX tree: {} sibling levels, root={}...",
-            mi.index_tree.levels.len(), index_root_hex);
-        println!("  DATA tree:  {} sibling levels, root={}...\n",
-            mi.data_tree.levels.len(), data_root_hex);
+        let index_root_hex: String = mi
+            .index_tree
+            .root
+            .iter()
+            .take(8)
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        let data_root_hex: String = mi
+            .data_tree
+            .root
+            .iter()
+            .take(8)
+            .map(|b| format!("{:02x}", b))
+            .collect();
+        println!("[7] Per-Bin Merkle Verification (arity={})...", mi.arity);
+        println!(
+            "  INDEX tree: {} sibling levels, root={}...",
+            mi.index_tree.levels.len(),
+            index_root_hex
+        );
+        println!(
+            "  DATA tree:  {} sibling levels, root={}...\n",
+            mi.data_tree.levels.len(),
+            data_root_hex
+        );
 
         // Collect INDEX leaves: one per address
         let mut index_leaves: Vec<(usize, [u8; 32])> = Vec::new();
         for addr_idx in 0..num_addresses {
-            if let (Some(hash), Some(pos)) = (index_bin_hashes[addr_idx], index_leaf_positions[addr_idx]) {
+            if let (Some(hash), Some(pos)) =
+                (index_bin_hashes[addr_idx], index_leaf_positions[addr_idx])
+            {
                 index_leaves.push((pos, hash));
             }
         }
@@ -1017,23 +1223,49 @@ async fn main() {
                 data_leaves.push((pos, hash));
             }
         }
-        println!("  {} index leaves, {} data leaves to verify\n", index_leaves.len(), data_leaves.len());
+        println!(
+            "  {} index leaves, {} data leaves to verify\n",
+            index_leaves.len(),
+            data_leaves.len()
+        );
 
         // Verify each sub-tree in sequence: (tree_kind, sub_tree, leaves, req/resp codes)
-        let trees: Vec<(&str, &OnionMerkleSubTree, &[(usize, [u8; 32])], u8, u8, u8, u8)> = vec![
-            ("index", &mi.index_tree, &index_leaves,
-             REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
-             REQ_ONIONPIR_MERKLE_INDEX_SIBLING, RESP_ONIONPIR_MERKLE_INDEX_SIBLING),
-            ("data", &mi.data_tree, &data_leaves,
-             REQ_ONIONPIR_MERKLE_DATA_TREE_TOP, RESP_ONIONPIR_MERKLE_DATA_TREE_TOP,
-             REQ_ONIONPIR_MERKLE_DATA_SIBLING, RESP_ONIONPIR_MERKLE_DATA_SIBLING),
+        let trees: Vec<(
+            &str,
+            &OnionMerkleSubTree,
+            &[(usize, [u8; 32])],
+            u8,
+            u8,
+            u8,
+            u8,
+        )> = vec![
+            (
+                "index",
+                &mi.index_tree,
+                &index_leaves,
+                REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+                RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+                REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+                RESP_ONIONPIR_MERKLE_INDEX_SIBLING,
+            ),
+            (
+                "data",
+                &mi.data_tree,
+                &data_leaves,
+                REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+                RESP_ONIONPIR_MERKLE_DATA_TREE_TOP,
+                REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+                RESP_ONIONPIR_MERKLE_DATA_SIBLING,
+            ),
         ];
 
         let mut total_index_verified = 0usize;
         let mut total_data_verified = 0usize;
 
         for (tree_kind, sub_tree, leaves, req_top, _resp_top, req_sib, resp_sib) in &trees {
-            if leaves.is_empty() { continue; }
+            if leaves.is_empty() {
+                continue;
+            }
 
             // Fetch tree-top cache
             {
@@ -1051,7 +1283,9 @@ async fn main() {
             let mut cache_offset = 8usize;
             let mut cache_levels: Vec<Vec<[u8; 32]>> = Vec::new();
             for _ in 0..num_cached_levels {
-                let num_nodes = u32::from_le_bytes(tree_top[cache_offset..cache_offset + 4].try_into().unwrap()) as usize;
+                let num_nodes = u32::from_le_bytes(
+                    tree_top[cache_offset..cache_offset + 4].try_into().unwrap(),
+                ) as usize;
                 cache_offset += 4;
                 let mut level_nodes = Vec::with_capacity(num_nodes);
                 for _ in 0..num_nodes {
@@ -1065,10 +1299,13 @@ async fn main() {
 
             // Deduplicate leaves
             let mut unique_map: HashMap<usize, [u8; 32]> = HashMap::new();
-            for &(lp, hash) in leaves.iter() { unique_map.entry(lp).or_insert(hash); }
+            for &(lp, hash) in leaves.iter() {
+                unique_map.entry(lp).or_insert(hash);
+            }
             let leaf_pos_arr: Vec<usize> = unique_map.keys().copied().collect();
             let n = leaf_pos_arr.len();
-            let mut current_hash: Vec<[u8; 32]> = leaf_pos_arr.iter().map(|lp| unique_map[lp]).collect();
+            let mut current_hash: Vec<[u8; 32]> =
+                leaf_pos_arr.iter().map(|lp| unique_map[lp]).collect();
             let mut node_idx: Vec<usize> = leaf_pos_arr.clone();
             let mut failed = vec![false; n];
 
@@ -1080,14 +1317,19 @@ async fn main() {
 
                 let mut group_to_items: HashMap<u32, Vec<usize>> = HashMap::new();
                 for i in 0..n {
-                    if failed[i] { continue; }
+                    if failed[i] {
+                        continue;
+                    }
                     let gid = (node_idx[i] / mi.arity) as u32;
                     group_to_items.entry(gid).or_default().push(i);
                 }
                 let unique_gids: Vec<u32> = group_to_items.keys().copied().collect();
-                if unique_gids.is_empty() { break; }
+                if unique_gids.is_empty() {
+                    break;
+                }
 
-                let cand_groups: Vec<[usize; 3]> = unique_gids.iter()
+                let cand_groups: Vec<[usize; 3]> = unique_gids
+                    .iter()
                     .map(|&gid| derive_sib_pbc_groups(gid, li.k))
                     .collect();
                 let pbc_rounds = pbc_plan_rounds(&cand_groups, li.k, 3, 500);
@@ -1100,17 +1342,39 @@ async fn main() {
                         let mut group_entries: Vec<u32> = Vec::new();
                         for g in 0..li.num_groups as u32 {
                             let bs = derive_sib_pbc_groups(g, li.k);
-                            if bs.contains(&pbc_group) { group_entries.push(g); }
+                            if bs.contains(&pbc_group) {
+                                group_entries.push(g);
+                            }
                         }
-                        let cuckoo_table = build_sib_cuckoo_for_group(tree_kind, level, pbc_group, &group_entries, li.bins_per_table);
-                        let target_bin = find_in_sib_cuckoo(&cuckoo_table, gid, tree_kind, level, pbc_group, li.bins_per_table)
-                            .unwrap_or_else(|| panic!("{} group {} not in sibling cuckoo L{} group {}", tree_kind, gid, level, pbc_group));
+                        let cuckoo_table = build_sib_cuckoo_for_group(
+                            tree_kind,
+                            level,
+                            pbc_group,
+                            &group_entries,
+                            li.bins_per_table,
+                        );
+                        let target_bin = find_in_sib_cuckoo(
+                            &cuckoo_table,
+                            gid,
+                            tree_kind,
+                            level,
+                            pbc_group,
+                            li.bins_per_table,
+                        )
+                        .unwrap_or_else(|| {
+                            panic!(
+                                "{} group {} not in sibling cuckoo L{} group {}",
+                                tree_kind, gid, level, pbc_group
+                            )
+                        });
                         group_info.insert(pbc_group, (gid, target_bin));
                     }
 
                     // OnionPIRv2 port: rename + Option<Self> return.
                     let sib_client = PirClient::from_secret_key(
-                        li.bins_per_table as u64, client_id, &secret_key,
+                        li.bins_per_table as u64,
+                        client_id,
+                        &secret_key,
                     )
                     .expect("freshly-generated secret key must round-trip (sibling)");
                     let mut sib_queries = Vec::with_capacity(li.k);
@@ -1123,20 +1387,25 @@ async fn main() {
                         sib_queries.push(sib_client.generate_query(bin));
                     }
 
-                    let batch = OnionPirBatchQuery { round_id: (level * 100 + ri) as u16, queries: sib_queries, db_id: 0 };
-                    sink.send(Message::Binary(batch.encode(*req_sib))).await.expect("send");
+                    let batch = OnionPirBatchQuery {
+                        round_id: (level * 100 + ri) as u16,
+                        queries: sib_queries,
+                        db_id: 0,
+                    };
+                    sink.send(Message::Binary(batch.encode(*req_sib)))
+                        .await
+                        .expect("send");
 
                     let resp_bytes = recv_binary(&mut stream, &mut sink).await;
                     let resp_payload = &resp_bytes[4..];
                     assert_eq!(resp_payload[0], *resp_sib);
-                    let result_batch = OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
+                    let result_batch =
+                        OnionPirBatchResult::decode(&resp_payload[1..]).expect("decode sibling");
 
                     for (&pbc_group, &(gid, target_bin)) in &group_info {
                         // OnionPIRv2 port (commit 2): bit-unpack the raw plaintext.
                         let _ = target_bin;
-                        let raw_pt = sib_client.decrypt_response(
-                            &result_batch.results[pbc_group],
-                        );
+                        let raw_pt = sib_client.decrypt_response(&result_batch.results[pbc_group]);
                         let pinfo = onionpir::params_info(li.bins_per_table as u64);
                         let decrypted = onion_unpack::unpack_onion_plaintext(
                             &raw_pt,
@@ -1146,18 +1415,31 @@ async fn main() {
                         .expect("onion_unpack rejected sibling plaintext from server");
                         sibling_data.insert(gid, decrypted);
                     }
-                    println!("    {} L{} PBC round {}/{}: {} groups ✓",
-                        tree_kind, level, ri + 1, pbc_rounds.len(), pbc_round.len());
+                    println!(
+                        "    {} L{} PBC round {}/{}: {} groups ✓",
+                        tree_kind,
+                        level,
+                        ri + 1,
+                        pbc_rounds.len(),
+                        pbc_round.len()
+                    );
                 }
 
                 // Update state
                 for (&gid, item_indices) in &group_to_items {
                     let decrypted = match sibling_data.get(&gid) {
                         Some(d) => d,
-                        None => { for &i in item_indices { failed[i] = true; } continue; }
+                        None => {
+                            for &i in item_indices {
+                                failed[i] = true;
+                            }
+                            continue;
+                        }
                     };
                     for &i in item_indices {
-                        if failed[i] { continue; }
+                        if failed[i] {
+                            continue;
+                        }
                         let child_pos = node_idx[i] % mi.arity;
                         let mut children: Vec<[u8; 32]> = Vec::with_capacity(mi.arity);
                         for c in 0..mi.arity {
@@ -1166,7 +1448,9 @@ async fn main() {
                             } else {
                                 let off = c * 32;
                                 let mut h = [0u8; 32];
-                                if off + 32 <= decrypted.len() { h.copy_from_slice(&decrypted[off..off + 32]); }
+                                if off + 32 <= decrypted.len() {
+                                    h.copy_from_slice(&decrypted[off..off + 32]);
+                                }
                                 children.push(h);
                             }
                         }
@@ -1179,7 +1463,9 @@ async fn main() {
             // Walk tree-top cache to root
             let mut verified = 0usize;
             for i in 0..n {
-                if failed[i] { continue; }
+                if failed[i] {
+                    continue;
+                }
                 let mut hash = current_hash[i];
                 let mut idx = node_idx[i];
                 for ci in 0..cache_levels.len().saturating_sub(1) {
@@ -1188,29 +1474,45 @@ async fn main() {
                     let mut children: Vec<[u8; 32]> = Vec::with_capacity(cache_arity);
                     for c in 0..cache_arity {
                         let child_idx = parent_start + c;
-                        children.push(if child_idx < level_nodes.len() { level_nodes[child_idx] } else { [0u8; 32] });
+                        children.push(if child_idx < level_nodes.len() {
+                            level_nodes[child_idx]
+                        } else {
+                            [0u8; 32]
+                        });
                     }
                     hash = merkle::compute_parent_n(&children);
                     idx /= cache_arity;
                 }
-                if hash == sub_tree.root { verified += 1; }
+                if hash == sub_tree.root {
+                    verified += 1;
+                }
             }
             println!("  {} tree: {}/{} leaves verified\n", tree_kind, verified, n);
 
-            if *tree_kind == "index" { total_index_verified = verified; }
-            else { total_data_verified = verified; }
+            if *tree_kind == "index" {
+                total_index_verified = verified;
+            } else {
+                total_data_verified = verified;
+            }
         }
 
-        println!("  Per-Bin Merkle: INDEX {}/{}, DATA {}/{}\n",
-            total_index_verified, index_leaves.len(), total_data_verified, data_leaves.len());
+        println!(
+            "  Per-Bin Merkle: INDEX {}/{}, DATA {}/{}\n",
+            total_index_verified,
+            index_leaves.len(),
+            total_data_verified,
+            data_leaves.len()
+        );
     } else {
         println!("\n[7] Merkle: not available (no onionpir_merkle in server info)");
     }
 
     // ── Summary ─────────────────────────────────────────────────────────
     println!("=== Done ===");
-    println!("  {} addresses, {} index rounds, {} chunk rounds",
-        num_addresses, total_index_rounds, chunk_rounds_count);
+    println!(
+        "  {} addresses, {} index rounds, {} chunk rounds",
+        num_addresses, total_index_rounds, chunk_rounds_count
+    );
     println!("  Total time: {:.2?}", total_start.elapsed());
 
     let _ = sink.send(Message::Close(None)).await;

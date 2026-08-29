@@ -155,8 +155,7 @@ impl RoundProfile {
     /// shape: K-padded length plus uniform per-group item count
     /// (INDEX = 2 for DPF/Onion, T-1 for Harmony, etc.).
     pub fn items_uniform(&self, expected_len: usize, expected_value: u32) -> bool {
-        self.items.len() == expected_len
-            && self.items.iter().all(|&v| v == expected_value)
+        self.items.len() == expected_len && self.items.iter().all(|&v| v == expected_value)
     }
 
     /// True if `kind` matches up to its enum variant, ignoring any
@@ -189,7 +188,10 @@ pub struct LeakageProfile {
 impl LeakageProfile {
     /// New empty profile for the given backend.
     pub fn new(backend: impl Into<String>) -> Self {
-        Self { backend: backend.into(), rounds: Vec::new() }
+        Self {
+            backend: backend.into(),
+            rounds: Vec::new(),
+        }
     }
 
     /// Iterator over rounds whose `kind` matches `kind` up to enum
@@ -266,7 +268,10 @@ impl BufferingLeakageRecorder {
     /// Snapshot the current buffer (clone). The recorder retains its
     /// state — repeated snapshots see additional rounds appended.
     pub fn snapshot(&self) -> Vec<RoundProfile> {
-        self.rounds.lock().expect("leakage recorder mutex poisoned").clone()
+        self.rounds
+            .lock()
+            .expect("leakage recorder mutex poisoned")
+            .clone()
     }
 
     /// Drain the buffer into a [`LeakageProfile`] tagged with the
@@ -276,17 +281,26 @@ impl BufferingLeakageRecorder {
     pub fn take_profile(&self, backend: impl Into<String>) -> LeakageProfile {
         let mut guard = self.rounds.lock().expect("leakage recorder mutex poisoned");
         let rounds = std::mem::take(&mut *guard);
-        LeakageProfile { backend: backend.into(), rounds }
+        LeakageProfile {
+            backend: backend.into(),
+            rounds,
+        }
     }
 
     /// Drop every buffered round without producing a profile.
     pub fn clear(&self) {
-        self.rounds.lock().expect("leakage recorder mutex poisoned").clear();
+        self.rounds
+            .lock()
+            .expect("leakage recorder mutex poisoned")
+            .clear();
     }
 
     /// Number of rounds currently buffered.
     pub fn len(&self) -> usize {
-        self.rounds.lock().expect("leakage recorder mutex poisoned").len()
+        self.rounds
+            .lock()
+            .expect("leakage recorder mutex poisoned")
+            .len()
     }
 
     /// `true` iff no rounds have been recorded since the last
@@ -361,7 +375,10 @@ mod tests {
         let snap = r.snapshot();
         assert_eq!(snap[0].server_id, 0);
         assert_eq!(snap[1].server_id, 1);
-        assert!(matches!(snap[2].kind, RoundKind::IndexMerkleSiblings { level: 0 }));
+        assert!(matches!(
+            snap[2].kind,
+            RoundKind::IndexMerkleSiblings { level: 0 }
+        ));
     }
 
     #[test]
@@ -500,7 +517,10 @@ mod tests {
             .collect();
         // All three IndexMerkleSiblings rounds match, regardless of level.
         assert_eq!(merkle_rounds.len(), 3);
-        assert_eq!(p.count_of_kind(&RoundKind::IndexMerkleSiblings { level: 0 }), 3);
+        assert_eq!(
+            p.count_of_kind(&RoundKind::IndexMerkleSiblings { level: 0 }),
+            3
+        );
         // Index variant is distinct.
         assert_eq!(p.count_of_kind(&RoundKind::Index), 1);
         // Variants not present in the profile return 0.

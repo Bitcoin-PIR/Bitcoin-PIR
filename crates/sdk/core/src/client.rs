@@ -219,7 +219,9 @@ impl PirClientConfig {
         use crate::error::PirError;
 
         if self.server0_url.is_empty() {
-            return Err(PirError::MissingServer("primary server URL required".into()));
+            return Err(PirError::MissingServer(
+                "primary server URL required".into(),
+            ));
         }
 
         match self.backend {
@@ -274,7 +276,12 @@ pub struct PrintProgress;
 
 impl SyncProgress for PrintProgress {
     fn on_step_start(&self, step_index: usize, total_steps: usize, description: &str) {
-        println!("[{}/{}] Starting: {}", step_index + 1, total_steps, description);
+        println!(
+            "[{}/{}] Starting: {}",
+            step_index + 1,
+            total_steps,
+            description
+        );
     }
 
     fn on_step_progress(&self, step_index: usize, progress: f32) {

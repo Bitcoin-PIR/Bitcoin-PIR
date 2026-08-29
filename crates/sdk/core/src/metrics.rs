@@ -358,21 +358,15 @@ impl AtomicMetrics {
             frames_received: self.frames_received.load(Ordering::Relaxed),
             connects: self.connects.load(Ordering::Relaxed),
             disconnects: self.disconnects.load(Ordering::Relaxed),
-            total_query_latency_micros: self
-                .total_query_latency_micros
-                .load(Ordering::Relaxed),
+            total_query_latency_micros: self.total_query_latency_micros.load(Ordering::Relaxed),
             min_query_latency_micros: self.min_query_latency_micros.load(Ordering::Relaxed),
             max_query_latency_micros: self.max_query_latency_micros.load(Ordering::Relaxed),
             roundtrips_observed: self.roundtrips_observed.load(Ordering::Relaxed),
             total_roundtrip_latency_micros: self
                 .total_roundtrip_latency_micros
                 .load(Ordering::Relaxed),
-            min_roundtrip_latency_micros: self
-                .min_roundtrip_latency_micros
-                .load(Ordering::Relaxed),
-            max_roundtrip_latency_micros: self
-                .max_roundtrip_latency_micros
-                .load(Ordering::Relaxed),
+            min_roundtrip_latency_micros: self.min_roundtrip_latency_micros.load(Ordering::Relaxed),
+            max_roundtrip_latency_micros: self.max_roundtrip_latency_micros.load(Ordering::Relaxed),
         }
     }
 }
@@ -822,13 +816,7 @@ mod tests {
                         // Mix in tid so durations vary across threads
                         // and the min/max race is meaningful.
                         let micros = (tid as u64 * 1000) + i as u64 + 1;
-                        m.on_query_end(
-                            "dpf",
-                            0,
-                            10,
-                            true,
-                            Duration::from_micros(micros),
-                        );
+                        m.on_query_end("dpf", 0, 10, true, Duration::from_micros(micros));
                     }
                 })
             })
@@ -862,13 +850,7 @@ mod tests {
     fn atomic_metrics_saturates_on_huge_duration() {
         let m = AtomicMetrics::new();
         // u128::MAX micros >> u64::MAX; the conversion saturates.
-        m.on_query_end(
-            "dpf",
-            0,
-            10,
-            true,
-            Duration::new(u64::MAX, 999_999_999),
-        );
+        m.on_query_end("dpf", 0, 10, true, Duration::new(u64::MAX, 999_999_999));
         let s = m.snapshot();
         assert_eq!(s.max_query_latency_micros, u64::MAX);
     }
@@ -971,10 +953,7 @@ mod tests {
         assert_eq!(m.snapshot().min_roundtrip_latency_micros_or_zero(), 0);
 
         m.on_roundtrip_end("dpf", 100, 200, Duration::from_millis(3));
-        assert_eq!(
-            m.snapshot().min_roundtrip_latency_micros_or_zero(),
-            3_000
-        );
+        assert_eq!(m.snapshot().min_roundtrip_latency_micros_or_zero(), 3_000);
     }
 
     /// Roundtrip-latency counters are atomic across threads —
@@ -994,12 +973,7 @@ mod tests {
                         // Mix in tid so durations vary across threads
                         // and the min/max race is meaningful.
                         let micros = (tid as u64 * 1000) + i as u64 + 1;
-                        m.on_roundtrip_end(
-                            "dpf",
-                            100,
-                            200,
-                            Duration::from_micros(micros),
-                        );
+                        m.on_roundtrip_end("dpf", 100, 200, Duration::from_micros(micros));
                     }
                 })
             })
@@ -1025,12 +999,7 @@ mod tests {
     #[test]
     fn atomic_metrics_saturates_on_huge_roundtrip_duration() {
         let m = AtomicMetrics::new();
-        m.on_roundtrip_end(
-            "dpf",
-            100,
-            200,
-            Duration::new(u64::MAX, 999_999_999),
-        );
+        m.on_roundtrip_end("dpf", 100, 200, Duration::new(u64::MAX, 999_999_999));
         let s = m.snapshot();
         assert_eq!(s.max_roundtrip_latency_micros, u64::MAX);
     }

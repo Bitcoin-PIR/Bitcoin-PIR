@@ -146,7 +146,7 @@ pub(crate) fn verify_tree_tops_super_root(
 
 /// Parse the tree-tops blob returned by `REQ_BUCKET_MERKLE_TREE_TOPS`.
 ///
-/// Wire format (matches server `apps/server/src/bin/unified_server.rs` and
+/// Wire format (matches server `apps/server/src/bin/unified_server/` and
 /// the TS parser in `web/src/merkle-verify-bucket.ts`):
 ///
 /// ```text

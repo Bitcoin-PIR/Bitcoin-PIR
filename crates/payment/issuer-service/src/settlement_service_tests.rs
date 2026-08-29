@@ -1,7 +1,6 @@
 use super::*;
 use pir_issuer_store::{
-    BatKeyLineageRegistration, ProviderSettlementRegistrationWriteV1,
-    StoreOptions,
+    BatKeyLineageRegistration, ProviderSettlementRegistrationWriteV1, StoreOptions,
 };
 use pir_payment_crypto::{cashu_hash_to_curve_v1, K256CashuMintKeyringV1};
 use pir_service_protocol::{

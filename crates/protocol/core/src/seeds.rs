@@ -210,7 +210,10 @@ impl ChainAnchor {
         let mut block_hash = [0u8; 32];
         block_hash.copy_from_slice(&bytes[..32]);
         let block_height = u32::from_le_bytes(bytes[32..36].try_into().unwrap());
-        Ok(ChainAnchor { block_hash, block_height })
+        Ok(ChainAnchor {
+            block_hash,
+            block_height,
+        })
     }
 
     /// Write to a file. Overwrites if the file exists.
@@ -446,7 +449,10 @@ mod tests {
 
     #[test]
     fn delta_anchor_bytes_roundtrip() {
-        let d = DeltaAnchor { from: anchor1(), to: anchor2() };
+        let d = DeltaAnchor {
+            from: anchor1(),
+            to: anchor2(),
+        };
         let d2 = DeltaAnchor::from_bytes(&d.to_bytes()).unwrap();
         assert_eq!(d, d2);
         assert_eq!(d.to_bytes().len(), DELTA_ANCHOR_BYTES);
@@ -470,10 +476,19 @@ mod tests {
         // u64 prefix is negligible — if this trips, something is wrong
         // with the domain wiring.)
         let s = SnapshotSeeds::derive(&anchor1());
-        let xs = [s.index_master, s.chunk_master, s.index_tag, s.merkle_data_master];
+        let xs = [
+            s.index_master,
+            s.chunk_master,
+            s.index_tag,
+            s.merkle_data_master,
+        ];
         for i in 0..xs.len() {
             for j in (i + 1)..xs.len() {
-                assert_ne!(xs[i], xs[j], "SnapshotSeeds fields {} and {} collided", i, j);
+                assert_ne!(
+                    xs[i], xs[j],
+                    "SnapshotSeeds fields {} and {} collided",
+                    i, j
+                );
             }
         }
     }

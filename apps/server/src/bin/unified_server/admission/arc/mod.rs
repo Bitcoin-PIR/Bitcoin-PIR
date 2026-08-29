@@ -1,7 +1,7 @@
 //! ARC admission facade (D2).
 //!
 //! Single construction boundary for the provider-local ARC verifier, so the
-//! legacy flag wiring in `unified_server.rs` collapses to one call site. The
+//! legacy flag wiring in `unified_server/` collapses to one call site. The
 //! verifier itself (`pir_runtime_core::arc_verifier`) stays put; the single
 //! designated issuer lives outside the node — this facade only checks that
 //! presented tokens were issued under an accepted key.

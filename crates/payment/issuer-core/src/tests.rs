@@ -2,9 +2,7 @@ use super::*;
 use ed25519_dalek::SigningKey;
 use k256::elliptic_curve::sec1::ToEncodedPoint;
 use k256::{ProjectivePoint, Scalar};
-use pir_issuer_store::{
-    StoreOptions,
-};
+use pir_issuer_store::StoreOptions;
 use pir_lightning_backend::{
     CreatedInvoiceV1, FakeFailurePointV1, FakeLightningNodeV1, InvoiceObservationV1,
 };

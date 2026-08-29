@@ -6,15 +6,14 @@
 //! build binaries importing `use common::*;` continue to compile unchanged.
 
 // Re-export all constants and types from pir-core
-pub use pir_core::params::*;
 pub use pir_core::codec::*;
+pub use pir_core::params::*;
 pub use pir_core::pbc::*;
 
 // Re-export primitive hashing functions directly (same signature)
 pub use pir_core::hash::{
-    splitmix64, sh_a, sh_b, sh_c,
-    hash_for_group, cuckoo_hash, cuckoo_hash_int, compute_tag,
-    hash_int_for_group,
+    compute_tag, cuckoo_hash, cuckoo_hash_int, hash_for_group, hash_int_for_group, sh_a, sh_b,
+    sh_c, splitmix64,
 };
 
 // ─── Backward-compatible wrappers ──────────────────────────────────────────
@@ -54,11 +53,8 @@ pub fn derive_chunk_groups(chunk_id: u32) -> [usize; NUM_HASHES] {
 /// anchor itself is discarded by this signature — callers that need it
 /// should use [`pir_core::cuckoo::read_cuckoo_header_with_anchor`] directly.
 pub fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(
-        data,
-        &pir_core::params::INDEX_PARAMS,
-    )
-    .expect("INDEX cuckoo header parse");
+    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &pir_core::params::INDEX_PARAMS)
+        .expect("INDEX cuckoo header parse");
     (h.bins_per_table, h.tag_seed)
 }
 
@@ -70,11 +66,8 @@ pub fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
 /// `MASTER_SEED` const, so the binary keeps working on chain-anchored
 /// databases (Phase B+).
 pub fn read_cuckoo_header_full(data: &[u8]) -> (usize, u64, u64) {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(
-        data,
-        &pir_core::params::INDEX_PARAMS,
-    )
-    .expect("INDEX cuckoo header parse");
+    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &pir_core::params::INDEX_PARAMS)
+        .expect("INDEX cuckoo header parse");
     (h.bins_per_table, h.master_seed, h.tag_seed)
 }
 
@@ -82,11 +75,8 @@ pub fn read_cuckoo_header_full(data: &[u8]) -> (usize, u64, u64) {
 ///
 /// Accepts both legacy and Phase-C v2 MAGIC variants.
 pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(
-        data,
-        &pir_core::params::CHUNK_PARAMS,
-    )
-    .expect("CHUNK cuckoo header parse");
+    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &pir_core::params::CHUNK_PARAMS)
+        .expect("CHUNK cuckoo header parse");
     h.bins_per_table
 }
 
@@ -94,10 +84,7 @@ pub fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
 ///
 /// See [`read_cuckoo_header_full`] for the rationale.
 pub fn read_chunk_cuckoo_header_full(data: &[u8]) -> (usize, u64) {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(
-        data,
-        &pir_core::params::CHUNK_PARAMS,
-    )
-    .expect("CHUNK cuckoo header parse");
+    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &pir_core::params::CHUNK_PARAMS)
+        .expect("CHUNK cuckoo header parse");
     (h.bins_per_table, h.master_seed)
 }

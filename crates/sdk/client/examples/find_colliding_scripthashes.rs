@@ -4,7 +4,7 @@
 //! a fixed seed, buckets them by `derive_groups_3(sh, K)[0]` (the same
 //! assigned-group function the DPF and Harmony INDEX query path uses
 //! at `crates/sdk/client/src/dpf.rs::query_index_level` and
-//! `crates/sdk/client/src/harmony.rs::query_single`), and prints six
+//! `crates/sdk/client/src/harmony/mod.rs::query_single`), and prints six
 //! scripthashes ready to paste into the integration test.
 //!
 //! Output is grouped into:
@@ -104,22 +104,42 @@ fn main() {
         .collect();
     other_buckets.sort_by_key(|(g, _)| *g);
     let non_collide_pair: Vec<[u8; 20]> = other_buckets.iter().take(2).map(|(_, h)| *h).collect();
-    assert_eq!(non_collide_pair.len(), 2, "need 2 distinct non-colliding buckets");
+    assert_eq!(
+        non_collide_pair.len(),
+        2,
+        "need 2 distinct non-colliding buckets"
+    );
     let g_c1 = derive_groups_3(&non_collide_pair[0], k)[0];
     let g_c2 = derive_groups_3(&non_collide_pair[1], k)[0];
 
-    println!("# === COLLIDING (batch_A, batch_B share assigned_group = {}) ===", g_collide);
+    println!(
+        "# === COLLIDING (batch_A, batch_B share assigned_group = {}) ===",
+        g_collide
+    );
     let labels_collide = ["sh_a1", "sh_a2", "sh_b1", "sh_b2"];
     for (i, sh) in collide_hashes.iter().enumerate() {
         let g = derive_groups_3(sh, k)[0];
-        println!("const {}_HEX: &str = \"{}\"; // assigned_group = {}", labels_collide[i].to_uppercase(), hex::encode(sh), g);
+        println!(
+            "const {}_HEX: &str = \"{}\"; // assigned_group = {}",
+            labels_collide[i].to_uppercase(),
+            hex::encode(sh),
+            g
+        );
     }
     println!();
-    println!("# === NON-COLLIDING (batch_C: assigned_groups {} and {}) ===", g_c1, g_c2);
+    println!(
+        "# === NON-COLLIDING (batch_C: assigned_groups {} and {}) ===",
+        g_c1, g_c2
+    );
     let labels_nc = ["sh_c1", "sh_c2"];
     for (i, sh) in non_collide_pair.iter().enumerate() {
         let g = derive_groups_3(sh, k)[0];
-        println!("const {}_HEX: &str = \"{}\"; // assigned_group = {}", labels_nc[i].to_uppercase(), hex::encode(sh), g);
+        println!(
+            "const {}_HEX: &str = \"{}\"; // assigned_group = {}",
+            labels_nc[i].to_uppercase(),
+            hex::encode(sh),
+            g
+        );
     }
 
     // Self-verify the collision pattern. If any of these fire, the
@@ -146,7 +166,10 @@ fn main() {
     );
 
     println!();
-    println!("# Sanity-checked: groups[a1..b2] all = {}, c1 = {}, c2 = {}", g_collide, g_c1, g_c2);
+    println!(
+        "# Sanity-checked: groups[a1..b2] all = {}, c1 = {}, c2 = {}",
+        g_collide, g_c1, g_c2
+    );
     println!("# Distinct scripthashes in each batch:");
     for (label, sh) in labels_collide.iter().zip(collide_hashes.iter()) {
         println!("#   {}: {}", label, hex::encode(sh));

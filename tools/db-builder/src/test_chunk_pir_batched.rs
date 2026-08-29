@@ -100,7 +100,11 @@ fn read_plan(path: &str) -> Plan {
 
     assert_eq!(pos, data.len(), "Plan file has trailing data");
 
-    Plan { spks, rounds, total_placed }
+    Plan {
+        spks,
+        rounds,
+        total_placed,
+    }
 }
 
 // ─── DPF helpers ────────────────────────────────────────────────────────────
@@ -206,7 +210,9 @@ impl DummyRng {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        Self { state: splitmix64(seed) }
+        Self {
+            state: splitmix64(seed),
+        }
     }
 
     fn next_u64(&mut self) -> u64 {
@@ -229,9 +235,18 @@ fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 fn main() {
-    println!("=== Chunk PIR Test (group-major, sample {} rounds) ===", ROUNDS_PER_BATCH);
-    println!("  CHUNKS_PER_UNIT = {} ({} bytes/unit)", CHUNKS_PER_UNIT, UNIT_DATA_SIZE);
-    println!("  SLOT_SIZE = {} bytes, RESULT_SIZE = {} bytes", SLOT_SIZE, RESULT_SIZE);
+    println!(
+        "=== Chunk PIR Test (group-major, sample {} rounds) ===",
+        ROUNDS_PER_BATCH
+    );
+    println!(
+        "  CHUNKS_PER_UNIT = {} ({} bytes/unit)",
+        CHUNKS_PER_UNIT, UNIT_DATA_SIZE
+    );
+    println!(
+        "  SLOT_SIZE = {} bytes, RESULT_SIZE = {} bytes",
+        SLOT_SIZE, RESULT_SIZE
+    );
     println!();
     // ── 1. Load plan ─────────────────────────────────────────────────────
     println!("[1] Loading plan: {}", CHUNK_PIR_PLAN_FILE);
@@ -249,7 +264,10 @@ fn main() {
     let cuckoo_data = fs::read(CHUNK_CUCKOO_FILE).expect("read chunk cuckoo");
     let (bins_per_table, chunk_master_seed) = read_chunk_cuckoo_header_full(&cuckoo_data);
     let dpf_n = pir_core::params::compute_dpf_n(bins_per_table);
-    println!("  Chunk cuckoo: bins_per_table = {}, dpf_n = {}", bins_per_table, dpf_n);
+    println!(
+        "  Chunk cuckoo: bins_per_table = {}, dpf_n = {}",
+        bins_per_table, dpf_n
+    );
 
     let chunks_file = File::open(CHUNKS_DATA_FILE).expect("open chunks");
     let chunks_mmap = unsafe { Mmap::map(&chunks_file) }.expect("mmap chunks");
@@ -279,7 +297,10 @@ fn main() {
     println!();
 
     // ── 3. Generate DPF keys for sample rounds ───────────────────────────
-    println!("[3] Generating DPF keys for {} rounds × {} groups...", sample_rounds, K_CHUNK);
+    println!(
+        "[3] Generating DPF keys for {} rounds × {} groups...",
+        sample_rounds, K_CHUNK
+    );
     let keygen_start = Instant::now();
 
     let dpf = Dpf::with_default_key();
@@ -332,7 +353,10 @@ fn main() {
     // ── 4. Server processing: group-major over sample rounds ────────────
     let table_byte_size = bins_per_table * RESULT_SIZE; // bins × SLOTS × SLOT_SIZE
 
-    println!("[4] Both servers: {} groups × {} rounds (group-major, concurrent)...", K_CHUNK, sample_rounds);
+    println!(
+        "[4] Both servers: {} groups × {} rounds (group-major, concurrent)...",
+        K_CHUNK, sample_rounds
+    );
     let servers_start = Instant::now();
 
     let (results_s0, results_s1) = rayon::join(
@@ -387,8 +411,7 @@ fn main() {
     // ── 5. Client: XOR and verify ────────────────────────────────────────
     println!("[6] Client: XOR and verify {} rounds...", sample_rounds);
 
-    let mut unit_to_spk: std::collections::HashMap<u32, usize> =
-        std::collections::HashMap::new();
+    let mut unit_to_spk: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for (si, spk) in plan.spks.iter().enumerate() {
         let num_units = (spk.num_chunks as usize).div_ceil(CHUNKS_PER_UNIT);
         for u in 0..num_units {
@@ -417,7 +440,10 @@ fn main() {
             for result in [&r0, &r1] {
                 if let Some(data) = find_chunk_in_result(result, chunk_id) {
                     let data_offset = chunk_id as usize * CHUNK_SIZE;
-                    let avail = chunks_mmap.len().saturating_sub(data_offset).min(UNIT_DATA_SIZE);
+                    let avail = chunks_mmap
+                        .len()
+                        .saturating_sub(data_offset)
+                        .min(UNIT_DATA_SIZE);
                     let actual = &chunks_mmap[data_offset..data_offset + avail];
                     if data[..avail] == *actual {
                         total_found += 1;
@@ -425,7 +451,9 @@ fn main() {
                         total_mismatch += 1;
                         if total_mismatch <= 3 {
                             // Find first differing byte
-                            let first_diff = data[..avail].iter().zip(actual.iter())
+                            let first_diff = data[..avail]
+                                .iter()
+                                .zip(actual.iter())
                                 .position(|(a, b)| a != b)
                                 .unwrap_or(avail);
                             eprintln!(
@@ -447,17 +475,16 @@ fn main() {
                 if total_not_found <= 10 {
                     eprintln!(
                         "  MISS: unit chunk {} round {} group {}",
-                        chunk_id, ri + 1, b
+                        chunk_id,
+                        ri + 1,
+                        b
                     );
                 }
             }
         }
     }
 
-    let sample_units: usize = plan.rounds[..sample_rounds]
-        .iter()
-        .map(|r| r.len())
-        .sum();
+    let sample_units: usize = plan.rounds[..sample_rounds].iter().map(|r| r.len()).sum();
 
     println!(
         "  {} rounds: found {}/{}, miss {}, mismatch {}",
@@ -487,9 +514,21 @@ fn main() {
     println!("    Total:            {:.2} s", total_per_round);
     println!();
     println!("  Estimated for all {} rounds:", num_rounds);
-    println!("    Key generation:   {:.1} s  ({:.1} min)", est_keygen_all, est_keygen_all / 60.0);
-    println!("    Server (both):    {:.1} s  ({:.1} min)", est_server_all, est_server_all / 60.0);
-    println!("    Total:            {:.1} s  ({:.1} min)", est_total_all, est_total_all / 60.0);
+    println!(
+        "    Key generation:   {:.1} s  ({:.1} min)",
+        est_keygen_all,
+        est_keygen_all / 60.0
+    );
+    println!(
+        "    Server (both):    {:.1} s  ({:.1} min)",
+        est_server_all,
+        est_server_all / 60.0
+    );
+    println!(
+        "    Total:            {:.1} s  ({:.1} min)",
+        est_total_all,
+        est_total_all / 60.0
+    );
 
     // ── 7. Communication cost ────────────────────────────────────────────
     let keys_per_round_per_server = K_CHUNK * 2;
@@ -501,39 +540,71 @@ fn main() {
     let total_comm = total_client_upload + total_server_download;
 
     println!();
-    println!("=== Communication Cost (chunk-level PIR, all {} rounds) ===", num_rounds);
-    println!("  DPF key size (est.):           {} bytes (n={})", dpf_key_wire_size, dpf_n);
-    println!("  Result size per group:        {} bytes ({}×{}B slots)", RESULT_SIZE, SLOTS, SLOT_SIZE);
+    println!(
+        "=== Communication Cost (chunk-level PIR, all {} rounds) ===",
+        num_rounds
+    );
+    println!(
+        "  DPF key size (est.):           {} bytes (n={})",
+        dpf_key_wire_size, dpf_n
+    );
+    println!(
+        "  Result size per group:        {} bytes ({}×{}B slots)",
+        RESULT_SIZE, SLOTS, SLOT_SIZE
+    );
     println!("  Groups per round:             {}", K_CHUNK);
     println!("  Queries per group per round:  2 (q0, q1)");
     println!();
     println!("  Per round, per server:");
-    println!("    Client → server:  {} keys × {}B = {:.1} KB",
-        keys_per_round_per_server, dpf_key_wire_size,
-        client_upload_per_round as f64 / 1024.0);
-    println!("    Server → client:  {} results × {}B = {:.1} KB",
-        keys_per_round_per_server, RESULT_SIZE,
-        server_response_per_round as f64 / 1024.0);
+    println!(
+        "    Client → server:  {} keys × {}B = {:.1} KB",
+        keys_per_round_per_server,
+        dpf_key_wire_size,
+        client_upload_per_round as f64 / 1024.0
+    );
+    println!(
+        "    Server → client:  {} results × {}B = {:.1} KB",
+        keys_per_round_per_server,
+        RESULT_SIZE,
+        server_response_per_round as f64 / 1024.0
+    );
     println!();
     println!("  Total across {} rounds × 2 servers:", num_rounds);
-    println!("    Client upload:   {:.2} MB", total_client_upload as f64 / (1024.0 * 1024.0));
-    println!("    Client download: {:.2} MB", total_server_download as f64 / (1024.0 * 1024.0));
-    println!("    Total comm:      {:.2} MB", total_comm as f64 / (1024.0 * 1024.0));
+    println!(
+        "    Client upload:   {:.2} MB",
+        total_client_upload as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "    Client download: {:.2} MB",
+        total_server_download as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "    Total comm:      {:.2} MB",
+        total_comm as f64 / (1024.0 * 1024.0)
+    );
 
     let total_payload = plan.total_placed as u64 * UNIT_DATA_SIZE as u64;
     println!();
-    println!("  Useful payload retrieved:      {:.2} MB ({} units × {} bytes)",
+    println!(
+        "  Useful payload retrieved:      {:.2} MB ({} units × {} bytes)",
         total_payload as f64 / (1024.0 * 1024.0),
-        plan.total_placed, UNIT_DATA_SIZE);
+        plan.total_placed,
+        UNIT_DATA_SIZE
+    );
     if total_comm > 0 {
-        println!("  Communication overhead:        {:.1}× payload",
-            total_comm as f64 / total_payload as f64);
+        println!(
+            "  Communication overhead:        {:.1}× payload",
+            total_comm as f64 / total_payload as f64
+        );
     }
 
     // ── 8. Final verdict ─────────────────────────────────────────────────
     println!();
     if sample_ok {
-        println!("  Sample {} rounds: ALL {} units verified OK!", sample_rounds, total_found);
+        println!(
+            "  Sample {} rounds: ALL {} units verified OK!",
+            sample_rounds, total_found
+        );
     } else {
         println!("  Sample {} rounds: FAILURES detected!", sample_rounds);
         std::process::exit(1);

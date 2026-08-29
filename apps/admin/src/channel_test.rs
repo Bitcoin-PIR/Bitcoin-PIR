@@ -217,5 +217,3 @@ pub async fn run(args: ChannelTestArgs) -> Result<(), i32> {
 
     Ok(())
 }
-
-

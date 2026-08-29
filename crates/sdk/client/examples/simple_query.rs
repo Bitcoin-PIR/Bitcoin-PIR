@@ -55,7 +55,10 @@ fn parse_args() -> (String, String, Vec<ScriptHash>) {
                         }
                     }
                 } else {
-                    eprintln!("Warning: Invalid script hash '{}' (expected 40 hex chars)", arg);
+                    eprintln!(
+                        "Warning: Invalid script hash '{}' (expected 40 hex chars)",
+                        arg
+                    );
                 }
             }
             _ => {
@@ -115,19 +118,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if query_result.entries.is_empty() {
                     println!("(no UTXOs found)");
                 } else {
-                    println!("{} UTXO(s), {} sats total",
+                    println!(
+                        "{} UTXO(s), {} sats total",
                         query_result.entries.len(),
                         query_result.total_balance()
                     );
 
                     for entry in &query_result.entries {
-                        let txid_hex: String = entry.txid.iter().rev()
+                        let txid_hex: String = entry
+                            .txid
+                            .iter()
+                            .rev()
                             .map(|b| format!("{:02x}", b))
                             .collect();
-                        println!("  - {}:{} = {} sats",
-                            txid_hex,
-                            entry.vout,
-                            entry.amount_sats
+                        println!(
+                            "  - {}:{} = {} sats",
+                            txid_hex, entry.vout, entry.amount_sats
                         );
                     }
                 }

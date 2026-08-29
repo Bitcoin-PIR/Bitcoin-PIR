@@ -106,8 +106,7 @@ impl Packer {
         if data_len <= remaining {
             let entry_id = self.entry_count;
             let offset = self.current_pos;
-            self.current_entry[self.current_pos..self.current_pos + data_len]
-                .copy_from_slice(data);
+            self.current_entry[self.current_pos..self.current_pos + data_len].copy_from_slice(data);
             self.current_pos += data_len;
 
             if self.current_pos == self.entry_size {
@@ -141,14 +140,14 @@ impl Packer {
         assert!(
             num_entries <= 255,
             "delta data {} bytes needs {} entries, exceeds u8",
-            data_len, num_entries
+            data_len,
+            num_entries
         );
 
         let mut written = 0;
         for i in 0..num_entries {
             let chunk_len = (data_len - written).min(self.entry_size);
-            self.current_entry[..chunk_len]
-                .copy_from_slice(&data[written..written + chunk_len]);
+            self.current_entry[..chunk_len].copy_from_slice(&data[written..written + chunk_len]);
             written += chunk_len;
 
             if i < num_entries - 1 {
@@ -208,7 +207,10 @@ fn parse_args() -> CliArgs {
     }
     let start_height: u64 = args[1].parse().expect("start_height must be a number");
     let end_height: u64 = args[2].parse().expect("end_height must be a number");
-    assert!(start_height < end_height, "start_height must be < end_height");
+    assert!(
+        start_height < end_height,
+        "start_height must be < end_height"
+    );
 
     let mut intermediate_dir = DEFAULT_INTERMEDIATE_DIR.to_string();
     let mut data_dir = format!("{}/{}_{}", DEFAULT_DELTA_ROOT, start_height, end_height);
@@ -235,7 +237,12 @@ fn parse_args() -> CliArgs {
         i += 1;
     }
 
-    CliArgs { start_height, end_height, intermediate_dir, data_dir }
+    CliArgs {
+        start_height,
+        end_height,
+        intermediate_dir,
+        data_dir,
+    }
 }
 
 fn main() {
@@ -252,11 +259,20 @@ fn main() {
     // linked onionpir crate (3328 default post-port, was 3840 pre-port).
     let packed_entry_size = onion_entry_size();
 
-    println!("=== delta_gen_1_onion: Pack Delta into OnionPIR {}-byte Entries ===", packed_entry_size);
+    println!(
+        "=== delta_gen_1_onion: Pack Delta into OnionPIR {}-byte Entries ===",
+        packed_entry_size
+    );
     println!();
     println!("Configuration:");
-    println!("  Start/end height:   {} → {}", cli.start_height, cli.end_height);
-    println!("  Entry size:         {} bytes (from onionpir::params_info(0))", packed_entry_size);
+    println!(
+        "  Start/end height:   {} → {}",
+        cli.start_height, cli.end_height
+    );
+    println!(
+        "  Entry size:         {} bytes (from onionpir::params_info(0))",
+        packed_entry_size
+    );
     println!("  Index record size:  {} bytes", ONION_INDEX_RECORD_SIZE);
     println!("  Input (grouped):    {}", input_path);
     println!("  Output packed:      {}", packed_path);
@@ -303,9 +319,8 @@ fn main() {
         if pos + SCRIPT_HASH_SIZE > mmap.len() {
             panic!("truncated: scripthash header at entry {}", i);
         }
-        let script_hash: [u8; SCRIPT_HASH_SIZE] = mmap[pos..pos + SCRIPT_HASH_SIZE]
-            .try_into()
-            .unwrap();
+        let script_hash: [u8; SCRIPT_HASH_SIZE] =
+            mmap[pos..pos + SCRIPT_HASH_SIZE].try_into().unwrap();
         pos += SCRIPT_HASH_SIZE;
 
         let data_start = pos;
@@ -448,22 +463,46 @@ fn main() {
     println!();
     println!("Size distribution:");
     let pct = |n: u64| n as f64 / total_groups.max(1) as f64 * 100.0;
-    println!("  0-40 B:     {:>10} ({:.2}%)", size_histogram[0], pct(size_histogram[0]));
-    println!("  40-100 B:   {:>10} ({:.2}%)", size_histogram[1], pct(size_histogram[1]));
-    println!("  100-500 B:  {:>10} ({:.2}%)", size_histogram[2], pct(size_histogram[2]));
-    println!("  500-1K B:   {:>10} ({:.2}%)", size_histogram[3], pct(size_histogram[3]));
-    println!("  1K-2K B:    {:>10} ({:.2}%)", size_histogram[4], pct(size_histogram[4]));
-    println!("  2K-3840 B:  {:>10} ({:.2}%)", size_histogram[5], pct(size_histogram[5]));
-    println!("  >3840 B:    {:>10} ({:.2}%) [span multiple entries]",
-        size_histogram[6], pct(size_histogram[6]));
+    println!(
+        "  0-40 B:     {:>10} ({:.2}%)",
+        size_histogram[0],
+        pct(size_histogram[0])
+    );
+    println!(
+        "  40-100 B:   {:>10} ({:.2}%)",
+        size_histogram[1],
+        pct(size_histogram[1])
+    );
+    println!(
+        "  100-500 B:  {:>10} ({:.2}%)",
+        size_histogram[2],
+        pct(size_histogram[2])
+    );
+    println!(
+        "  500-1K B:   {:>10} ({:.2}%)",
+        size_histogram[3],
+        pct(size_histogram[3])
+    );
+    println!(
+        "  1K-2K B:    {:>10} ({:.2}%)",
+        size_histogram[4],
+        pct(size_histogram[4])
+    );
+    println!(
+        "  2K-3840 B:  {:>10} ({:.2}%)",
+        size_histogram[5],
+        pct(size_histogram[5])
+    );
+    println!(
+        "  >3840 B:    {:>10} ({:.2}%) [span multiple entries]",
+        size_histogram[6],
+        pct(size_histogram[6])
+    );
     println!("  Whale:      {:>10}", size_histogram[7]);
     println!();
     println!("Total time:           {:.2?}", total_elapsed);
 
     if packer.entry_count > u32::MAX as u64 {
-        println!(
-            "WARNING: entry_count {} overflows u32!",
-            packer.entry_count
-        );
+        println!("WARNING: entry_count {} overflows u32!", packer.entry_count);
     }
 }

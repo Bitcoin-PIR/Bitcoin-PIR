@@ -93,8 +93,14 @@ fn splitmix64(mut x: u64) -> u64 {
 #[inline]
 fn sh_a(script_hash: &[u8]) -> u64 {
     u64::from_le_bytes([
-        script_hash[0], script_hash[1], script_hash[2], script_hash[3],
-        script_hash[4], script_hash[5], script_hash[6], script_hash[7],
+        script_hash[0],
+        script_hash[1],
+        script_hash[2],
+        script_hash[3],
+        script_hash[4],
+        script_hash[5],
+        script_hash[6],
+        script_hash[7],
     ])
 }
 
@@ -102,8 +108,14 @@ fn sh_a(script_hash: &[u8]) -> u64 {
 #[inline]
 fn sh_b(script_hash: &[u8]) -> u64 {
     u64::from_le_bytes([
-        script_hash[8], script_hash[9], script_hash[10], script_hash[11],
-        script_hash[12], script_hash[13], script_hash[14], script_hash[15],
+        script_hash[8],
+        script_hash[9],
+        script_hash[10],
+        script_hash[11],
+        script_hash[12],
+        script_hash[13],
+        script_hash[14],
+        script_hash[15],
     ])
 }
 
@@ -111,7 +123,10 @@ fn sh_b(script_hash: &[u8]) -> u64 {
 #[inline]
 fn sh_c(script_hash: &[u8]) -> u64 {
     u32::from_le_bytes([
-        script_hash[16], script_hash[17], script_hash[18], script_hash[19],
+        script_hash[16],
+        script_hash[17],
+        script_hash[18],
+        script_hash[19],
     ]) as u64
 }
 
@@ -288,8 +303,7 @@ fn main() {
         .into_par_iter()
         .enumerate()
         .map(|(group_id, entries)| {
-            let result =
-                build_cuckoo_for_group(group_id, &entries, mmap_slice, bins_per_table);
+            let result = build_cuckoo_for_group(group_id, &entries, mmap_slice, bins_per_table);
             let done = completed.fetch_add(1, Ordering::Relaxed) + 1;
             eprint!("\r  Progress: {}/{} groups", done, K);
             let _ = io::stderr().flush();
@@ -320,7 +334,10 @@ fn main() {
     }
 
     if failures > 0 {
-        eprintln!("  {} group(s) failed — output file will NOT be written.", failures);
+        eprintln!(
+            "  {} group(s) failed — output file will NOT be written.",
+            failures
+        );
         std::process::exit(1);
     }
 
@@ -404,7 +421,9 @@ fn main() {
                 let tag = compute_tag(TAG_SEED, script_hash);
                 writer.write_all(&tag.to_le_bytes()).unwrap();
                 // start_chunk_id (4B) + num_chunks (1B)
-                writer.write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE]).unwrap();
+                writer
+                    .write_all(&mmap[offset + SCRIPT_HASH_SIZE..offset + INDEX_RECORD_SIZE])
+                    .unwrap();
             }
         }
     }
@@ -521,7 +540,11 @@ fn cuckoo_insert(
         let ev_sh = &mmap[ev_base..ev_base + SCRIPT_HASH_SIZE];
         let ev_bin0 = cuckoo_hash(ev_sh, key0, num_bins);
         let ev_bin1 = cuckoo_hash(ev_sh, key1, num_bins);
-        let alt_bin = if ev_bin0 == current_bin { ev_bin1 } else { ev_bin0 };
+        let alt_bin = if ev_bin0 == current_bin {
+            ev_bin1
+        } else {
+            ev_bin0
+        };
 
         // Try to place evicted entry in its alternative bin
         let alt_base = alt_bin * SLOTS_PER_BIN;

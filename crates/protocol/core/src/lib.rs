@@ -6,11 +6,11 @@
 //! INDEX, CHUNK, MERKLE, and DELTA sub-tables with different configurations.
 
 pub mod attest;
-pub mod params;
-pub mod seeds;
-pub mod hash;
 pub mod codec;
-pub mod pbc;
 pub mod cuckoo;
+pub mod hash;
 pub mod merkle;
 pub mod onion_unpack;
+pub mod params;
+pub mod pbc;
+pub mod seeds;

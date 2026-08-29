@@ -112,7 +112,9 @@ fn parse_cli() -> (usize, String) {
                 println!("Usage: {} [--partitions N] [--data-dir <dir>]", args[0]);
                 println!();
                 println!("Reads <dir>/utxo_set.bin and writes <dir>/{{utxo_chunks_nodust.bin,");
-                println!("utxo_chunks_index_nodust.bin, top100_addresses.bin, whale_addresses.txt}}.");
+                println!(
+                    "utxo_chunks_index_nodust.bin, top100_addresses.bin, whale_addresses.txt}}."
+                );
                 println!("Default dir: {}", DEFAULT_DATA_DIR);
                 std::process::exit(0);
             }
@@ -154,7 +156,11 @@ fn main() {
     let mmap = unsafe { Mmap::map(&input_file) }.expect("mmap");
     let entry_count = mmap.len() / ENTRY_SIZE;
     assert_eq!(mmap.len() % ENTRY_SIZE, 0);
-    println!("  {} entries ({})", entry_count, format_bytes(mmap.len() as u64));
+    println!(
+        "  {} entries ({})",
+        entry_count,
+        format_bytes(mmap.len() as u64)
+    );
     println!();
 
     // ── 2. Open output files ───────────────────────────────────────────
@@ -217,7 +223,11 @@ fn main() {
                 if current_pct > last_pct && current_pct <= 100 {
                     eprint!(
                         "\r    Building: {}% | Scanned: {}/{} | Keys: {} | Dust skipped: {}",
-                        current_pct, i + 1, entry_count, map.len(), partition_dust
+                        current_pct,
+                        i + 1,
+                        entry_count,
+                        map.len(),
+                        partition_dust
                     );
                     let _ = io::stderr().flush();
                     last_pct = current_pct;
@@ -234,15 +244,22 @@ fn main() {
             let vout = u32::from_le_bytes(chunk[52..56].try_into().unwrap());
             let height = u32::from_le_bytes(chunk[64..68].try_into().unwrap());
 
-            map.entry(script_hash)
-                .or_default()
-                .push(ShortenedEntry { txid, vout, amount, height });
+            map.entry(script_hash).or_default().push(ShortenedEntry {
+                txid,
+                vout,
+                amount,
+                height,
+            });
 
             let current_pct = (i as u64 + 1) / one_percent as u64;
             if current_pct > last_pct && current_pct <= 100 {
                 eprint!(
                     "\r    Building: {}% | Scanned: {}/{} | Keys: {} | Dust skipped: {}",
-                    current_pct, i + 1, entry_count, map.len(), partition_dust
+                    current_pct,
+                    i + 1,
+                    entry_count,
+                    map.len(),
+                    partition_dust
                 );
                 let _ = io::stderr().flush();
                 last_pct = current_pct;
@@ -254,7 +271,9 @@ fn main() {
         total_dust_skipped += partition_dust;
         println!(
             "  HashMap built in {:.2?} — {} unique script_hashes, {} dust UTXOs skipped",
-            build_start.elapsed(), unique_keys, partition_dust
+            build_start.elapsed(),
+            unique_keys,
+            partition_dust
         );
 
         // ── 3b+3c+3d. Serialize, write blocks, write index ─────────────
@@ -271,7 +290,7 @@ fn main() {
                 // Write a sentinel index entry: num_chunks=0 (whale)
                 index_writer.write_all(&script_hash).unwrap();
                 index_writer.write_all(&0u32.to_le_bytes()).unwrap(); // start_chunk_id = 0
-                index_writer.write_all(&[0u8]).unwrap();             // num_chunks = 0
+                index_writer.write_all(&[0u8]).unwrap(); // num_chunks = 0
                 whale_entries.push((script_hash, entries.len()));
                 partition_whale_skipped += 1;
                 continue;
@@ -302,9 +321,15 @@ fn main() {
 
             // Write index entry: [20B script_hash][4B start_chunk_id LE][1B num_chunks]
             let start_chunk_id = (current_offset / BLOCK_SIZE as u64) as u32;
-            assert!(num_chunks <= 255, "num_chunks {} exceeds u8 max", num_chunks);
+            assert!(
+                num_chunks <= 255,
+                "num_chunks {} exceeds u8 max",
+                num_chunks
+            );
             index_writer.write_all(&script_hash).unwrap();
-            index_writer.write_all(&start_chunk_id.to_le_bytes()).unwrap();
+            index_writer
+                .write_all(&start_chunk_id.to_le_bytes())
+                .unwrap();
             index_writer.write_all(&[num_chunks as u8]).unwrap();
 
             // Write data
@@ -341,7 +366,9 @@ fn main() {
         );
         println!(
             "  Partition {}/{} completed in {:.2?}",
-            partition + 1, num_partitions, partition_start.elapsed()
+            partition + 1,
+            num_partitions,
+            partition_start.elapsed()
         );
         println!();
     }
@@ -359,7 +386,8 @@ fn main() {
     println!("[5] Writing top-100 largest groups to {}...", top_path);
 
     // Drain heap into a vec, sorted by data_len descending
-    let mut top_entries: Vec<TopEntry> = top_heap.into_sorted_vec()
+    let mut top_entries: Vec<TopEntry> = top_heap
+        .into_sorted_vec()
         .into_iter()
         .map(|Reverse(e)| e)
         .collect();
@@ -370,26 +398,39 @@ fn main() {
         let mut top_writer = BufWriter::new(top_file);
 
         for (data_len, script_hash, first_txid, first_vout) in &top_entries {
-            top_writer.write_all(script_hash).unwrap();        // 20 bytes
-            top_writer.write_all(first_txid).unwrap();         // 32 bytes
+            top_writer.write_all(script_hash).unwrap(); // 20 bytes
+            top_writer.write_all(first_txid).unwrap(); // 32 bytes
             top_writer.write_all(&first_vout.to_le_bytes()).unwrap(); // 4 bytes
-            // Also store data_len so the file is self-descriptive
-            top_writer.write_all(&(*data_len as u32).to_le_bytes()).unwrap(); // 4 bytes
+                                                                      // Also store data_len so the file is self-descriptive
+            top_writer
+                .write_all(&(*data_len as u32).to_le_bytes())
+                .unwrap(); // 4 bytes
         }
         top_writer.flush().unwrap();
     }
 
-    println!("  Written {} entries (60 bytes each: 20B hash + 32B txid + 4B vout + 4B data_len)",
-        top_entries.len());
+    println!(
+        "  Written {} entries (60 bytes each: 20B hash + 32B txid + 4B vout + 4B data_len)",
+        top_entries.len()
+    );
 
     // Print the top 10 for quick reference
     println!();
     println!("  Top 10 largest groups:");
-    println!("  {:>4}  {:>12}  {:>8}  script_hash (hex)", "Rank", "Data (B)", "Chunks");
+    println!(
+        "  {:>4}  {:>12}  {:>8}  script_hash (hex)",
+        "Rank", "Data (B)", "Chunks"
+    );
     for (i, (data_len, script_hash, _txid, _vout)) in top_entries.iter().take(10).enumerate() {
         let num_chunks = data_len.div_ceil(BLOCK_SIZE);
         let hash_hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
-        println!("  {:>4}  {:>12}  {:>8}  {}", i + 1, data_len, num_chunks, hash_hex);
+        println!(
+            "  {:>4}  {:>12}  {:>8}  {}",
+            i + 1,
+            data_len,
+            num_chunks,
+            hash_hex
+        );
     }
     // ── 6. Write whale addresses file ─────────────────────────────────
     println!();
@@ -401,7 +442,12 @@ fn main() {
     {
         let whale_file = File::create(&whales_path).expect("create whale addresses file");
         let mut whale_writer = BufWriter::new(whale_file);
-        writeln!(whale_writer, "# Excluded whale addresses (>{} UTXOs per scriptPubKey)", MAX_UTXOS_PER_SPK).unwrap();
+        writeln!(
+            whale_writer,
+            "# Excluded whale addresses (>{} UTXOs per scriptPubKey)",
+            MAX_UTXOS_PER_SPK
+        )
+        .unwrap();
         writeln!(whale_writer, "# Format: script_hash_hex  utxo_count").unwrap();
         for (script_hash, count) in &whale_entries {
             let hex: String = script_hash.iter().map(|b| format!("{:02x}", b)).collect();
@@ -430,8 +476,14 @@ fn main() {
 
     println!("=== Summary ===");
     println!("Input entries:        {}", entry_count);
-    println!("Dust UTXOs skipped:   {} (amount <= {} sats)", total_dust_skipped, DUST_THRESHOLD);
-    println!("Whale SPKs excluded:  {} (>{} UTXOs, sentinel index entries written)", total_whale_skipped, MAX_UTXOS_PER_SPK);
+    println!(
+        "Dust UTXOs skipped:   {} (amount <= {} sats)",
+        total_dust_skipped, DUST_THRESHOLD
+    );
+    println!(
+        "Whale SPKs excluded:  {} (>{} UTXOs, sentinel index entries written)",
+        total_whale_skipped, MAX_UTXOS_PER_SPK
+    );
     println!("Groups written:       {}", total_groups_written);
     println!();
     println!("Block size:           {} bytes", BLOCK_SIZE);
@@ -478,7 +530,11 @@ fn main() {
     // Verify chunk_id doesn't overflow u32
     let max_chunk_id = current_offset / BLOCK_SIZE as u64;
     if max_chunk_id > u32::MAX as u64 {
-        println!("WARNING: chunk_id overflows u32! Max chunk_id = {} > {}", max_chunk_id, u32::MAX);
+        println!(
+            "WARNING: chunk_id overflows u32! Max chunk_id = {} > {}",
+            max_chunk_id,
+            u32::MAX
+        );
     } else {
         println!(
             "Max chunk_id:         {} / {} ({:.1}% of u32 range)",

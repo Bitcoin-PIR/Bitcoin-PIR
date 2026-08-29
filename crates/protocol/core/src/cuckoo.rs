@@ -436,8 +436,8 @@ pub fn verify_anchor_seeds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::params::{INDEX_PARAMS, CHUNK_PARAMS};
     use crate::hash::read_cuckoo_header;
+    use crate::params::{CHUNK_PARAMS, INDEX_PARAMS};
 
     #[test]
     fn test_compute_bins_per_table() {
@@ -480,7 +480,10 @@ mod tests {
 
         // v2 magic = legacy XOR snapshot marker; total size = legacy + 36.
         let expected_magic = INDEX_PARAMS.magic ^ ANCHOR_MAGIC_SNAPSHOT_XOR;
-        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), expected_magic);
+        assert_eq!(
+            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            expected_magic
+        );
         assert_eq!(bytes.len(), INDEX_PARAMS.header_size + 36);
 
         let parsed = read_cuckoo_header_with_anchor(&bytes, &INDEX_PARAMS).unwrap();
@@ -502,8 +505,14 @@ mod tests {
     fn test_header_with_anchor_delta_roundtrip() {
         use crate::seeds::{domain, ChainAnchor, DeltaAnchor, DeltaSeeds};
 
-        let from = ChainAnchor { block_hash: [0xaa; 32], block_height: 900_000 };
-        let to = ChainAnchor { block_hash: [0xbb; 32], block_height: 902_016 };
+        let from = ChainAnchor {
+            block_hash: [0xaa; 32],
+            block_height: 900_000,
+        };
+        let to = ChainAnchor {
+            block_hash: [0xbb; 32],
+            block_height: 902_016,
+        };
         let delta = DeltaAnchor { from, to };
         let seeds = DeltaSeeds::derive(&delta);
 
@@ -516,7 +525,10 @@ mod tests {
         );
 
         let expected_magic = CHUNK_PARAMS.magic ^ ANCHOR_MAGIC_DELTA_XOR;
-        assert_eq!(u64::from_le_bytes(bytes[0..8].try_into().unwrap()), expected_magic);
+        assert_eq!(
+            u64::from_le_bytes(bytes[0..8].try_into().unwrap()),
+            expected_magic
+        );
         assert_eq!(bytes.len(), CHUNK_PARAMS.header_size + 72);
 
         let parsed = read_cuckoo_header_with_anchor(&bytes, &CHUNK_PARAMS).unwrap();
@@ -547,7 +559,10 @@ mod tests {
     fn test_verify_anchor_rejects_mismatched_seed() {
         use crate::seeds::{domain, ChainAnchor};
 
-        let anchor = ChainAnchor { block_hash: [0; 32], block_height: 1 };
+        let anchor = ChainAnchor {
+            block_hash: [0; 32],
+            block_height: 1,
+        };
         // Use a deliberately WRONG master seed — not what the anchor would derive.
         let params = INDEX_PARAMS.with_master_seed(0xdeadbeef);
         let bytes = write_header_with_anchor(
@@ -575,13 +590,12 @@ mod tests {
     #[test]
     fn test_read_rejects_truncated_anchor() {
         use crate::seeds::ChainAnchor;
-        let anchor = ChainAnchor { block_hash: [0; 32], block_height: 0 };
-        let bytes = write_header_with_anchor(
-            &INDEX_PARAMS,
-            1,
-            0,
-            Some(&HeaderAnchor::Snapshot(anchor)),
-        );
+        let anchor = ChainAnchor {
+            block_hash: [0; 32],
+            block_height: 0,
+        };
+        let bytes =
+            write_header_with_anchor(&INDEX_PARAMS, 1, 0, Some(&HeaderAnchor::Snapshot(anchor)));
         // Lop off the last 10 bytes of the anchor — truncated.
         let truncated = &bytes[..bytes.len() - 10];
         let err = read_cuckoo_header_with_anchor(truncated, &INDEX_PARAMS).unwrap_err();
@@ -604,11 +618,13 @@ mod tests {
     #[test]
     fn test_build_byte_keyed_table() {
         // Small test: 10 items, 4 bins
-        let items: Vec<[u8; 20]> = (0..10u8).map(|i| {
-            let mut sh = [0u8; 20];
-            sh[0] = i;
-            sh
-        }).collect();
+        let items: Vec<[u8; 20]> = (0..10u8)
+            .map(|i| {
+                let mut sh = [0u8; 20];
+                sh[0] = i;
+                sh
+            })
+            .collect();
         let refs: Vec<&[u8]> = items.iter().map(|s| s.as_slice()).collect();
 
         let table = build_byte_keyed_table(&refs, 0, &INDEX_PARAMS, 10);
