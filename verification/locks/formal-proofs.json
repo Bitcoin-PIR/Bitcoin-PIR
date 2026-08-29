@@ -2,11 +2,11 @@
   "schema": "BitcoinPIR/formal-proof-lock/v1",
   "protocolProofs": {
     "repository": "Bitcoin-PIR/protocol-proofs",
-    "commit": "c519f1960aa9567ac324856f30c71071b04a4a17",
+    "commit": "549fb4db80164955c9f5809b8778c32009ebe333",
     "manifestPath": "proof-manifest.json",
-    "manifestSha256": "5763b9a4e5e40f7eed1f1f1eadeb44950c6b4172ea55c995ca24f062e0ee860d",
-    "verificationRecordPath": "verification/records/formal/c97d8fff7b072154e78fb0388a076cb849a2d99e9968be7a9cd0d838268b54d8.json",
-    "verificationRecordSha256": "c97d8fff7b072154e78fb0388a076cb849a2d99e9968be7a9cd0d838268b54d8"
+    "manifestSha256": "623f7a8f4b429e1659b3cc57addf30dd27a617b844300c4f3a5038a384e1bcab",
+    "verificationRecordPath": "verification/records/formal/b3905916389e1313502c6be0e82cae35c279e5b381adc176add4a6f2a56a5113.json",
+    "verificationRecordSha256": "b3905916389e1313502c6be0e82cae35c279e5b381adc176add4a6f2a56a5113"
   },
   "implementationContract": {
     "schema": "BitcoinPIR/wire-shape-contract/v1",
