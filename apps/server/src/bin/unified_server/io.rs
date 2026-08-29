@@ -1,15 +1,12 @@
-use crate::unsafe_debug_log;
 use futures_util::SinkExt;
 use runtime::protocol::*;
 use runtime::table::{DatabaseDescriptor, MappedDatabase};
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
-use tokio_tungstenite::tungstenite::Message;
-use zeroize::Zeroizing;
 
 // ─── AMD VCEK chain loader ─────────────────────────────────────────────────
 //

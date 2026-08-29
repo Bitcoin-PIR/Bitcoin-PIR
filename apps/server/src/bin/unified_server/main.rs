@@ -24,9 +24,11 @@ mod state;
 mod unified_server_pir2_sealed;
 
 pub(crate) use cli::*;
+#[allow(unused_imports)]
 pub(crate) use harmony_hints::*;
 pub(crate) use io::*;
 pub(crate) use logging::*;
+#[allow(unused_imports)]
 pub(crate) use onion::*;
 #[allow(unused_imports)]
 pub(crate) use oram::*;
@@ -37,8 +39,6 @@ use admission::local::LocalAdmissionV1;
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
 use runtime::hint_pool;
-use runtime::onionpir::*;
-use runtime::protocol::*;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase, ServerState};
 use unified_server_pir2_sealed::{
     dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
@@ -46,17 +46,12 @@ use unified_server_pir2_sealed::{
 };
 
 use ed25519_dalek::VerifyingKey;
-use memmap2::Mmap;
-use onionpir::{self, KeyStore, Server as PirServer};
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs::File;
-use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
 
 #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
 use std::sync::atomic::Ordering;

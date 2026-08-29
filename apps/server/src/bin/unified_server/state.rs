@@ -2,18 +2,21 @@ use crate::cli::ServerRole;
 use crate::harmony_hints::{harmony_batch_response, harmony_query_response};
 use crate::onion::{OnionPirInfo, OnionPirMerkleInfo, PirCommand};
 #[cfg(feature = "cuckoo-oram")]
-use crate::oram::{CuckooOramTables, DirectOramTables};
+use crate::oram::{
+    direct_oram_response_padding_bytes, CuckooNativeLookupConfig, CuckooOramTables,
+    DirectOramTables,
+};
+#[cfg(feature = "cuckoo-oram")]
 use crate::unsafe_debug_log;
 use libdpf::DpfKey;
-use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
+use pir_core::params;
 use rayon::prelude::*;
 use runtime::eval::{self, GroupTiming};
 use runtime::hint_pool;
-use runtime::onionpir::*;
 use runtime::protocol::*;
 use runtime::table::{DatabaseType, MappedDatabase, MappedSubTable, ServerState};
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;

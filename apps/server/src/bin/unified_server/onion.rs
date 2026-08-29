@@ -3,9 +3,6 @@ use crate::unsafe_debug_log;
 use memmap2::Mmap;
 use onionpir::{self, KeyStore, Server as PirServer};
 use rayon::prelude::*;
-use runtime::onionpir::*;
-use runtime::protocol::*;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -244,6 +241,7 @@ pub(crate) struct OnionPirInfo {
     pub(crate) chunk_master_seed: u64,
 }
 
+#[allow(clippy::type_complexity)]
 pub(crate) fn setup_onionpir_workers(
     args: &crate::cli::CliArgs,
     db_paths: &[(u8, String, std::path::PathBuf)],

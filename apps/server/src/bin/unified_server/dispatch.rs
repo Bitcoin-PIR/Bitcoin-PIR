@@ -3,7 +3,6 @@ use crate::io::*;
 use crate::onion::PirCommand;
 use crate::state::{UnifiedServerData, V2HalfPending};
 use crate::unsafe_debug_log;
-use futures_util::SinkExt;
 use rayon::prelude::*;
 use runtime::hint_pool;
 use runtime::onionpir::*;
@@ -13,6 +12,7 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_variant<S>(
     payload: &[u8],
     sink: &mut S,
@@ -1011,7 +1011,6 @@ pub(crate) async fn handle_variant<S>(
                                     peer,
                                     error
                                 );
-                                return;
                             }
                         }
                     }

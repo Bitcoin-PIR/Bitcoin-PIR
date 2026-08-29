@@ -1,5 +1,6 @@
 #![cfg(test)]
 use super::*;
+use runtime::protocol::*;
 
 mod announce_dispatch_tests {
     //! Tests for the REQ_ANNOUNCE response builder used by the
@@ -66,6 +67,14 @@ mod harmony_dos_guard_tests {
     //! because the full `UnifiedServerData` needs a multi-GB
     //! checkpoint to boot — same pattern as `announce_dispatch_tests`.
     use super::*;
+    #[cfg(feature = "cuckoo-oram")]
+    use bitcoinpir_oram::{
+        circuit_meta_page_bytes, circuit_payload_page_bytes, CircuitOram, CircuitOramState,
+        CircuitStoreAuthState, CuckooLevel, CuckooPackedBlockReader, CuckooTableInfo,
+        DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel, DirectTableInfo,
+        DirectTableMetadata, FilePageStore, OramParams, PageStore, TieredMerklePageStore,
+        DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_INPUT_RECORD_SIZE,
+    };
     use pir_core::cuckoo::write_header_with_anchor;
     use runtime::table::MappedSubTable;
     use std::io::Write as _;
