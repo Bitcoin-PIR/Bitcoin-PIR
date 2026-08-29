@@ -695,8 +695,8 @@ def main() -> None:
     contract, contract_raw = load_json(ROOT / contract_path, "wire contract")
     if contract.get("schema") != contract_lock["schema"]:
         fail("wire contract schema does not match the lock")
-    if int_field(contract, "contractVersion") != 2:
-        fail("wire contract must use contractVersion 2 for Payment V1 authorization")
+    if int_field(contract, "contractVersion") != 3:
+        fail("wire contract must use contractVersion 3 after Payment V1 removal")
     actual_contract_digest = sha256(contract_raw)
     if actual_contract_digest != expected_contract_digest:
         fail(

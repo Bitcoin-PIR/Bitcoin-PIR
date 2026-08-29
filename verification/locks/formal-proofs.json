@@ -11,7 +11,7 @@
   "implementationContract": {
     "schema": "BitcoinPIR/wire-shape-contract/v1",
     "path": "verification/contracts/wire-shape-v1.json",
-    "sha256": "648227ffba4946b5adc55291bdb77eb452d93a5c03c553a17dc6f5d053b97bf7"
+    "sha256": "5c5c488bb46fd03f4bba1328d2dbfcbf5defc294e1a34eb6948c338580ace745"
   },
   "trustedVerifier": {
     "schema": "BitcoinPIR/product-owned-easycrypt-verifier/v2",
