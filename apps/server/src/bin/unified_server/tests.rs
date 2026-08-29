@@ -67,6 +67,7 @@ mod harmony_dos_guard_tests {
     //! checkpoint to boot — same pattern as `announce_dispatch_tests`.
     use super::*;
     use pir_core::cuckoo::write_header_with_anchor;
+    use runtime::table::MappedSubTable;
     use std::io::Write as _;
 
     /// bins_per_table for the synthetic test DB (mirrors the
