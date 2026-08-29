@@ -82,87 +82,7 @@ describe('strict PIR result release', () => {
     );
   });
 
-  it('preflights the selected DPF/Harmony database before constructing the second admission leg', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const staged = html.slice(
-      html.indexOf('async function prepareIndependentProductLeg'),
-      html.indexOf('async function prepareCurrentIndependentProductLeg'),
-    );
-    const dpf = staged.slice(0, staged.indexOf("const providerIndex = role === 'hint'"));
-    const harmony = staged.slice(staged.indexOf("const providerIndex = role === 'hint'"));
-    expect(dpf.indexOf('await connected.prepareStrictAdmission(dbId)')).toBeGreaterThan(0);
-    expect(dpf.indexOf('new ProviderAdmissionSessionV1(')).toBeGreaterThan(
-      dpf.indexOf('await connected.prepareStrictAdmission(dbId)'),
-    );
-    expect(harmony.indexOf('await connected.prepareStrictAdmission(dbId)')).toBeGreaterThan(0);
-    expect(harmony.indexOf('new ProviderAdmissionSessionV1(')).toBeGreaterThan(
-      harmony.indexOf('await connected.prepareStrictAdmission(dbId)'),
-    );
-  });
-
-  it('lets a selected Harmony hint advance to the independent query provider before authorization', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const buttonState = html.slice(
-      html.indexOf('function updateAdmissionQueryButton'),
-      html.indexOf('function allDirectoryEntries'),
-    );
-    const firstIndependentSelection = buttonState.indexOf(
-      "snapshot?.topology === 'independent-pair'",
-    );
-    const selectedOffer = buttonState.indexOf(
-      'hasExactAdmissionSelection(snapshot.legs[0])',
-      firstIndependentSelection,
-    );
-    const advance = buttonState.indexOf(
-      "'Verify independent Query provider'",
-      selectedOffer,
-    );
-    const blocked = buttonState.indexOf("'Query blocked · authorize current provider'", advance);
-    expect(firstIndependentSelection).toBeGreaterThanOrEqual(0);
-    expect(selectedOffer).toBeGreaterThan(firstIndependentSelection);
-    expect(advance).toBeGreaterThan(selectedOffer);
-    expect(blocked).toBeGreaterThan(advance);
-  });
-
-  it('installs the query provider ARK pin before staged Harmony verification', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const connect = html.slice(
-      html.indexOf('async function hpConnectLeg'),
-      html.indexOf('function hpDisconnect'),
-    );
-    const pairArk = connect.indexOf('selectedPairArkFingerprint = sharedArkFingerprint');
-    const installArk = connect.indexOf(
-      'candidate?.setExpectedArkFingerprint(selectedPairArkFingerprint)',
-      pairArk,
-    );
-    const connectQuery = connect.indexOf('await candidate.connectLeg(providerIndex)', installArk);
-    expect(pairArk).toBeGreaterThanOrEqual(0);
-    expect(installArk).toBeGreaterThan(pairArk);
-    expect(connectQuery).toBeGreaterThan(installArk);
-  });
-
-  it('freezes planner demand before offer selection and recomputes it at execution', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const prepare = html.slice(
-      html.indexOf('async function prepareProductAdmission'),
-      html.indexOf('async function runProductAdmissionQuery'),
-    );
-    const run = html.slice(
-      html.indexOf('async function runProductAdmissionQuery'),
-      html.indexOf('/** Pick n random elements'),
-    );
-    expect(prepare).toContain('installPreparedProductQueryShapes(kind, controller)');
-    expect(run).toContain('installPreparedProductQueryShapes(kind, controller)');
-    expect(run).toContain('currentProductQueryShapes(kind, controller)');
-    expect(run.indexOf('currentProductQueryShapes(kind, controller)')).toBeLessThan(
-      run.indexOf('query,\n'),
-    );
-    expect(run.indexOf('setAdmissionQueryControlsFrozen(kind, true)')).toBeLessThan(
-      run.indexOf('prepareProductAdmission(kind)'),
-    );
-  });
-
-  it('rejects Onion/ORAM database selector drift before a paid operation starts', () => {
+  it('binds the Onion/ORAM query to the database selected at connection time', () => {
     const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
     const onion = html.slice(
       html.indexOf('async function opQueryUtxos()'),
@@ -180,15 +100,5 @@ describe('strict PIR result release', () => {
     expect(oram.indexOf('queryClient.queryDelta(')).toBeGreaterThan(
       oram.indexOf('selectedDbId !== oramAdmissionDbId'),
     );
-    const onionChange = html.slice(
-      html.indexOf("document.getElementById('op-dbSelect').addEventListener"),
-      html.indexOf('// ═══════════════════════════════════════════════════════════════\n        // HarmonyPIR'),
-    );
-    expect(onionChange).toContain("closeAdmissionAttempt(\n                    'onion'");
-    const oramChange = html.slice(
-      html.indexOf("document.getElementById('oram-dbSelect').addEventListener"),
-      html.indexOf('</script>', html.indexOf("document.getElementById('oram-dbSelect')")),
-    );
-    expect(oramChange).toContain("closeAdmissionAttempt(\n                    'oram'");
   });
 });

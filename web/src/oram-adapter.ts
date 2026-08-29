@@ -40,13 +40,7 @@ import {
   type WasmOramClient,
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
-import type { ProductQueryShapeV1 } from './service-entitlement.js';
 import { trustedNowUnixV1 } from './trusted-time.js';
-import {
-  assertLiveOperatorIdentityV1,
-  verifiedLiveOperatorSigningKeyV1,
-  type ServiceAdmissionPortV1,
-} from './service-admission.js';
 import {
   assertStrictDatabasePinCoverage,
   assertStrictSingleTransportReady,
@@ -274,90 +268,6 @@ export class OramPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  /** Strict provider-local admission for the single ORAM provider. */
-  serviceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmOramClient => {
-      if (!this.wasmClient) throw new Error('Not connected');
-      if (!this.isStrictVerification() || !this.strictReady) {
-        throw new Error('V1 service admission requires completed strict ORAM verification');
-      }
-      if (!this.secureChannelEstablished) {
-        throw new Error('V1 service admission requires a verified secure channel');
-      }
-      if (
-        this.attestation.state !== 'verified-vcek'
-        || this.attestation.sevStatus !== 'reportDataMatch'
-        || this.attestation.vcekChain !== 'pass'
-      ) {
-        throw new Error('V1 service admission requires hardware-backed VCEK attestation');
-      }
-      if (
-        !this.config.expectedServerPin?.measurementHex
-        || !this.config.expectedServerPin.binarySha256Hex
-        || this.attestation.pinStatus !== 'match'
-      ) {
-        throw new Error('V1 service admission requires matching measurement and binary pins');
-      }
-      if (
-        this.config.verifyOperatorIdentity !== true
-        || !this.config.expectedServerId
-        || this.operatorIdentity.state !== 'verified'
-        || this.operatorIdentity.serverId !== this.config.expectedServerId
-      ) {
-        throw new Error('V1 service admission requires the expected verified operator identity');
-      }
-      if (this.databaseProofs.get(dbId)?.state !== 'verified') {
-        throw new Error(`V1 service admission requires a verified database proof for db ${dbId}`);
-      }
-      return this.wasmClient;
-    };
-    return {
-      providerEndpoint: () => this.config.serverUrl,
-      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity),
-      assertTrustAnchor: (trust) => {
-        client();
-        assertLiveOperatorIdentityV1(trust, this.operatorIdentity);
-      },
-      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
-        client().fetchServicePolicy(dbId, providerId, policyKey, nowUnix, checkpoint),
-      fetchRetainedRedemption: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedServiceRedemption(
-        dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      fetchRetainedBatV2Policy: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedBatV2Policy(
-        dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      assertSessionBinding: (policy) => client().verifyServicePolicySession(policy),
-      captureReadinessGuard: () => {
-        const expectedClient = client();
-        const expectedGeneration = this.sessionGeneration;
-        const assertReady = () => {
-          this.assertCurrentSession(
-            expectedGeneration,
-            expectedClient,
-            'service admission readiness',
-          );
-          client();
-        };
-        assertReady();
-        return assertReady;
-      },
-      assertRetainedSessionBinding: (policy, nowUnix) =>
-        client().verifyRetainedServiceSession(policy, nowUnix),
-      authorize: (policy, scopeId, offerId, proof) =>
-        client().authorizeService(dbId, policy, scopeId, offerId, proof),
-      authorizeBatV2: (verified, proof, nowUnix) =>
-        client().authorizeBatV2Service(dbId, verified, proof, nowUnix),
-      authorizeRetained: (policy, proof, nowUnix) =>
-        client().authorizeRetainedService(dbId, policy, proof, nowUnix),
-      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        client().requestServicePowChallenge(dbId, policy, scopeId, offerId, nowUnix),
-    };
-  }
-
   /**
    * ORAM does not publish client-verifiable per-PBC bucket trees. The direct
    * ORAM page store is authenticated server-side against trusted state.
@@ -392,43 +302,6 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     return this.queryBatchInternal(scriptHashes, dbId, onProgress);
-  }
-
-  /** Exact zero-wire accounting for the single atomic ORAM request frame. */
-  planServiceQuery(
-    scriptHashes: Uint8Array[],
-    dbId: number = 0,
-  ): ProductQueryShapeV1 {
-    if (!this.wasmClient) throw new Error('Not connected');
-    if (this.isStrictVerification()
-        && (!this.strictReady || this.databaseProofs.get(dbId)?.state !== 'verified')) {
-      throw new Error(`strict ORAM service planning requires verified db_id ${dbId}`);
-    }
-    const plannerConfig = this.config.batchPlanner
-      ? {
-          ...this.config.batchPlanner,
-          maxScriptHashesPerRequest:
-            this.config.batchPlanner.maxScriptHashesPerRequest
-            ?? this.config.maxScriptHashesPerRequest,
-        }
-      : null;
-    const plan = plannerConfig ? resolveOramBatchPlan(plannerConfig) : null;
-    const maxRealInputs = plan
-      ? plan.maxScriptHashesPerRequest
-      : resolveMaxScriptHashesPerRequest(this.config.maxScriptHashesPerRequest);
-    const batch = requireAtomicOramRequest(scriptHashes, maxRealInputs);
-    if (batch.length === 0) throw new Error('ORAM service plan requires an input');
-    const chargedSlots = plan?.paddedSlotCount ?? batch.length;
-    return {
-      backend: 'tee-oram',
-      workload: 'tee-oram-query',
-      lowerBounds: {
-        logicalInputs: chargedSlots,
-        frames: 1,
-        concurrentSockets: 1,
-        workUnits: chargedSlots.toString(),
-      },
-    };
   }
 
   /**
@@ -892,10 +765,10 @@ export function splitOramScriptHashBatches<T>(
 }
 
 /**
- * Admission-safe product boundary: one user query must fit one ORAM wire
- * frame. This is checked before the SDK sends anything; callers should acquire
- * a separate capability/connection for another atomic query, never split one
- * authorized attempt behind the user's back.
+ * Fixed-size product boundary: one user query must fit one ORAM wire
+ * frame. This is checked before the SDK sends anything; callers should run a
+ * separate query for another atomic batch, never split one attempt behind
+ * the user's back.
  */
 export function requireAtomicOramRequest<T>(
   items: readonly T[],
@@ -904,7 +777,7 @@ export function requireAtomicOramRequest<T>(
   const max = resolveMaxScriptHashesPerRequest(maxPerRequest);
   if (items.length > max) {
     throw new Error(
-      `atomic ORAM query has ${items.length} real inputs but this signed/deployment profile permits at most ${max} in one authorization; reduce the query or acquire a separate capability`,
+      `atomic ORAM query has ${items.length} real inputs but this deployment profile permits at most ${max} in one request; reduce the query or run a separate batch`,
     );
   }
   return items.slice();

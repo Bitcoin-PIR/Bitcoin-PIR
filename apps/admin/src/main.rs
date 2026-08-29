@@ -49,7 +49,6 @@ mod lightning_staging;
 mod mainnet_lightning_v1;
 mod payment_artifact;
 mod payment_fixture;
-mod payment_v1_signet_smoke;
 mod pir2_sealed_release;
 mod service_keygen;
 mod service_policy;
@@ -115,11 +114,6 @@ enum Command {
     /// Emit the deterministic two-provider Payment V1 no-funds fixture.
     #[command(name = "payment-v1-no-funds-fixture")]
     PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
-    /// Explicit Signet-only paid capability smoke: verify provider and quote,
-    /// invoke an isolated payer CLN, claim one capability, and prove provider
-    /// admission without executing a PIR query.
-    #[command(name = "payment-v1-signet-smoke")]
-    PaymentV1SignetSmoke(payment_v1_signet_smoke::PaymentV1SignetSmokeArgs),
     /// Verify a fresh SNP observation and emit one canonical pir2 release.
     #[command(name = "pir2-sealed-release")]
     Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
@@ -224,13 +218,6 @@ async fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("payment-v1-no-funds-fixture: {}", e);
-                1
-            }
-        },
-        Command::PaymentV1SignetSmoke(args) => match payment_v1_signet_smoke::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("payment-v1-signet-smoke: {e}");
                 1
             }
         },

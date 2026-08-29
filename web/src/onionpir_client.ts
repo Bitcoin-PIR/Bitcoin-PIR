@@ -54,7 +54,6 @@ import {
 
 import type { UtxoEntry, QueryResult, ConnectionState } from './types.js';
 import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
-import type { ProductQueryShapeV1 } from './service-entitlement.js';
 import { trustedNowUnixV1 } from './trusted-time.js';
 import type {
   DatabaseCatalog,
@@ -64,11 +63,6 @@ import type {
 import { fetchDatabaseCatalog } from './server-info.js';
 
 import type { LeakageRecorder, RoundProfile } from './leakage.js';
-import {
-  assertLiveOperatorIdentityV1,
-  verifiedLiveOperatorSigningKeyV1,
-  type ServiceAdmissionPortV1,
-} from './service-admission.js';
 
 // ─── Constants for OnionPIR v2 layout ─────────────────────────────────────
 
@@ -1063,166 +1057,6 @@ export class OnionPirWebClient {
     return this.databaseProofStatuses.get(dbId);
   }
 
-  /** Strict provider-local admission over the exact OnionPIR socket. The
-   * returned port has no second-provider field and performs no retries. */
-  serviceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const admission = () => {
-      if (!this.ws?.isOpen() || !this.secureChannelEstablished || !this.secureChannel) {
-        throw new Error('V1 OnionPIR admission requires the verified secure channel');
-      }
-      if (!this.isStrictVerification() || !this.strictReady) {
-        throw new Error('V1 OnionPIR admission requires completed strict verification');
-      }
-      if (this.databaseProofStatuses.get(dbId)?.state !== 'verified') {
-        throw new Error(`V1 OnionPIR admission requires a verified database proof for db ${dbId}`);
-      }
-      return new (requireSdkWasm().WasmStandaloneOnionServiceAdmissionV1)(
-        dbId,
-        this.secureChannel.serviceAuthorizationExporterV1(),
-      );
-    };
-    const roundtrip = async <T>(
-      operation: (state: ReturnType<typeof admission>) => Promise<T>,
-    ): Promise<T> => {
-      const generation = this.sessionGeneration;
-      const state = admission();
-      try {
-        const result = await operation(state);
-        if (generation !== this.sessionGeneration || !this.ws?.isOpen()) {
-          throw new Error('stale OnionPIR admission response');
-        }
-        return result;
-      } finally {
-        state.free();
-      }
-    };
-    return {
-      providerEndpoint: () => this.config.serverUrl,
-      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity),
-      assertTrustAnchor: (trust) => {
-        admission().free();
-        assertLiveOperatorIdentityV1(trust, this.operatorIdentity);
-      },
-      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
-        roundtrip(async (state) => {
-          const response = await this.sendRaw(state.policyRequest());
-          return state.acceptPolicyResponse(
-            response,
-            providerId,
-            policyKey,
-            nowUnix,
-            checkpoint,
-          );
-        }),
-      fetchRetainedRedemption: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => roundtrip(async (state) => {
-        const response = await this.sendRaw(state.retainedPolicyRequest(policyDigest));
-        return state.acceptRetainedPolicyResponse(
-          response,
-          providerId,
-          policyKey,
-          policyDigest,
-          scopeId,
-          offerId,
-          nowUnix,
-        );
-      }),
-      fetchRetainedBatV2Policy: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => roundtrip(async (state) => {
-        const response = await this.sendRaw(state.retainedPolicyRequest(policyDigest));
-        return state.acceptRetainedBatV2PolicyResponse(
-          response,
-          providerId,
-          policyKey,
-          policyDigest,
-          scopeId,
-          offerId,
-          nowUnix,
-        );
-      }),
-      assertSessionBinding: (policy) => {
-        const state = admission();
-        try {
-          state.verifyPolicySession(policy);
-        } finally {
-          state.free();
-        }
-      },
-      captureReadinessGuard: () => {
-        const generation = this.sessionGeneration;
-        const socket = this.ws;
-        const channel = this.secureChannel;
-        const assertReady = () => {
-          if (generation !== this.sessionGeneration
-              || this.ws !== socket
-              || !socket?.isOpen()
-              || this.secureChannel !== channel) {
-            throw new Error('OnionPIR strict admission session was invalidated');
-          }
-          admission().free();
-        };
-        assertReady();
-        return assertReady;
-      },
-      assertRetainedSessionBinding: (policy, nowUnix) => {
-        const state = admission();
-        try {
-          state.verifyRetainedPolicySession(policy, nowUnix);
-        } finally {
-          state.free();
-        }
-      },
-      authorize: (policy, scopeId, offerId, proof) =>
-        roundtrip(async (state) => {
-          // The ProviderAdmissionSession has already retired/advanced proof
-          // bytes before this method is entered.
-          const request = state.authorizationRequest(policy, scopeId, offerId, proof);
-          try {
-            const response = await this.sendRaw(request);
-            return state.acceptAuthorizationResponse(response, policy, scopeId);
-          } finally {
-            request.fill(0);
-          }
-        }),
-      authorizeBatV2: (verified, proof, nowUnix) =>
-        roundtrip(async (state) => {
-          // Rust rechecks current/retained membership and proof/class binding
-          // before returning request bytes. Exactly one socket send follows.
-          const request = state.batV2AuthorizationRequest(verified, proof, nowUnix);
-          try {
-            const response = await this.sendRaw(request);
-            return state.acceptBatV2AuthorizationResponse(response, verified);
-          } finally {
-            request.fill(0);
-          }
-        }),
-      authorizeRetained: (policy, proof, nowUnix) =>
-        roundtrip(async (state) => {
-          const request = state.retainedAuthorizationRequest(policy, proof, nowUnix);
-          try {
-            const response = await this.sendRaw(request);
-            return state.acceptRetainedAuthorizationResponse(response, policy, nowUnix);
-          } finally {
-            request.fill(0);
-          }
-        }),
-      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        roundtrip(async (state) => {
-          const request = state.powChallengeRequest(policy, scopeId, offerId);
-          const response = await this.sendRaw(request);
-          return state.acceptPowChallengeResponse(
-            response,
-            policy,
-            scopeId,
-            offerId,
-            nowUnix,
-          );
-        }),
-    };
-  }
-
   /**
    * Install (or replace) a leakage recorder. Pass `null` to uninstall.
    * Mirrors `OnionClient::set_leakage_recorder` on the Rust side — same
@@ -2095,48 +1929,6 @@ export class OnionPirWebClient {
   // ═══════════════════════════════════════════════════════════════════════
   // BATCH QUERY
   // ═══════════════════════════════════════════════════════════════════════
-
-  /**
-   * Run the exact INDEX PBC planner without generating keys or touching the
-   * network. Data-dependent CHUNK and Merkle counts remain conservative
-   * lower bounds; the returned shape never claims a complete byte/time fit.
-   */
-  planServiceQuery(
-    scriptHashes: Uint8Array[],
-    dbId: number = this.dbId,
-  ): ProductQueryShapeV1 {
-    if (scriptHashes.length === 0) throw new Error('OnionPIR service plan requires an input');
-    for (let index = 0; index < scriptHashes.length; index += 1) {
-      if (scriptHashes[index].length !== 20) {
-        throw new Error(`scriptHash[${index}] must be 20 bytes`);
-      }
-    }
-    const generation = this.sessionGeneration;
-    this.assertCurrentQuerySession(generation, dbId, 'service planning');
-    const installed = this.installedOnionRoots.get(dbId);
-    const indexK = this.isStrictVerification() ? installed!.indexK : this.indexK;
-    const chunkK = this.isStrictVerification() ? installed!.chunkK : this.chunkK;
-    const indexRounds = planPbcRounds(scriptHashes.map(deriveGroups), indexK).length;
-    // Mandatory lower-bound frames: register, every exact INDEX round, one
-    // CHUNK round (including all-not-found), and one pass for each Merkle
-    // sub-tree. Collisions/data can only increase the latter phases.
-    const frames = 1 + indexRounds + 1 + 2;
-    const workUnits = 1n
-      + BigInt(indexRounds * 2 * indexK)
-      + BigInt(chunkK)
-      + BigInt(indexK)
-      + BigInt(chunkK);
-    return {
-      backend: 'onion-pir',
-      workload: 'onion-session',
-      lowerBounds: {
-        logicalInputs: indexRounds,
-        frames,
-        concurrentSockets: 1,
-        workUnits: workUnits.toString(),
-      },
-    };
-  }
 
   async queryBatch(
     scriptHashes: Uint8Array[],

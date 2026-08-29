@@ -69,15 +69,6 @@ import {
 } from './strict-verification.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
-import {
-  assertLiveOperatorIdentityV1,
-  verifiedLiveOperatorSigningKeyV1,
-  type ServiceAdmissionPortV1,
-} from './service-admission.js';
-import {
-  canonicalProductQueryShapeV1,
-  type ProductQueryShapeV1,
-} from './service-entitlement.js';
 import { trustedNowUnixV1 } from './trusted-time.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -1088,117 +1079,6 @@ export class BatchPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  /**
-   * Build an independent admission port for exactly one DPF provider. The
-   * caller creates one `ProviderAdmissionSessionV1` per server; no peer ID or
-   * shared capability crosses either connection.
-   */
-  serviceAdmissionPort(serverIndex: 0 | 1, dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmDpfClient => {
-      if (!this.wasmClient) throw new Error('Not connected');
-      if (!this.isStrictVerification() || !this.strictLegReady[serverIndex]) {
-        throw new Error(`V1 service admission requires strict verification of server ${serverIndex}`);
-      }
-      return this.wasmClient;
-    };
-    const authorizedClient = (): WasmDpfClient => {
-      const current = client();
-      if (!this.isPreparedAdmissionDb(dbId)) {
-        throw new Error(
-          `DPF capability use requires prepared strict admission for db_id ${dbId}`,
-        );
-      }
-      return current;
-    };
-    return {
-      providerEndpoint: () => serverIndex === 0
-        ? this.config.server0Url : this.config.server1Url,
-      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(
-        serverIndex === 0 ? this.operatorIdentity.server0 : this.operatorIdentity.server1,
-      ),
-      assertTrustAnchor: (trust) => {
-        client();
-        assertLiveOperatorIdentityV1(
-          trust,
-          serverIndex === 0 ? this.operatorIdentity.server0 : this.operatorIdentity.server1,
-        );
-      },
-      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
-        client().fetchServicePolicy(
-          serverIndex,
-          dbId,
-          providerId,
-          policyKey,
-          nowUnix,
-          checkpoint,
-        ),
-      fetchRetainedRedemption: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedServiceRedemption(
-        serverIndex,
-        dbId,
-        providerId,
-        policyKey,
-        policyDigest,
-        scopeId,
-        offerId,
-        nowUnix,
-      ),
-      fetchRetainedBatV2Policy: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedBatV2Policy(
-        serverIndex,
-        dbId,
-        providerId,
-        policyKey,
-        policyDigest,
-        scopeId,
-        offerId,
-        nowUnix,
-      ),
-      assertSessionBinding: (policy) =>
-        authorizedClient().verifyServicePolicySession(serverIndex, policy),
-      captureReadinessGuard: () => {
-        const expectedClient = authorizedClient();
-        const expectedGeneration = this.pairGeneration;
-        const assertReady = () => {
-          if (!expectedClient.isServerConnected(0) || !expectedClient.isServerConnected(1)) {
-            throw new Error('DPF strict pair transport is no longer connected');
-          }
-          this.assertCurrentStrictPair(expectedClient, expectedGeneration);
-          authorizedClient();
-        };
-        assertReady();
-        return assertReady;
-      },
-      assertRetainedSessionBinding: (policy, nowUnix) =>
-        authorizedClient().verifyRetainedServiceSession(serverIndex, policy, nowUnix),
-      authorize: (policy, scopeId, offerId, proof) =>
-        authorizedClient().authorizeService(serverIndex, dbId, policy, scopeId, offerId, proof),
-      authorizeBatV2: (verified, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeBatV2Service(
-          serverIndex,
-          dbId,
-          verified,
-          proof,
-          nowUnix,
-        ),
-      authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeRetainedService(
-          serverIndex, dbId, policy, proof, nowUnix,
-        ),
-      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        authorizedClient().requestServicePowChallenge(
-          serverIndex,
-          dbId,
-          policy,
-          scopeId,
-          offerId,
-          nowUnix,
-        ),
-    };
-  }
-
   // ── Merkle accessors ─────────────────────────────────────────────────
 
   hasMerkle(): boolean {
@@ -1232,20 +1112,6 @@ export class BatchPirClientAdapter {
   }
 
   // ── Query paths ───────────────────────────────────────────────────────
-
-  /**
-   * Compute provider-local Payment-V1 demand before capability acquisition.
-   * The WASM method is synchronous and transport-free; canonicalization strips
-   * its diagnostic fields into the common product contract.
-   */
-  planServiceQuery(
-    scriptHashes: Uint8Array[],
-    dbId: number = 0,
-  ): ProductQueryShapeV1 {
-    if (!this.wasmClient) throw new Error('Not connected');
-    const plan = this.wasmClient.planServiceQuery(packScriptHashes(scriptHashes), dbId);
-    return canonicalProductQueryShapeV1(plan, 'DPF planned query shape');
-  }
 
   /**
    * Full-snapshot batch query. `scriptHashes` is an array of 20-byte

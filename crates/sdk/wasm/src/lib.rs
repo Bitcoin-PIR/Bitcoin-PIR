@@ -60,31 +60,6 @@ pub mod arc;
 /// returned signature into a single-use BAT.
 pub mod cashu;
 
-/// Strict standard Cashu V3/V4 token importer. Wallet serialization remains
-/// browser-local and is normalized into the service protocol's canonical
-/// spend bytes only after exact signed-manifest checks.
-mod standard_cashu;
-
-/// Browser-side BOLT11 quote acquisition and recovery state machine.
-pub mod bolt11;
-
-/// Class-bound BAT V2 acquisition and recovery bridge.
-pub mod bat_v2;
-pub use bat_v2::{WasmBolt11BatV2AcquisitionV2, WasmIssuedBatV2ProofsV2};
-
-/// Strict signed service-policy and provider-local admission bindings.
-pub mod service;
-pub use service::{
-    initial_service_policy_checkpoint_v1, WasmAcceptedRetainedBatV2PolicyV2,
-    WasmAcceptedServicePolicyV1, WasmServicePowChallengeV1, WasmVerifiedBatV2RedemptionV2,
-};
-
-/// Strict Nostr directory verification and persist-before-select typestate.
-/// Relay sockets and durable storage remain browser-owned; signatures,
-/// replacement ordering, rollback, split-view and shard binding remain Rust.
-pub mod directory;
-pub use directory::{directory_full_catalog_req_json_v1, WasmDirectoryCatalogCandidateV1};
-
 /// Same-socket attestation and encrypted-frame bridge for the standalone
 /// browser OnionPIR/SEAL implementation.
 pub mod standalone_channel;

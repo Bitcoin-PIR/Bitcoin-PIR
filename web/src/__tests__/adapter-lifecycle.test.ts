@@ -537,115 +537,9 @@ describe('adapter WASM lifecycle', () => {
     });
     expect(preflightDatabase).not.toHaveBeenCalled();
     expect(dpf.isConnected()).toBe(false);
-    expect(() => dpf.serviceAdmissionPort(0, 0).authorize(
-      {} as any, new Uint8Array(32), 0, new Uint8Array(),
-    )).toThrow('requires prepared strict admission');
-  });
-
-  it('exposes one canonical zero-network product planner contract', () => {
-    const dpfPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
-      backend: 'dpf-pir',
-      workload: 'dpf-query',
-      lowerBounds: {
-        logicalInputs: 1,
-        frames: 3,
-        workUnits: '470',
-        concurrentSockets: 1,
-      },
-      pbcRounds: 1,
-      exactIndexFrames: 1,
-      omitted: ['requestBytes', 'responseBytes', 'merkleFrames'],
-    }));
-    const dpf = new BatchPirClientAdapter({
-      server0Url: 'wss://pir1.invalid',
-      server1Url: 'wss://pir2.invalid',
-      strictVerification: false,
-    });
-    (dpf as any).wasmClient = { planServiceQuery: dpfPlan };
-    const hash0 = new Uint8Array(20).fill(1);
-    const hash1 = new Uint8Array(20).fill(2);
-    expect(dpf.planServiceQuery([hash0, hash1], 7)).toEqual({
-      backend: 'dpf-pir',
-      workload: 'dpf-query',
-      lowerBounds: {
-        logicalInputs: 1,
-        frames: 3,
-        workUnits: '470',
-        concurrentSockets: 1,
-      },
-    });
-    expect(dpfPlan).toHaveBeenCalledOnce();
-    expect(dpfPlan.mock.calls[0][0]).toEqual(
-      new Uint8Array([...hash0, ...hash1]),
+    await expect(dpf.queryBatch([new Uint8Array(20)])).rejects.toThrow(
+      'strict verification is not ready',
     );
-    expect(dpfPlan.mock.calls[0][1]).toBe(7);
-
-    const harmonyQueryPlan = vi.fn((_packed: Uint8Array, _dbId: number) => ({
-      backend: 'harmony-pir',
-      workload: 'harmony-query',
-      lowerBounds: { logicalInputs: 1, frames: 4, workUnits: '900', concurrentSockets: 1 },
-      pbcRounds: 1,
-      exactIndexFrames: 2,
-      omitted: ['dataDependentAdditionalChunkFrames'],
-    }));
-    const harmonyHintPlan = vi.fn((_dbId: number) => ({
-      backend: 'harmony-pir',
-      workload: 'harmony-hint',
-      lowerBounds: {
-        logicalInputs: 0,
-        frames: 1,
-        workUnits: '155',
-        hintGroups: 155,
-        concurrentSockets: 1,
-      },
-      omitted: ['siblingHintGroups'],
-    }));
-    const harmony = new HarmonyPirClientAdapter({
-      hintServerUrl: 'wss://hint.invalid',
-      queryServerUrl: 'wss://query.invalid',
-      strictVerification: false,
-    });
-    (harmony as any).wasmClient = {
-      planServiceQuery: harmonyQueryPlan,
-      planServiceHint: harmonyHintPlan,
-    };
-    expect(harmony.planServiceQuery([hash0], 8)).toEqual({
-      backend: 'harmony-pir',
-      workload: 'harmony-query',
-      lowerBounds: {
-        logicalInputs: 1,
-        frames: 4,
-        workUnits: '900',
-        concurrentSockets: 1,
-      },
-    });
-    expect(harmony.planServiceHint(8)).toEqual({
-      backend: 'harmony-pir',
-      workload: 'harmony-hint',
-      lowerBounds: {
-        logicalInputs: 0,
-        frames: 1,
-        workUnits: '155',
-        hintGroups: 155,
-        concurrentSockets: 1,
-      },
-    });
-    expect(harmonyQueryPlan).toHaveBeenCalledWith(hash0, 8);
-    expect(harmonyHintPlan).toHaveBeenCalledWith(8);
-  });
-
-  it('rejects malformed planner hashes before entering WASM', () => {
-    const planServiceQuery = vi.fn();
-    const adapter = new BatchPirClientAdapter({
-      server0Url: 'wss://pir1.invalid',
-      server1Url: 'wss://pir2.invalid',
-      strictVerification: false,
-    });
-    (adapter as any).wasmClient = { planServiceQuery };
-    expect(() => adapter.planServiceQuery([new Uint8Array(19)])).toThrow(
-      'scriptHash[0] must be 20 bytes',
-    );
-    expect(planServiceQuery).not.toHaveBeenCalled();
   });
 
   it('never inherits a native merkleVerified default before explicit verification', async () => {
@@ -812,10 +706,6 @@ describe('adapter WASM lifecycle', () => {
       proof: { bucketSuperRootHex: '51'.repeat(32) },
     });
     await adapter.saveHintsToCache({
-      providerIdHex: '11'.repeat(32),
-      policyDigestHex: '31'.repeat(32),
-      scopeIdHex: '21'.repeat(32),
-      offerId: 1,
       datasetIdHex: '51'.repeat(32),
       prpBackend: 0,
     });
@@ -1379,164 +1269,54 @@ describe('adapter WASM lifecycle', () => {
     expect(adapter.isLegReady(0)).toBe(false);
   });
 
-  it('keeps DPF capability use and queries blocked until pre-authorization preflight completes', async () => {
+  it('keeps DPF queries blocked until pre-authorization preflight completes', async () => {
     const preflightDatabase = vi.fn(async () => {});
-    const authorizeService = vi.fn(async () => ({}));
-    const adapter = strictDpfPair({ preflightDatabase, authorizeService });
-    const port = adapter.serviceAdmissionPort(0, 0);
+    const adapter = strictDpfPair({ preflightDatabase });
 
     await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
-    expect(() => port.authorize({} as any, new Uint8Array(32), 0, new Uint8Array()))
-      .toThrow('requires prepared strict admission');
     await Promise.all([
       adapter.prepareStrictAdmission(0),
       adapter.prepareStrictAdmission(0),
     ]);
 
     expect(preflightDatabase).toHaveBeenCalledOnce();
-    await port.authorize({} as any, new Uint8Array(32), 0, new Uint8Array());
-    expect(authorizeService).toHaveBeenCalledOnce();
     await expect(adapter.queryBatch([], undefined, 1)).rejects.toThrow(
       'strict DPF admission is bound to db_id 0, not db_id 1',
     );
   });
 
-  it('routes DPF BAT V2 only through the explicit one-sided typed primitive', async () => {
-    const dangerousUnpairedAuthorizeBatV2Service = vi.fn(async () => ({
-      kind: 'recoverable-definitely-not-sent',
-      retryAfterMs: 7,
-    }));
-    const authorizeService = vi.fn();
-    const adapter = strictDpfPair({
-      preflightDatabase: vi.fn(async () => {}),
-      isServerConnected: vi.fn(() => true),
-      dangerousUnpairedAuthorizeBatV2Service,
-      authorizeService,
-    });
-    const port = adapter.serviceAdmissionPort(0, 0);
-    await adapter.prepareStrictAdmission(0);
-    const verified = { marker: 'opaque-bat-v2' } as any;
-    const proof = new Uint8Array([1, 2, 3]);
-    await expect(port.authorizeBatV2!(verified, proof, 9n)).resolves.toEqual({
-      kind: 'recoverable-definitely-not-sent',
-      retryAfterMs: 7,
-    });
-    expect(dangerousUnpairedAuthorizeBatV2Service).toHaveBeenCalledOnce();
-    expect(dangerousUnpairedAuthorizeBatV2Service).toHaveBeenCalledWith(
-      0, 0, verified, proof, 9n,
-    );
-    expect(authorizeService).not.toHaveBeenCalled();
-  });
-
-  it('routes Harmony BAT V2 through role-explicit one-sided primitives without retry', async () => {
-    const hint = vi.fn(async () => ({ kind: 'burn-terminal' }));
-    const query = vi.fn(async () => ({ kind: 'burn-outcome-unknown' }));
-    const adapter = strictHarmonyPair({
-      preflightDatabase: vi.fn(async () => {}),
-      isProviderConnected: vi.fn(() => true),
-      dangerousUnpairedAuthorizeBatV2HintService: hint,
-      dangerousUnpairedAuthorizeBatV2QueryService: query,
-    });
-    await adapter.prepareStrictAdmission(0);
-    const verified = { marker: 'opaque-bat-v2' } as any;
-    const proof = new Uint8Array([4, 5]);
-    await expect(adapter.hintServiceAdmissionPort(0).authorizeBatV2!(
-      verified, proof, 10n,
-    )).resolves.toEqual({ kind: 'burn-terminal' });
-    await expect(adapter.queryServiceAdmissionPort(0).authorizeBatV2!(
-      verified, proof, 11n,
-    )).resolves.toEqual({ kind: 'burn-outcome-unknown' });
-    expect(hint).toHaveBeenCalledOnce();
-    expect(query).toHaveBeenCalledOnce();
-    expect(hint).toHaveBeenCalledWith(0, verified, proof, 10n);
-    expect(query).toHaveBeenCalledWith(0, verified, proof, 11n);
-  });
-
-  it('routes direct ORAM BAT V2 through its typed verified-handle primitive once', async () => {
-    const authorizeBatV2Service = vi.fn(async () => ({ kind: 'burn-terminal' }));
-    const adapter = new OramPirClientAdapter({
-      serverUrl: 'wss://oram.invalid',
-      strictVerification: true,
-      verifyOperatorIdentity: true,
-      expectedServerId: 'oram',
-      expectedServerPin: {
-        binarySha256Hex: BINARY_0,
-        measurementHex: '61'.repeat(48),
-      },
-    });
-    const state = adapter as any;
-    state.wasmClient = { authorizeBatV2Service };
-    state.connected = true;
-    state.strictReady = true;
-    state.secureChannelEstablished = true;
-    state.attestation = {
-      state: 'verified-vcek',
-      sevStatus: 'reportDataMatch',
-      vcekChain: 'pass',
-      pinStatus: 'match',
-    };
-    adapter.operatorIdentity = {
-      state: 'verified',
-      serverId: 'oram',
-      operatorPubkeyHex: '62'.repeat(32),
-    };
-    state.databaseProofs.set(3, { state: 'verified' });
-    const verified = { marker: 'opaque-bat-v2' } as any;
-    const proof = new Uint8Array([7, 8]);
-
-    await expect(adapter.serviceAdmissionPort(3).authorizeBatV2!(
-      verified, proof, 12n,
-    )).resolves.toEqual({ kind: 'burn-terminal' });
-    expect(authorizeBatV2Service).toHaveBeenCalledOnce();
-    expect(authorizeBatV2Service).toHaveBeenCalledWith(3, verified, proof, 12n);
-  });
-
-  it('invalidates DPF acquisition binding when either prepared peer disconnects', async () => {
+  it('invalidates DPF prepared binding when either prepared peer disconnects', async () => {
     const connected = [true, true];
-    const verifyServicePolicySession = vi.fn();
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      verifyServicePolicySession,
       disconnectServer: vi.fn(async (index: number) => { connected[index] = false; }),
       isServerConnected: vi.fn((index: number) => connected[index]),
     };
     const adapter = strictDpfPair(client);
-    const survivingPort = adapter.serviceAdmissionPort(0, 0);
-    const policy = { marker: 'signed-policy' } as any;
 
     await adapter.prepareStrictAdmission(0);
-    survivingPort.assertSessionBinding(policy);
-    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+    expect(adapter.isPreparedAdmissionDb(0)).toBe(true);
 
     await adapter.disconnectLeg(1);
-    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
-      'requires prepared strict admission',
-    );
-    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+    expect(adapter.isPreparedAdmissionDb(0)).toBe(false);
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
   });
 
-  it('invalidates Harmony acquisition binding when either prepared peer disconnects', async () => {
+  it('invalidates Harmony prepared binding when either prepared peer disconnects', async () => {
     const connected = [true, true];
-    const verifyServicePolicySession = vi.fn();
     const client = {
       preflightDatabase: vi.fn(async () => {}),
-      verifyServicePolicySession,
       disconnectProvider: vi.fn(async (index: number) => { connected[index] = false; }),
       isProviderConnected: vi.fn((index: number) => connected[index]),
     };
     const adapter = strictHarmonyPair(client);
-    const survivingPort = adapter.hintServiceAdmissionPort(0);
-    const policy = { marker: 'signed-policy' } as any;
 
     await adapter.prepareStrictAdmission(0);
-    survivingPort.assertSessionBinding(policy);
-    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+    expect(adapter.isPreparedAdmissionDb(0)).toBe(true);
 
     await adapter.disconnectLeg(1);
-    expect(() => survivingPort.assertSessionBinding(policy)).toThrow(
-      'requires prepared strict admission',
-    );
-    expect(verifyServicePolicySession).toHaveBeenCalledOnce();
+    expect(adapter.isPreparedAdmissionDb(0)).toBe(false);
+    await expect(adapter.queryBatch([])).rejects.toThrow('strict verification is not ready');
   });
 
   it('rechecks distinct operator pins at the final DPF pair gate', async () => {
@@ -1557,46 +1337,6 @@ describe('adapter WASM lifecycle', () => {
 
     await expect(adapter.prepareStrictAdmission(0)).rejects.toThrow('distinct operator pins');
     expect(preflightDatabase).not.toHaveBeenCalled();
-  });
-
-  it('allows first-leg Harmony policy display but blocks capability paths before preflight', async () => {
-    const policy = { marker: 'signed-policy' } as any;
-    const fetchServicePolicy = vi.fn(async () => policy);
-    const requestHintPowChallenge = vi.fn(async () => ({ marker: 'challenge' }));
-    const adapter = strictHarmonyPair({
-      preflightDatabase: vi.fn(async () => {}),
-      fetchServicePolicy,
-      requestHintPowChallenge,
-    });
-    const port = adapter.hintServiceAdmissionPort(0);
-
-    await expect(port.fetchPolicy(
-      new Uint8Array(32),
-      new Uint8Array(32),
-      1n,
-      new Uint8Array(),
-    )).resolves.toBe(policy);
-    await expect(adapter.fetchHints()).rejects.toThrow(
-      'hint acquisition requires prepared strict admission',
-    );
-    expect(() => port.requestPowChallenge(
-      policy,
-      new Uint8Array(32),
-      0,
-      1n,
-    )).toThrow('requires prepared strict admission');
-
-    await adapter.prepareStrictAdmission(0);
-    await port.requestPowChallenge(policy, new Uint8Array(32), 0, 1n);
-    expect(requestHintPowChallenge).toHaveBeenCalledOnce();
-    expect(fetchServicePolicy).toHaveBeenCalledWith(
-      0,
-      0,
-      expect.any(Uint8Array),
-      expect.any(Uint8Array),
-      1n,
-      expect.any(Uint8Array),
-    );
   });
 
   it('makes a failed Harmony pre-authorization preflight fail closed and one-shot', async () => {

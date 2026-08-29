@@ -57,24 +57,14 @@ use crate::db_proof::{
 #[cfg(feature = "onion")]
 use crate::protocol::reject_error_response;
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
-use crate::service::{
-    dangerous_unpaired_authorize_bat_v2_redemption_v2,
-    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
-    fetch_verified_service_policy_v1, request_pow_challenge_v1,
-    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
-    AcceptedRetainedBatV2PolicyV2, AcceptedServicePolicyV1, BatV2AdmissionOutcomeV2,
-    ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
-};
 use crate::transport::PirTransport;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
-use ed25519_dalek::VerifyingKey;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant,
     LeakageRecorder, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult,
     RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult, SyncStep,
 };
-use pir_service_protocol::{AuthorizationProofV1, OperationStartV1, ProviderId};
 use std::sync::Arc;
 
 // ─── CHUNK Round-Presence Symmetry: per-slot classifier ────────────────────
@@ -686,147 +676,6 @@ impl OnionClient {
 
     pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.verified_roots.get(db_id)
-    }
-
-    pub async fn fetch_service_policy_v1(
-        &mut self,
-        db_id: u8,
-        expected_provider_id: ProviderId,
-        policy_signing_key: &VerifyingKey,
-        now_unix: u64,
-        checkpoint: &ServicePolicyCheckpointV1,
-    ) -> PirResult<AcceptedServicePolicyV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "service policy requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        fetch_verified_service_policy_v1(
-            transport.as_mut(),
-            expected_provider_id,
-            policy_signing_key,
-            now_unix,
-            checkpoint,
-        )
-        .await
-    }
-
-    /// Fetch one exact historical BAT V2 member after the Onion database root
-    /// is installed. This path cannot select a provider-bound V1 credential.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn fetch_retained_bat_v2_policy_v2(
-        &mut self,
-        db_id: u8,
-        expected_provider_id: ProviderId,
-        policy_signing_key: &VerifyingKey,
-        expected_policy_digest: [u8; 32],
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "retained BAT V2 policy requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        fetch_retained_bat_v2_policy_v2(
-            transport.as_mut(),
-            expected_provider_id,
-            policy_signing_key,
-            expected_policy_digest,
-            scope_id,
-            offer_id,
-            now_unix,
-        )
-        .await
-    }
-
-    /// Verify that `accepted` belongs to this exact OnionPIR connection. Call
-    /// immediately before retiring a one-shot capability.
-    pub fn verify_service_policy_session_v1(
-        &self,
-        accepted: &AcceptedServicePolicyV1,
-    ) -> PirResult<()> {
-        let transport = self.conn.as_ref().ok_or(PirError::NotConnected)?;
-        verify_policy_transport_session_v1(transport.as_ref(), accepted)
-    }
-
-    pub async fn authorize_service_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        proof: AuthorizationProofV1,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_service_policy_session_v1(accepted)?;
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "service authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        dangerous_unpaired_authorize_service_operation_v1(
-            transport.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::OnionSession { db_id },
-            proof,
-        )
-        .await
-    }
-
-    /// One-shot standalone OnionPIR BAT V2 admission with an exact verified
-    /// member handle and conservative post-send disposition.
-    pub async fn authorize_bat_v2_service_v2(
-        &mut self,
-        db_id: u8,
-        verified: &VerifiedBatV2RedemptionV2,
-        proof_bytes: &[u8],
-        now_unix: u64,
-    ) -> PirResult<BatV2AdmissionOutcomeV2> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "BAT V2 authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        dangerous_unpaired_authorize_bat_v2_redemption_v2(
-            transport.as_mut(),
-            verified,
-            OperationStartV1::OnionSession { db_id },
-            proof_bytes,
-            now_unix,
-        )
-        .await
-    }
-
-    pub async fn request_service_pow_challenge_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "proof-of-work challenge requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        request_pow_challenge_v1(
-            transport.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::OnionSession { db_id },
-            now_unix,
-        )
-        .await
     }
 
     /// Fetch and bind a database's OnionPIR Merkle tree-tops to an explicitly

@@ -103,15 +103,6 @@ import type {
   QueryInspectorData,
 } from './harmony-types.js';
 import { ManagedWebSocket } from './ws.js';
-import {
-  assertLiveOperatorIdentityV1,
-  verifiedLiveOperatorSigningKeyV1,
-  type ServiceAdmissionPortV1,
-} from './service-admission.js';
-import {
-  canonicalProductQueryShapeV1,
-  type ProductQueryShapeV1,
-} from './service-entitlement.js';
 import { trustedNowUnixV1 } from './trusted-time.js';
 import {
   buildCacheKey,
@@ -1338,139 +1329,6 @@ export class HarmonyPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  /** Independent, separately priced admission for the expensive hint phase. */
-  hintServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient(0);
-    const authorizedClient = (): WasmHarmonyClient =>
-      this.requirePreparedAdmissionClient(0, dbId);
-    return {
-      providerEndpoint: () => this.config.hintServerUrl,
-      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity.hint),
-      assertTrustAnchor: (trust) => {
-        client();
-        assertLiveOperatorIdentityV1(trust, this.operatorIdentity.hint);
-      },
-      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
-        client().fetchServicePolicy(0, dbId, providerId, policyKey, nowUnix, checkpoint),
-      fetchRetainedRedemption: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedServiceRedemption(
-        0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      fetchRetainedBatV2Policy: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedBatV2Policy(
-        0, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(0, policy),
-      captureReadinessGuard: () => this.captureServiceReadinessGuard(0, dbId),
-      assertRetainedSessionBinding: (policy, nowUnix) =>
-        authorizedClient().verifyRetainedServiceSession(0, policy, nowUnix),
-      authorize: (policy, scopeId, offerId, proof) =>
-        authorizedClient().authorizeHintService(dbId, policy, scopeId, offerId, proof),
-      authorizeBatV2: (verified, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeBatV2HintService(
-          dbId, verified, proof, nowUnix,
-        ),
-      authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeRetainedHintService(
-          dbId,
-          policy,
-          proof,
-          nowUnix,
-        ),
-      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        authorizedClient().requestHintPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
-    };
-  }
-
-  /** Independent admission for the lower-cost Harmony query phase. */
-  queryServiceAdmissionPort(dbId: number): ServiceAdmissionPortV1 {
-    const client = (): WasmHarmonyClient => this.requireStrictAdmissionClient(1);
-    const authorizedClient = (): WasmHarmonyClient =>
-      this.requirePreparedAdmissionClient(1, dbId);
-    return {
-      providerEndpoint: () => this.config.queryServerUrl,
-      operatorSigningKey: () => verifiedLiveOperatorSigningKeyV1(this.operatorIdentity.query),
-      assertTrustAnchor: (trust) => {
-        client();
-        assertLiveOperatorIdentityV1(trust, this.operatorIdentity.query);
-      },
-      fetchPolicy: (providerId, policyKey, nowUnix, checkpoint) =>
-        client().fetchServicePolicy(1, dbId, providerId, policyKey, nowUnix, checkpoint),
-      fetchRetainedRedemption: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedServiceRedemption(
-        1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      fetchRetainedBatV2Policy: (
-        providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ) => client().fetchRetainedBatV2Policy(
-        1, dbId, providerId, policyKey, policyDigest, scopeId, offerId, nowUnix,
-      ),
-      assertSessionBinding: (policy) => authorizedClient().verifyServicePolicySession(1, policy),
-      captureReadinessGuard: () => this.captureServiceReadinessGuard(1, dbId),
-      assertRetainedSessionBinding: (policy, nowUnix) =>
-        authorizedClient().verifyRetainedServiceSession(1, policy, nowUnix),
-      authorize: (policy, scopeId, offerId, proof) =>
-        authorizedClient().authorizeQueryService(dbId, policy, scopeId, offerId, proof),
-      authorizeBatV2: (verified, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeBatV2QueryService(
-          dbId, verified, proof, nowUnix,
-        ),
-      authorizeRetained: (policy, proof, nowUnix) =>
-        authorizedClient().dangerousUnpairedAuthorizeRetainedQueryService(
-          dbId,
-          policy,
-          proof,
-          nowUnix,
-        ),
-      requestPowChallenge: (policy, scopeId, offerId, nowUnix) =>
-        authorizedClient().requestQueryPowChallenge(dbId, policy, scopeId, offerId, nowUnix),
-    };
-  }
-
-  private requireStrictAdmissionClient(providerIndex: 0 | 1): WasmHarmonyClient {
-    if (!this.wasmClient) throw new Error('Not connected');
-    if (!this.isStrictVerification() || !this.strictLegReady[providerIndex]) {
-      throw new Error(
-        `V1 service admission requires strict verification of Harmony provider ${providerIndex}`,
-      );
-    }
-    return this.wasmClient;
-  }
-
-  private requirePreparedAdmissionClient(
-    providerIndex: 0 | 1,
-    dbId: number,
-  ): WasmHarmonyClient {
-    const client = this.requireStrictAdmissionClient(providerIndex);
-    if (!this.isPreparedAdmissionDb(dbId)) {
-      throw new Error(
-        `Harmony capability use requires prepared strict admission for db_id ${dbId}`,
-      );
-    }
-    return client;
-  }
-
-  private captureServiceReadinessGuard(
-    providerIndex: 0 | 1,
-    dbId: number,
-  ): () => void {
-    const expectedClient = this.requirePreparedAdmissionClient(providerIndex, dbId);
-    const expectedGeneration = this.pairGeneration;
-    const assertReady = () => {
-      if (!expectedClient.isProviderConnected(0)
-          || !expectedClient.isProviderConnected(1)) {
-        throw new Error('Harmony strict pair transport is no longer connected');
-      }
-      this.assertCurrentStrictPair(expectedClient, expectedGeneration);
-      this.requirePreparedAdmissionClient(providerIndex, dbId);
-    };
-    assertReady();
-    return assertReady;
-  }
-
   private async verifyConfiguredDatabaseProofs(): Promise<void> {
     if (!this.wasmClient) return;
     const pins = this.config.databaseProofPins ?? [];
@@ -1596,26 +1454,6 @@ export class HarmonyPirClientAdapter {
   }
 
   // ══ Query path ═══════════════════════════════════════════════════════
-
-  /** Zero-network query-provider demand from the native PBC planner. */
-  planServiceQuery(
-    scriptHashes: Uint8Array[],
-    dbId: number = this.dbId,
-  ): ProductQueryShapeV1 {
-    if (!this.wasmClient) throw new Error('Not connected');
-    const plan = this.wasmClient.planServiceQuery(packScriptHashes(scriptHashes), dbId);
-    return canonicalProductQueryShapeV1(plan, 'Harmony planned query shape');
-  }
-
-  /**
-   * Separate cold-cache hint-provider lower bound. It covers catalog-known
-   * main groups; authenticated sibling groups remain explicitly unknown.
-   */
-  planServiceHint(dbId: number = this.dbId): ProductQueryShapeV1 {
-    if (!this.wasmClient) throw new Error('Not connected');
-    const plan = this.wasmClient.planServiceHint(dbId);
-    return canonicalProductQueryShapeV1(plan, 'Harmony planned hint shape');
-  }
 
   /**
    * Batch query. Accepts Bitcoin addresses or raw-hex scriptPubKeys,
@@ -1887,10 +1725,6 @@ export class HarmonyPirClientAdapter {
     const record: StoredHints = {
       cacheKey,
       dbId: this.dbId,
-      providerIdHex: binding.providerIdHex,
-      policyDigestHex: binding.policyDigestHex,
-      scopeIdHex: binding.scopeIdHex,
-      offerId: binding.offerId,
       datasetIdHex: binding.datasetIdHex,
       prpBackend: binding.prpBackend,
       // V2 servers may select a different compatible backend in the hint

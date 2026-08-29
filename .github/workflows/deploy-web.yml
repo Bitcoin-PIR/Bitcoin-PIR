@@ -88,22 +88,6 @@ jobs:
         working-directory: web
         run: npm test
 
-      - name: Install Chromium test runtime
-        working-directory: web
-        run: npx --no-install playwright install --with-deps chromium
-
-      - name: Exercise local multi-tab payment vault before publishing
-        working-directory: web
-        run: npm run test:e2e:payment-vault
-
-      - name: Exercise real WASM against loopback no-funds issuer before publishing
-        working-directory: web
-        run: npm run test:e2e:payment-real-issuer
-
-      - name: Exercise browser issuance and verified DPF query across two providers before publishing
-        working-directory: web
-        run: npm run test:e2e:payment-two-provider
-
       - name: Build production bundle
         working-directory: web
         run: npm run build-web
