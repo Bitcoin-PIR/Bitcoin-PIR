@@ -17,8 +17,6 @@ categories = ["cryptography", "cryptography::cryptocurrencies", "network-program
 [dependencies]
 pir-core = { version = "0.1.0", path = "../core" }
 pir-channel = { version = "0.1.0", path = "../channel" }
-pir-service-protocol = { version = "0.1.0", path = "../service" }
-pir-service-store = { version = "0.1.0", path = "../service-store" }
 # Two-tier operator-signed identity bundle returned by REQ_ANNOUNCE.
 # Pure crypto (Ed25519 sign/verify + canonical wire encoding) — the
 # server-side I/O wrapper (loading the identity key + cert from disk,

@@ -42,7 +42,6 @@ pir-sdk-client = { version = "0.1.0", path = "../client", default-features = fal
 # REPORT_DATA commits to the *exact* X25519 eph pubkey used in the
 # subsequent `upgradeToSecureChannel` handshake).
 pir-channel = { version = "0.1.0", path = "../../protocol/channel" }
-pir-service-protocol = { version = "0.1.0", path = "../../protocol/service" }
 arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
 # Cashu BDHKE blind/unblind (the `cashu` module's WasmCashuBlind). k256 +
 # sha2 compile cleanly to wasm32; the hash_to_curve here is byte-identical

@@ -51,30 +51,12 @@ pub fn run(args: KeygenArgs) -> Result<SecretWriteCompletionV1, String> {
     Ok(completion)
 }
 
-#[cfg(all(test, unix))]
-pub(crate) fn write_secret_key_unix(path: &std::path::Path, seed: &[u8; 32]) -> Result<(), String> {
-    write_secret_bytes_unix(path, seed)
-}
-
-#[cfg(all(test, not(unix)))]
-pub(crate) fn write_secret_key_unix(path: &std::path::Path, seed: &[u8; 32]) -> Result<(), String> {
-    write_secret_bytes_unix(path, seed)
-}
-
 pub(crate) fn write_secret_key_unix_with_force(
     path: &std::path::Path,
     seed: &[u8; 32],
     force: bool,
 ) -> Result<SecretWriteCompletionV1, String> {
     write_secret_bytes_unix_with_force(path, seed, force)
-}
-
-/// Write arbitrary fixed-size secret material with the same owner-only and
-/// no-symlink guarantees as the admin signing key. Payment V1 needs this for
-/// the four-scalar (128-byte) experimental ARC key.
-#[cfg(all(unix, any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn write_secret_bytes_unix(path: &std::path::Path, secret: &[u8]) -> Result<(), String> {
-    require_durable_secret_write(write_secret_bytes_unix_with_force(path, secret, true)?)
 }
 
 /// Atomically enforces the caller's no-clobber choice without a racy
@@ -178,16 +160,6 @@ impl SecretWriteCompletionV1 {
             Self::Durable => 0,
             Self::CommittedAmbiguous => COMMITTED_AMBIGUOUS_EXIT_CODE_V1,
         }
-    }
-}
-
-fn require_durable_secret_write(completion: SecretWriteCompletionV1) -> Result<(), String> {
-    match completion {
-        SecretWriteCompletionV1::Durable => Ok(()),
-        SecretWriteCompletionV1::CommittedAmbiguous => Err(
-            "secret write committed but did not complete ordinarily; reconcile the installed path and do not retry"
-                .to_owned(),
-        ),
     }
 }
 
@@ -983,11 +955,6 @@ fn secret_parent(path: &std::path::Path) -> &std::path::Path {
     path.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."))
-}
-
-#[cfg(not(all(unix, any(target_os = "linux", target_os = "macos"))))]
-pub(crate) fn write_secret_bytes_unix(path: &std::path::Path, secret: &[u8]) -> Result<(), String> {
-    require_durable_secret_write(write_secret_bytes_unix_with_force(path, secret, true)?)
 }
 
 #[cfg(not(all(unix, any(target_os = "linux", target_os = "macos"))))]

@@ -16,7 +16,7 @@ use zeroize::Zeroize;
 const ARC_VAULT_STATE_MAGIC_V1: &[u8; 8] = b"BPIRARC1";
 const REVIEWED_ARC_STATE_LEN_V1: usize = 1 + 32 + 32 + 8 + 8 + 32 + (3 * 33);
 const CREDENTIAL_PRESENTATION_CONTEXT_DOMAIN: &[u8] =
-    pir_service_protocol::CREDENTIAL_PRESENTATION_CONTEXT_DOMAIN;
+    b"BitcoinPIR/credential-presentation-context/v1";
 
 #[derive(Clone, Copy)]
 struct ReviewedArcBindingStateV1 {

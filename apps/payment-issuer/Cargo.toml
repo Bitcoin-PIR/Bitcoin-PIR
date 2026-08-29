@@ -4,46 +4,18 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.81"
 publish = false
-description = "BitcoinPIR payment and anonymous credential issuer"
+description = "Designated BitcoinPIR cashu/ARC credential issuer"
 
 [[bin]]
 name = "payment-issuer"
 path = "src/main.rs"
 
-[features]
-default = []
-# Non-default local integration harness only. The package build script rejects
-# this feature outside Cargo's debug/test artifact class, even if a release
-# profile manually enables Rust debug assertions.
-test-only-fake-lightning = []
-# Non-default real-process E2E only. This forwards the private test-CA hook;
-# release builds remain rejected by pir-strict-https at compile time.
-
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-ed25519-dalek = "2"
-getrandom = "0.2"
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+rand_core = { version = "0.6", features = ["getrandom"] }
+k256 = { version = "0.13", features = ["arithmetic"] }
 hex = "0.4"
-httparse = "1"
-pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
-pir-issuer-credentials = { path = "../../crates/payment/issuer-credentials" }
-pir-issuer-clearing = { path = "../../crates/payment/issuer-clearing" }
-pir-issuer-core = { path = "../../crates/payment/issuer-core" }
-pir-issuer-service = { path = "../../crates/payment/issuer-service" }
-pir-issuer-store = { path = "../../crates/payment/issuer-store" }
-pir-lightning-backend = { path = "../../crates/payment/lightning-backend" }
-pir-payment-crypto = { path = "../../crates/payment/crypto" }
-pir-private-files = { path = "../../crates/security/private-files" }
-pir-service-protocol = { path = "../../crates/protocol/service" }
-zeroize = "1"
-
-[target.'cfg(unix)'.dependencies]
-rustix = { version = "1", features = ["fs", "process"] }
-
-[dev-dependencies]
-pir-service-store = { path = "../../crates/protocol/service-store" }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-tempfile = "3"
+sha2 = "0.10"
 
 [lints.rust]
 unsafe_code = "forbid"

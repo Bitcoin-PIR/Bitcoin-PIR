@@ -67,15 +67,12 @@ merely building this repository.
 BitcoinPIR/
 ├── crates/
 │   ├── protocol/      Shared database, channel, and server-runtime primitives
-│   ├── payment/       Payment issuer, Cashu, BAT, ARC, clearing, and CLN adapters
-│   ├── directory/     Signed Nostr service-directory protocol
 │   ├── sdk/           Rust, native-client, server, and WASM SDK crates
 │   └── trust/         Identity, attestation, and database-proof verification
 ├── apps/
 │   ├── server/        Production server and diagnostic binaries
 │   ├── admin/         Operator CLI
-│   ├── payment-issuer/ Persistent BOLT11 capability issuer and clearing service
-│   └── dev-issuer/    Development-only rate-limit issuer and gate
+│   └── payment-issuer/ Designated cashu/ARC credential issuer
 ├── tools/
 │   ├── db-builder/    Database generation pipeline
 │   └── block-reader/  Bitcoin Core block/UTXO inspection utilities

@@ -16,12 +16,12 @@ use pir_runtime_core::snp_sealed_secrets::{
     Pir2SealedReceiptClaimsV1, Pir2SealedReceiptPhaseV1, Pir2SealedReceiptV1,
     Pir2SealedSigningMaterialV1, SnpDerivedKeyProvider, VerifiedPir2SealedReleaseV1,
 };
-use pir_service_protocol::{
-    IssuerAccountingApprovalV2, ProviderAccountingAuthorizationV2,
-    BAT_V2_ISSUER_ACCOUNTING_APPROVAL_LEN_V2, MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2,
-};
-
 use super::read_regular_file_bounded_v1;
+
+// Ceremony still supplies these files until the R5 sealed-startup
+// simplification. S4 only stops decoding them as deleted-world types.
+const MAX_ACCOUNTING_AUTHORIZATION_LEN_V1: usize = 16 * 1024;
+const MAX_ISSUER_APPROVAL_LEN_V1: usize = 145;
 
 const MAX_IDENTITY_CERT_LEN_V1: usize = 4096;
 const MAX_RELEASE_LEN_V1: usize = 2048;
@@ -121,17 +121,12 @@ pub(super) enum Pir2SealedStartupV1 {
     },
     Ready {
         identity_key: SigningKey,
-        // Clearing-side ceremony outputs. Still validated and wrapped by the
-        // current measured-boot ceremony, but no longer consumed by the
-        // server since the clearing world was deleted; the R5 ceremony
-        // simplification removes them from the variant entirely.
+        // Clearing-side ceremony outputs. Still unsealed by the current
+        // measured-boot ceremony, but no longer consumed by the server;
+        // the R5 ceremony simplification removes them from the variant.
         #[allow(dead_code)]
         clearing_key: SigningKey,
         identity_cert: IdentityCert,
-        #[allow(dead_code)]
-        accounting_auth: ProviderAccountingAuthorizationV2,
-        #[allow(dead_code)]
-        issuer_approval: IssuerAccountingApprovalV2,
     },
 }
 
@@ -273,7 +268,6 @@ fn decode_hex_array_v1<const N: usize>(value: Option<&str>, flag: &str) -> Resul
 pub(super) fn dispatch_pir2_sealed_startup_v1<P: SnpDerivedKeyProvider + ?Sized>(
     cli: &Pir2SealedCliV1,
     source_pinned_operator_key: &VerifyingKey,
-    issuer_settlement_key: Option<&VerifyingKey>,
     now_unix: u64,
     current_channel_pubkey: [u8; 32],
     provider: &P,
@@ -281,7 +275,6 @@ pub(super) fn dispatch_pir2_sealed_startup_v1<P: SnpDerivedKeyProvider + ?Sized>
     dispatch_pir2_sealed_startup_with_security_v1(
         cli,
         source_pinned_operator_key,
-        issuer_settlement_key,
         now_unix,
         current_channel_pubkey,
         provider,
@@ -295,7 +288,6 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
 >(
     cli: &Pir2SealedCliV1,
     source_pinned_operator_key: &VerifyingKey,
-    issuer_settlement_key: Option<&VerifyingKey>,
     now_unix: u64,
     current_channel_pubkey: [u8; 32],
     provider: &P,
@@ -385,7 +377,6 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
             &release,
             material.as_ref().expect("ready phase opened material"),
             source_pinned_operator_key,
-            issuer_settlement_key,
             now_unix,
         )?)
     } else {
@@ -426,15 +417,12 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
     }
     debug_assert!(cli.require_ready);
     let material = material.ok_or_else(|| "ready phase did not unseal credentials".to_owned())?;
-    let (identity_cert, accounting_auth, issuer_approval) =
-        ready_artifacts.expect("ready phase verified public artifacts");
+    let identity_cert = ready_artifacts.expect("ready phase verified public artifacts");
     let keys = material.into_signing_keys();
     Ok(Pir2SealedStartupV1::Ready {
         identity_key: keys.service_identity,
         clearing_key: keys.clearing,
         identity_cert,
-        accounting_auth,
-        issuer_approval,
     })
 }
 
@@ -443,16 +431,8 @@ fn load_ready_artifacts_v1(
     release: &VerifiedPir2SealedReleaseV1,
     material: &Pir2SealedSigningMaterialV1,
     source_pinned_operator_key: &VerifyingKey,
-    issuer_settlement_key: Option<&VerifyingKey>,
     now_unix: u64,
-) -> Result<
-    (
-        IdentityCert,
-        ProviderAccountingAuthorizationV2,
-        IssuerAccountingApprovalV2,
-    ),
-    String,
-> {
+) -> Result<IdentityCert, String> {
     let public_keys = material.public_keys();
     let identity_cert_bytes = read_regular_file_bounded_v1(
         cli.identity_cert_path.expect("ready paths checked"),
@@ -480,61 +460,20 @@ fn load_ready_artifacts_v1(
         );
     }
 
-    let accounting_bytes = read_regular_file_bounded_v1(
+    // Presence-only: the measured ceremony still writes these files. S4
+    // stops decoding the deleted clearing types; R5 drops the files.
+    let _accounting_bytes = read_regular_file_bounded_v1(
         cli.accounting_authorization_path
             .expect("ready paths checked"),
-        MAX_BAT_V2_PROVIDER_ACCOUNTING_AUTHORIZATION_LEN_V2,
-        "pir2 BAT V2 accounting authorization",
+        MAX_ACCOUNTING_AUTHORIZATION_LEN_V1,
+        "pir2 accounting authorization",
     )?;
-    let accounting_auth = ProviderAccountingAuthorizationV2::decode(&accounting_bytes)
-        .map_err(|error| format!("invalid pir2 accounting authorization: {error}"))?;
-    if accounting_auth
-        .encode()
-        .map_err(|error| error.to_string())?
-        != accounting_bytes
-        || accounting_auth.operator_verifying_key != source_pinned_operator_key.to_bytes()
-        || accounting_auth.claims.provider_id != release.claims().provider_id
-        || accounting_auth.claims.authorization_epoch
-            != release.claims().clearing_authorization_epoch
-        || accounting_auth.claims.clearing_verifying_key != public_keys.clearing
-    {
-        return Err(
-            "pir2 accounting authorization does not match release/operator/sealed key".to_owned(),
-        );
-    }
-    accounting_auth
-        .verify_for(
-            &release.claims().provider_id,
-            &accounting_auth.claims.issuer_id,
-            source_pinned_operator_key,
-            now_unix,
-            release.claims().clearing_authorization_epoch,
-        )
-        .map_err(|error| format!("pir2 accounting authorization is not current: {error}"))?;
-
-    let approval_bytes = read_regular_file_bounded_v1(
+    let _approval_bytes = read_regular_file_bounded_v1(
         cli.issuer_approval_path.expect("ready paths checked"),
-        BAT_V2_ISSUER_ACCOUNTING_APPROVAL_LEN_V2,
-        "pir2 BAT V2 issuer accounting approval",
+        MAX_ISSUER_APPROVAL_LEN_V1,
+        "pir2 issuer approval",
     )?;
-    let issuer_approval = IssuerAccountingApprovalV2::decode(&approval_bytes)
-        .map_err(|error| format!("invalid pir2 issuer accounting approval: {error}"))?;
-    if issuer_approval.encode().as_slice() != approval_bytes.as_slice()
-        || issuer_approval.authorization_epoch != release.claims().clearing_authorization_epoch
-    {
-        return Err("pir2 issuer approval is non-canonical or has the wrong epoch".to_owned());
-    }
-    issuer_approval
-        .verify_for(
-            &accounting_auth,
-            issuer_settlement_key.ok_or_else(|| {
-                "ready sealed mode requires the source-configured issuer settlement key".to_owned()
-            })?,
-            now_unix,
-            release.claims().clearing_authorization_epoch,
-        )
-        .map_err(|error| format!("pir2 issuer approval is not current: {error}"))?;
-    Ok((identity_cert, accounting_auth, issuer_approval))
+    Ok(identity_cert)
 }
 
 fn encode_inert_marker_v1(
@@ -595,10 +534,6 @@ mod tests {
         SnpDerivedKeyMaterialV1, SnpDerivedKeyProviderErrorV1, SnpDerivedKeyRequestV1,
         SnpTcbVersionV1,
     };
-    use pir_service_protocol::{
-        ProviderAccountingAuthorizationClaimsV2, ProviderAccountingRuleV2, SettlementUnitV1,
-    };
-
     fn complete(phase: Pir2SealedStartupPhaseV1) -> Pir2SealedCliV1 {
         let ready = phase == Pir2SealedStartupPhaseV1::Ready;
         Pir2SealedCliV1 {
@@ -739,7 +674,6 @@ mod tests {
     struct ReadyPreflightFixtureV1 {
         _directory: tempfile::TempDir,
         operator: SigningKey,
-        issuer_settlement: SigningKey,
         provider: ReadyProviderV1,
         cli: Pir2SealedCliV1,
         accounting_path: PathBuf,
@@ -751,7 +685,6 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let operator = SigningKey::from_bytes(&[0x61; 32]);
-        let issuer_settlement = SigningKey::from_bytes(&[0x62; 32]);
         let claims = Pir2SealedReleaseClaimsV1 {
             provider_id: [0x11; 32],
             stable_server_id: "pir2-mainnet".to_owned(),
@@ -802,38 +735,10 @@ mod tests {
         let identity_cert_path = directory.path().join("identity.cert");
         std::fs::write(&identity_cert_path, identity_cert.encode()).unwrap();
 
-        let authorization = ProviderAccountingAuthorizationV2::sign(
-            ProviderAccountingAuthorizationClaimsV2 {
-                authorization_id: [0x71; 16],
-                authorization_epoch: claims.clearing_authorization_epoch,
-                provider_id: claims.provider_id,
-                issuer_id: [0x72; 32],
-                redeem_endpoint: "https://issuer.invalid".to_owned(),
-                redeem_leaf_spki_sha256_pins: vec![[0x73; 32]],
-                settlement_account_id: [0x74; 32],
-                clearing_verifying_key: public_keys.clearing,
-                not_before: 100,
-                not_after: 1_000,
-                rules: vec![ProviderAccountingRuleV2 {
-                    class_id: [0x75; 32],
-                    policy_digest: [0x76; 32],
-                    scope_id: [0x77; 32],
-                    offer_id: 1,
-                    unit: SettlementUnitV1::AuthCredit,
-                    accepted_value: 10,
-                    provider_credit: 8,
-                    issuer_fee: 2,
-                }],
-            },
-            &operator,
-        )
-        .unwrap();
         let accounting_path = directory.path().join("accounting.bin");
-        std::fs::write(&accounting_path, authorization.encode().unwrap()).unwrap();
-        let issuer_approval =
-            IssuerAccountingApprovalV2::sign(&authorization, 100, 900, &issuer_settlement).unwrap();
+        std::fs::write(&accounting_path, [0xA1; 32]).unwrap();
         let issuer_approval_path = directory.path().join("approval.bin");
-        std::fs::write(&issuer_approval_path, issuer_approval.encode()).unwrap();
+        std::fs::write(&issuer_approval_path, [0xA2; 32]).unwrap();
 
         let receipt_path = directory.path().join("ready-preflight-receipt.bin");
         let marker_path = directory.path().join("ready-preflight.marker");
@@ -858,7 +763,6 @@ mod tests {
         ReadyPreflightFixtureV1 {
             _directory: directory,
             operator,
-            issuer_settlement,
             provider,
             cli,
             accounting_path,
@@ -937,7 +841,6 @@ mod tests {
         let outcome = dispatch_pir2_sealed_startup_with_security_v1(
             &cli,
             &operator.verifying_key(),
-            None,
             150,
             [0x43; 32],
             &provider,
@@ -971,7 +874,6 @@ mod tests {
         let outcome = dispatch_pir2_sealed_startup_with_security_v1(
             &fixture.cli,
             &fixture.operator.verifying_key(),
-            Some(&fixture.issuer_settlement.verifying_key()),
             150,
             [0x43; 32],
             &fixture.provider,
@@ -994,14 +896,15 @@ mod tests {
     #[test]
     fn ready_preflight_bad_artifact_writes_neither_receipt_nor_marker() {
         let fixture = ready_preflight_fixture_v1();
-        let mut accounting_bytes = std::fs::read(&fixture.accounting_path).unwrap();
-        *accounting_bytes.last_mut().unwrap() ^= 0x01;
-        std::fs::write(&fixture.accounting_path, accounting_bytes).unwrap();
+        std::fs::write(
+            &fixture.accounting_path,
+            vec![0xA1; MAX_ACCOUNTING_AUTHORIZATION_LEN_V1 + 1],
+        )
+        .unwrap();
 
         let error = match dispatch_pir2_sealed_startup_with_security_v1(
             &fixture.cli,
             &fixture.operator.verifying_key(),
-            Some(&fixture.issuer_settlement.verifying_key()),
             150,
             [0x43; 32],
             &fixture.provider,

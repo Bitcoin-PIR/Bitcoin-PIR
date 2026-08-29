@@ -2,16 +2,6 @@
 
 use crate::ServiceProtocolError;
 
-pub(crate) fn put_bytes_u16(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
-    out.extend_from_slice(bytes);
-}
-
-pub(crate) fn put_bytes_u32(out: &mut Vec<u8>, bytes: &[u8]) {
-    out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-    out.extend_from_slice(bytes);
-}
-
 pub(crate) struct Decoder<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -41,13 +31,6 @@ impl<'a> Decoder<'a> {
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
-    pub(crate) fn u32(&mut self, field: &'static str) -> Result<u32, ServiceProtocolError> {
-        let bytes = self.take(4, field)?;
-        Ok(u32::from_le_bytes(
-            bytes.try_into().expect("checked four-byte slice"),
-        ))
-    }
-
     pub(crate) fn u64(&mut self, field: &'static str) -> Result<u64, ServiceProtocolError> {
         let bytes = self.take(8, field)?;
         Ok(u64::from_le_bytes(
@@ -61,65 +44,6 @@ impl<'a> Decoder<'a> {
     ) -> Result<[u8; N], ServiceProtocolError> {
         let bytes = self.take(N, field)?;
         Ok(bytes.try_into().expect("checked fixed-size slice"))
-    }
-
-    pub(crate) fn bytes_u8(
-        &mut self,
-        field: &'static str,
-        max: usize,
-    ) -> Result<Vec<u8>, ServiceProtocolError> {
-        let len = self.u8(field)? as usize;
-        self.bounded_bytes(field, len, max)
-    }
-
-    pub(crate) fn bytes_u16(
-        &mut self,
-        field: &'static str,
-        max: usize,
-    ) -> Result<Vec<u8>, ServiceProtocolError> {
-        let len = self.u16(field)? as usize;
-        self.bounded_bytes(field, len, max)
-    }
-
-    pub(crate) fn bytes_u32(
-        &mut self,
-        field: &'static str,
-        max: usize,
-    ) -> Result<Vec<u8>, ServiceProtocolError> {
-        let len_u32 = self.u32(field)?;
-        let len = usize::try_from(len_u32).map_err(|_| ServiceProtocolError::FieldTooLong {
-            field,
-            len: usize::MAX,
-            max,
-        })?;
-        self.bounded_bytes(field, len, max)
-    }
-
-    pub(crate) fn string_u16(
-        &mut self,
-        field: &'static str,
-        max: usize,
-    ) -> Result<String, ServiceProtocolError> {
-        let bytes = self.bytes_u16(field, max)?;
-        String::from_utf8(bytes).map_err(|_| ServiceProtocolError::InvalidUtf8(field))
-    }
-
-    pub(crate) fn take_remaining(&mut self) -> &'a [u8] {
-        let rest = &self.bytes[self.pos..];
-        self.pos = self.bytes.len();
-        rest
-    }
-
-    fn bounded_bytes(
-        &mut self,
-        field: &'static str,
-        len: usize,
-        max: usize,
-    ) -> Result<Vec<u8>, ServiceProtocolError> {
-        if len > max {
-            return Err(ServiceProtocolError::FieldTooLong { field, len, max });
-        }
-        Ok(self.take(len, field)?.to_vec())
     }
 
     fn take(&mut self, len: usize, field: &'static str) -> Result<&'a [u8], ServiceProtocolError> {

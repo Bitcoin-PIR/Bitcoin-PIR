@@ -19,10 +19,9 @@ script's status subcommand for the rest.
 
 ## Technical references
 
-- Payment architecture: [Architecture](payment/ARCHITECTURE.md),
-  [Protocol](payment/PROTOCOL.md),
-  [Directory protocol](payment/DIRECTORY_PROTOCOL.md),
-  [Persistence](payment/PERSISTENCE.md), and [Security](payment/SECURITY.md).
+- Paid queries present a designated issuer's cashu/ARC credential on
+  opcodes `0x08`/`0x09`. The issuer app is [`apps/payment-issuer`](../apps/payment-issuer).
+  Retired Payment V1 design notes live in the [payment archive](archive/payment/README.md).
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).
 - Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).

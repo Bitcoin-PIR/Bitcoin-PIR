@@ -45,7 +45,6 @@ use unified_server_pir2_sealed::{
     validate_pir2_sealed_cli_v1, Pir2SealedStartupV1, PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1,
 };
 
-use ed25519_dalek::VerifyingKey;
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -115,14 +114,10 @@ async fn main() {
     let channel_pubkey = channel_keypair.public_bytes();
     let pinned_operator =
         source_pinned_pir2_operator_key_v1().unwrap_or_else(|error| fatal_cli(error));
-    // The issuer settlement key was clearing material; the sealed startup no
-    // longer receives one (the node announces the issuer endpoint instead).
-    let sealed_issuer_settlement_key: Option<VerifyingKey> = None;
     let sealed_now_unix = current_unix_seconds_v1().unwrap_or_else(|error| fatal_cli(error));
     let sealed_startup = dispatch_pir2_sealed_startup_v1(
         &args.pir2_sealed,
         &pinned_operator,
-        sealed_issuer_settlement_key.as_ref(),
         sealed_now_unix,
         channel_pubkey,
         &pir_runtime_core::snp_sealed_secrets::LinuxSevSnpDerivedKeyProviderV1,

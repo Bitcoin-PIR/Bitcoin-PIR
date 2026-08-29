@@ -16,21 +16,8 @@
 //! - `db-proof verify` — verify attested-builder evidence, root bundle,
 //!   artifact manifests, and SEV-SNP REPORT_DATA binding for a database
 //!   build proof directory.
-//! - `service-keygen`, `payment-artifact`, and `service-policy` — offline
-//!   Payment V1 key generation, canonical artifact construction, and policy
-//!   signing without a listener or Lightning backend.
-//! - `service-store-init` — explicitly create a provider admission store.
-//! - `service-store-check` — run the serving-equivalent provider-store open
-//!   and report aggregate startup/SLO counters without starting a listener.
-//! - `cashu-custody` — owner-only standard-Cashu custody inventory, export,
-//!   decrypt, acknowledgement, and explicit one-shot NUT-07 retirement.
-//! - `payment-v1-no-funds-fixture` — emit deterministic public test vectors
-//!   for two providers, five payment methods, and five workloads.
-//! - `lightning-staging` — strict default-Signet/CLN bootstrap/full preflights
-//!   plus an explicit local, digest-only backup-receipt ceremony.
-//! - `mainnet-lightning-v1` — offline lint plus a read-only live Core/CLN
-//!   preflight for the versioned Direct-BOLT11/DPF mainnet profile. It cannot
-//!   create an invoice, authorize a payment, or mutate wallet state.
+//! - `pir2-sealed-release` — verify a fresh SNP observation and emit one
+//!   canonical pir2 release.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -41,19 +28,9 @@ use clap::{Parser, Subcommand};
 mod attest;
 mod channel_test;
 mod db_proof;
-mod directory_artifact;
-mod directory_publish;
 mod generate_identity;
 mod keygen;
-mod lightning_staging;
-mod mainnet_lightning_v1;
-mod payment_artifact;
-mod payment_fixture;
 mod pir2_sealed_release;
-mod service_keygen;
-mod service_policy;
-mod service_store_check;
-mod service_store_init;
 mod show_vcek_url;
 mod sign_identity;
 mod upload;
@@ -95,37 +72,9 @@ enum Command {
     /// Verify attested-builder database build proof artifacts.
     #[command(name = "db-proof")]
     DbProof(db_proof::DbProofArgs),
-    /// Offline canonical service-policy signing, validation and inspection.
-    #[command(name = "service-policy")]
-    ServicePolicy(service_policy::ServicePolicyArgs),
-    /// Generate a role-labelled service/payment key without printing secrets.
-    #[command(name = "service-keygen")]
-    ServiceKeygen(service_keygen::ServiceKeygenArgs),
-    /// Explicitly create a provider admission store.
-    #[command(name = "service-store-init")]
-    ServiceStoreInit(service_store_init::ServiceStoreInitArgs),
-    /// Fail-closed provider-store startup and SLO check without a listener.
-    #[command(name = "service-store-check")]
-    ServiceStoreCheck(service_store_check::ServiceStoreCheckArgs),
-    /// Owner-only standard-Cashu custody operations. Only explicit
-    /// Build and self-verify offline Payment V1 protocol artifacts.
-    #[command(name = "payment-artifact")]
-    PaymentArtifact(payment_artifact::PaymentArtifactArgs),
-    /// Emit the deterministic two-provider Payment V1 no-funds fixture.
-    #[command(name = "payment-v1-no-funds-fixture")]
-    PaymentV1NoFundsFixture(payment_fixture::PaymentFixtureArgs),
     /// Verify a fresh SNP observation and emit one canonical pir2 release.
     #[command(name = "pir2-sealed-release")]
     Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
-    /// Build, self-verify, or publish signed Nostr directory artifacts.
-    #[command(name = "directory-artifact")]
-    DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
-    /// Strict default-Signet/CLN bootstrap/full preflights and backup ceremony.
-    #[command(name = "lightning-staging")]
-    LightningStaging(lightning_staging::LightningStagingArgs),
-    /// Lint or run the read-only live Mainnet Lightning V1 preflight.
-    #[command(name = "mainnet-lightning-v1")]
-    MainnetLightningV1(mainnet_lightning_v1::MainnetLightningV1Args),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -179,73 +128,10 @@ async fn main() {
                 1
             }
         },
-        Command::ServicePolicy(args) => match service_policy::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("service-policy: {}", e);
-                1
-            }
-        },
-        Command::ServiceKeygen(args) => match service_keygen::run(args) {
-            Ok(completion) => completion.exit_code(),
-            Err(e) => {
-                eprintln!("service-keygen: {}", e);
-                1
-            }
-        },
-        Command::ServiceStoreInit(args) => match service_store_init::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("service-store-init: {}", e);
-                1
-            }
-        },
-        Command::ServiceStoreCheck(args) => match service_store_check::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("service-store-check: {}", e);
-                1
-            }
-        },
-        Command::PaymentArtifact(args) => match payment_artifact::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("payment-artifact: {}", e);
-                1
-            }
-        },
-        Command::PaymentV1NoFundsFixture(args) => match payment_fixture::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("payment-v1-no-funds-fixture: {}", e);
-                1
-            }
-        },
         Command::Pir2SealedRelease(args) => match pir2_sealed_release::run(*args) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("pir2-sealed-release: {e}");
-                1
-            }
-        },
-        Command::DirectoryArtifact(args) => match directory_artifact::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("directory-artifact: {}", e);
-                1
-            }
-        },
-        Command::LightningStaging(args) => match lightning_staging::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("lightning-staging: {}", e);
-                1
-            }
-        },
-        Command::MainnetLightningV1(args) => match mainnet_lightning_v1::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("mainnet-lightning-v1: {e}");
                 1
             }
         },
@@ -259,238 +145,36 @@ mod cli_tests {
     use clap::CommandFactory;
 
     #[test]
-    fn payment_and_store_commands_are_present_in_help() {
+    fn kept_operator_commands_are_present_in_help() {
         Cli::command().debug_assert();
         let mut command = Cli::command();
         let help = command.render_long_help().to_string();
         for subcommand in [
+            "keygen",
+            "generate-identity",
+            "sign-identity",
+            "attest",
+            "channel-test",
+            "show-vcek-url",
+            "upload",
+            "db-proof",
+            "pir2-sealed-release",
+        ] {
+            assert!(help.contains(subcommand), "missing {subcommand} from help");
+        }
+        for deleted in [
             "service-policy",
             "service-keygen",
             "service-store-init",
-            "service-store-check",
             "payment-artifact",
-            "payment-v1-no-funds-fixture",
-            "pir2-sealed-release",
             "directory-artifact",
             "lightning-staging",
             "mainnet-lightning-v1",
         ] {
-            assert!(help.contains(subcommand), "missing {subcommand} from help");
+            assert!(
+                !help.contains(deleted),
+                "deleted Payment V1 command {deleted} still in help"
+            );
         }
-    }
-
-    #[test]
-    fn service_policy_scope_ids_accepts_an_unsigned_config() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "service-policy",
-            "scope-ids",
-            "--config",
-            "/private/service-policy.toml",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::ServicePolicy(_)));
-    }
-
-    #[test]
-    fn service_store_init_cli_requires_explicit_paths_and_provider() {
-        let provider_id = hex::encode([1u8; 32]);
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-init",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::ServiceStoreInit(_)));
-
-        assert!(Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-init",
-            "--provider-id-hex",
-            &provider_id,
-        ])
-        .is_err());
-    }
-
-    #[test]
-    fn service_store_check_cli_requires_explicit_paths_and_provider() {
-        let provider_id = hex::encode([1u8; 32]);
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-check",
-            "--provider-id-hex",
-            &provider_id,
-            "--store",
-            "/private/provider.sqlite3",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::ServiceStoreCheck(_)));
-
-        assert!(Cli::try_parse_from([
-            "bpir-admin",
-            "service-store-check",
-            "--provider-id-hex",
-            &provider_id,
-        ])
-        .is_err());
-    }
-
-    #[test]
-    fn directory_publish_cli_accepts_repeated_artifacts_and_relays() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "directory-artifact",
-            "publish",
-            "--artifact",
-            "entry.event.json",
-            "--artifact",
-            "checkpoints.json",
-            "--relay",
-            "wss://one.example",
-            "--relay",
-            "wss://two.example/nostr",
-            "--directory-pubkey-hex",
-            &hex::encode([1u8; 32]),
-            "--now-unix",
-            "1500",
-            "--validate-only",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::DirectoryArtifact(_)));
-
-        let centralized = Cli::try_parse_from([
-            "bpir-admin",
-            "directory-artifact",
-            "publish",
-            "--artifact",
-            "entry.event.json",
-            "--relay",
-            "wss://central.example",
-            "--centralized-single-relay",
-            "--directory-pubkey-hex",
-            &hex::encode([1u8; 32]),
-            "--now-unix",
-            "1500",
-            "--validate-only",
-        ])
-        .unwrap();
-        assert!(matches!(centralized.command, Command::DirectoryArtifact(_)));
-    }
-
-    #[test]
-    fn no_funds_fixture_cli_requires_explicit_acknowledgement_at_runtime() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "payment-v1-no-funds-fixture",
-            "--out",
-            "/tmp/payment-v1-fixture",
-        ])
-        .unwrap();
-        let Command::PaymentV1NoFundsFixture(args) = parsed.command else {
-            panic!("wrong subcommand");
-        };
-        assert!(!args.acknowledge_deterministic_test_keys);
-    }
-
-    #[test]
-    fn lightning_staging_preflight_requires_out_of_band_config_trust_boundary() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "lightning-staging",
-            "preflight",
-            "--config",
-            "/srv/bitcoinpir/preflight.toml",
-            "--config-protected-parent",
-            "/srv/bitcoinpir",
-            "--config-expected-uid",
-            "0",
-            "--config-expected-gid",
-            "991",
-            "--config-reader-expected-uid",
-            "991",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::LightningStaging(_)));
-    }
-
-    #[test]
-    fn lightning_staging_supervisor_uses_the_same_closed_trust_boundary() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "lightning-staging",
-            "preflight-supervisor",
-            "--config",
-            "/srv/bitcoinpir/preflight.toml",
-            "--config-protected-parent",
-            "/srv/bitcoinpir",
-            "--config-expected-uid",
-            "0",
-            "--config-expected-gid",
-            "991",
-            "--config-reader-expected-uid",
-            "991",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::LightningStaging(_)));
-    }
-
-    #[test]
-    fn lightning_staging_bootstrap_preflight_uses_the_same_trust_boundary() {
-        let parsed = Cli::try_parse_from([
-            "bpir-admin",
-            "lightning-staging",
-            "bootstrap-preflight",
-            "--config",
-            "/srv/bitcoinpir/preflight.toml",
-            "--config-protected-parent",
-            "/srv/bitcoinpir",
-            "--config-expected-uid",
-            "0",
-            "--config-expected-gid",
-            "991",
-            "--config-reader-expected-uid",
-            "991",
-        ])
-        .unwrap();
-        assert!(matches!(parsed.command, Command::LightningStaging(_)));
-    }
-
-    #[test]
-    fn lightning_staging_backup_receipt_requires_both_explicit_acknowledgements() {
-        let base = [
-            "bpir-admin",
-            "lightning-staging",
-            "record-backup-receipt",
-            "--config",
-            "/srv/bitcoinpir/preflight.toml",
-            "--config-protected-parent",
-            "/srv/bitcoinpir",
-            "--config-expected-uid",
-            "0",
-            "--config-expected-gid",
-            "991",
-            "--config-reader-expected-uid",
-            "991",
-        ];
-        assert!(Cli::try_parse_from(base).is_err());
-
-        let mut only_identity = base.to_vec();
-        only_identity.push("--acknowledge-identity-secret-offline-backup-restore-checked");
-        assert!(Cli::try_parse_from(only_identity).is_err());
-
-        let mut only_channel = base.to_vec();
-        only_channel.push("--acknowledge-channel-state-recovery-backup-restore-checked");
-        assert!(Cli::try_parse_from(only_channel).is_err());
-
-        let mut both = base.to_vec();
-        both.extend([
-            "--acknowledge-identity-secret-offline-backup-restore-checked",
-            "--acknowledge-channel-state-recovery-backup-restore-checked",
-        ]);
-        let parsed = Cli::try_parse_from(both).unwrap();
-        assert!(matches!(parsed.command, Command::LightningStaging(_)));
     }
 }
