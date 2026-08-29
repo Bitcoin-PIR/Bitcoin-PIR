@@ -525,8 +525,14 @@ export function validatePaymentPlatformCompileAcceleration(
     if (artifact.with?.path !== "${{ matrix.timing_paths }}" || artifact.with?.["retention-days"] !== 7 || artifact.with?.["if-no-files-found"] !== "ignore") fail(`${label} protocol lanes must upload only seven-day retention matrix timing reports`);
     const aggregate = workflow.jobs["protocol-and-persistence"];
     if (!isRecord(aggregate) || aggregate.name !== "Protocol, stores, adapters, issuer and runtime" || aggregate.if !== "${{ always() }}" || aggregate.needs !== "protocol-and-persistence-lanes") fail(`${label} must preserve the stable protocol aggregate required check`);
+    // The Chromium browser boundary was deleted with the Payment V1 browser
+    // world (R3 stage 3). If a future browser boundary job is reintroduced
+    // under the same name, it must remain explicit-dispatch opt-in.
     const browser = workflow.jobs["browser-storage-boundary"];
-    if (!isRecord(browser) || browser.if !== "${{ github.event_name == 'workflow_dispatch' && inputs.run_browser_checks }}") fail(`${label} Chromium browser boundary must be explicit-dispatch opt-in`);
+    if (browser !== undefined
+        && (!isRecord(browser) || browser.if !== "${{ github.event_name == 'workflow_dispatch' && inputs.run_browser_checks }}")) {
+      fail(`${label} Chromium browser boundary must be explicit-dispatch opt-in`);
+    }
     return;
   }
   if (!isRecord(workflow.jobs) || !isRecord(workflow.jobs["protocol-and-persistence"])) {
