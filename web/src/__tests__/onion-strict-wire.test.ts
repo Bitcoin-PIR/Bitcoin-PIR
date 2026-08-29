@@ -215,31 +215,6 @@ describe('strict OnionPIR session lifecycle', () => {
     expect(socket.sendRaw).not.toHaveBeenCalled();
   });
 
-  it('plans the exact Onion INDEX round without generating keys or network traffic', () => {
-    const socket = {
-      isOpen: () => true,
-      sendRaw: vi.fn(),
-      disconnect: vi.fn(),
-    };
-    const client = new OnionPirWebClient({
-      serverUrl: 'wss://example.invalid',
-      strictVerification: true,
-    });
-    seedStrictQuerySession(client, socket);
-
-    expect(client.planServiceQuery([new Uint8Array(20)])).toEqual({
-      backend: 'onion-pir',
-      workload: 'onion-session',
-      lowerBounds: {
-        logicalInputs: 1,
-        frames: 5,
-        concurrentSockets: 1,
-        workUnits: '386',
-      },
-    });
-    expect(socket.sendRaw).not.toHaveBeenCalled();
-  });
-
   it('rejects a late query response from a disconnected OnionPIR session', async () => {
     let release!: (value: Uint8Array) => void;
     const response = new Promise<Uint8Array>((resolve) => { release = resolve; });

@@ -43,21 +43,10 @@ use crate::protocol::{
     decode_catalog, decode_error_response_message, encode_request, ensure_catalog_query_compatible,
     reject_error_response, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
-use crate::service::{
-    dangerous_unpaired_authorize_bat_v2_redemption_v2,
-    dangerous_unpaired_authorize_retained_service_redemption_v1,
-    dangerous_unpaired_authorize_service_operation_v1, fetch_retained_bat_v2_policy_v2,
-    fetch_retained_service_redemption_v1, fetch_verified_service_policy_v1,
-    request_pow_challenge_v1,
-    verify_service_policy_session_v1 as verify_policy_transport_session_v1,
-    AcceptedRetainedBatV2PolicyV2, AcceptedRetiredServiceRedemptionV1, AcceptedServicePolicyV1,
-    BatV2AdmissionOutcomeV2, ServicePolicyCheckpointV1, VerifiedBatV2RedemptionV2,
-};
 use crate::transport::PirTransport;
 use crate::verified_query::VerifiedQueryResult;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
-use ed25519_dalek::VerifyingKey;
 use harmonypir::remote::{PrpBackend, RemoteClient as HarmonyGroup};
 use pir_core::params::{
     CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CHUNK_SLOT_SIZE,
@@ -69,7 +58,6 @@ use pir_sdk::{
     PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
     SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
 };
-use pir_service_protocol::{AuthorizationProofV1, HintTransport, OperationStartV1, ProviderId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -190,20 +178,10 @@ fn validate_v2_terminal(frame: &[u8], label: &str) -> PirResult<()> {
     Ok(())
 }
 
-/// Legacy/ungated discovery heuristic. A successfully granted Payment V1
-/// V2Full operation bypasses this heuristic and follows its exact db binding.
+/// The V2 hint pool serves the default database (db_id 0); other databases
+/// fetch hints through the legacy V1 path.
 fn should_use_v2_hint_pool(use_v2_protocol: bool, db_id: u8) -> bool {
     use_v2_protocol && db_id == 0
-}
-
-/// Session-local record of a successfully granted Payment V1 V2Full hint
-/// operation. The server gate is already durably committed and expects the
-/// exact V2Full main frame for this database next, so a cold-cache client must
-/// neither substitute legacy V1 nor retry the main bundle after it completed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StrictV2FullHintAuthorizationV1 {
-    db_id: u8,
-    main_bundle_loaded: bool,
 }
 
 fn is_v2_hint_pool_unavailable_message(message: &str) -> bool {
@@ -988,10 +966,6 @@ pub struct HarmonyClient {
     /// A granted Payment V1 V2Full operation always follows its exact wire
     /// contract and does not consult this compatibility preference.
     use_v2_protocol: bool,
-    /// Present only after this session receives a Payment V1 grant for a
-    /// single-socket V2Full hint operation. This is deliberately volatile and
-    /// cleared with every transport-session binding.
-    strict_v2_full_hint_authorization_v1: Option<StrictV2FullHintAuthorizationV1>,
 }
 
 impl HarmonyClient {
@@ -1038,74 +1012,7 @@ impl HarmonyClient {
             verified_roots: VerifiedRootState::default(),
             verified_tree_tops: HashMap::new(),
             use_v2_protocol: true,
-            strict_v2_full_hint_authorization_v1: None,
         }
-    }
-
-    /// Compute query-provider Payment-V1 admission lower bounds using the
-    /// cached catalog and the exact live INDEX PBC planner. Once strict
-    /// preflight has authenticated the tree tops, the plan also includes the
-    /// mandatory INDEX/CHUNK Merkle transcript. No network or hint state is
-    /// touched.
-    pub fn plan_service_query(
-        &self,
-        script_hashes: &[ScriptHash],
-        db_id: u8,
-    ) -> PirResult<crate::query_plan::ProductQueryShapeV1> {
-        let db_info = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?
-            .get(db_id)
-            .ok_or_else(|| {
-                PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
-            })?;
-        let Some(tree_tops) = self.verified_tree_tops.get(&db_id) else {
-            return crate::query_plan::plan_harmony_service_query_v1(script_hashes, db_info);
-        };
-        let k_index = usize::from(db_info.index_k);
-        let k_chunk = usize::from(db_info.chunk_k);
-        if tree_tops.len() != k_index + k_chunk {
-            return Err(PirError::InvalidState(format!(
-                "db_id {db_id} has {} verified tree tops, expected {}",
-                tree_tops.len(),
-                k_index + k_chunk,
-            )));
-        }
-        let index_sibling_levels = tree_tops[..k_index]
-            .iter()
-            .map(|top| top.cache_from_level)
-            .max()
-            .unwrap_or(0);
-        let chunk_sibling_levels = tree_tops[k_index..]
-            .iter()
-            .map(|top| top.cache_from_level)
-            .max()
-            .unwrap_or(0);
-        crate::query_plan::plan_harmony_service_query_with_verified_merkle_v1(
-            script_hashes,
-            db_info,
-            index_sibling_levels,
-            chunk_sibling_levels,
-        )
-    }
-
-    /// Compute the catalog-known main-group lower bound for a cold-cache
-    /// Harmony hint entitlement. Authenticated sibling hints remain explicitly
-    /// omitted until verified tree-top preflight supplies their geometry.
-    pub fn plan_service_hint(
-        &self,
-        db_id: u8,
-    ) -> PirResult<crate::query_plan::ProductQueryShapeV1> {
-        let db_info = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?
-            .get(db_id)
-            .ok_or_else(|| {
-                PirError::InvalidState(format!("no database with db_id={db_id} in catalog"))
-            })?;
-        crate::query_plan::plan_harmony_service_hint_v1(db_info)
     }
 
     /// Configure one independently selected Harmony role before connecting it.
@@ -1223,11 +1130,6 @@ impl HarmonyClient {
         if let Some(mut connection) = secondary.take() {
             let _ = connection.close().await;
         }
-        if provider_index == 0 {
-            // A V2Full paid grant is bound to the exact hint transport
-            // session. Cached hint bytes may survive, but the grant cannot.
-            self.strict_v2_full_hint_authorization_v1 = None;
-        }
         if self.hint_conn.is_none() && self.query_conn.is_none() {
             self.invalidate_session_bindings();
         }
@@ -1281,7 +1183,6 @@ impl HarmonyClient {
         self.catalog = None;
         self.clear_verified_database_roots();
         self.invalidate_groups();
-        self.strict_v2_full_hint_authorization_v1 = None;
     }
 
     /// Gracefully close and remove every primary/secondary transport slot.
@@ -1303,622 +1204,6 @@ impl HarmonyClient {
 
     pub fn verified_database_roots(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.verified_roots.get(db_id)
-    }
-
-    /// Fetch the signed policy from either independently operated Harmony
-    /// provider (`0 = hint`, `1 = query`) after the DB proof root is installed.
-    pub async fn fetch_service_policy_v1(
-        &mut self,
-        provider_index: u8,
-        db_id: u8,
-        expected_provider_id: ProviderId,
-        policy_signing_key: &VerifyingKey,
-        now_unix: u64,
-        checkpoint: &ServicePolicyCheckpointV1,
-    ) -> PirResult<AcceptedServicePolicyV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "service policy requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = match provider_index {
-            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        fetch_verified_service_policy_v1(
-            transport.as_mut(),
-            expected_provider_id,
-            policy_signing_key,
-            now_unix,
-            checkpoint,
-        )
-        .await
-    }
-
-    /// Exact historical policy fetch for redemption only. Provider index 0 is
-    /// hint and 1 is query; neither learns the other selection.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn fetch_retained_service_redemption_v1(
-        &mut self,
-        provider_index: u8,
-        db_id: u8,
-        expected_provider_id: ProviderId,
-        policy_signing_key: &VerifyingKey,
-        expected_policy_digest: [u8; 32],
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<AcceptedRetiredServiceRedemptionV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "retained service redemption requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = match provider_index {
-            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-            )))
-            }
-        };
-        fetch_retained_service_redemption_v1(
-            transport.as_mut(),
-            expected_provider_id,
-            policy_signing_key,
-            expected_policy_digest,
-            scope_id,
-            offer_id,
-            now_unix,
-        )
-        .await
-    }
-
-    /// Fetch one exact retained BAT V2 policy member for the independently
-    /// selected Harmony side (`0 = hint`, `1 = query`).
-    #[allow(clippy::too_many_arguments)]
-    pub async fn fetch_retained_bat_v2_policy_v2(
-        &mut self,
-        provider_index: u8,
-        db_id: u8,
-        expected_provider_id: ProviderId,
-        policy_signing_key: &VerifyingKey,
-        expected_policy_digest: [u8; 32],
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<AcceptedRetainedBatV2PolicyV2> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "retained BAT V2 policy requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = match provider_index {
-            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        fetch_retained_bat_v2_policy_v2(
-            transport.as_mut(),
-            expected_provider_id,
-            policy_signing_key,
-            expected_policy_digest,
-            scope_id,
-            offer_id,
-            now_unix,
-        )
-        .await
-    }
-
-    pub fn verify_retained_service_session_v1(
-        &self,
-        provider_index: u8,
-        accepted: &AcceptedRetiredServiceRedemptionV1,
-    ) -> PirResult<()> {
-        let transport = match provider_index {
-            0 => self.hint_conn.as_ref().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_ref().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-            )))
-            }
-        };
-        let exporter = transport
-            .service_authorization_exporter_v1()
-            .ok_or_else(|| {
-                PirError::VerificationFailed(
-                    "retained redemption requires an authenticated secure channel".into(),
-                )
-            })?;
-        accepted.verify_service_authorization_exporter_v1(&exporter)
-    }
-
-    /// Low-level retained hint redemption without a verified hint/query
-    /// payment context. Product callers must bind both selected provider legs
-    /// before retiring a one-shot capability.
-    pub async fn dangerous_unpaired_authorize_retained_hint_service_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedRetiredServiceRedemptionV1,
-        proof: AuthorizationProofV1,
-        now_unix: u64,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_retained_service_session_v1(0, accepted)?;
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "retained hint authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-        let granted = dangerous_unpaired_authorize_retained_service_redemption_v1(
-            transport.as_mut(),
-            accepted,
-            OperationStartV1::HarmonyHint {
-                db_id,
-                transport: HintTransport::V2Full,
-                session_token: None,
-                primary_side: None,
-            },
-            proof,
-            now_unix,
-        )
-        .await?;
-        self.strict_v2_full_hint_authorization_v1 = Some(StrictV2FullHintAuthorizationV1 {
-            db_id,
-            main_bundle_loaded: false,
-        });
-        Ok(granted)
-    }
-
-    /// Low-level retained query redemption without a verified hint/query
-    /// payment context. Product callers must bind both selected provider legs
-    /// before retiring a one-shot capability.
-    pub async fn dangerous_unpaired_authorize_retained_query_service_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedRetiredServiceRedemptionV1,
-        proof: AuthorizationProofV1,
-        now_unix: u64,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_retained_service_session_v1(1, accepted)?;
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "retained query authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let transport = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        dangerous_unpaired_authorize_retained_service_redemption_v1(
-            transport.as_mut(),
-            accepted,
-            OperationStartV1::HarmonyQuery { db_id },
-            proof,
-            now_unix,
-        )
-        .await
-    }
-
-    /// Verify that `accepted` was fetched on the currently connected Harmony
-    /// provider side (`0 = hint`, `1 = query`). Call before capability retire.
-    pub fn verify_service_policy_session_v1(
-        &self,
-        provider_index: u8,
-        accepted: &AcceptedServicePolicyV1,
-    ) -> PirResult<()> {
-        let transport = match provider_index {
-            0 => self.hint_conn.as_ref().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_ref().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        verify_policy_transport_session_v1(transport.as_ref(), accepted)
-    }
-
-    /// Freeze strict payment context from the exact endpoints held by the
-    /// connected Harmony hint and query transports.
-    pub fn bind_service_pair_payment_context_v1<'first, 'second>(
-        &self,
-        pair: crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'first, 'second>,
-        hint: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
-        query: crate::strict_pair::StrictProviderPaymentContextInputV1<'_>,
-        now_unix: u64,
-    ) -> PirResult<
-        crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'first, 'second>,
-    > {
-        if self.hint_conn.is_none() || self.query_conn.is_none() {
-            return Err(PirError::NotConnected);
-        }
-        crate::strict_pair::verify_strict_two_provider_payment_context_v1(
-            pair,
-            &self.hint_server_url,
-            hint,
-            &self.query_server_url,
-            query,
-            now_unix,
-        )
-    }
-
-    fn verify_payment_context_side_ready_v1(
-        &self,
-        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
-        provider_index: u8,
-        now_unix: u64,
-    ) -> PirResult<()> {
-        let (actual_endpoint, frozen_endpoint) = match provider_index {
-            0 => (
-                &self.hint_server_url,
-                payment_context.first_provider_endpoint(),
-            ),
-            1 => (
-                &self.query_server_url,
-                payment_context.second_provider_endpoint(),
-            ),
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony service provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        if actual_endpoint != frozen_endpoint {
-            return Err(PirError::VerificationFailed(
-                "Harmony transport endpoint differs from the frozen strict payment context".into(),
-            ));
-        }
-        match provider_index {
-            0 => self.verify_hint_service_pair_ready_v1(payment_context.pair(), now_unix),
-            1 => self.verify_query_service_pair_ready_v1(payment_context.pair(), now_unix),
-            _ => unreachable!("provider index was checked above"),
-        }
-    }
-
-    /// Recheck strict-pair freshness and the live hint-provider channel. Call
-    /// immediately before retiring the hint capability.
-    pub fn verify_hint_service_pair_ready_v1(
-        &self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
-        now_unix: u64,
-    ) -> PirResult<()> {
-        pair.verify_first_offer_current_v1(now_unix)?;
-        self.verify_service_policy_session_v1(0, pair.first().accepted_policy())
-    }
-
-    /// Recheck strict-pair freshness and the live query-provider channel. Call
-    /// immediately before retiring the query capability.
-    pub fn verify_query_service_pair_ready_v1(
-        &self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
-        now_unix: u64,
-    ) -> PirResult<()> {
-        pair.verify_second_offer_current_v1(now_unix)?;
-        self.verify_service_policy_session_v1(1, pair.second().accepted_policy())
-    }
-
-    /// Dangerous one-provider compatibility entry point for the Harmony hint
-    /// workload. Native strict callers must use
-    /// [`Self::authorize_hint_service_pair_v1`]. Hint pricing is distinct from
-    /// query pricing. V2 half transport requires a caller-supplied non-zero
-    /// pairing token and side for the same provider's two sockets.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn dangerous_unpaired_authorize_hint_service_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        proof: AuthorizationProofV1,
-        transport: HintTransport,
-        session_token: Option<[u8; 16]>,
-        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_service_policy_session_v1(0, accepted)?;
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "hint authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-        let granted = dangerous_unpaired_authorize_service_operation_v1(
-            hint_conn.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::HarmonyHint {
-                db_id,
-                transport,
-                session_token,
-                primary_side,
-            },
-            proof,
-        )
-        .await?;
-        self.strict_v2_full_hint_authorization_v1 = match transport {
-            HintTransport::V2Full => Some(StrictV2FullHintAuthorizationV1 {
-                db_id,
-                main_bundle_loaded: false,
-            }),
-            HintTransport::V2Half => None,
-        };
-        Ok(granted)
-    }
-
-    /// Dangerous unpaired BAT V2 authorization for the Harmony hint side.
-    /// This does not verify a strict hint/query provider pair. The bearer is
-    /// sent at most once; only a grant advances local authorization state.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn dangerous_unpaired_authorize_bat_v2_hint_service_v2(
-        &mut self,
-        db_id: u8,
-        verified: &VerifiedBatV2RedemptionV2,
-        proof_bytes: &[u8],
-        now_unix: u64,
-        hint_transport: HintTransport,
-        session_token: Option<[u8; 16]>,
-        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
-    ) -> PirResult<BatV2AdmissionOutcomeV2> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "BAT V2 hint authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let outcome = {
-            let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-            dangerous_unpaired_authorize_bat_v2_redemption_v2(
-                hint_conn.as_mut(),
-                verified,
-                OperationStartV1::HarmonyHint {
-                    db_id,
-                    transport: hint_transport,
-                    session_token,
-                    primary_side,
-                },
-                proof_bytes,
-                now_unix,
-            )
-            .await?
-        };
-        if matches!(&outcome, BatV2AdmissionOutcomeV2::Granted(_)) {
-            self.strict_v2_full_hint_authorization_v1 = match hint_transport {
-                HintTransport::V2Full => Some(StrictV2FullHintAuthorizationV1 {
-                    db_id,
-                    main_bundle_loaded: false,
-                }),
-                HintTransport::V2Half => None,
-            };
-        }
-        Ok(outcome)
-    }
-
-    /// Dangerous compatibility entry point for an already-retired hint proof.
-    /// A failed readiness check cannot preserve that capability. Prefer
-    /// [`Self::authorize_hint_service_pair_v1`].
-    #[allow(clippy::too_many_arguments)]
-    pub async fn dangerous_already_retired_authorize_hint_service_pair_v1(
-        &mut self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
-        db_id: u8,
-        now_unix: u64,
-        proof: AuthorizationProofV1,
-        transport: HintTransport,
-        session_token: Option<[u8; 16]>,
-        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_hint_service_pair_ready_v1(pair, now_unix)?;
-        let selected = pair.first();
-        self.dangerous_unpaired_authorize_hint_service_v1(
-            db_id,
-            selected.accepted_policy(),
-            selected.verified_offer().scope().scope_id(),
-            selected.offer().offer_id,
-            proof,
-            transport,
-            session_token,
-            primary_side,
-        )
-        .await
-    }
-
-    /// Retire and authorize the independently priced hint capability. The
-    /// deferred producer is called only after the strict pair, policy freshness,
-    /// and live hint-channel binding pass. The offer's workload is checked
-    /// again before any bytes are sent.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn authorize_hint_service_pair_v1<Producer, Produced>(
-        &mut self,
-        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
-        db_id: u8,
-        now_unix: u64,
-        produce_after_ready: Producer,
-        transport: HintTransport,
-        session_token: Option<[u8; 16]>,
-        primary_side: Option<pir_service_protocol::HarmonyHintSideV1>,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1>
-    where
-        Producer: FnOnce() -> Produced,
-        Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
-    {
-        let pair = payment_context.pair();
-        let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
-            || self.verify_payment_context_side_ready_v1(payment_context, 0, now_unix),
-            produce_after_ready,
-        )
-        .await?;
-        self.dangerous_already_retired_authorize_hint_service_pair_v1(
-            pair,
-            db_id,
-            now_unix,
-            proof,
-            transport,
-            session_token,
-            primary_side,
-        )
-        .await
-    }
-
-    /// Dangerous one-provider compatibility entry point for the Harmony query
-    /// workload. Native strict callers must use
-    /// [`Self::authorize_query_service_pair_v1`].
-    pub async fn dangerous_unpaired_authorize_query_service_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        proof: AuthorizationProofV1,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_service_policy_session_v1(1, accepted)?;
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "query authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        dangerous_unpaired_authorize_service_operation_v1(
-            query_conn.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::HarmonyQuery { db_id },
-            proof,
-        )
-        .await
-    }
-
-    /// Dangerous unpaired BAT V2 authorization for the Harmony query side.
-    /// This does not verify a strict hint/query provider pair.
-    pub async fn dangerous_unpaired_authorize_bat_v2_query_service_v2(
-        &mut self,
-        db_id: u8,
-        verified: &VerifiedBatV2RedemptionV2,
-        proof_bytes: &[u8],
-        now_unix: u64,
-    ) -> PirResult<BatV2AdmissionOutcomeV2> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "BAT V2 query authorization requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        dangerous_unpaired_authorize_bat_v2_redemption_v2(
-            query_conn.as_mut(),
-            verified,
-            OperationStartV1::HarmonyQuery { db_id },
-            proof_bytes,
-            now_unix,
-        )
-        .await
-    }
-
-    /// Dangerous compatibility entry point for an already-retired query proof.
-    /// Prefer [`Self::authorize_query_service_pair_v1`].
-    pub async fn dangerous_already_retired_authorize_query_service_pair_v1(
-        &mut self,
-        pair: &crate::strict_pair::VerifiedStrictTwoProviderOfferPairV1<'_, '_>,
-        db_id: u8,
-        now_unix: u64,
-        proof: AuthorizationProofV1,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1> {
-        self.verify_query_service_pair_ready_v1(pair, now_unix)?;
-        let selected = pair.second();
-        self.dangerous_unpaired_authorize_query_service_v1(
-            db_id,
-            selected.accepted_policy(),
-            selected.verified_offer().scope().scope_id(),
-            selected.offer().offer_id,
-            proof,
-        )
-        .await
-    }
-
-    /// Retire and authorize the independently priced query capability. The
-    /// deferred producer is not called until the strict pair, policy freshness,
-    /// and live query-channel binding pass.
-    pub async fn authorize_query_service_pair_v1<Producer, Produced>(
-        &mut self,
-        payment_context: &crate::strict_pair::VerifiedStrictTwoProviderPaymentContextV1<'_, '_>,
-        db_id: u8,
-        now_unix: u64,
-        produce_after_ready: Producer,
-    ) -> PirResult<pir_service_protocol::AuthGrantedV1>
-    where
-        Producer: FnOnce() -> Produced,
-        Produced: core::future::Future<Output = PirResult<AuthorizationProofV1>>,
-    {
-        let pair = payment_context.pair();
-        let proof = crate::strict_pair::produce_authorization_proof_after_ready_v1(
-            || self.verify_payment_context_side_ready_v1(payment_context, 1, now_unix),
-            produce_after_ready,
-        )
-        .await?;
-        self.dangerous_already_retired_authorize_query_service_pair_v1(pair, db_id, now_unix, proof)
-            .await
-    }
-
-    pub async fn request_hint_pow_challenge_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "hint proof-of-work challenge requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let hint_conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-        request_pow_challenge_v1(
-            hint_conn.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::HarmonyHint {
-                db_id,
-                transport: HintTransport::V2Full,
-                session_token: None,
-                primary_side: None,
-            },
-            now_unix,
-        )
-        .await
-    }
-
-    pub async fn request_query_pow_challenge_v1(
-        &mut self,
-        db_id: u8,
-        accepted: &AcceptedServicePolicyV1,
-        scope_id: [u8; 32],
-        offer_id: u32,
-        now_unix: u64,
-    ) -> PirResult<pir_service_protocol::PowChallengeResponseV1> {
-        if self.verified_database_roots(db_id).is_none() {
-            return Err(PirError::VerificationFailed(format!(
-                "query proof-of-work challenge requires installed database proof for db_id {db_id}"
-            )));
-        }
-        let query_conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-        request_pow_challenge_v1(
-            query_conn.as_mut(),
-            accepted,
-            scope_id,
-            offer_id,
-            OperationStartV1::HarmonyQuery { db_id },
-            now_unix,
-        )
-        .await
     }
 
     async fn preflight_bucket_tree_tops(&mut self, db: &DatabaseInfo) -> PirResult<()> {
@@ -3047,60 +2332,6 @@ impl HarmonyClient {
         db_info: &DatabaseInfo,
         progress: Option<&dyn HintProgress>,
     ) -> PirResult<()> {
-        if let Some(authorization) = self.strict_v2_full_hint_authorization_v1 {
-            if authorization.db_id != db_info.db_id {
-                return Err(PirError::InvalidState(format!(
-                    "Payment V1 V2Full hint grant is bound to db_id {}, not db_id {}",
-                    authorization.db_id, db_info.db_id
-                )));
-            }
-            if authorization.main_bundle_loaded {
-                if self.loaded_db_id == Some(db_info.db_id)
-                    && !self.index_groups.is_empty()
-                    && !self.chunk_groups.is_empty()
-                {
-                    if let Some(p) = progress {
-                        let total = db_info.index_k as u32 + db_info.chunk_k as u32;
-                        if total > 0 {
-                            p.on_group_complete(total, total, "chunk");
-                        }
-                    }
-                    return Ok(());
-                }
-                if let Some(mut conn) = self.hint_conn.take() {
-                    let _ = conn.close().await;
-                }
-                return Err(PirError::InvalidState(
-                    "Payment V1 V2Full main hint bundle was already consumed; local hint state was lost and the operation cannot be retried on this connection"
-                        .into(),
-                ));
-            }
-
-            // A granted V2Full operation must execute its canonical main frame
-            // even if legacy/local cache state happens to exist. The server's
-            // paid-operation DFA expects this frame before any sibling hints.
-            self.invalidate_groups();
-            return match self.ensure_groups_ready_v2(db_info, progress).await? {
-                V2HintFetchOutcome::Loaded => {
-                    let authorization = self
-                        .strict_v2_full_hint_authorization_v1
-                        .as_mut()
-                        .expect("authorization remains installed during V2Full fetch");
-                    authorization.main_bundle_loaded = true;
-                    Ok(())
-                }
-                V2HintFetchOutcome::PoolUnavailable => {
-                    if let Some(mut conn) = self.hint_conn.take() {
-                        let _ = conn.close().await;
-                    }
-                    Err(PirError::ServerError(
-                        "Payment V1 V2Full hint pool became unavailable after authorization; refusing legacy V1 fallback or in-session retry"
-                            .into(),
-                    ))
-                }
-            };
-        }
-
         if self.loaded_db_id == Some(db_info.db_id)
             && !self.index_groups.is_empty()
             && !self.chunk_groups.is_empty()
@@ -3140,7 +2371,6 @@ impl HarmonyClient {
         // Dispatch matrix for main hint fetch (cold cache only — the
         // warm-cache fast path returned above):
         //
-        //   Payment V1 V2Full grant: → exact granted db's V2 full path above
         //   db_id != 0, legacy mode: → V1 (default V2 pool is bound to db0)
         //   pool=2 AND v2:           → V2-half (parallel; this commit)
         //   pool=2 AND v1-opt-in:    → V1 parallel (slow; bench/fallback only)
@@ -3158,9 +2388,8 @@ impl HarmonyClient {
         // across two TCP connections — each connection gets its own
         // bandwidth-delay-product budget, halving wall time on far
         // (high-RTT) clients. A malformed or interrupted V2 response is
-        // fail-closed. Only an ungated legacy session may treat the server's
-        // exact preamble-level pool-empty response as permission to retry
-        // through V1; a committed Payment V1 grant never falls back.
+        // fail-closed. The server's exact preamble-level pool-empty response
+        // is permission to retry through V1.
         let use_v2_for_db = should_use_v2_hint_pool(self.use_v2_protocol, db_info.db_id);
         let want_v1_parallel =
             matches!(std::env::var("HARMONY_USE_V1_PARALLEL").as_deref(), Ok("1"));
@@ -9890,107 +9119,6 @@ mod tests {
         assert!(!should_use_v2_hint_pool(false, 0));
     }
 
-    #[tokio::test]
-    async fn payment_v1_v2_full_grant_uses_non_main_database_pool() {
-        let closed = Arc::new(AtomicBool::new(false));
-        let sends = Arc::new(AtomicUsize::new(0));
-        let key = [0x47; 16];
-        let hint = ScriptedCloseTransport::new(
-            "wss://hint",
-            [
-                v2_key_preamble_frame(PRP_HMR12, 0xFF, 2, key),
-                v1_hint_frame(0, 8, 4, 4, 4 * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE),
-                v1_hint_frame(0, 8, 4, 4, 4 * CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE),
-                v2_terminal_frame(0xFF),
-            ],
-            closed.clone(),
-            sends.clone(),
-        );
-
-        let db = session_db_info();
-        assert_ne!(db.db_id, 0);
-        let mut client = HarmonyClient::new("wss://hint", "wss://query");
-        client.connect_with_transport(Box::new(hint), Box::new(MockTransport::new("wss://query")));
-        client.strict_v2_full_hint_authorization_v1 = Some(StrictV2FullHintAuthorizationV1 {
-            db_id: db.db_id,
-            main_bundle_loaded: false,
-        });
-
-        client.ensure_groups_ready(&db, None).await.unwrap();
-
-        assert!(!closed.load(Ordering::SeqCst));
-        assert_eq!(sends.load(Ordering::SeqCst), 1);
-        assert_eq!(client.loaded_db_id, Some(db.db_id));
-        assert_eq!(client.index_groups.len(), 1);
-        assert_eq!(client.chunk_groups.len(), 1);
-        assert_eq!(
-            client.strict_v2_full_hint_authorization_v1,
-            Some(StrictV2FullHintAuthorizationV1 {
-                db_id: db.db_id,
-                main_bundle_loaded: true,
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn payment_v1_v2_full_pool_unavailable_never_falls_back_to_v1() {
-        let closed = Arc::new(AtomicBool::new(false));
-        let sends = Arc::new(AtomicUsize::new(0));
-        let hint = ScriptedCloseTransport::new(
-            "wss://hint",
-            [v2_pool_unavailable_frame()],
-            closed.clone(),
-            sends.clone(),
-        );
-
-        let db = session_db_info();
-        let mut client = HarmonyClient::new("wss://hint", "wss://query");
-        client.connect_with_transport(Box::new(hint), Box::new(MockTransport::new("wss://query")));
-        client.strict_v2_full_hint_authorization_v1 = Some(StrictV2FullHintAuthorizationV1 {
-            db_id: db.db_id,
-            main_bundle_loaded: false,
-        });
-
-        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
-
-        assert!(matches!(error, PirError::ServerError(message) if
-            message.contains("refusing legacy V1 fallback")));
-        assert!(closed.load(Ordering::SeqCst));
-        assert_eq!(sends.load(Ordering::SeqCst), 1);
-        assert!(client.hint_conn.is_none());
-        assert!(client.index_groups.is_empty());
-        assert!(client.chunk_groups.is_empty());
-    }
-
-    #[tokio::test]
-    async fn payment_v1_v2_full_grant_rejects_a_different_database_before_send() {
-        let closed = Arc::new(AtomicBool::new(false));
-        let sends = Arc::new(AtomicUsize::new(0));
-        let hint = ScriptedCloseTransport::new(
-            "wss://hint",
-            std::iter::empty::<Vec<u8>>(),
-            closed.clone(),
-            sends.clone(),
-        );
-
-        let mut db = session_db_info();
-        let authorized_db_id = db.db_id;
-        db.db_id = authorized_db_id.wrapping_add(1);
-        let mut client = HarmonyClient::new("wss://hint", "wss://query");
-        client.connect_with_transport(Box::new(hint), Box::new(MockTransport::new("wss://query")));
-        client.strict_v2_full_hint_authorization_v1 = Some(StrictV2FullHintAuthorizationV1 {
-            db_id: authorized_db_id,
-            main_bundle_loaded: false,
-        });
-
-        let error = client.ensure_groups_ready(&db, None).await.unwrap_err();
-
-        assert!(matches!(error, PirError::InvalidState(message) if
-            message.contains("bound to db_id")));
-        assert!(!closed.load(Ordering::SeqCst));
-        assert_eq!(sends.load(Ordering::SeqCst), 0);
-    }
-
     #[test]
     fn v2_pool_fallback_requires_exact_message() {
         assert!(is_v2_hint_pool_unavailable_message(
@@ -10377,27 +9505,6 @@ mod tests {
     }
 
     #[test]
-    fn service_plan_request_bytes_match_batch_encoder() {
-        let indices_per_group = 1_064_usize;
-        let items: Vec<BatchItem> = (0..75)
-            .map(|group_id| BatchItem {
-                group_id,
-                indices: vec![0; indices_per_group],
-            })
-            .collect();
-        let wire = encode_batch_query(0, 0, 0, &items);
-        assert_eq!(
-            u64::try_from(wire.len() - 4).unwrap(),
-            crate::query_plan::harmony_batch_counted_request_bytes(
-                75,
-                indices_per_group as u64,
-                0,
-            )
-            .unwrap(),
-        );
-    }
-
-    #[test]
     fn test_bytes_to_u32_vec() {
         let bytes = vec![1u8, 0, 0, 0, 2, 0, 0, 0];
         let v = bytes_to_u32_vec(&bytes).unwrap();
@@ -10513,23 +9620,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn staged_hint_disconnect_clears_grant_but_preserves_bindings_until_last_leg() {
+    async fn staged_hint_disconnect_preserves_bindings_until_last_leg() {
         let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
         client.connect_with_transport(
             Box::new(MockTransport::new("wss://mock-hint")),
             Box::new(MockTransport::new("wss://mock-query")),
         );
         let db_id = seed_verified_session(&mut client);
-        client.strict_v2_full_hint_authorization_v1 = Some(StrictV2FullHintAuthorizationV1 {
-            db_id,
-            main_bundle_loaded: false,
-        });
 
         client.disconnect_provider(0).await.unwrap();
 
         assert!(!client.is_provider_connected(0).unwrap());
         assert!(client.is_provider_connected(1).unwrap());
-        assert!(client.strict_v2_full_hint_authorization_v1.is_none());
         assert!(client.catalog.is_some());
         assert!(client.verified_database_roots(db_id).is_some());
         assert!(client.verified_tree_tops.contains_key(&db_id));

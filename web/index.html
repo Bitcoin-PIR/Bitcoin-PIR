@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-mg+Rxmkm26a7L4IKVh9RsQ849jkKIqNyshRzO62etzw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-k5FAty64spX3AcS6LCw/45546KMACyrx05o66WWZNCY=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -802,78 +802,7 @@
         .verification-dialog-close:hover { color: var(--ink); background: var(--sunken); }
         .verification-dialog-body { padding: 18px; overflow-y: auto; max-height: calc(100vh - 96px); }
 
-        /* Provider verification is a compact, query-local gate. It follows the
-           existing dense form language instead of becoming a second dashboard. */
-        .admission-config {
-            margin-top: 12px;
-            padding: 12px;
-            border: 1px solid var(--line);
-            border-radius: var(--r);
-            background: var(--sunken);
-        }
-        .admission-config summary { cursor: pointer; font-weight: 700; font-size: 12px; }
-        .admission-config-grid { display: grid; gap: 10px; margin-top: 10px; }
-        .admission-config-grid textarea { min-height: 92px; font-family: var(--mono); font-size: 11px; }
-        .admission-config-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-        .admission-config-status { font-size: 11.5px; color: var(--ink-mute); }
-        .admission-simple-mode {
-            display: flex;
-            align-items: flex-start;
-            gap: 8px;
-            margin-top: 10px;
-            padding: 9px 10px;
-            border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
-            border-radius: var(--r);
-            background: color-mix(in srgb, var(--accent) 6%, var(--panel));
-            color: var(--ink-mute);
-            font-size: 11.5px;
-            line-height: 1.45;
-        }
-        .admission-simple-mode input { margin-top: 2px; accent-color: var(--accent); }
-        .admission-simple-mode strong { color: var(--ink); }
-        .product-admission-panel { display: grid; gap: 8px; margin: 14px 0 10px; }
-        .admission-notice {
-            margin: 0; padding: 8px 10px; border-left: 3px solid var(--warn);
-            background: var(--sunken); color: var(--ink-mute); font-size: 11.5px;
-            display: flex; align-items: center; justify-content: space-between; gap: 10px;
-        }
-        .admission-notice.error { border-left-color: var(--err); color: var(--err); }
-        .admission-notice > button { flex: 0 0 auto; white-space: nowrap; }
-        .product-admission-panel[data-admission-mode="simple"] .admission-provider-row,
-        .product-admission-panel[data-admission-mode="simple"] .admission-shared-infrastructure {
-            display: none;
-        }
-        .admission-transport-boundary {
-            margin: 6px 0 10px;
-            color: var(--ink-mute);
-            font-size: 11px;
-            line-height: 1.45;
-        }
-        .admission-provider-row {
-            display: grid; gap: 5px; padding: 10px;
-            border: 1px solid var(--line-soft); border-radius: var(--r); background: var(--panel);
-            overflow-wrap: anywhere;
-        }
-        .admission-provider-heading { display: grid; grid-template-columns: minmax(95px, .45fr) minmax(170px, 1fr); gap: 8px; align-items: center; }
-        .admission-provider-heading strong { font-size: 12px; }
-        .admission-provider-row select { width: 100%; min-width: 0; }
-        .admission-provider-identity, .admission-provider-terms,
-        .admission-provider-warning, .admission-provider-status {
-            font-family: var(--mono); font-size: 10.5px; color: var(--ink-mute);
-        }
-        .admission-provider-warning.experimental { color: var(--err); font-weight: 700; }
-        .admission-provider-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
-        .admission-provider-actions textarea { flex: 1 1 260px; min-width: 0; font-family: var(--mono); font-size: 10.5px; }
-        .admission-shared-infrastructure { display: flex; align-items: flex-start; gap: 7px; font-size: 10.5px; color: var(--ink-mute); }
-        .admission-provider-row :focus-visible, .admission-config :focus-visible {
-            outline: 3px solid color-mix(in srgb, var(--accent) 42%, transparent); outline-offset: 2px;
-        }
-        @media (max-width: 640px) {
-            .admission-provider-heading { grid-template-columns: 1fr; }
-            .admission-config-actions > * { width: 100%; }
-            .admission-provider-actions > button { flex: 1 1 140px; }
-        }
-    </style>
+    </style>    </style>
     <!-- OnionPIR WASM (post-port ES module) loaded dynamically via
          `await import('/wasm/onionpir_client.mjs')` in
          web/src/onionpir_client.ts. The pre-port script-tag UMD
@@ -924,34 +853,6 @@
                         <span class="name">ORAM TEE</span>
                     </button>
                 </div>
-                <label class="admission-simple-mode" for="simpleAdmissionMode">
-                    <input type="checkbox" id="simpleAdmissionMode" checked>
-                    <span><strong>Simple mode (recommended).</strong> Click Query and the trusted server roles, signed Free access, and strict verification run automatically. You will only be asked to review a problem.</span>
-                </label>
-                <details class="admission-config" id="admissionConfig">
-                    <summary>Provider verification trust configuration</summary>
-                    <div class="admission-config-grid">
-                        <label for="admissionBootstrapJson">Trusted bootstrap JSON (advanced replacement: endpoint, provider/policy/operator keys, server/binary/measurement/database pins, explicit product-role workloads, exact issuer/network/Lightning-payee trust)</label>
-                        <textarea id="admissionBootstrapJson" class="input" autocomplete="off" spellcheck="false" placeholder="A functional-beta trusted bootstrap is bundled for this page load. Paste a complete replacement only when intentionally changing trust."></textarea>
-                        <div class="admission-config-actions">
-                            <button type="button" id="admissionApplyBootstrap" class="btn">Apply replacement in memory</button>
-                            <span id="admissionConfigStatus" class="admission-config-status" role="status" aria-live="polite">Bundled functional-beta bootstrap is loading; queries fail closed until it completes.</span>
-                        </div>
-                        <label for="admissionDirectoryMode">Assurance mode for the next directory refresh (changing it clears current directory trust)</label>
-                        <select id="admissionDirectoryMode" class="input">
-                            <option value="strict-multi-relay">Strict multi-relay (2–8 distinct WSS origins)</option>
-                            <option value="centralized-single-relay" selected>Centralized single relay — degraded, no relay cross-check</option>
-                        </select>
-                        <label for="admissionDirectoryRelays">Nostr directory relays (one wss:// URL per line; explicit refresh only)</label>
-                        <textarea id="admissionDirectoryRelays" class="input" rows="2" autocomplete="off" spellcheck="false">wss://directory.65-21-91-217.sslip.io</textarea>
-                        <label for="admissionDirectoryKey">Pinned directory Nostr x-only secp256k1 public key (64 lowercase hex; independent bootstrap)</label>
-                        <input id="admissionDirectoryKey" class="input" autocomplete="off" spellcheck="false" value="0d399dc19efb5632e4a1d26ad5fec578fb401c6b3af80e234cea7339a8c7ad0c">
-                        <div class="admission-config-actions">
-                            <button type="button" id="admissionRefreshDirectory" class="btn ghost">Refresh directory now</button>
-                            <span>Centralized mode requires exactly one relay and is visibly degraded. Relay data remains signed discovery metadata; live identity, binary, attestation, database and result verification still fail closed.</span>
-                        </div>
-                    </div>
-                </details>
             </section>
 
         <!-- ═══ DPF Tab ═══ -->
@@ -1051,9 +952,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="dpfAdmissionPanel" class="product-admission-panel" aria-label="DPF provider verification"></div>
                             <div style="margin-top: 10px;">
-                                <button id="queryBtn" class="btn accent" style="width: 100%;">Select Server 0, then verify it</button>
+                                <button id="queryBtn" class="btn accent" style="width: 100%;">Run free query</button>
                             </div>
                         </div>
 
@@ -1238,7 +1138,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="op-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="opAdmissionPanel" class="product-admission-panel" aria-label="OnionPIR provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="op-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1410,7 +1309,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                     <button id="hp-syncCancelBtn" class="btn ghost sm">Cancel</button>
                                 </div>
                             </div>
-                            <div id="hpAdmissionPanel" class="product-admission-panel" aria-label="HarmonyPIR provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="hp-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1570,7 +1468,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 <button id="oram-connectBtn" class="btn">Connect</button>
                                 <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
                             </div>
-                            <div id="oramAdmissionPanel" class="product-admission-panel" aria-label="ORAM provider verification"></div>
                             <div style="margin-top: 10px;">
                                 <button id="oram-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1674,8 +1571,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, AdmissionCredentialVaultV1, DirectoryRollbackVaultV1, DirectoryRefreshIntentGuardV1, ProviderAdmissionSessionV1, ProductAdmissionControllerV1, ProductAdmissionPanelV1, assertIndependentProviderDialPairV1, assertSelectableDirectoryCatalogFreshV1, parseProductTrustedBootstrapV1, manualProviderAdmissionTrustAnchorV1, directoryBoundProviderTrustAnchorV1, providerArkFingerprintV1, providerLightningPayeeTrustV1, providerOperatorKeyV1, defaultProviderIdsForAdmissionRoutesV1, refreshNostrDirectoryV1, directoryRefreshFailureStateV1, publicAdmissionError, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1, resourceBindingToHarmonyHintCacheBindingV1 } from './src/index.ts';
-        import FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP from './src/functional-beta-trusted-bootstrap.json';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
+        import { PIR1_PROVIDER, PIR2_PROVIDER } from './src/production-providers.js';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
@@ -1742,296 +1639,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         let client = null;
 
-        // ─── Product admission state (query-independent, no localStorage) ──
-        let productTrustedBootstrap = null;
-        let verifiedDirectoryCatalog = null;
-        let directoryTrustRequiresRefresh = false;
-        let directoryRefreshInFlight = false;
-        const directoryRefreshIntentGuard = new DirectoryRefreshIntentGuardV1();
-        let admissionTrustTransitions = 0;
-        let admissionTrustRevision = 0;
-        let admissionVaultPromise = null;
-        const admissionControllers = { dpf: null, onion: null, harmony: null, oram: null };
-        const admissionPanels = {
-            dpf: new ProductAdmissionPanelV1({
-                root: document.getElementById('dpfAdmissionPanel'),
-                roles: [
-                    { role: 'server0', label: 'Server 0 · DPF query', workload: 'dpf-query' },
-                    { role: 'server1', label: 'Server 1 · DPF query', workload: 'dpf-query' },
-                ],
-                beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
-                onRequestAdvancedMode: requestAdvancedAdmissionMode,
-                onStateChange: snapshot => updateAdmissionQueryButton('queryBtn', snapshot),
-            }),
-            onion: new ProductAdmissionPanelV1({
-                root: document.getElementById('opAdmissionPanel'),
-                roles: [{ role: 'onion', label: 'Onion provider', workload: 'onion-session' }],
-                beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
-                onRequestAdvancedMode: requestAdvancedAdmissionMode,
-                onStateChange: snapshot => updateAdmissionQueryButton('op-queryBtn', snapshot),
-            }),
-            harmony: new ProductAdmissionPanelV1({
-                root: document.getElementById('hpAdmissionPanel'),
-                roles: [
-                    { role: 'hint', label: 'Hint provider · large one-time hint workload', workload: 'harmony-hint' },
-                    { role: 'query', label: 'Query provider · per-query workload', workload: 'harmony-query' },
-                ],
-                beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
-                onRequestAdvancedMode: requestAdvancedAdmissionMode,
-                onStateChange: snapshot => updateAdmissionQueryButton('hp-queryBtn', snapshot),
-            }),
-            oram: new ProductAdmissionPanelV1({
-                root: document.getElementById('oramAdmissionPanel'),
-                roles: [{ role: 'oram', label: 'ORAM provider', workload: 'tee-oram-query' }],
-                beforeSecurityTransition: requireFreshDirectoryTrustForSecurityTransition,
-                onRequestAdvancedMode: requestAdvancedAdmissionMode,
-                onStateChange: snapshot => updateAdmissionQueryButton('oram-queryBtn', snapshot),
-            }),
-        };
-
-        function simpleAdmissionEnabled() {
-            const checkbox = document.getElementById('simpleAdmissionMode');
-            return checkbox instanceof HTMLInputElement && checkbox.checked;
-        }
-
-        function requestAdvancedAdmissionMode() {
-            const checkbox = document.getElementById('simpleAdmissionMode');
-            if (!(checkbox instanceof HTMLInputElement) || !checkbox.checked) return;
-            checkbox.checked = false;
-            checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-
-        function defaultProviderIdsForKind(kind) {
-            const providers = productTrustedBootstrap?.providers ?? [];
-            const routes = {
-                dpf: [
-                    ['server0', 'dpf-query'],
-                    ['server1', 'dpf-query'],
-                ],
-                harmony: [
-                    ['hint', 'harmony-hint'],
-                    ['query', 'harmony-query'],
-                ],
-                onion: [['onion', 'onion-session']],
-                oram: [['oram', 'tee-oram-query']],
-            }[kind] ?? [];
-            return defaultProviderIdsForAdmissionRoutesV1(providers, routes);
-        }
-
-        function hasExactAdmissionSelection(leg) {
-            return leg?.selected != null || leg?.retainedSelected != null;
-        }
-
-        function isAdmissionAuthorized(leg) {
-            return leg?.status === 'authorized' || leg?.status === 'cached-resource-ready';
-        }
-
-        function updateAdmissionQueryButton(id, snapshot) {
-            const button = document.getElementById(id);
-            if (!button) return;
-            if (button.dataset.admissionActionInFlight === 'true') return;
-            if (simpleAdmissionEnabled()) {
-                if (button.disabled) return;
-                if (snapshot?.phase === 'querying') {
-                    button.disabled = true;
-                    button.textContent = 'Verified query in progress…';
-                } else if (snapshot?.phase === 'ready-to-query') {
-                    button.disabled = false;
-                    button.textContent = 'Run one verified query';
-                } else {
-                    button.disabled = false;
-                    button.textContent = snapshot?.phase === 'selecting'
-                        ? 'Finish automatic Free access'
-                        : 'Run free query';
-                }
-                return;
-            }
-            if (id === 'queryBtn') {
-                const legs = snapshot?.legs ?? [];
-                if (!snapshot) {
-                    button.disabled = false;
-                    button.textContent = 'Select Server 0, then verify it';
-                    return;
-                }
-                if (snapshot.phase === 'querying') {
-                    button.disabled = true;
-                    button.textContent = 'Two-server query in progress…';
-                    return;
-                }
-                if (legs.length === 1) {
-                    if (!hasExactAdmissionSelection(legs[0])) {
-                        button.disabled = true;
-                        button.textContent = 'Select Server 0 exact offer in the panel';
-                        return;
-                    }
-                    button.disabled = false;
-                    button.textContent = 'Verify independent Server 1';
-                    return;
-                }
-                if (legs.length === 2) {
-                    if (!legs.every(hasExactAdmissionSelection)) {
-                        button.disabled = true;
-                        button.textContent = 'Select Server 1 exact offer in the panel';
-                        return;
-                    }
-                    if (!legs.every(isAdmissionAuthorized)) {
-                        button.disabled = true;
-                        button.textContent = 'Request Free access or authorize Premium access in both panels';
-                        return;
-                    }
-                    button.disabled = false;
-                    button.textContent = 'Send two-server verified query';
-                    return;
-                }
-                button.disabled = false;
-                button.textContent = 'Select Server 0, then verify it';
-                return;
-            }
-            if (button.disabled) return;
-            // An independent pair must establish and select both exact
-            // provider scopes before either payment or authorization is
-            // permitted.  In particular, a selected Harmony hint offer is
-            // deliberately only "ready", not authorized, while the query
-            // provider is being verified.
-            const firstReady = snapshot?.topology === 'independent-pair'
-                && snapshot.legs.length === 1
-                && hasExactAdmissionSelection(snapshot.legs[0]);
-            button.textContent = snapshot?.phase === 'ready-to-query'
-                ? 'Run one verified query'
-                : firstReady
-                    ? id === 'hp-queryBtn'
-                        ? 'Verify independent Query provider'
-                        : 'Verify independent second provider'
-                : snapshot?.phase === 'selecting'
-                    ? 'Query blocked · authorize current provider'
-                    : 'Verify provider';
-        }
-
-        function allDirectoryEntries() {
-            return verifiedDirectoryCatalog?.shards?.flatMap(shard => shard.entries) ?? [];
-        }
-
-        function matchingDirectoryEntry(provider) {
-            return allDirectoryEntries().find(entry =>
-                entry.providerIdHex === provider.providerIdHex
-                && entry.policySigningKeyEd25519Hex === provider.policySigningKeyHex
-                && entry.operatorPubkeyEd25519Hex === provider.operatorSigningKeyHex
-                && entry.stableServerId === provider.stableServerId) ?? null;
-        }
-
-        function renderTrustedProviderOptions() {
-            const providers = directoryTrustRequiresRefresh && !verifiedDirectoryCatalog
-                ? []
-                : productTrustedBootstrap?.providers ?? [];
-            const choices = providers.map(provider => ({
-                providerIdHex: provider.providerIdHex,
-                label: provider.label,
-                source: matchingDirectoryEntry(provider) ? 'directory' : 'manual',
-                supportedWorkloads: provider.supportedWorkloads,
-            }));
-            Object.entries(admissionPanels).forEach(([kind, panel]) => {
-                panel.setSimpleMode(simpleAdmissionEnabled());
-                panel.setProviderOptions(choices);
-                if (simpleAdmissionEnabled()) {
-                    panel.setDefaultProviderIds(defaultProviderIdsForKind(kind));
-                }
-            });
-        }
-
-        function loadBundledFunctionalBetaTrustedBootstrap() {
-            const status = document.getElementById('admissionConfigStatus');
-            try {
-                productTrustedBootstrap = parseProductTrustedBootstrapV1(
-                    JSON.stringify(FUNCTIONAL_BETA_TRUSTED_BOOTSTRAP),
-                );
-            } catch {
-                productTrustedBootstrap = null;
-                renderTrustedProviderOptions();
-                status.textContent = 'Bundled functional-beta trusted bootstrap is invalid; query access remains blocked.';
-                return;
-            }
-            renderTrustedProviderOptions();
-            status.textContent = `${productTrustedBootstrap.providers.length} bundled functional-beta trusted provider(s) loaded in memory; no connection was made.`;
-        }
-
-        function providerById(providerIdHex) {
-            const provider = productTrustedBootstrap?.providers.find(item => item.providerIdHex === providerIdHex);
-            if (!provider) throw new Error('selected provider is absent from the in-memory trusted bootstrap');
-            return provider;
-        }
-
-        function trustForProvider(provider) {
-            if (directoryRefreshInFlight) {
-                throw new Error('directory refresh is in flight; provider trust remains fail closed');
-            }
-            if (directoryTrustRequiresRefresh && !verifiedDirectoryCatalog) {
-                throw new Error('directory trust was invalidated; manual fallback is not permitted');
-            }
-            if (verifiedDirectoryCatalog) {
-                try {
-                    assertSelectableDirectoryCatalogFreshV1(verifiedDirectoryCatalog);
-                } catch {
-                    void beginDirectoryTrustInvalidation(
-                        'The authenticated directory catalog expired; all admission attempts were closed.',
-                        'The authenticated directory catalog expired and was cleared. Manual fallback is blocked; refresh explicitly.',
-                        true,
-                    ).catch(() => {});
-                    throw new Error('the authenticated directory catalog expired; refresh is required');
-                }
-            }
-            const entry = matchingDirectoryEntry(provider);
-            return entry
-                ? directoryBoundProviderTrustAnchorV1(entry, provider)
-                : manualProviderAdmissionTrustAnchorV1(provider);
-        }
-
-        function selectedAdmissionProviders(kind) {
-            if (!productTrustedBootstrap) throw new Error('query access is unconfigured');
-            const ids = admissionPanels[kind].selectedProviderIds();
-            const selected = Object.fromEntries(Object.entries(ids).map(([role, id]) => [role, providerById(id)]));
-            const values = Object.values(selected);
-            if (values.length === 2 && values[0].providerIdHex === values[1].providerIdHex) {
-                throw new Error('independent PIR roles must select distinct provider identities');
-            }
-            return selected;
-        }
-
-        function selectedAdmissionProvider(kind, role) {
-            if (!productTrustedBootstrap) throw new Error('query access is unconfigured');
-            return providerById(admissionPanels[kind].freezeProviderSelection(role));
-        }
-
-        function canonicalJson(value) {
-            if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-            if (value && typeof value === 'object') {
-                return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
-            }
-            return JSON.stringify(value);
-        }
-
-        function sharedDatabasePins(first, second) {
-            if (canonicalJson(first.databaseProofPins) !== canonicalJson(second.databaseProofPins)) {
-                throw new Error('the selected pair does not independently pin the same database proof set');
-            }
-            return first.databaseProofPins;
-        }
-
-        function sharedArkFingerprint(first, second) {
-            const left = first.expectedArkFingerprintHex ?? null;
-            const right = second.expectedArkFingerprintHex ?? null;
-            if (left !== null && right !== null && left !== right) {
-                throw new Error('the selected pair requires different ARK roots unsupported by one adapter session');
-            }
-            // A non-SEV provider has no ARK to pin. Passing the other leg's
-            // pinned root is safe: the adapter only invokes AMD chain
-            // validation for a leg that actually supplies a VCEK chain.
-            return providerArkFingerprintV1(left !== null ? first : second);
-        }
-
-        async function admissionVault() {
-            admissionVaultPromise ??= AdmissionCredentialVaultV1.open();
-            return admissionVaultPromise;
-        }
+        // ─── Free/open product connection ──────────────────────────────────
+        // Free queries are open: connect the pinned production provider(s),
+        // complete the strict attestation + database-proof preflight, then
+        // query directly. There is no bootstrap JSON, no directory, no
+        // signed policy fetch, no proof-of-work, and no capability
+        // acquisition. One query per verified connection attempt: the
+        // connection closes after each query so every query runs on a
+        // fresh, fully verified session.
 
         function setAdmissionQueryControlsFrozen(kind, frozen) {
             const controls = {
@@ -2045,211 +1660,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (element) element.disabled = frozen;
             }
         }
-
-        async function closeAdmissionAttempt(kind, message = 'Start a new provider verification setup.') {
-            const controller = admissionControllers[kind];
-            admissionControllers[kind] = null;
-            if (controller) await controller.close().catch(() => {});
-            admissionPanels[kind].detach(message);
-            setAdmissionQueryControlsFrozen(kind, false);
-        }
-
-        async function closeAllAdmissionAttempts(message) {
-            admissionTrustTransitions += 1;
-            try {
-                await Promise.all(Object.keys(admissionControllers).map(kind => closeAdmissionAttempt(kind, message)));
-            } finally {
-                admissionTrustTransitions -= 1;
-            }
-        }
-
-        document.getElementById('simpleAdmissionMode').addEventListener('change', async () => {
-            await closeAllAdmissionAttempts('Admission mode changed; start a new strict admission attempt.');
-            renderTrustedProviderOptions();
-            Object.values(admissionPanels).forEach(panel => {
-                if (simpleAdmissionEnabled()) {
-                    panel.setAutomationNotice('Simple mode is ready: strict verification and signed Free authorization will run automatically.');
-                }
-            });
-        });
-
-        function currentDirectoryRefreshInput() {
-            return {
-                relayMode: document.getElementById('admissionDirectoryMode').value,
-                relays: document.getElementById('admissionDirectoryRelays').value
-                    .split('\n').map(value => value.trim()).filter(Boolean),
-                pinnedDirectoryPubkeyHex:
-                    document.getElementById('admissionDirectoryKey').value.trim(),
-            };
-        }
-
-        function beginDirectoryTrustInvalidation(message, statusText, requireRefresh) {
-            directoryRefreshIntentGuard.invalidateInput();
-            directoryRefreshInFlight = false;
-            admissionTrustRevision += 1;
-            directoryTrustRequiresRefresh = requireRefresh
-                || directoryTrustRequiresRefresh
-                || verifiedDirectoryCatalog !== null;
-            verifiedDirectoryCatalog = null;
-            renderTrustedProviderOptions();
-            document.getElementById('admissionConfigStatus').textContent = statusText;
-            return closeAllAdmissionAttempts(message);
-        }
-
-        function invalidateDirectoryRefreshInput(label) {
-            const requireRefresh = verifiedDirectoryCatalog !== null || directoryTrustRequiresRefresh;
-            void beginDirectoryTrustInvalidation(
-                `Directory ${label} changed; all admission attempts were closed.`,
-                `Directory ${label} changed; active directory trust was cleared synchronously. Run an explicit refresh before directory-backed admission can resume.`,
-                requireRefresh,
-            ).catch(() => {});
-        }
-
-        async function requireFreshDirectoryTrustForSecurityTransition() {
-            if (directoryRefreshInFlight) {
-                throw new Error('directory refresh is in flight; security transitions remain fail closed');
-            }
-            if (!verifiedDirectoryCatalog) {
-                if (directoryTrustRequiresRefresh) {
-                    throw new Error('directory trust was invalidated; an explicit successful refresh is required');
-                }
-                return;
-            }
-            try {
-                assertSelectableDirectoryCatalogFreshV1(verifiedDirectoryCatalog);
-            } catch {
-                await beginDirectoryTrustInvalidation(
-                    'The authenticated directory catalog expired; all admission attempts were closed.',
-                    'The authenticated directory catalog expired and was cleared. Manual fallback is blocked; refresh explicitly before admission, payment, token use or query.',
-                    true,
-                );
-                throw new Error('the authenticated directory catalog expired; refresh is required');
-            }
-        }
-
-        document.getElementById('admissionApplyBootstrap').addEventListener('click', async () => {
-            const status = document.getElementById('admissionConfigStatus');
-            const textarea = document.getElementById('admissionBootstrapJson');
-            let parsed = null;
-            try {
-                parsed = parseProductTrustedBootstrapV1(textarea.value);
-            } catch {
-                // Keep parsed null. Invalid bootstrap input invalidates the old
-                // in-memory trust just as a valid replacement does.
-            }
-            directoryRefreshIntentGuard.replaceBootstrap();
-            const applyIntent = directoryRefreshIntentGuard.capture(currentDirectoryRefreshInput());
-            directoryRefreshInFlight = false;
-            admissionTrustRevision += 1;
-            productTrustedBootstrap = null;
-            verifiedDirectoryCatalog = null;
-            directoryTrustRequiresRefresh = false;
-            renderTrustedProviderOptions();
-            status.textContent = parsed
-                ? 'Applying replacement trusted bootstrap; admission is temporarily fail closed.'
-                : 'Rejecting invalid trusted bootstrap; admission is temporarily fail closed.';
-            await closeAllAdmissionAttempts(parsed
-                ? 'Trusted bootstrap changed; start a new provider verification setup.'
-                : 'Invalid trusted bootstrap; provider verification attempts were closed.');
-            if (!directoryRefreshIntentGuard.isCurrent(
-                applyIntent,
-                currentDirectoryRefreshInput(),
-            )) return;
-            if (!parsed) {
-                status.textContent = 'Rejected invalid trusted bootstrap; query access remains blocked.';
-                return;
-            }
-            productTrustedBootstrap = parsed;
-            textarea.value = '';
-            renderTrustedProviderOptions();
-            status.textContent = `${parsed.providers.length} trusted provider bootstrap(s) loaded in memory; no connection was made.`;
-        });
-
-        document.getElementById('admissionDirectoryMode').addEventListener(
-            'change', () => invalidateDirectoryRefreshInput('mode'),
-        );
-        document.getElementById('admissionDirectoryRelays').addEventListener(
-            'input', () => invalidateDirectoryRefreshInput('relay set'),
-        );
-        document.getElementById('admissionDirectoryKey').addEventListener(
-            'input', () => invalidateDirectoryRefreshInput('publisher key'),
-        );
-
-        document.getElementById('admissionRefreshDirectory').addEventListener('click', async () => {
-            const status = document.getElementById('admissionConfigStatus');
-            directoryRefreshIntentGuard.invalidateInput();
-            const refreshIntent = directoryRefreshIntentGuard.capture(currentDirectoryRefreshInput());
-            const { relays, relayMode, pinnedDirectoryPubkeyHex } = refreshIntent;
-            directoryRefreshInFlight = true;
-            directoryTrustRequiresRefresh = true;
-            renderTrustedProviderOptions();
-            let vault = null;
-            try {
-                if (!productTrustedBootstrap) throw new Error('bootstrap required');
-                status.textContent = relayMode === 'centralized-single-relay'
-                    ? 'Refreshing all 16 directory shards from one centralized relay (degraded; no relay cross-check)…'
-                    : 'Refreshing all 16 directory shards from distinct WSS relay origins…';
-                admissionTrustRevision += 1;
-                await closeAllAdmissionAttempts(
-                    'An explicit directory refresh began; the previous admission attempt was closed.',
-                );
-                if (!directoryRefreshIntentGuard.isCurrent(
-                    refreshIntent,
-                    currentDirectoryRefreshInput(),
-                )) return;
-                vault = await DirectoryRollbackVaultV1.open();
-                const candidateDirectoryCatalog = await refreshNostrDirectoryV1({
-                    relays,
-                    relayMode,
-                    pinnedDirectoryPubkeyHex,
-                    vault,
-                });
-                if (!directoryRefreshIntentGuard.isCurrent(
-                    refreshIntent,
-                    currentDirectoryRefreshInput(),
-                )) return;
-                assertSelectableDirectoryCatalogFreshV1(candidateDirectoryCatalog);
-                verifiedDirectoryCatalog = candidateDirectoryCatalog;
-                directoryTrustRequiresRefresh = true;
-                renderTrustedProviderOptions();
-                status.textContent = verifiedDirectoryCatalog.directoryMode === 'centralized-single-relay'
-                    ? 'Centralized/degraded directory verified from one complete relay; no relay split-view or outage cross-check. Rollback state committed and live provider verification remains strict.'
-                    : 'Directory verified across at least two complete WSS origins; same-epoch split-view comparison passed and rollback state committed. Origin count does not prove independent operators.';
-            } catch {
-                if (!directoryRefreshIntentGuard.isCurrent(
-                    refreshIntent,
-                    currentDirectoryRefreshInput(),
-                )) return;
-                if (verifiedDirectoryCatalog) {
-                    try {
-                        assertSelectableDirectoryCatalogFreshV1(verifiedDirectoryCatalog);
-                    } catch {
-                        await beginDirectoryTrustInvalidation(
-                            'The retained authenticated directory catalog expired; all admission attempts were closed.',
-                            'Directory refresh failed and the retained catalog was expired, so it was cleared. Manual fallback is blocked; refresh explicitly.',
-                            true,
-                        );
-                        return;
-                    }
-                }
-                const failure = directoryRefreshFailureStateV1(verifiedDirectoryCatalog, relayMode);
-                if (!failure.retainCatalog) {
-                    if (verifiedDirectoryCatalog) admissionTrustRevision += 1;
-                    verifiedDirectoryCatalog = null;
-                    if (directoryTrustRequiresRefresh) directoryTrustRequiresRefresh = true;
-                    renderTrustedProviderOptions();
-                }
-                status.textContent = failure.statusText;
-            } finally {
-                vault?.close();
-                if (directoryRefreshIntentGuard.isCurrent(
-                    refreshIntent,
-                    currentDirectoryRefreshInput(),
-                )) directoryRefreshInFlight = false;
-            }
-        });
-
-        loadBundledFunctionalBetaTrustedBootstrap();
 
         function validateQueryInputBeforeAdmission(kind) {
             const textareaId = {
@@ -2265,403 +1675,72 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 throw new Error('no valid address or scriptPubKey is present');
             }
             if (kind === 'oram' && values.length > 25) {
-                throw new Error('one ORAM entitlement permits one atomic request with at most 25 inputs');
+                throw new Error('one ORAM query is one atomic request with at most 25 inputs');
             }
         }
 
-        function productScriptHashes(kind) {
-            const textareaId = {
-                dpf: 'scriptPubkeys', onion: 'op-scriptPubkeys',
-                harmony: 'hp-scriptPubkeys', oram: 'oram-scriptPubkeys',
-            }[kind];
-            const rawValues = document.getElementById(textareaId).value
-                .split('\n').map(value => value.trim()).filter(Boolean);
-            const hashes = [];
-            for (const raw of rawValues) {
-                const scriptHex = /^[0-9a-fA-F]+$/.test(raw) && raw.length % 2 === 0
-                    ? raw.toLowerCase()
-                    : addressToScriptPubKey(raw);
-                if (scriptHex) hashes.push(scriptHash(hexToBytes(scriptHex)));
-            }
-            if (hashes.length === 0) {
-                throw new Error(`${kind} planner has no valid query inputs`);
-            }
-            return hashes;
+        async function ensureDpfPair() {
+            await connectDpfLeg(PIR1_PROVIDER, 0);
+            await connectDpfLeg(PIR2_PROVIDER, 1);
+            const dbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
+            dpfAdmissionDbId = dbId;
+            await client.prepareStrictAdmission(dbId);
+            log('DPF: both providers verified; running one open query…', 'success');
         }
 
-        function planProductRole(kind, role) {
-            const hashes = productScriptHashes(kind);
-            if (kind === 'dpf') {
-                if (!client || dpfAdmissionDbId === null) {
-                    throw new Error('DPF planner requires the live verified database');
-                }
-                return client.planServiceQuery(hashes, dpfAdmissionDbId);
-            }
-            if (kind === 'harmony') {
-                if (!hpClient) throw new Error('Harmony planner requires the live verified client');
-                const dbId = hpClient.getDbId();
-                return role === 'hint'
-                    ? hpClient.planServiceHint(dbId)
-                    : hpClient.planServiceQuery(hashes, dbId);
-            }
-            if (kind === 'onion') {
-                if (!opClient || onionAdmissionDbId === null) {
-                    throw new Error('OnionPIR planner requires the live verified database');
-                }
-                return opClient.planServiceQuery(hashes, onionAdmissionDbId);
-            }
-            if (!oramClient || oramAdmissionDbId === null) {
-                throw new Error('ORAM planner requires the live verified database');
-            }
-            return oramClient.planServiceQuery(hashes, oramAdmissionDbId);
+        async function ensureOnionConnection() {
+            const connected = await opConnect(PIR1_PROVIDER);
+            onionAdmissionDbId = connected.getDbId();
         }
 
-        function installPreparedProductQueryShapes(kind, controller) {
-            const snapshot = controller.snapshot();
-            for (const leg of snapshot.legs) {
-                controller.setQueryShape(leg.role, planProductRole(kind, leg.role));
+        async function ensureHarmonyPair() {
+            await hpConnectLeg(PIR1_PROVIDER, 0);
+            await hpConnectLeg(PIR2_PROVIDER, 1);
+            await hpClient.prepareStrictAdmission(hpClient.getDbId());
+            if (hpHintsLoaded) return;
+            const datasetIdHex = hpClient.getMerkleRootHex();
+            if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
+                throw new Error('verified Harmony hint dataset root is unavailable');
             }
+            const binding = { datasetIdHex, prpBackend: hpCurrentPrp };
+            const restored = await hpClient.restoreHintsFromCache(binding);
+            if (restored) {
+                hpHintsLoaded = true;
+                document.getElementById('hp-offlineContainer').style.display = 'block';
+                document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
+                document.getElementById('hp-offlineFill').style.width = '100%';
+                document.getElementById('hp-offlineLabel').textContent =
+                    'Dataset and PRP binding verified against the live database proof.';
+                return;
+            }
+            document.getElementById('hp-offlineContainer').style.display = 'block';
+            if (!await hpFetchHints(hpClient)) throw new Error('hint download failed');
+            hpHintsLoaded = true;
+            await hpClient.saveHintsToCache(binding);
         }
 
-        function currentProductQueryShapes(kind, controller) {
-            const shapes = {};
-            for (const leg of controller.snapshot().legs) {
-                shapes[leg.role] = planProductRole(kind, leg.role);
-            }
-            return shapes;
+        async function ensureOramConnection() {
+            await oramConnect(PIR2_PROVIDER);
+            oramAdmissionDbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
         }
 
-        function verifiedAdmissionManifestRoot(connected, dbId, label) {
-            const status = connected.getDatabaseProofStatus(dbId);
-            const rootHex = status?.state === 'verified'
-                ? status.proof?.manifestRootHex?.toLowerCase()
-                : null;
-            if (!/^[0-9a-f]{64}$/.test(rootHex ?? '') || /^0{64}$/.test(rootHex)) {
-                throw new Error(`${label} verified database manifest root is unavailable`);
-            }
-            return rootHex;
-        }
-
-        async function prepareIndependentProductLeg(kind, role, vault) {
-            const provider = selectedAdmissionProvider(kind, role);
-            if (kind === 'dpf') {
-                const serverIndex = role === 'server0' ? 0 : 1;
-                const connected = await connectDpfLeg(provider, serverIndex);
-                const selectedDbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
-                if (serverIndex === 0) dpfAdmissionDbId = selectedDbId;
-                const dbId = dpfAdmissionDbId;
-                if (dbId === null) throw new Error('DPF server 0 database binding is unavailable');
-                if (serverIndex === 1) {
-                    await connected.prepareStrictAdmission(dbId);
-                }
-                const manifestRootHex = verifiedAdmissionManifestRoot(
-                    connected, dbId, `DPF server ${serverIndex}`,
-                );
-                return {
-                    leg: {
-                        role,
-                        label: `Server ${serverIndex} · DPF query workload`,
-                        session: new ProviderAdmissionSessionV1(
-                            vault, connected.serviceAdmissionPort(serverIndex, dbId), trustForProvider(provider),
-                            {
-                                backend: 'dpf-pir', workload: 'dpf-query',
-                                protocolVersion: 1,
-                                expectedDatasetManifestRootHex: manifestRootHex,
-                            },
-                        ),
-                        backend: 'dpf-pir', workload: 'dpf-query',
-                        network: productTrustedBootstrap.network,
-                        lightningPayeeTrust: providerLightningPayeeTrustV1(provider),
-                        providerEndpoint: provider.endpoint,
-                    },
-                    close: async () => {
-                        if (serverIndex === 0) {
-                            if (client === connected) disconnect(true); else connected.disconnect();
-                        } else {
-                            await connected.disconnectLeg(1);
-                            dpfAdmissionProviders[1] = null;
-                        }
-                    },
-                };
-            }
-
-            const providerIndex = role === 'hint' ? 0 : 1;
-            const connected = await hpConnectLeg(provider, providerIndex);
-            const dbId = connected.getDbId();
-            if (providerIndex === 1) {
-                await connected.prepareStrictAdmission(dbId);
-            }
-            const manifestRootHex = verifiedAdmissionManifestRoot(
-                connected, dbId, providerIndex === 0 ? 'Harmony hint provider' : 'Harmony query provider',
-            );
-            const leg = {
-                role,
-                label: providerIndex === 0
-                    ? 'Hint provider · large one-time harmony-hint workload'
-                    : 'Query provider · per-query harmony-query workload',
-                session: new ProviderAdmissionSessionV1(
-                    vault,
-                    providerIndex === 0
-                        ? connected.hintServiceAdmissionPort(dbId)
-                        : connected.queryServiceAdmissionPort(dbId),
-                    trustForProvider(provider),
-                    {
-                        backend: 'harmony-pir',
-                        workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
-                        protocolVersion: 2,
-                        expectedDatasetManifestRootHex: manifestRootHex,
-                    },
-                ),
-                backend: 'harmony-pir',
-                workload: providerIndex === 0 ? 'harmony-hint' : 'harmony-query',
-                network: productTrustedBootstrap.network,
-                lightningPayeeTrust: providerLightningPayeeTrustV1(provider),
-                providerEndpoint: provider.endpoint,
-            };
-            if (providerIndex === 0) {
-                const datasetIdHex = connected.getMerkleRootHex();
-                if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
-                    throw new Error('verified Harmony hint dataset root is unavailable');
-                }
-                leg.resource = {
-                    datasetIdHex,
-                    variant: hpCurrentPrp,
-                    restore: async binding => {
-                        const restored = await connected.restoreHintsFromCache(
-                            resourceBindingToHarmonyHintCacheBindingV1(binding),
-                        );
-                        hpHintsLoaded = restored;
-                        if (restored) {
-                            document.getElementById('hp-offlineContainer').style.display = 'block';
-                            document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
-                            document.getElementById('hp-offlineFill').style.width = '100%';
-                            document.getElementById('hp-offlineLabel').textContent = 'Provider, policy, scope, offer, dataset and PRP binding verified.';
-                        }
-                        return restored;
-                    },
-                    acquireAfterAuthorization: async binding => {
-                        document.getElementById('hp-offlineContainer').style.display = 'block';
-                        if (!await hpFetchHints(connected)) throw new Error('authorized hint download failed');
-                        hpHintsLoaded = true;
-                        await connected.saveHintsToCache(
-                            resourceBindingToHarmonyHintCacheBindingV1(binding),
-                        );
-                    },
-                    persistAfterQuery: binding => connected.saveHintsToCache(
-                        resourceBindingToHarmonyHintCacheBindingV1(binding),
-                    ),
-                };
-            }
-            return {
-                leg,
-                close: async () => {
-                    if (providerIndex === 0) {
-                        if (hpClient === connected) hpDisconnect(true, true); else connected.disconnect();
-                    } else {
-                        await connected.disconnectLeg(1);
-                        harmonyAdmissionProviders[1] = null;
-                    }
-                },
-            };
-        }
-
-        async function prepareCurrentIndependentProductLeg(kind, role, vault, controller) {
-            const staged = await prepareIndependentProductLeg(kind, role, vault);
-            if (admissionControllers[kind] !== controller) {
-                await staged.close();
-                throw new Error('provider verification was invalidated while bootstrap was in flight');
-            }
-            return staged;
-        }
-
-        async function prepareProductAdmission(kind) {
-            await requireFreshDirectoryTrustForSecurityTransition();
-            if (admissionTrustTransitions !== 0) {
-                throw new Error('admission trust is changing; start again after the fail-closed transition completes');
-            }
-            const trustRevision = admissionTrustRevision;
-            const vault = await admissionVault();
-            await requireFreshDirectoryTrustForSecurityTransition();
-            if (trustRevision !== admissionTrustRevision || admissionTrustTransitions !== 0) {
-                throw new Error('admission trust changed while the credential vault was opening');
-            }
-            const topology = kind === 'dpf' || kind === 'harmony'
-                ? 'independent-pair'
-                : 'single-provider';
-            const controller = new ProductAdmissionControllerV1({ topology, vault });
-            admissionControllers[kind] = controller;
-            admissionPanels[kind].attach(controller);
-
-            if (topology === 'independent-pair') {
-                const firstRole = kind === 'dpf' ? 'server0' : 'hint';
-                await controller.prepareLeg(
-                    () => prepareCurrentIndependentProductLeg(
-                        kind, firstRole, vault, controller,
-                    ),
-                );
-            } else {
-                const selected = selectedAdmissionProviders(kind);
-                await controller.prepare(async () => {
-                    if (kind === 'onion') {
-                        const provider = selected.onion;
-                        const connected = await opConnect(provider);
-                        const dbId = connected.getDbId();
-                        onionAdmissionDbId = dbId;
-                        const manifestRootHex = verifiedAdmissionManifestRoot(
-                            connected, dbId, 'OnionPIR provider',
-                        );
-                        return {
-                            legs: [{
-                                role: 'onion', label: 'Onion provider',
-                                session: new ProviderAdmissionSessionV1(
-                                    vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                                    {
-                                        backend: 'onion-pir', workload: 'onion-session',
-                                        protocolVersion: 1,
-                                        expectedDatasetManifestRootHex: manifestRootHex,
-                                    },
-                                ),
-                                backend: 'onion-pir', workload: 'onion-session',
-                                network: productTrustedBootstrap.network,
-                                lightningPayeeTrust: providerLightningPayeeTrustV1(provider),
-                            }],
-                            close: () => { if (opClient === connected) opDisconnect(true); else connected.disconnect(); },
-                        };
-                    }
-                    const provider = selected.oram;
-                    const connected = await oramConnect(provider);
-                    const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
-                    oramAdmissionDbId = dbId;
-                    const manifestRootHex = verifiedAdmissionManifestRoot(
-                        connected, dbId, 'ORAM provider',
-                    );
-                    return {
-                        legs: [{
-                            role: 'oram', label: 'ORAM provider',
-                            session: new ProviderAdmissionSessionV1(
-                                vault, connected.serviceAdmissionPort(dbId), trustForProvider(provider),
-                                {
-                                    backend: 'tee-oram', workload: 'tee-oram-query',
-                                    protocolVersion: 1,
-                                    expectedDatasetManifestRootHex: manifestRootHex,
-                                },
-                            ),
-                            backend: 'tee-oram', workload: 'tee-oram-query',
-                            network: productTrustedBootstrap.network,
-                            lightningPayeeTrust: providerLightningPayeeTrustV1(provider),
-                        }],
-                        close: () => { if (oramClient === connected) oramDisconnect(true); else connected.disconnect(); },
-                    };
-                });
-            }
-            if (trustRevision !== admissionTrustRevision || admissionControllers[kind] !== controller) {
-                await controller.close().catch(() => {});
-                throw new Error('admission trust changed while strict provider verification was in flight');
-            }
-            await requireFreshDirectoryTrustForSecurityTransition();
-            installPreparedProductQueryShapes(kind, controller);
-            admissionPanels[kind].render(controller.snapshot());
-            return controller;
-        }
-
-        async function completeSimpleAdmission(kind, controller) {
-            const panel = admissionPanels[kind];
-            panel.setPublicError(null);
-            panel.setAutomationNotice('Simple mode: selecting a signed Free offer for every required role…');
-            await controller.selectFreeOffers();
-
-            if ((kind === 'dpf' || kind === 'harmony')
-                && controller.snapshot().legs.length === 1) {
-                const secondRole = kind === 'dpf' ? 'server1' : 'query';
-                const vault = await admissionVault();
-                await requireFreshDirectoryTrustForSecurityTransition();
-                await controller.prepareLeg(
-                    () => prepareCurrentIndependentProductLeg(
-                        kind, secondRole, vault, controller,
-                    ),
-                );
-                await requireFreshDirectoryTrustForSecurityTransition();
-                installPreparedProductQueryShapes(kind, controller);
-                await controller.selectFreeOffers();
-            }
-
-            panel.render(controller.snapshot());
-            panel.setAutomationNotice('Simple mode: authorizing signed Free access for every required role…');
-            await controller.authorizeSelectedFreeOffers();
-            panel.render(controller.snapshot());
-            panel.setAutomationNotice('Simple mode: strict verification and Free authorization complete. Running one verified query…');
-        }
-
-        async function runProductAdmissionQuery(kind, query) {
-            await requireFreshDirectoryTrustForSecurityTransition();
-            if (admissionTrustTransitions !== 0) {
-                throw new Error('admission trust is changing; queries remain fail closed');
-            }
+        async function runOpenProductQuery(kind, ensure, query, close) {
             validateQueryInputBeforeAdmission(kind);
-            let controller = admissionControllers[kind];
-            const phase = controller?.snapshot().phase ?? 'idle';
-            if (!controller || phase === 'idle' || phase === 'failed' || phase === 'querying') {
-                if (controller) await closeAdmissionAttempt(kind);
-                setAdmissionQueryControlsFrozen(kind, true);
-                try {
-                    controller = await prepareProductAdmission(kind);
-                } catch (error) {
-                    await closeAdmissionAttempt(kind, 'Provider verification failed; inputs are editable again.');
-                    admissionPanels[kind].setPublicError(publicAdmissionError(error));
-                    throw error;
-                }
-                if (simpleAdmissionEnabled()) {
-                    try {
-                        await completeSimpleAdmission(kind, controller);
-                    } catch (error) {
-                        admissionPanels[kind].setPublicError(publicAdmissionError(error));
-                        throw error;
-                    }
-                } else {
-                    log(`${kind}: provider verification and signed policy complete; select and authorize each exact offer.`, 'success');
-                    return;
-                }
-            } else if (simpleAdmissionEnabled() && phase === 'selecting') {
-                try {
-                    await completeSimpleAdmission(kind, controller);
-                } catch (error) {
-                    admissionPanels[kind].setPublicError(publicAdmissionError(error));
-                    throw error;
-                }
-            }
-            const snapshot = controller.snapshot();
-            if ((kind === 'dpf' || kind === 'harmony') && snapshot.legs.length === 1) {
-                const secondRole = kind === 'dpf' ? 'server1' : 'query';
-                const vault = await admissionVault();
-                await requireFreshDirectoryTrustForSecurityTransition();
-                await controller.prepareLeg(
-                    () => prepareCurrentIndependentProductLeg(
-                        kind, secondRole, vault, controller,
-                    ),
-                );
-                await requireFreshDirectoryTrustForSecurityTransition();
-                installPreparedProductQueryShapes(kind, controller);
-                admissionPanels[kind].render(controller.snapshot());
-                log(`${kind}: both providers and tree-tops verified; capabilities may now be acquired or authorized independently.`, 'success');
-                return;
-            }
-            if (!controller.canQuery()) {
-                admissionPanels[kind].render(controller.snapshot());
-                log(`${kind}: query blocked until every independent provider role is authorized.`, 'error');
-                return;
-            }
-            await requireFreshDirectoryTrustForSecurityTransition();
+            setAdmissionQueryControlsFrozen(kind, true);
             try {
-                await controller.executeQuery(
-                    currentProductQueryShapes(kind, controller),
-                    query,
-                );
+                await ensure();
+            } catch (error) {
+                setAdmissionQueryControlsFrozen(kind, false);
+                throw error;
+            }
+            try {
+                await query();
             } finally {
-                await closeAdmissionAttempt(kind, 'Previous one-query connection closed. Start a new provider verification setup.');
+                await close();
+                setAdmissionQueryControlsFrozen(kind, false);
             }
         }
 
-        /** Pick n random elements from an array (Fisher-Yates shuffle, take first n) */
         function pickRandom(arr, n) {
             const copy = [...arr];
             for (let i = copy.length - 1; i > 0; i--) {
@@ -3715,21 +2794,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function connectDpfLeg(provider, serverIndex) {
             if (!provider?.endpoint || (serverIndex !== 0 && serverIndex !== 1)) {
-                throw new Error('DPF query access requires one complete trusted provider bootstrap per leg');
+                throw new Error('DPF query access requires one complete provider pin per leg');
             }
-            const previous = dpfAdmissionProviders[serverIndex];
-            if (previous && previous.providerIdHex !== provider.providerIdHex) {
-                throw new Error(`DPF server ${serverIndex} is already bound to another provider`);
-            }
-            if (serverIndex === 1) {
-                const first = dpfAdmissionProviders[0];
-                if (!first) throw new Error('DPF server 0 must finish before server 1 is selected');
-                assertIndependentProviderDialPairV1(first, provider);
-                // Server 0 may intentionally be a NoSEV, binary-pinned
-                // provider. Apply the selected pair's ARK before attesting
-                // Server 1 so its SEV-SNP chain cannot be silently skipped.
-                client?.setExpectedArkFingerprint(sharedArkFingerprint(first, provider));
-                sharedDatabasePins(first, provider);
+            if (serverIndex === 1 && !dpfAdmissionProviders[0]) {
+                throw new Error('DPF server 0 must finish before server 1 connects');
             }
             document.getElementById(serverIndex === 0 ? 'server0Url' : 'server1Url').value = provider.endpoint;
 
@@ -3750,8 +2818,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     server0Url: '',
                     server1Url: '',
                     strictVerification: true,
-                    expectedArkFingerprint: providerArkFingerprintV1(provider),
-                    databaseProofPins: provider.databaseProofPins,
+                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -3814,7 +2882,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     url: provider.endpoint,
                     expectedPin: provider.serverPin,
                     expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                    pinnedOperatorPubkey: provider.operatorPubkey,
                 });
                 await client.connectLeg(serverIndex);
                 dpfAdmissionProviders[serverIndex] = provider;
@@ -3934,7 +3002,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function queryUtxos() {
             if (!client || !client.isConnected()) {
-                throw new Error('DPF query requires the live strictly verified admission connection');
+                throw new Error('DPF query requires the live strictly verified connection');
             }
 
             const textarea = document.getElementById('scriptPubkeys');
@@ -4095,17 +3163,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const button = document.getElementById('queryBtn');
             if (button.disabled) return;
             button.disabled = true;
-            button.dataset.admissionActionInFlight = 'true';
             button.textContent = 'Querying…';
             try {
-                await runProductAdmissionQuery('dpf', queryUtxos);
+                await runOpenProductQuery(
+                    'dpf', ensureDpfPair, queryUtxos,
+                    async () => disconnect(true),
+                );
             } catch (error) {
-                log(`DPF admission: ${publicAdmissionError(error)}`, 'error');
+                log(`DPF query: ${error.message}`, 'error');
             } finally {
-                delete button.dataset.admissionActionInFlight;
                 button.disabled = false;
-                admissionPanels.dpf.render(admissionControllers.dpf?.snapshot() ?? null);
-                updateAdmissionQueryButton('queryBtn', admissionControllers.dpf?.snapshot() ?? null);
+                button.textContent = 'Run free query';
             }
         }
 
@@ -4433,7 +3501,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // ─── Main buttons (DPF) ────────────────────────────────────────
         document.getElementById('connectBtn').addEventListener('click', runDpfQueryOnce);
-        document.getElementById('disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('dpf'));
+        document.getElementById('disconnectBtn').addEventListener('click', () => disconnect());
         document.getElementById('queryBtn').addEventListener('click', runDpfQueryOnce);
         document.getElementById('syncBtn').addEventListener('click', planSync);
         document.getElementById('syncConfirmBtn').addEventListener('click', executeSync);
@@ -4608,7 +3676,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function opConnect(provider) {
             if (!provider?.endpoint) {
-                throw new Error('OnionPIR query access requires a complete trusted provider bootstrap');
+                throw new Error('OnionPIR query access requires a complete provider pin');
             }
             const serverUrl = provider.endpoint;
             document.getElementById('op-serverUrl').value = serverUrl;
@@ -4623,10 +3691,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 candidate = new OnionPirWebClient({
                     serverUrl,
                     strictVerification: true,
-                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    expectedArkFingerprint: provider.expectedArkFingerprint,
                     expectedServerPin: provider.serverPin,
                     expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                    pinnedOperatorPubkey: provider.operatorPubkey,
                     databaseProofPins: PRODUCTION_ONION_DB_PROOF_V2_PINS,
                     onConnectionStateChange: (state, message) => {
                         log(`OnionPIR: ${state}${message ? ' - ' + message : ''}`,
@@ -4892,10 +3960,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function opQueryUtxos() {
             if (!opClient || !opClient.isConnected()) {
-                throw new Error('OnionPIR query requires the live strictly verified admission connection');
+                throw new Error('OnionPIR query requires the live strictly verified connection');
             }
             if (onionAdmissionDbId === null || opClient.getDbId() !== onionAdmissionDbId) {
-                throw new Error('OnionPIR database selection changed after exact admission; start a new attempt');
+                throw new Error('OnionPIR database selection changed after verification; start a new query attempt');
             }
 
             const textarea = document.getElementById('op-scriptPubkeys');
@@ -4989,13 +4057,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runProductAdmissionQuery('onion', opQueryUtxos);
+                await runOpenProductQuery(
+                    'onion', ensureOnionConnection, opQueryUtxos,
+                    async () => opDisconnect(true),
+                );
             } catch (error) {
-                log(`OnionPIR admission: ${publicAdmissionError(error)}`, 'error');
+                log(`OnionPIR query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
-                admissionPanels.onion.render(admissionControllers.onion?.snapshot() ?? null);
-                updateAdmissionQueryButton('op-queryBtn', admissionControllers.onion?.snapshot() ?? null);
             }
         }
 
@@ -5030,7 +4099,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // OnionPIR buttons
         document.getElementById('op-connectBtn').addEventListener('click', runOnionQueryOnce);
-        document.getElementById('op-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('onion'));
+        document.getElementById('op-disconnectBtn').addEventListener('click', () => opDisconnect());
         document.getElementById('op-queryBtn').addEventListener('click', runOnionQueryOnce);
         document.getElementById('op-syncBtn').addEventListener('click', opPlanSync);
         document.getElementById('op-syncConfirmBtn').addEventListener('click', opExecuteSync);
@@ -5038,14 +4107,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('op-resetSyncBtn').addEventListener('click', opResetSyncState);
         document.getElementById('op-dbSelect').addEventListener('change', async (e) => {
             const newDbId = parseInt(e.target.value);
-            if (admissionControllers.onion) {
-                await closeAdmissionAttempt(
-                    'onion',
-                    'Database selection changed; start a new provider verification setup.',
-                );
-                log('OnionPIR: database change closed the exact admission before any query spend', 'info');
-                return;
-            }
             if (!opClient) return;
             opSwitchDb(newDbId);
         });
@@ -5167,8 +4228,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (newDbId === hpClient.getDbId()) return;
             hpClient.setDbId(newDbId);
             hpHintsLoaded = false;
-            await closeAdmissionAttempt('harmony', 'Database changed; start a new provider verification setup.');
-            log(`HarmonyPIR: db_id=${newDbId} selected; old policy, grant, and hint binding invalidated.`, 'info');
+            log(`HarmonyPIR: db_id=${newDbId} selected; previous hint binding invalidated.`, 'info');
         }
 
         function hpSetButtons(connected) {
@@ -5236,15 +4296,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 throw new Error('HarmonyPIR provider bootstrap is already in progress');
             }
             if (!provider?.endpoint || (providerIndex !== 0 && providerIndex !== 1)) {
-                throw new Error('HarmonyPIR requires one complete trusted bootstrap per role');
+                throw new Error('HarmonyPIR requires one complete provider pin per role');
             }
-            let selectedPairArkFingerprint = null;
-            if (providerIndex === 1) {
-                const hintProvider = harmonyAdmissionProviders[0];
-                if (!hintProvider) throw new Error('Harmony hint role must finish before query role selection');
-                assertIndependentProviderDialPairV1(hintProvider, provider);
-                selectedPairArkFingerprint = sharedArkFingerprint(hintProvider, provider);
-                sharedDatabasePins(hintProvider, provider);
+            if (providerIndex === 1 && !harmonyAdmissionProviders[0]) {
+                throw new Error('Harmony hint role must finish before query role connects');
             }
             document.getElementById(
                 providerIndex === 0 ? 'hp-hintServerUrl' : 'hp-queryServerUrl',
@@ -5263,11 +4318,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             hpConnecting = true;
             document.getElementById('hp-connectBtn').disabled = true;
             let candidate = hpClient;
-            if (providerIndex === 1) {
-                // Keep the verified hint connection, but install the query
-                // provider's ARK pin before its measured attestation begins.
-                candidate?.setExpectedArkFingerprint(selectedPairArkFingerprint);
-            }
             try {
                 const statusDiv = document.getElementById('hp-status');
                 statusDiv.textContent = 'Status: Connecting...';
@@ -5290,8 +4340,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     queryServerUrl: '',
                     prpBackend: hpCurrentPrp,
                     strictVerification: true,
-                    expectedArkFingerprint: providerArkFingerprintV1(provider),
-                    databaseProofPins: provider.databaseProofPins,
+                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                     onDatabaseProof: (dbId, info) => {
                         if (info.state === 'verified') {
                             log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
@@ -5372,7 +4422,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     url: provider.endpoint,
                     expectedPin: provider.serverPin,
                     expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                    pinnedOperatorPubkey: provider.operatorPubkey,
                 });
                 await candidate.loadWasm();
                 log('HarmonyPIR: WASM loaded', 'success');
@@ -5464,9 +4514,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function persistHarmonyHintsAndDisconnect(preserveResults = true) {
-            // Exact-bound persistence is owned by ProductAdmissionResourceV1;
-            // a caller without that provider/policy/scope/offer binding must
-            // never create or overwrite a hint cache record.
+            // Hint bytes were already persisted to the exact dataset/PRP-bound
+            // IndexedDB record when they were fetched; disconnect only.
             if (hpClient) hpDisconnect(true, preserveResults);
         }
 
@@ -6004,13 +5053,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runProductAdmissionQuery('harmony', hpQueryUtxos);
+                await runOpenProductQuery(
+                    'harmony', ensureHarmonyPair, hpQueryUtxos,
+                    async () => hpDisconnect(true, true),
+                );
             } catch (error) {
-                log(`HarmonyPIR admission: ${publicAdmissionError(error)}`, 'error');
+                log(`HarmonyPIR query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
-                admissionPanels.harmony.render(admissionControllers.harmony?.snapshot() ?? null);
-                updateAdmissionQueryButton('hp-queryBtn', admissionControllers.harmony?.snapshot() ?? null);
             }
         }
 
@@ -6025,9 +5075,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
             hpCurrentPrp = newPrp;
             const names = ['HMR12', 'FastPRP'];
-            await closeAdmissionAttempt('harmony', 'PRP backend changed; start a new provider verification setup.');
             if (hpClient) hpDisconnect(true, true);
-            log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}; live policy/grants invalidated.`, 'info');
+            log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}; hints and cached state invalidated.`, 'info');
         });
 
         // HarmonyPIR example buttons
@@ -6061,7 +5110,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // HarmonyPIR buttons
         document.getElementById('hp-connectBtn').addEventListener('click', runHarmonyQueryOnce);
-        document.getElementById('hp-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('harmony'));
+        document.getElementById('hp-disconnectBtn').addEventListener('click', () => hpDisconnect(true));
         document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQueryOnce);
         document.getElementById('hp-syncBtn').addEventListener('click', hpPlanSync);
         document.getElementById('hp-syncConfirmBtn').addEventListener('click', hpExecuteSync);
@@ -6164,7 +5213,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function oramConnect(provider) {
             if (!provider?.endpoint) {
-                throw new Error('ORAM query access requires a complete trusted provider bootstrap');
+                throw new Error('ORAM query access requires a complete provider pin');
             }
             const serverUrl = provider.endpoint;
             document.getElementById('oram-serverUrl').value = serverUrl;
@@ -6194,10 +5243,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 oramClient = new OramPirClientAdapter({
                     serverUrl,
                     strictVerification: true,
-                    expectedArkFingerprint: providerArkFingerprintV1(provider),
+                    expectedArkFingerprint: provider.expectedArkFingerprint,
                     expectedServerPin: provider.serverPin,
                     expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: providerOperatorKeyV1(provider),
+                    pinnedOperatorPubkey: provider.operatorPubkey,
                     verifyOperatorIdentity: true,
                     databaseProofPins: PRODUCTION_ORAM_DB_PROOF_V2_PINS,
                     batchPlanner: {
@@ -6471,13 +5520,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runProductAdmissionQuery('oram', oramQueryUtxos);
+                await runOpenProductQuery(
+                    'oram', ensureOramConnection, oramQueryUtxos,
+                    async () => oramDisconnect(true),
+                );
             } catch (error) {
-                log(`ORAM admission: ${publicAdmissionError(error)}`, 'error');
+                log(`ORAM query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
-                admissionPanels.oram.render(admissionControllers.oram?.snapshot() ?? null);
-                updateAdmissionQueryButton('oram-queryBtn', admissionControllers.oram?.snapshot() ?? null);
             }
         }
 
@@ -6504,23 +5554,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 3).join('\n');
         });
         document.getElementById('oram-connectBtn').addEventListener('click', runOramQueryOnce);
-        document.getElementById('oram-disconnectBtn').addEventListener('click', () => void closeAdmissionAttempt('oram'));
+        document.getElementById('oram-disconnectBtn').addEventListener('click', () => oramDisconnect());
         document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
         document.getElementById('oram-dbSelect').addEventListener('change', async () => {
             const select = document.getElementById('oram-dbSelect');
             const selectedDbId = Number.parseInt(select.value, 10) || 0;
-            const hadAdmission = Boolean(admissionControllers.oram);
-            if (hadAdmission) {
-                await closeAdmissionAttempt(
-                    'oram',
-                    'Database selection changed; start a new provider verification setup.',
-                );
-            }
             oramRefreshDbInfo();
             renderOramSourceProofWaitingForDb(selectedDbId);
-            if (hadAdmission) {
-                log('ORAM: database change closed the exact admission before any query spend', 'info');
-            }
         });
         oramSetButtons(false);
         renderOramSourceProofWaitingForDb(0);

@@ -4,7 +4,7 @@
  * Browser wall time is not a cryptographic time oracle. Keeping the largest
  * observed Unix second and advancing the initial sample by page-local
  * performance time prevents a later wall-clock rollback or stall from making
- * already-expired directory, policy, quote, capability, or identity current.
+ * already-expired credential or identity validity windows current.
  */
 export class NondecreasingUnixClockV1 {
   private floor = 0n;

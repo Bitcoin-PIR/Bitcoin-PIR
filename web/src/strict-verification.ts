@@ -456,7 +456,7 @@ export interface StrictServerLegOptions {
   operatorPin?: Uint8Array;
 }
 
-/** Validate one provider before its policy or capability is requested. This
+/** Validate one provider before its first backend frame is requested. This
  * intentionally does not inspect, name, or require the peer provider. */
 export function collectStrictServerLegFailures(options: StrictServerLegOptions): string[] {
   const failures: string[] = [];

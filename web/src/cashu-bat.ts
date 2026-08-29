@@ -116,9 +116,8 @@ export class CashuBatPool {
  * WASM.
  *
  * Requires the SDK WASM module (initialised here, idempotently). `issuerUrl`
- * is the legacy `dev-issuer`. Production Payment V1 does not repoint these
- * `/dev/*` calls; it uses the signed-offer acquisition and admission flow in
- * `service-acquisition.ts` / `service-admission.ts`.
+ * is the base URL of the single designated credential issuer; the same
+ * `/dev/*` mint endpoints serve both development and production issuance.
  *
  * @throws if `count` is not a positive integer, the mint is unreachable, or
  *   the response is malformed (errors surface from `payment-client`).

@@ -33,9 +33,6 @@ on:
       - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-ci-lane.sh'
-      - 'scripts/payment-v1-cdk-regtest-e2e.sh'
-      - 'scripts/payment-v1-cln-regtest-e2e.sh'
-      - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
       - '.github/workflows/payment-platform.yml'
   pull_request:
@@ -70,18 +67,9 @@ on:
       - 'scripts/payment-v1-renameat2-noreplace.rs'
       - 'scripts/payment-v1-rendered-artifact-gate.mjs'
       - 'scripts/payment-v1-ci-lane.sh'
-      - 'scripts/payment-v1-cdk-regtest-e2e.sh'
-      - 'scripts/payment-v1-cln-regtest-e2e.sh'
-      - 'scripts/payment-v1-nostr-readback.mjs'
       - 'scripts/payment-v1-pages-deploy-gate.mjs'
       - '.github/workflows/payment-platform.yml'
   workflow_dispatch:
-    inputs:
-      run_browser_checks:
-        description: 'Run opt-in Chromium/Playwright payment boundary checks'
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -153,7 +141,7 @@ jobs:
         run: test "$LANE_RESULT" = success
 
   wasm-boundary:
-    name: Browser payment and directory boundary
+    name: Browser credential boundary
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -169,87 +157,3 @@ jobs:
           rustup target add wasm32-unknown-unknown
       - name: Check WASM without native provider storage
         run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
-
-  browser-storage-boundary:
-    name: Chromium vault and real no-funds issuer boundaries
-    # Keep the stable check visible while preventing Chromium from consuming PR
-    # or push runners unless a maintainer explicitly dispatches it.
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_browser_checks }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install pinned Rust toolchain with wasm32
-        run: |
-          rustup toolchain install --profile minimal
-          rustup target add wasm32-unknown-unknown
-      - name: Install pinned WASM tools without executing a remote installer
-        run: |
-          cd "$RUNNER_TEMP"
-          cargo +1.94.1 install wasm-pack \
-            --version 0.14.0 \
-            --locked \
-            --root "$RUNNER_TEMP/wasm-pack"
-          cargo +1.94.1 install wasm-bindgen-cli \
-            --version 0.2.114 \
-            --locked \
-            --root "$RUNNER_TEMP/wasm-pack"
-          echo "$RUNNER_TEMP/wasm-pack/bin" >> "$GITHUB_PATH"
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: '24.18.0'
-          cache: 'npm'
-          cache-dependency-path: web/package-lock.json
-      - name: Install pinned web dependencies
-        working-directory: web
-        run: npm ci
-      - name: Enforce manual main-only production Pages deployment
-        run: node scripts/payment-v1-pages-deploy-gate.mjs
-      - name: Validate non-activating Payment V1 deployment templates
-        run: |
-          if git grep -nE '(^|[^0-9A-Za-z])629[0-9]{2}([^0-9A-Za-z]|$)' -- deploy/payment-v1 docs/payment 'scripts/payment-v1-*'; then
-            echo 'former Payment V1 629xx service identities are forbidden'
-            exit 1
-          fi
-          node --check scripts/payment-v1-deployment-template-gate.mjs
-          node scripts/payment-v1-deployment-template-gate.mjs
-          node --check scripts/payment-v1-rendered-artifact-gate.mjs
-      - name: Typecheck the opt-in CDK browser interoperability harness
-        working-directory: web
-        run: npx --no-install tsc -p tsconfig.payment-cdk-cashu-e2e.json --pretty false
-      - name: Exercise bounded Nostr relay readback inputs
-        run: |
-          node --check scripts/payment-v1-nostr-readback.mjs
-          node scripts/payment-v1-nostr-readback.mjs --help >/dev/null
-      - name: Install Chromium test runtime
-        working-directory: web
-        run: npx --no-install playwright install --with-deps chromium
-      - name: Generate current pir-sdk-wasm browser package
-        run: >-
-          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
-          --target web --out-dir pkg --mode no-install --no-opt
-          -- --locked --offline
-      - name: Exercise local multi-tab vault and claim recovery
-        working-directory: web
-        run: npm run test:e2e:payment-vault
-      - name: Exercise real WASM against the loopback no-funds issuer
-        working-directory: web
-        run: npm run test:e2e:payment-real-issuer
-      - name: Exercise browser issuance and verified DPF query across two providers
-        working-directory: web
-        run: npm run test:e2e:payment-two-provider
-      - name: Upload browser boundary failure evidence
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: payment-vault-browser-${{ github.run_id }}
-          path: |
-            web/test-results/payment-vault/
-            web/test-results/payment-real-issuer/
-            web/test-results/payment-two-provider/
-          if-no-files-found: ignore
-          retention-days: 14

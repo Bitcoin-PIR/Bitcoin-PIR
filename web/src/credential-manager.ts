@@ -3,8 +3,8 @@
  *
  * Manages an ARC credential's presentation state: calls into WASM for the
  * cryptographic operations and tracks remaining query budget in memory.
- * Production persistence is owned by `AdmissionCredentialVaultV1`, which
- * encrypts the serialized state in IndexedDB and serializes multi-tab use.
+ * Persistence is caller-owned: `serializeState()` output belongs in the
+ * caller's own durable store; this module keeps the live state in memory.
  *
  * ## Usage
  *
@@ -24,8 +24,8 @@
  * // Send presBytes in REQ_CREDENTIAL_PRESENT to the server
  * console.log(`Remaining: ${mgr.remaining}`);
  *
- * // Production callers persist mgr.serializeState() through
- * // AdmissionCredentialVaultV1; never write ARC state to localStorage.
+ * // Production callers persist mgr.serializeState() in their own durable
+ * // store; never write ARC state to localStorage.
  * ```
  */
 

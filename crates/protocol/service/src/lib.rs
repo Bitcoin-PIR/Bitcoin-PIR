@@ -30,7 +30,6 @@ mod error;
 mod grant_claim;
 #[path = "legacy/issuance.rs"]
 mod issuance;
-mod opcode;
 #[path = "legacy/policy.rs"]
 mod policy;
 mod proof;
@@ -174,10 +173,6 @@ pub use issuance::{
     ARC_CREDENTIAL_RESPONSE_LEN_V1, CREDENTIAL_ISSUANCE_REQUEST_DIGEST_DOMAIN_V1,
     MAX_BOLT11_QUOTE_CLAIM_ENVELOPE_LEN_V1, MAX_CREDENTIAL_ISSUANCE_REQUEST_LEN_V1,
     MAX_CREDENTIAL_ISSUANCE_RESPONSE_LEN_V1, PAID_RECEIPT_WIRE_LEN_V1,
-};
-pub use opcode::{
-    REQ_AUTH_BEGIN_V1, REQ_HARMONY_ATTACH_V1, REQ_POW_CHALLENGE_V1, REQ_SERVICE_POLICY_V1,
-    RESP_AUTH_RESULT_V1, RESP_HARMONY_ATTACH_V1, RESP_POW_CHALLENGE_V1, RESP_SERVICE_POLICY_V1,
 };
 pub use policy::{
     is_canonical_service_https_endpoint_v1, is_canonical_service_https_origin_v1,

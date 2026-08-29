@@ -2,11 +2,9 @@
  * HTTP client for the credential issuer (the "obtain" leg of anonymous
  * rate-limiting).
  *
- * This talks only to `dev-issuer` — a DEV-ONLY free issuer with no payment.
- * These `/dev/*` endpoints and legacy `0x08`/`0x09` frames are not the
- * production Payment V1 seam and cannot unlock its enforced server gate.
- * Production-shaped acquisition lives in `service-acquisition.ts` and the
- * provider/scope/offer-bound admission modules.
+ * This talks to the single designated credential issuer over plain HTTP:
+ * obtain ARC credentials and Cashu blind-auth tokens, then present them to
+ * the PIR server on the `0x08`/`0x09` credential-present frames.
  *
  * Typical ARC obtain flow (pairs with the `WasmArcCredentialRequest` WASM
  * binding and `ArcCredentialManager`):

@@ -2,15 +2,12 @@
 //!
 //! The runtime protocol and the independent service-protocol crate cannot
 //! depend on each other merely to allocate constants.  This integration test
-//! compiles the service registry source directly and checks both directions
-//! against the runtime, unified-server JSON, OnionPIR, and retired reservations.
+//! checks both directions against the runtime, unified-server JSON, OnionPIR,
+//! and retired reservations.
 
 use std::collections::BTreeMap;
 
 use pir_runtime_core::protocol::*;
-
-#[path = "../../service/src/opcode.rs"]
-mod service_opcode;
 
 fn assert_unique(assignments: &[(&str, u8)]) {
     let mut seen = BTreeMap::new();
@@ -39,10 +36,13 @@ fn request_opcode_registry_has_no_collisions() {
         ("LEGACY_CASHU_BAT_PRESENT", REQ_CASHU_BAT_PRESENT),
         ("GET_DB_PROOF", REQ_GET_DB_PROOF),
         ("GET_DB_PROOF_V2", REQ_GET_DB_PROOF_V2),
-        ("SERVICE_POLICY_V1", service_opcode::REQ_SERVICE_POLICY_V1),
-        ("AUTH_BEGIN_V1", service_opcode::REQ_AUTH_BEGIN_V1),
-        ("POW_CHALLENGE_V1", service_opcode::REQ_POW_CHALLENGE_V1),
-        ("HARMONY_ATTACH_V1", service_opcode::REQ_HARMONY_ATTACH_V1),
+        // Retired with the signed service-policy admission world (R3):
+        // SERVICE_POLICY_V1, AUTH_BEGIN_V1, POW_CHALLENGE_V1,
+        // HARMONY_ATTACH_V1. Never reassign.
+        ("RETIRED_SERVICE_POLICY_V1", 0x0d),
+        ("RETIRED_AUTH_BEGIN_V1", 0x0e),
+        ("RETIRED_POW_CHALLENGE_V1", 0x0f),
+        ("RETIRED_HARMONY_ATTACH_V1", 0x10),
         ("INDEX_BATCH", REQ_INDEX_BATCH),
         ("CHUNK_BATCH", REQ_CHUNK_BATCH),
         ("RETIRED_MERKLE_SIBLING_BATCH", 0x31),
@@ -87,10 +87,10 @@ fn response_opcode_registry_has_no_collisions() {
         ("LEGACY_CASHU_BAT_OK", RESP_CASHU_BAT_OK),
         ("DB_PROOF", RESP_DB_PROOF),
         ("DB_PROOF_V2", RESP_DB_PROOF_V2),
-        ("SERVICE_POLICY_V1", service_opcode::RESP_SERVICE_POLICY_V1),
-        ("AUTH_RESULT_V1", service_opcode::RESP_AUTH_RESULT_V1),
-        ("POW_CHALLENGE_V1", service_opcode::RESP_POW_CHALLENGE_V1),
-        ("HARMONY_ATTACH_V1", service_opcode::RESP_HARMONY_ATTACH_V1),
+        ("RETIRED_SERVICE_POLICY_V1", 0x0d),
+        ("RETIRED_AUTH_RESULT_V1", 0x0e),
+        ("RETIRED_POW_CHALLENGE_V1", 0x0f),
+        ("RETIRED_HARMONY_ATTACH_V1", 0x10),
         ("INDEX_BATCH", RESP_INDEX_BATCH),
         ("CHUNK_BATCH", RESP_CHUNK_BATCH),
         ("BUCKET_MERKLE_SIB_BATCH", RESP_BUCKET_MERKLE_SIB_BATCH),

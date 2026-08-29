@@ -1,5 +1,5 @@
 /**
- * IndexedDB persistence for complete HarmonyPIR hint state (v4 schema).
+ * IndexedDB persistence for complete HarmonyPIR hint state (v5 schema).
  *
  * Stores the opaque byte blob produced by `WasmHarmonyClient.saveHints()`
  * (self-describing, fingerprinted — see `crates/sdk/client/src/hint_cache.rs`)
@@ -8,65 +8,34 @@
  * so this binding has to be persisted next to the hint blob — otherwise a
  * restored hint bundle can't be replayed.
  *
- * Records are keyed by the exact verified admission binding plus dataset and
- * PRP backend. Endpoint-only v2 records are deliberately discarded: they do
- * not prove which provider, signed policy, scope, and offer paid for the
- * expensive hint download. The 16-byte
- * `fingerprintHex` is an integrity/debug field; the authoritative
- * cross-check happens inside `WasmHarmonyClient.loadHints(bytes, catalog, db_id)`
- * which re-derives and compares the fingerprint before accepting the blob.
+ * Records are keyed by the verified dataset root, database id, and PRP
+ * backend. The dataset root (`bucketSuperRootHex` from the verified database
+ * proof) already pins the exact database content; the blob's self-describing
+ * `fingerprintHex` is re-derived and compared inside
+ * `WasmHarmonyClient.loadHints(bytes, catalog, db_id)` before the blob is
+ * accepted, so a record bound to a different database can never replay.
  * A fingerprint mismatch surfaces as a thrown `JsError` from the WASM
  * boundary — the caller treats that as "cache stale" and re-fetches.
  *
- * Schema version is bumped to 2 when migrating from the old per-group
- * `Map<number, Uint8Array>` layout. IndexedDB's `onupgradeneeded`
- * handler deletes the store and re-creates it, so pre-Session-6
- * entries are discarded cleanly on first load.
+ * Schema version is bumped whenever the record layout changes. IndexedDB's
+ * `onupgradeneeded` handler deletes the store and re-creates it, so
+ * older entries are discarded cleanly on first load.
  */
 
 const DB_NAME = 'harmonypir-hints';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const STORE = 'hints';
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 export interface HarmonyHintCacheBindingV1 {
-  providerIdHex: string;
-  policyDigestHex: string;
-  scopeIdHex: string;
-  offerId: number;
   datasetIdHex: string;
   prpBackend: number;
-}
-
-/** Generic product resources call their backend-specific variant `variant`.
- * Harmony hint persistence names that same value `prpBackend` so it is part
- * of the exact cache key. Keep this conversion explicit at the boundary. */
-export interface HarmonyHintResourceBindingV1
-  extends Omit<HarmonyHintCacheBindingV1, 'prpBackend'> {
-  variant: number;
-}
-
-export function resourceBindingToHarmonyHintCacheBindingV1(
-  binding: HarmonyHintResourceBindingV1,
-): HarmonyHintCacheBindingV1 {
-  return {
-    providerIdHex: binding.providerIdHex,
-    policyDigestHex: binding.policyDigestHex,
-    scopeIdHex: binding.scopeIdHex,
-    offerId: binding.offerId,
-    datasetIdHex: binding.datasetIdHex,
-    prpBackend: binding.variant,
-  };
 }
 
 /** Stored IndexedDB record containing a complete main+sibling hint bundle. */
 export interface StoredHints {
   cacheKey: string;
   dbId: number;
-  providerIdHex: string;
-  policyDigestHex: string;
-  scopeIdHex: string;
-  offerId: number;
   datasetIdHex: string;
   prpBackend: number;
   /** Effective backend selected by V2 hint setup. */
@@ -82,13 +51,7 @@ export interface StoredHints {
 }
 
 export function buildCacheKey(binding: HarmonyHintCacheBindingV1, dbId: number): string {
-  const provider = canonicalHex32('providerIdHex', binding.providerIdHex);
-  const policy = canonicalHex32('policyDigestHex', binding.policyDigestHex);
-  const scope = canonicalHex32('scopeIdHex', binding.scopeIdHex);
   const dataset = canonicalHex32('datasetIdHex', binding.datasetIdHex);
-  if (!Number.isSafeInteger(binding.offerId) || binding.offerId <= 0) {
-    throw new Error('Harmony hint offerId must be a positive safe integer');
-  }
   if (!Number.isSafeInteger(binding.prpBackend) || binding.prpBackend < 0
       || binding.prpBackend > 0xffff_ffff) {
     throw new Error('Harmony hint PRP backend is invalid');
@@ -96,7 +59,7 @@ export function buildCacheKey(binding: HarmonyHintCacheBindingV1, dbId: number):
   if (!Number.isSafeInteger(dbId) || dbId < 0 || dbId > 0xffff_ffff) {
     throw new Error('Harmony hint dbId is invalid');
   }
-  return `${provider}|${policy}|${scope}|${binding.offerId}|${dataset}|${dbId}|${binding.prpBackend}`;
+  return `${dataset}|${dbId}|${binding.prpBackend}`;
 }
 
 function idbAvailable(): boolean {
@@ -108,9 +71,10 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
-      // Endpoint-only v2 records and older layouts cannot prove the exact
-      // admission binding. Drop them rather than silently treating an old
-      // hint purchase as valid under a rotated policy or different provider.
+      // Records from older schema versions are discarded rather than
+      // migrated: a hint blob is only ever a cache of bytes the server
+      // can stream again, and an old-layout record cannot prove it was
+      // built for this dataset.
       if (db.objectStoreNames.contains(STORE)) {
         db.deleteObjectStore(STORE);
       }
@@ -147,10 +111,10 @@ export async function getHints(cacheKey: string): Promise<StoredHints | undefine
       const req = tx.objectStore(STORE).get(cacheKey);
       req.onsuccess = () => {
         const rec = req.result as StoredHints | undefined;
-        // Defensive check: if something older than v2 survived the
-        // upgrade handler (e.g. a browser that delivered onupgradeneeded
-        // for a different reason), reject it silently so callers
-        // re-download.
+        // Defensive check: if something older than the current schema
+        // survived the upgrade handler (e.g. a browser that delivered
+        // onupgradeneeded for a different reason), reject it silently so
+        // callers re-download.
         if (rec && rec.schemaVersion !== SCHEMA_VERSION) resolve(undefined);
         else resolve(rec);
       };

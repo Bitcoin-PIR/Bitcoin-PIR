@@ -3,7 +3,7 @@
  *
  * Attestation and operator-identity callbacks can contain server-controlled
  * strings.  Rendering them as HTML would let an untrusted endpoint execute in
- * the application origin and reach the capability vault.  This helper owns no
+ * the application origin and reach durable credential storage.  This helper owns no
  * HTML parser entry point: every value is assigned through `textContent`, and
  * every tooltip through the DOM `title` property.
  */
