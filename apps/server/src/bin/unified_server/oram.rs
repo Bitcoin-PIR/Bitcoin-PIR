@@ -1,5 +1,7 @@
 use pir_core::params::{CHUNK_PARAMS, INDEX_PARAMS};
 use runtime::table::{MappedDatabase, MappedSubTable};
+#[cfg(feature = "cuckoo-oram")]
+use std::path::PathBuf;
 
 #[cfg(feature = "cuckoo-oram")]
 use crate::unsafe_debug_log;
