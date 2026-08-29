@@ -17,11 +17,6 @@ use bitcoinpir_oram::{
     TieredMerklePageStore, TieredMerkleState, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE,
     EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
-#[cfg(all(feature = "cuckoo-oram", test))]
-use bitcoinpir_oram::{
-    CuckooPackedBlockReader, DirectChunkPackedBlockReader, DirectIndexPackedBlockReader,
-    DirectTableInfo, DIRECT_INDEX_INPUT_RECORD_SIZE,
-};
 
 /// Narrow read interface for BitcoinPIR cuckoo-table rows.
 ///
