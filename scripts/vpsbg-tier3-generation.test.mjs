@@ -187,12 +187,12 @@ try {
   assert.match(
     tier3RunText,
     /validate_pir2_public_artifact_set[\s\S]*run_pir2_with_public_artifacts exec[\s\S]*--pir2-snp-sealed-require-ready/,
-    "final serving must use sealed Ready plus the validated public BAT V2 artifact set",
+    "final serving must use sealed Ready plus the validated public artifact set",
   );
-  assert.match(
+  assert.doesNotMatch(
     tier3RunText,
-    /run_pir2_with_public_artifacts\(\)[\s\S]*--service-storeless-bat-v2-policy-digest-hex[\s\S]*--service-storeless-bat-v2-retained-policy[\s\S]*--service-storeless-bat-v2-class/,
-    "the bounded artifact runner must project current, retained, and class flags",
+    /--service-storeless-bat-v2-|--require-service-auth-v1|--service-policy |--service-provider-id-hex|--service-policy-key-hex|--service-max-concurrent|--service-pre-auth-timeout-ms/,
+    "measured argv must not pass deleted Payment V1 flags",
   );
   assert.doesNotMatch(
     tier3ModuleSetupText,
@@ -924,12 +924,12 @@ exit 1
   assert.match(finalArgs, /--direct-oram-db\n0=.*db0-mainnet-948454/);
   assert.match(finalArgs, /--direct-oram-db\n1=.*db1-delta-940611-948454/);
   assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
-  assert.match(finalArgs, /--service-storeless-bat-v2-policy-digest-hex/);
-  assert.equal(
-    (finalArgs.match(/--service-storeless-bat-v2-retained-policy/g) ?? []).length,
-    0,
+  assert.match(finalArgs, /--pir2-snp-sealed-accounting-authorization/);
+  assert.match(finalArgs, /--pir2-snp-sealed-issuer-approval/);
+  assert.doesNotMatch(
+    finalArgs,
+    /--service-storeless-bat-v2-|--require-service-auth-v1|--service-policy |--service-provider-id-hex|--service-policy-key-hex|--service-max-concurrent|--service-pre-auth-timeout-ms/,
   );
-  assert.equal((finalArgs.match(/--service-storeless-bat-v2-class/g) ?? []).length, 1);
   assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
   assert.deepEqual(
     readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>

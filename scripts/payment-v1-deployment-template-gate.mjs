@@ -27,7 +27,7 @@ export const ACTIVE_BASELINES = Object.freeze({
   "deploy/systemd/cloudflared.service":
     "2a405d952610f5132453c80198ab2486b3884ee83b8c4674d04425cc3c81715c",
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh":
-    "62bfe52b1e8875b7baf2579b528cfa01ce494705656fa9de6717fe4b55dcf596",
+    "3ae30fc6e07ff2c5c355de6607df8e595342e38b936269e21dd02cc6a185074b",
   "scripts/dracut/97bpir-tier3-init/unified-server-finish.sh":
     "361d6a52a2e61482d8e766823a17c3b12187f96805c7e1f9d0f785e27ae64ef9",
   "scripts/dracut/97bpir-tier3-init/direct-oram-supervisor.sh":
@@ -2290,17 +2290,10 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     const finalLine = finalLines[0];
     for (const required of [
       "--pir2-snp-sealed-require-ready",
-      "--require-service-auth-v1",
-      "--service-policy \"$SERVICE_POLICY_PATH\"",
-      "--service-provider-id-hex \"$PIR2_SEALED_PROVIDER_ID_HEX\"",
-      "--service-policy-key-hex \"$PIR2_SEALED_POLICY_KEY_HEX\"",
-      "--service-storeless-bat-v2-accounting-authorization",
-      "--service-storeless-bat-v2-issuer-approval",
-      "--service-storeless-bat-v2-operator-key-hex",
-      "--service-storeless-bat-v2-issuer-settlement-key-hex",
-      "--service-storeless-bat-v2-minimum-authorization-epoch",
+      "--pir2-snp-sealed-identity-cert",
+      "--pir2-snp-sealed-accounting-authorization",
+      "--pir2-snp-sealed-issuer-approval",
       "--connection-idle-timeout-ms 300000",
-      "--service-pre-auth-timeout-ms 300000",
     ]) requireText(finalLine, required, label);
     for (const [name, value] of [
       ["PIR2_SEALED_OPERATOR_KEY_HEX", /^PIR2_SEALED_OPERATOR_KEY_HEX=([0-9a-f]{64})$/mu.exec(text)?.[1]],
@@ -2319,7 +2312,6 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
     ]) rejectPattern(text, pattern, label, description);
     for (const [needle, description] of [
       ["--connection-idle-timeout-ms 300000", "connection idle timeout"],
-      ["--service-pre-auth-timeout-ms 300000", "service pre-auth timeout"],
     ]) {
       if (finalLine.split(needle).length !== 2) {
         fail(`${label} must contain ${description} exactly once in the final invocation`);
@@ -2329,8 +2321,8 @@ export function validateVpsbgPremiumFreePowMeasuredFinalExec(text) {
       "bitcoinpir-pir2-sealed-startup-v2",
       "PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH",
       "artifact_set_sha256=",
-      "--service-storeless-bat-v2-retained-policy",
-      "--service-storeless-bat-v2-class",
+      "--pir2-snp-sealed-accounting-authorization",
+      "--pir2-snp-sealed-issuer-approval",
     ]) requireText(text, required, label);
     return;
   }
@@ -3083,8 +3075,14 @@ function validateActiveBaselines(root) {
         "PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH",
         "artifact_set_sha256=",
         "run_pir2_with_public_artifacts exec",
-        "--service-storeless-bat-v2-retained-policy",
+        "--pir2-snp-sealed-accounting-authorization",
       ]) requireText(text, required, relativePath);
+      rejectPattern(
+        text,
+        /--service-storeless-bat-v2-|--require-service-auth-v1|--service-policy |--service-provider-id-hex|--service-policy-key-hex|--service-max-concurrent|--service-pre-auth-timeout-ms/u,
+        relativePath,
+        "deleted Payment V1 flag",
+      );
       rejectPattern(
         text,
         /--service-storeless-bat-v2-pir1-clearing-key|--service-shared-(?:clearing|idempotency)/u,

@@ -7,8 +7,8 @@
 # Base topology flags mirror deploy/systemd/pir-vpsbg.service. The measured
 # sealed profile is intentionally VPSBG-specific: observe/enroll/probe finish
 # inertly before database access, while Ready opens its measurement-bound
-# identity and BAT V2 clearing keys before Direct ORAM construction and again
-# in the final long-lived server process.
+# identity and presence-checked accounting files before Direct ORAM
+# construction and again in the final long-lived server process.
 #   --port 8091
 #   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
 #   --serve-queries    (pir2 is queries-only per the production topology
@@ -524,29 +524,6 @@ run_pir2_with_public_artifacts() {
     shift
     [ -f "$PIR2_ACTIVE_ARTIFACT_SET_PATH" ] && [ ! -L "$PIR2_ACTIVE_ARTIFACT_SET_PATH" ] \
         || fatal "trusted pir2 public artifact-set snapshot is unavailable"
-    while IFS= read -r artifact_line; do
-        artifact_kind=${artifact_line%%=*}
-        [ "$artifact_kind" != schema ] || continue
-        artifact_spec=${artifact_line#*=}
-        artifact_digest=${artifact_spec%%=*}
-        artifact_remainder=${artifact_spec#*=}
-        artifact_path=${artifact_remainder#*=}
-        case "$artifact_kind" in
-            current_policy)
-                set -- "$@" --service-storeless-bat-v2-policy-digest-hex "$artifact_digest"
-                ;;
-            retained_policy)
-                set -- "$@" --service-storeless-bat-v2-retained-policy "$artifact_digest=$artifact_path"
-                ;;
-            current_class|retained_class)
-                set -- "$@" --service-storeless-bat-v2-class "$artifact_digest=$artifact_path"
-                ;;
-            accounting_authorization|accounting_approval)
-                :
-                ;;
-            *) fatal "pir2 public artifact set changed after validation" ;;
-        esac
-    done <"$PIR2_ACTIVE_ARTIFACT_SET_PATH"
     if [ "$artifact_execution_mode" = exec ]; then
         exec "$@"
     fi
@@ -946,12 +923,7 @@ run_pir2_sealed_ready_preflight() {
         --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX" \
         --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
         --pir2-snp-sealed-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
-        --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
-        --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
-        --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
-        --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \
-        --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
-        --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH"
+        --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH"
     sealed_status=$?
     [ "$sealed_status" -eq "$PIR2_SEALED_INERT_SUCCESS_EXIT_CODE" ] \
         || fatal "pir2 sealed Ready preflight failed with exit $sealed_status"
@@ -1470,11 +1442,9 @@ trap - EXIT
 trap - HUP INT TERM
 start_unified_server_runtime_log
 
-# VPSBG is query-only but now carries a Harmony V2 query scope (policy epoch 2).
-# Allow up to 2 concurrent online V2Full authorizations for Harmony query jobs.
-# Revalidate the mutable-mount public bytes after the bounded ORAM build. The
-# Rust loader then repeats canonical/signature/digest/member/role-key checks in
-# the final Ready process; the audit receipt is evidence, not runtime authority.
+# Revalidate the mutable-mount public bytes after the bounded ORAM build.
+# Ready presence checks remain on --pir2-snp-sealed-*; deleted Payment V1
+# --service-* flags must not be passed (unknown CLI flags are fatal).
 validate_pir2_public_artifact_set
 run_pir2_with_public_artifacts exec "$UNIFIED_SERVER" \
     --port 8091 \
@@ -1505,17 +1475,5 @@ run_pir2_with_public_artifacts exec "$UNIFIED_SERVER" \
     --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
     --pir2-snp-sealed-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
     --pir2-snp-sealed-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
-    --require-service-auth-v1 \
-    --service-policy "$SERVICE_POLICY_PATH" \
-    --service-provider-id-hex "$PIR2_SEALED_PROVIDER_ID_HEX" \
-    --service-policy-key-hex "$PIR2_SEALED_POLICY_KEY_HEX" \
-    --service-storeless-bat-v2-accounting-authorization "$PIR2_SEALED_ACCOUNTING_AUTHORIZATION_PATH" \
-    --service-storeless-bat-v2-issuer-approval "$PIR2_SEALED_ISSUER_APPROVAL_PATH" \
-    --service-storeless-bat-v2-operator-key-hex "$PIR2_SEALED_OPERATOR_KEY_HEX" \
-    --service-storeless-bat-v2-issuer-settlement-key-hex "$PIR2_SEALED_ISSUER_SETTLEMENT_KEY_HEX" \
-    --service-storeless-bat-v2-minimum-authorization-epoch "$PIR2_SEALED_MINIMUM_AUTHORIZATION_EPOCH" \
-    --service-max-concurrent-auth 4 \
-    --service-max-concurrent-online-v2full-auth 0 \
     --connection-idle-timeout-ms 300000 \
-    --service-pre-auth-timeout-ms 300000 \
     2>&1
