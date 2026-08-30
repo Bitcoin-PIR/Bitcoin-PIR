@@ -16,19 +16,9 @@ path = "src/main.rs"
 pir-core = { path = "../../crates/protocol/core" }
 pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
-# Used by `generate-identity` + `sign-identity` subcommands to build
-# IdentityCert blobs the server consumes.
 pir-identity = { path = "../../crates/trust/identity" }
-# Slice D: parse the SNP report locally so `bpir-admin show-vcek-url`
-# can extract chip_id + TCB and print the AMD KDS curl commands.
 pir-attest-verify = { path = "../../crates/trust/attest-verify" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
-pir-service-protocol = { path = "../../crates/protocol/service" }
-pir-directory-nostr = { path = "../../crates/directory/nostr" }
-pir-arc-adapter = { path = "../../crates/payment/arc-adapter" }
-pir-payment-crypto = { path = "../../crates/payment/crypto" }
-pir-service-store = { path = "../../crates/protocol/service-store" }
-pir-strict-https = { path = "../../crates/net/strict-https" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
 
@@ -39,18 +29,15 @@ futures-util = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 ed25519-dalek = "2"
 getrandom = "0.2"
-rand_core = "0.6"
 hex = "0.4"
-toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 rustix = { version = "1", features = ["fs", "net", "process"] }
 zeroize = "1"
-k256 = { version = "0.13", features = ["schnorr"] }
 sha2 = "0.10"
-async-trait = "0.1"
 sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
 tempfile = "3"
 
 [dev-dependencies]
 rustix = { version = "1", features = ["thread"] }
+toml = "0.8"

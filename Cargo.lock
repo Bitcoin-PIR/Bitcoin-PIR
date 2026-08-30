@@ -237,23 +237,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bitcoinpir-cln-rpc-guard"
-version = "0.1.0"
-dependencies = [
- "clap",
- "pir-lightning-backend",
- "pir-private-files",
- "pir-service-protocol",
- "rustix",
- "serde",
- "serde_json",
- "socket2",
- "tempfile",
- "tokio",
- "zeroize",
-]
-
-[[package]]
 name = "bitcoinpir-oram"
 version = "0.1.0"
 dependencies = [
@@ -323,28 +306,19 @@ dependencies = [
 name = "bpir-admin"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "clap",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.2.17",
  "hex",
- "k256",
- "pir-arc-adapter",
  "pir-attest-verify",
  "pir-core",
  "pir-db-attest",
- "pir-directory-nostr",
  "pir-identity",
- "pir-payment-crypto",
  "pir-private-files",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "pir-service-protocol",
- "pir-service-store",
- "pir-strict-https",
- "rand_core 0.6.4",
  "rustix",
  "rustls",
  "serde",
@@ -1527,26 +1501,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lightning-invoice"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b85e5e14bcdb30d746e9785b04f27938292e8944f78f26517e01e91691f6b3f2"
-dependencies = [
- "bech32",
- "bitcoin",
- "lightning-types",
-]
-
-[[package]]
-name = "lightning-types"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb1aac93f22f2c2eac8a0ee83bb1a1ea58673caa2c82847302710b83364d04e6"
-dependencies = [
- "bitcoin",
-]
-
-[[package]]
 name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1744,26 +1698,11 @@ dependencies = [
 name = "payment-issuer"
 version = "0.1.0"
 dependencies = [
- "clap",
- "ed25519-dalek",
- "getrandom 0.2.17",
+ "arc",
  "hex",
- "httparse",
- "pir-arc-adapter",
- "pir-issuer-clearing",
- "pir-issuer-core",
- "pir-issuer-credentials",
- "pir-issuer-service",
- "pir-issuer-store",
- "pir-lightning-backend",
- "pir-payment-crypto",
- "pir-private-files",
- "pir-service-protocol",
- "pir-service-store",
- "rustix",
- "rustls",
- "tempfile",
- "zeroize",
+ "k256",
+ "rand_core 0.6.4",
+ "sha2",
 ]
 
 [[package]]
@@ -1792,23 +1731,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pir-arc-adapter"
-version = "0.1.0"
-dependencies = [
- "arc",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hex",
- "pir-service-protocol",
- "pir-service-store",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
- "sha2",
- "tempfile",
- "zeroize",
-]
 
 [[package]]
 name = "pir-attest-verify"
@@ -1851,21 +1773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-directory-nostr"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "ed25519-dalek",
- "futures",
- "getrandom 0.2.17",
- "k256",
- "pir-service-protocol",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "pir-identity"
 version = "0.1.0"
 dependencies = [
@@ -1886,117 +1793,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "zeroize",
-]
-
-[[package]]
-name = "pir-issuer-clearing"
-version = "0.1.0"
-dependencies = [
- "arc",
- "ed25519-dalek",
- "hmac",
- "k256",
- "pir-arc-adapter",
- "pir-issuer-store",
- "pir-payment-crypto",
- "pir-service-protocol",
- "rand_chacha 0.3.1",
- "rusqlite",
- "sha2",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-issuer-core"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "k256",
- "pir-issuer-store",
- "pir-lightning-backend",
- "pir-service-protocol",
- "tempfile",
-]
-
-[[package]]
-name = "pir-issuer-credentials"
-version = "0.1.0"
-dependencies = [
- "arc",
- "ed25519-dalek",
- "hmac",
- "pir-arc-adapter",
- "pir-lightning-backend",
- "pir-payment-crypto",
- "pir-service-protocol",
- "rand_chacha 0.3.1",
- "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "pir-issuer-service"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.2.17",
- "k256",
- "pir-arc-adapter",
- "pir-issuer-clearing",
- "pir-issuer-core",
- "pir-issuer-credentials",
- "pir-issuer-store",
- "pir-lightning-backend",
- "pir-payment-crypto",
- "pir-service-protocol",
- "rand_chacha 0.3.1",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-issuer-store"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "k256",
- "pir-arc-adapter",
- "pir-private-files",
- "pir-service-protocol",
- "rusqlite",
- "sha2",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
-name = "pir-lightning-backend"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "lightning-invoice",
- "pir-private-files",
- "pir-service-protocol",
- "rustix",
- "serde",
- "serde_json",
- "sha2",
- "socket2",
- "zeroize",
-]
-
-[[package]]
-name = "pir-payment-crypto"
-version = "0.1.0"
-dependencies = [
- "getrandom 0.2.17",
- "hex",
- "k256",
- "pir-service-protocol",
- "pir-service-store",
- "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -2028,8 +1824,6 @@ dependencies = [
  "pir-core",
  "pir-identity",
  "pir-private-files",
- "pir-service-protocol",
- "pir-service-store",
  "rand_core 0.6.4",
  "rayon",
  "serde",
@@ -2130,7 +1924,6 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "pir-service-protocol",
  "rand_core 0.6.4",
  "send_wrapper",
  "serde",
@@ -2147,29 +1940,7 @@ dependencies = [
 name = "pir-service-protocol"
 version = "0.1.0"
 dependencies = [
- "bech32",
- "bitcoin",
- "ed25519-dalek",
- "getrandom 0.2.17",
- "hmac",
- "k256",
- "lightning-invoice",
  "sha2",
- "zeroize",
-]
-
-[[package]]
-name = "pir-service-store"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "getrandom 0.2.17",
- "pir-private-files",
- "pir-service-protocol",
- "rusqlite",
- "sha2",
- "tempfile",
- "zeroize",
 ]
 
 [[package]]
@@ -2575,7 +2346,6 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "pir-service-protocol",
  "pir-strict-https",
  "rand 0.8.5",
  "rand_chacha 0.3.1",

@@ -1,4 +1,4 @@
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use clap::Args;
@@ -19,8 +19,6 @@ use sev::measurement::{
 };
 use sev::parser::ByteParser as _;
 use sha2::{Digest as _, Sha256};
-
-use crate::directory_artifact::read_public_bounded;
 
 const MAX_UKI_LEN: usize = 256 * 1024 * 1024;
 const MAX_OVMF_LEN: usize = 64 * 1024 * 1024;
@@ -412,6 +410,75 @@ fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], 
     decoded
         .try_into()
         .map_err(|_| format!("{label} has the wrong decoded length"))
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PublicFileSnapshotV1 {
+    device: u128,
+    inode: u128,
+    mode: u64,
+    size: i128,
+    modified_seconds: i128,
+    modified_nanoseconds: i128,
+    changed_seconds: i128,
+    changed_nanoseconds: i128,
+}
+
+#[cfg(unix)]
+fn public_file_snapshot_v1(stat: &rustix::fs::Stat) -> PublicFileSnapshotV1 {
+    PublicFileSnapshotV1 {
+        device: stat.st_dev as u128,
+        inode: stat.st_ino as u128,
+        mode: stat.st_mode as u64,
+        size: stat.st_size as i128,
+        modified_seconds: stat.st_mtime as i128,
+        modified_nanoseconds: stat.st_mtime_nsec as i128,
+        changed_seconds: stat.st_ctime as i128,
+        changed_nanoseconds: stat.st_ctime_nsec as i128,
+    }
+}
+
+#[cfg(unix)]
+fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+    use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
+
+    let fd = rustix_fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+        Mode::empty(),
+    )
+    .map_err(|error| format!("open {label} {} failed: {error}", path.display()))?;
+    let stat = rustix_fs::fstat(&fd)
+        .map_err(|error| format!("inspect {label} {} failed: {error}", path.display()))?;
+    let snapshot = public_file_snapshot_v1(&stat);
+    if !FileType::from_raw_mode(stat.st_mode).is_file() || stat.st_size <= 0 {
+        return Err(format!("{label} must be a non-empty regular file"));
+    }
+    let length = usize::try_from(stat.st_size).map_err(|_| format!("{label} is too large"))?;
+    if length > max {
+        return Err(format!("{label} exceeds the {max}-byte bound"));
+    }
+    let file = std::fs::File::from(fd);
+    let mut bytes = Vec::with_capacity(length);
+    (&file)
+        .take((max as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {label} {} failed: {error}", path.display()))?;
+    let after = rustix_fs::fstat(&file)
+        .map_err(|error| format!("reinspect {label} {} failed: {error}", path.display()))?;
+    if bytes.len() != length || bytes.len() > max || public_file_snapshot_v1(&after) != snapshot {
+        return Err(format!("{label} changed while it was read"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+    let _ = (path, max);
+    Err(format!(
+        "reading {label} requires a local Unix/POSIX filesystem"
+    ))
 }
 
 #[cfg(test)]

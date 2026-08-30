@@ -34,8 +34,8 @@ Documentation index: [`docs/README.md`](docs/README.md).
   lines. Extract a module first.
 - New tests go in `src/foo/tests.rs` or crate `tests/`, not in the
   implementation file.
-- Do not refactor `crates/protocol/service/src/legacy/**` (scheduled
-  deletion).
+- The Payment V1 `legacy/` tree is deleted. Do not resurrect signed-policy,
+  clearing, directory, or PoW types.
 - Padding / Merkle-symmetry changes must run the existing symmetry tests,
   not just `cargo check`.
 

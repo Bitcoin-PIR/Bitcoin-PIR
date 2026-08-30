@@ -20,13 +20,13 @@ human-visible capstone.
 Two processes, no Lightning, no PIR database:
 
 ```bash
-cargo run -p dev-issuer            # issuer + verify gate on http://127.0.0.1:5601
+cargo run -p payment-issuer        # issuer + verify gate on http://127.0.0.1:5601
 npm --prefix web run dev           # Vite on http://localhost:3001
 # open http://localhost:3001/ratelimit-demo.html
 ```
 
 The page checks issuer reachability on load (green banner = good; red banner
-tells you to start the dev-issuer).
+tells you to start payment-issuer).
 
 ## What you'll see
 
@@ -69,7 +69,7 @@ trade-off can be demonstrated.
 ## Architecture
 
 ```
-mint ── dev-issuer ── obtain ── browser (WASM) ── present ── dev-issuer gate ── verify
+mint ── payment-issuer ── obtain ── browser (WASM) ── present ── payment-issuer gate ── verify
         (free, HTTP)            blind / finalize             (same crypto as the
                                                               PIR server's gate)
 ```
@@ -80,7 +80,7 @@ mint ── dev-issuer ── obtain ── browser (WASM) ── present ──
   `web/src/cashu-bat.ts` orchestrate the HTTP calls.
 - **present / verify** — `presentArc` / `presentCashu` post the *exact*
   `0x08` / `0x09` frame payloads (built by `ArcCredentialManager` /
-  `CashuBatPool`) to the dev-issuer's `/dev/arc/verify` /
+  `CashuBatPool`) to the issuer's `/dev/arc/verify` /
   `/dev/cashu/verify`.
 
 > **Demo vs Payment V1.** The dev-issuer co-locates the verify gate so the demo
@@ -103,7 +103,7 @@ and signed, provider-bound credential protocol are documented separately in
   present → verify loop with a shared key; wrong-key + replay rejection.
 - `cargo test -p pir-sdk-wasm --lib` — WASM ARC obtain leg; a WASM-blinded
   Cashu BAT verified under the real `CashuVerifier` (h2c + BDHKE cross-check).
-- `cargo test -p dev-issuer` — HTTP round-trips for ARC + Cashu, and the
+- `cargo test -p payment-issuer` — HTTP round-trips for ARC + Cashu, and the
   verify gate (present → accept, replay → reject) for both schemes.
 - `npm --prefix web test` — `payment-client` HTTP + present helpers.
 
@@ -111,7 +111,7 @@ and signed, provider-bound credential protocol are documented separately in
 
 | Area | File |
 |---|---|
-| Issuer + gate | [`apps/dev-issuer/`](../apps/dev-issuer/) (`README.md` has endpoint details) |
+| Issuer + gate | [`apps/payment-issuer/`](../apps/payment-issuer/) (`README.md` has endpoint details) |
 | WASM obtain | [`crates/sdk/wasm/src/arc.rs`](../crates/sdk/wasm/src/arc.rs), [`crates/sdk/wasm/src/cashu.rs`](../crates/sdk/wasm/src/cashu.rs) |
 | HTTP client | [`web/src/payment-client.ts`](../web/src/payment-client.ts) |
 | BAT pool | [`web/src/cashu-bat.ts`](../web/src/cashu-bat.ts), [`web/src/credential-manager.ts`](../web/src/credential-manager.ts) |

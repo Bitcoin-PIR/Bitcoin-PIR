@@ -69,7 +69,6 @@ harmony-oram = ["cuckoo-oram"]
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
-pir-service-protocol = { path = "../../crates/protocol/service" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }

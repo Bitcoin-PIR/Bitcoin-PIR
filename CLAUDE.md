@@ -40,9 +40,10 @@ reopening that decision).
 ## Layout
 
 `crates/protocol` (core primitives, server runtime), `crates/sdk`
-(core/client/server/wasm), `crates/payment`, `crates/trust`, `apps/server`
-(unified_server), `apps/admin`, `tools/db-builder`, `web/` (browser client),
-`deploy/`, `verification/`. Full map in [`README.md`](README.md);
+(core/client/server/wasm), `crates/trust`, `apps/server`
+(unified_server), `apps/admin`, `apps/payment-issuer`, `tools/db-builder`,
+`web/` (browser client), `deploy/`, `verification/`. Full map in
+[`README.md`](README.md);
 terminology in [`GLOSSARY.md`](GLOSSARY.md).
 
 ## Common commands

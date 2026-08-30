@@ -1,27 +1,13 @@
 [workspace]
 resolver = "2"
-# Payment-layer split (D4, decided 2026-08-27): the system keeps one PIR
-# service plus a single designated issuer (collect/issue/verify, no
-# clearing party). Crates under crates/*/legacy/ are legacy-only — every
-# consumer of them is itself slated for removal in the R series.
-# KNOTTED (keep-side crates still depend on these; extraction surgery is
-# scheduled before deletion): pir-service-store, pir-issuer-clearing.
+# One PIR service plus a single designated issuer (issue/verify cashu+ARC;
+# collection is later work). The Payment V1 crates are deleted.
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
     "crates/protocol/service",
-    "crates/protocol/service-store",
-    "crates/payment/issuer-store",
-    "crates/payment/crypto",
-    "crates/payment/arc-adapter",
-    "crates/payment/lightning-backend",
-    "crates/payment/issuer-credentials",
-    "crates/payment/issuer-clearing",
-    "crates/payment/issuer-core",
-    "crates/payment/issuer-service",
     "crates/security/private-files",
     "crates/net/strict-https",
-    "crates/directory/nostr",
     "crates/trust/identity",
     "crates/trust/identity-authority",
     "crates/trust/attest-verify",
@@ -36,7 +22,6 @@ members = [
     "apps/server",
     "tools/block-reader",
     "apps/payment-issuer",
-    "apps/cln-rpc-guard",
 ]
 exclude = ["vendor/bitcoinpir-oram"]
 

@@ -24,7 +24,7 @@ existing 0x08/0x09 opcodes; free queries are open.
 | `crates/sdk/server` | `cargo test --locked --offline -p pir-sdk-server`; `cargo build -p pir-sdk-server` | **None** — no workflow watches this path | Crate has ~0 lib tests; CI stays green if you break it |
 | `apps/server` / `crates/protocol/runtime` | `cargo test --locked --offline -p runtime --lib hint_pool`; `cargo test --locked --offline -p runtime --bin unified_server`; do **not** run the full `payment-v1-ci-lane.sh` locally unless asked | `payment-platform.yml` (via `apps/server/**`); `pir-sdk-integration.yml` only if you touched `hint_pool.rs`, `apps/server/src/bin/unified_server/`, or the crate manifest | A deployed binary/UKI is a separate authorized release, never implied by green CI |
 | `web/` (TypeScript, pins, tests) | `cd web && npm run build && npm test && npm run build-web` | `web-build.yml`; `deploy-web.yml` adds Playwright gates only at the manual release dispatch | Pin edits: keep `PRODUCTION_DB_PROOF_PINS`, `PRODUCTION_ONION_DB_PROOF_V2_PINS`, `PRODUCTION_ORAM_DB_PROOF_V2_PINS`, `verification/locks/generated-proofs.json`, and the duplicate pins in `crates/sdk/client/tests/integration_test.rs` consistent (rotation runbook §3 / Flow H.0) |
-| Payment / issuer (`crates/payment`, issuer apps, deploy templates) | `cargo test --locked --offline -p payment-issuer --features test-only-fake-lightning`; do **not** run `scripts/payment-v1-ci-lane.sh` locally unless asked | `payment-platform.yml` | Source-ready ≠ deployed; production routing is in [Production operations](PRODUCTION_OPERATIONS.md) |
+| Payment / issuer (`apps/payment-issuer`, deploy templates) | `cargo test --locked --offline -p payment-issuer`; do **not** run `scripts/payment-v1-ci-lane.sh` locally unless asked | `payment-platform.yml` | Source-ready ≠ deployed; production routing is in [Production operations](PRODUCTION_OPERATIONS.md) |
 | `verification/locks`, contracts, verifier scripts | `cargo test --locked --offline -p pir-sdk --features serde --test wire_shape_contract`; `python3 -m unittest verification/scripts/test_verify_formal_lock.py`; `cd web && npm test` (lock↔pin tests) | `formal-proof.yml` (every PR, unfiltered); `generated-proof-lock.yml` (lock paths) | Protocol framing / round-shape / padding changes must update the contract and proof lock (`REPOSITORY_BOUNDARIES.md`) |
 | `tools/db-builder`, `scripts/build_*.sh` | `cargo build -p build`; there is no test suite | **None** | Production databases come from the locked attested-builder, not these scripts; see `DATABASE_ARTIFACT_RETENTION.md` before any rebuild |
 | UKI scripts, VPSBG operator scripts, `.github/workflows/**` | `node scripts/github-workflow-supply-chain-gate.mjs`; `node --test scripts/tier3-uki-policy-contract.test.mjs`; `bash scripts/vpsbg-production-status.test.sh`; `bash scripts/ops-operator-scripts.test.sh` | `workflow-supply-chain.yml` | UKI builds and live VPSBG mutations are operator actions, not CI |
@@ -43,20 +43,6 @@ Local agents: one foreground `cargo check -p <crate>`, then at most one
 ## Payment checks
 
 The former `scripts/payment-v1-local-check.sh` profiles were deleted with
-Payment V1. For the single-issuer credential path, the issuer-side checks are
-`cargo test --locked --offline -p payment-issuer --features test-only-fake-lightning`
-and the protocol lanes in `scripts/payment-v1-ci-lane.sh`.
-
-## Mainnet Lightning V1 source readiness
-
-For changes limited to the versioned Mainnet Lightning V1 source profile, use:
-
-```sh
-scripts/payment-v1-mainnet-lightning-v1-check.sh
-```
-
-It runs the focused offline Rust profile/CLI contract, deployment source and
-rendered-artifact contracts, and the Web independent Direct BOLT11/DPF pair
-contract. It does not run the broader Payment V1 suite, a browser, a render,
-remote Core/CLN, or any funds flow. Continue with the
-[production enablement runbook](runbooks/production-enable.md).
+Payment V1. For the designated issuer, the check is
+`cargo test --locked --offline -p payment-issuer`
+and the remaining protocol lanes in `scripts/payment-v1-ci-lane.sh`.

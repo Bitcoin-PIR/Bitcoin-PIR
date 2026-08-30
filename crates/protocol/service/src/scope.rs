@@ -72,23 +72,6 @@ pub enum AuthScheme {
     BitcoinPirCashuBatV2 = 6,
 }
 
-impl AuthScheme {
-    pub(crate) fn decode(value: u8) -> Result<Self, ServiceProtocolError> {
-        match value {
-            1 => Ok(Self::FreeV1),
-            2 => Ok(Self::Bolt11DirectReceiptV1),
-            3 => Ok(Self::CashuEcashV1),
-            4 => Ok(Self::BitcoinPirCashuBatV1),
-            5 => Ok(Self::ArcV1Experimental),
-            6 => Ok(Self::BitcoinPirCashuBatV2),
-            value => Err(ServiceProtocolError::UnknownDiscriminant {
-                kind: "AuthScheme",
-                value,
-            }),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DatasetBindingV1 {
     Class { class_id: u16 },
