@@ -104,6 +104,8 @@ function validateMeasuredRunContract(source) {
   assert.doesNotMatch(source, /--service-shared-clearing-key/);
   assert.doesNotMatch(source, /--service-shared-idempotency-key/);
   assert.doesNotMatch(source, /--service-storeless-bat-v2-pir1-clearing-key/);
+  assert.doesNotMatch(source, /--service-storeless-bat-v2-/);
+  assert.doesNotMatch(source, /--require-service-auth-v1/);
   assert.match(source, /--pir2-snp-sealed-envelope/);
   assert.match(source, /--pir2-snp-sealed-identity-cert/);
   assert.match(source, /--pir2-snp-sealed-accounting-authorization/);

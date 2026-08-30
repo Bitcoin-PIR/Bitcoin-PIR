@@ -560,8 +560,8 @@ export function validatePir2RenderInputsV1(artifactSource, startupSource, runSou
     "bitcoinpir-pir2-sealed-startup-v2", "artifact_set_path", "artifact_set_sha256",
     "PIR2_SEALED_ARTIFACT_SET_SHA256", "validate_pir2_public_artifact_set",
     "PIR2_SEALED_TRUSTED_ARTIFACT_SET_PATH", "PIR2_ACTIVE_ARTIFACT_SET_PATH",
-    "artifact_set_sha256=", "--service-storeless-bat-v2-retained-policy",
-    "--service-storeless-bat-v2-class",
+    "artifact_set_sha256=", "--pir2-snp-sealed-accounting-authorization",
+    "--pir2-snp-sealed-issuer-approval",
   ]) {
     if (!runSource.includes(required)) fail(`pir2 measured run path is missing ${required}`);
   }
