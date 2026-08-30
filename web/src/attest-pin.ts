@@ -126,37 +126,36 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-26
- * after the epoch-5 sealed ceremony (Observe/Enroll/Probe/Ready on image 295).
- * Image 295 serves DPF, Harmony-query and TEE ORAM under the epoch-5
- * BAT V2 class that covers offers 402 and 502.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-30
+ * after the R5.1 free-query switch (Observe/Enroll/Probe/Ready on image 301,
+ * source `bd346d39`). Image 301 serves DPF, Harmony-query and TEE ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from live image 295 after validating the AMD chain, REPORT_DATA,
-  // exact unified_server binary and both attested database manifest roots.
+  // Captured from live image 301 after AMD chain + REPORT_DATA verification
+  // in scripts/pir2-post-switch-check.sh. binary_sha256 and MEASUREMENT
+  // mismatched the previous image-295 pin, as expected for this UKI.
   measurementHex:
-    'd5c34d4dd9601234474c387b32f6623f0b7fb60b1f0ea916e2f1bc98b140f0872a9236d75f4c2dbf8f949db79172e8ab',
+    '6e2f4f9346342da6cc0fd6fd430e3511d0b3b8ac267ef44d289fa85651ff86437c2cdd84de821f5356a242bdee0d7f93',
   binarySha256Hex:
-    '790f6d5b5434bb42ded3dd550fc3631d429c594d5fd89d1026aaad07be343f0e',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 295, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, epoch 5)',
+    '86d65881c9a7479716d23d80cfd44a10704a2ea2f09f000adc2d48af96cf6f78',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 301, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, R5.1)',
 };
 
 /**
- * weikeng1.bitcoinpir.org — Hetzner Payment V1 provider, Intel host, NO
- * SEV-SNP. The public endpoint is independently keyed and pinned below.
- * No MEASUREMENT to pin (no SEV report). binary_sha256 IS pinnable —
- * the value isn't hardware-backed without SEV, but pinning still
- * detects accidental drift between what the operator claims is
- * deployed and what's actually running.
+ * weikeng1.bitcoinpir.org — Hetzner Intel host, NO SEV-SNP. The public
+ * endpoint is independently keyed and pinned below. No MEASUREMENT to
+ * pin (no SEV report). binary_sha256 IS pinnable — the value isn't
+ * hardware-backed without SEV, but pinning still detects accidental
+ * drift between what the operator claims is deployed and what's
+ * actually running.
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // The public Payment V1 provider uses the build from commit 831a5ea1
-  // (2026-08-06 harmony fix rollout, 9b7128f0). This remains independent
-  // from the VPSBG Tier 3 pin.
+  // Live hashed unified_server from the R5.1 Flow D rebuild of 3e4e74a9
+  // (Payment V1 flags dropped; ARC/Cashu remain off).
   binarySha256Hex:
-    'c836e11ad2bd5854fe9015311a7540d06a4075371ac38052c810eeba62fe202e',
-  description: 'weikeng1.bitcoinpir.org (Hetzner Payment V1 provider, no SEV, harmony-response-fix)',
+    'bba403e0cf31c5a37241a3f5b5c46fadd8c71d4f2428bc301684c86b61e62289',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, R5.1 free-query unified_server)',
 };
 
 /**
