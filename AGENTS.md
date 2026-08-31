@@ -51,15 +51,20 @@ Documentation index: [`docs/README.md`](docs/README.md).
 - Before any long build, upload, or data transform: state expected duration,
   a hard stop, and the observable progress signal. Missing progress means the
   hypothesis is probably wrong — stop and report rather than push on.
-- When a stated success/stop condition is reached, stop. Do not roll into the
-  next phase without authorization.
+- When a stated success/stop condition is reached, stop. Do not invent a
+  second campaign. Inside an authorized production campaign, keep going
+  through that campaign's remaining steps.
 
 ## Production and data
 
 - Every production operation starts at
   [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md).
-  Pick one numbered flow (A–I). Upload, switch, reboot, rollback,
-  Pages deploy, and funds all require explicit authorization per step.
+  Classify the ask as one campaign (a named release, or one flow A–I).
+  One explicit authorization covers that whole campaign, including the
+  scripted `--apply` commands it needs (`upload` then `switch`, `put`
+  then `close`, Pages dispatch, pin PR). Stop only on failure, a new
+  campaign, or Human-only work (keys, funds, image delete). Do not
+  re-ask between steps of the same campaign.
 - VPSBG measured-boot operations use `scripts/vpsbg-measured-boot.sh` (API),
   not SSH. VPSBG data-disk edits use `scripts/vpsbg-data-disk.sh`.
 - Read [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md)

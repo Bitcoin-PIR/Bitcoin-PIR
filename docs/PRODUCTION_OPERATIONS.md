@@ -1,9 +1,11 @@
 # Production operations
 
 Start here for any authorized production change. Query live state first —
-never infer it from documents. Pick **one** flow below. Run its numbered
-steps in order. Stop at every authorization gate. Do not invent a
-composite path, and do not roll into the next flow without a new ask.
+never infer it from documents. Classify the ask as **one campaign**: a
+named release (for example R5.1) or one flow A–I. One explicit
+authorization covers that whole campaign. Run the campaign's numbered
+steps in order. Do not invent a second campaign, and do not re-ask
+between steps of the same campaign.
 
 Live status:
 
@@ -22,14 +24,18 @@ output. Do not copy them into prose.
 
 ## How an agent should use this page
 
-1. Classify the ask against the flow table. If it matches none, stop and
-   ask; do not improvise.
-2. State the flow id, the remaining steps, the expected duration, and
+1. Classify the ask against the flow table, or as a named release that
+   already lists its flows. If it matches none, stop and ask; do not
+   improvise.
+2. State the campaign, the remaining steps, the expected duration, and
    the hard stop **before** a long build, upload, or reboot.
-3. Run only scripted commands shown here. Human-only steps need an
-   explicit user decision and must not be bundled with a later step.
-4. When a step prints `PASS` and `NEXT_STEP`, stop if the next step is
-   a mutation or a different flow.
+3. Run only scripted commands shown here. Human-only work (keys, funds,
+   image delete) still needs a separate decision. Pin edits and Pages
+   dispatch are part of a release campaign when the user authorized that
+   release, not a second ask.
+4. When a step prints `PASS` and `NEXT_STEP`, continue if that next step
+   is still in the authorized campaign. Stop on failure, a hard stop
+   with no progress, or a step that belongs to a different campaign.
 
 ### Step types
 
@@ -37,11 +43,14 @@ output. Do not copy them into prose.
 | --- | --- | --- |
 | Read | No host, image, pin, or fund change | Yes, without extra authorization |
 | Local | Laptop or CI check; no production mutation | Yes for the matching change class in [Testing](TESTING.md) |
-| Auth | Changes a remote host, image, service, Pages site, or identity | Only after explicit authorization **for that step** |
-| Human | Key, funds, image delete, pin edit, or issuer deploy | Do not start; ask and wait |
+| Auth | Changes a remote host, image, service, Pages site, or identity | Yes for every remaining step of the authorized campaign |
+| Human | Key generation, funds, image delete | Do not start; ask and wait |
 
-`--apply` is per command. `upload` does not switch. `put` does not
-close. `close` and `switch` require the caller-supplied `--image-id`.
+`--apply` is still **per command**: `upload` does not switch, `put` does
+not close, `close`/`switch` take the caller-supplied `--image-id`. The
+agent issues those commands in campaign order without a new ask between
+them. Recoverable API stalls in the same campaign (for example a 423
+during `open`, then `start`) are in-campaign, not a new authorization.
 
 ### Workload estimates
 
@@ -355,11 +364,12 @@ enable a production issuer. Mainnet Lightning is not decided.
 
 ## Human-only — do not start from this page
 
-- Key generation (`bpir-admin service-keygen`) and writing `.keys/`.
+- Key generation and writing `.keys/` from scratch.
 - Funds, channels, or issuer deploy.
 - VPSBG image delete.
-- Editing `web/src/attest-pin.ts` or `verification/locks/` (the user
-  supplies the pin change).
+- Generating new keys. Updating `web/src/attest-pin.ts` from a completed
+  post-switch check is part of a release campaign when that release was
+  authorized; it is not a second Human gate.
 - Filling `--expect-*` from a live server or `server-info.super_root`.
 - Rebuilding or deleting retained Core snapshots / ORAM inputs.
 - Substituting `build_uki_attested_builder_tier3.sh` for the runtime
