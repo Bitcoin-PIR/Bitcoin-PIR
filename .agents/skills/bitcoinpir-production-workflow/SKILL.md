@@ -5,13 +5,15 @@ description: Run BitcoinPIR's production workflow through its repository command
 
 # BitcoinPIR production workflow
 
-Do not run this skill as one end-to-end payment-to-UKI chain. Open
-[`docs/PRODUCTION_OPERATIONS.md`](../../../docs/PRODUCTION_OPERATIONS.md),
-pick **one** flow A–I, and run only that flow's numbered steps.
+Open [`docs/PRODUCTION_OPERATIONS.md`](../../../docs/PRODUCTION_OPERATIONS.md).
+Classify the ask as one campaign (a named release, or one flow A–I) and
+run that campaign to completion. Do not invent a second campaign (for
+example Lightning or issuer deploy) from a free-query release.
 
 Wrapper commands print `PASS` and `NEXT_STEP`. Begin any mutation that
-supports `--dry-run` with that option. `--apply` is per step: never
-combine `upload` with `switch`, or `put` with `close`.
+supports `--dry-run` with that option. `--apply` is per **command**
+(`upload` then `switch`, `put` then `close`); do not splice two
+mutations into one argv. Inside an authorized campaign, keep going.
 
 ## Classify, then estimate
 
