@@ -78,66 +78,9 @@ deploy/*
 !deploy/systemd/
 deploy/systemd/*
 !deploy/systemd/cloudflared.service
-!deploy/systemd/dev-issuer.service
 !deploy/systemd/pir-primary.service
 !deploy/systemd/pir-secondary.service
 !deploy/systemd/pir-vpsbg.service
-!deploy/payment-v1/
-deploy/payment-v1/*
-!deploy/payment-v1/edge/
-deploy/payment-v1/edge/*
-!deploy/payment-v1/edge/directory-public-haproxy.cfg.in
-!deploy/payment-v1/edge/directory-public-haproxy-build-manifest.json.in
-!deploy/payment-v1/edge/integrated-existing-bhtm-caddy-directory-public.managed.Caddyfile.in
-!deploy/payment-v1/lightning/
-!deploy/payment-v1/lightning/mainnet-lightning-v1/
-!deploy/payment-v1/lightning/mainnet-lightning-v1/preflight.toml.example
-!deploy/payment-v1/vpsbg/
-!deploy/payment-v1/vpsbg/vpsbg-free-pow-service-auth.args.in
-!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-service-auth.args.in
-!deploy/payment-v1/vpsbg/vpsbg-premium-free-pow-beta-policy.toml.in
-!deploy/payment-v1/db1-free-pow-bat/
-deploy/payment-v1/db1-free-pow-bat/*
-!deploy/payment-v1/db1-free-pow-bat/README.md
-!deploy/payment-v1/db1-free-pow-bat/pir1-service-policy.toml.in
-!deploy/payment-v1/db1-free-pow-bat/pir2-service-policy.toml.in
-!deploy/payment-v1/bat-v2-source-ready/
-deploy/payment-v1/bat-v2-source-ready/*
-!deploy/payment-v1/bat-v2-source-ready/README.md
-!deploy/payment-v1/bat-v2-source-ready/bat-v2-class.toml.in
-!deploy/payment-v1/bat-v2-source-ready/provider-accounting-authorization.toml.in
-!deploy/payment-v1/bat-v2-source-ready/source-profile.json.in
-!deploy/payment-v1/bat-v2-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in
-!deploy/payment-v1/bat-v2-source-ready/pir1-storeless-bat-v2-provider.service.in
-!deploy/payment-v1/bat-v2-source-ready/pir2-public-artifact-set.env.in
-!deploy/payment-v1/bat-v2-source-ready/pir2-sealed-startup.env.in
-!deploy/payment-v1/bat-v2-genesis-source-ready/
-deploy/payment-v1/bat-v2-genesis-source-ready/*
-!deploy/payment-v1/bat-v2-genesis-source-ready/source-profile.json.in
-!deploy/payment-v1/bat-v2-genesis-source-ready/issuer-lightning-mainnet-bat-v2-payment-issuer.service.in
-!deploy/payment-v1/bat-v2-genesis-source-ready/pir1-storeless-bat-v2-provider.service.in
-!deploy/payment-v1/bat-v2-genesis-source-ready/pir2-public-artifact-set.env.in
-!deploy/payment-v1/bat-v2-genesis-source-ready/pir2-sealed-startup.env.in
-!deploy/payment-v1/systemd/
-deploy/payment-v1/systemd/*
-!deploy/payment-v1/systemd/bhtm-caddy.directory-public-edge.conf.in
-!deploy/payment-v1/systemd/hetzner-provider-direct.service.in
-!deploy/payment-v1/systemd/hetzner-provider-no-standard-cashu.service.in
-!deploy/payment-v1/systemd/payment-v1-directory-public-edge.service.in
-!deploy/payment-v1/systemd/payment-v1-publisher-netns.service.in
-!deploy/payment-v1/systemd/payment-v1-directory-publisher.service.in
-!deploy/payment-v1/systemd/bhtm-caddy.publisher-netns.conf.in
-!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-preflight.service.in
-!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-core.service.in
-!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-cln-rpc-guard.service.in
-!deploy/payment-v1/systemd/issuer-lightning-mainnet-v1-payment-issuer.service.in
-!deploy/payment-v1/network/
-deploy/payment-v1/network/*
-!deploy/payment-v1/network/README.md
-!deploy/payment-v1/network/directory-publisher-hosts.conf.in
-!deploy/payment-v1/network/directory-publisher-network-policy.json.in
-!deploy/payment-v1/network/directory-publisher-resolv.conf.in
-!deploy/payment-v1/network/directory-publisher-nsswitch.conf.in
 
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any
@@ -151,7 +94,7 @@ deploy/payment-v1/network/*
 # The vendor re-include above also re-opens files matched by the global
 # macOS metadata rule. Keep local Finder state out of vendored sources.
 /vendor/**/.DS_Store
-# dev-issuer demo key files (never commit)
+# payment-issuer key files (never commit)
 arc_key.bin
 cashu_key.bin
 
@@ -159,3 +102,6 @@ cashu_key.bin
 # These are never committed to the repository.
 .keys/
 .secrets/
+
+# Stray per-machine config dropped in by an unrelated local AI tool; never part of this repository.
+/config.json
