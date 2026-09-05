@@ -1,20 +1,18 @@
 [workspace]
 resolver = "2"
 # One PIR service plus a single designated issuer (issue/verify cashu+ARC;
-# collection is later work). The Payment V1 crates are deleted.
+# collection is later work). The Payment V1 crates are deleted; unused
+# support crates (strict-https, service-protocol, identity-authority,
+# sdk/server) were removed in 2026-09.
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
-    "crates/protocol/service",
     "crates/security/private-files",
-    "crates/net/strict-https",
     "crates/trust/identity",
-    "crates/trust/identity-authority",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
     "crates/sdk/core",
     "crates/protocol/runtime",
-    "crates/sdk/server",
     "crates/sdk/client",
     "crates/sdk/wasm",
     "apps/admin",

@@ -96,7 +96,7 @@ dependencies = [
  "crypto-bigint",
  "elliptic-curve",
  "p256",
- "rand_core 0.6.4",
+ "rand_core",
  "sha2",
  "sha3",
  "subtle",
@@ -246,8 +246,8 @@ dependencies = [
  "hex",
  "memmap2",
  "pir-db-attest",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand",
+ "rand_chacha",
  "serde",
  "serde_json",
  "sha2",
@@ -327,7 +327,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "toml",
  "zeroize",
 ]
@@ -773,7 +773,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76"
 dependencies = [
  "generic-array",
- "rand_core 0.6.4",
+ "rand_core",
  "subtle",
  "zeroize",
 ]
@@ -785,7 +785,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
- "rand_core 0.6.4",
+ "rand_core",
  "typenum",
 ]
 
@@ -971,7 +971,7 @@ dependencies = [
  "hkdf",
  "pem-rfc7468",
  "pkcs8",
- "rand_core 0.6.4",
+ "rand_core",
  "sec1",
  "subtle",
  "zeroize",
@@ -1017,18 +1017,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fallible-iterator"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
-
-[[package]]
-name = "fallible-streaming-iterator"
-version = "0.1.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
-
-[[package]]
 name = "fastprp"
 version = "0.1.0"
 source = "git+https://github.com/Bitcoin-PIR/fastprp.git?rev=eaf1ee787c051c1250329cbe645c157e085af6e2#eaf1ee787c051c1250329cbe645c157e085af6e2"
@@ -1048,7 +1036,7 @@ version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0b50bfb653653f9ca9095b427bed08ab8d75a137839d9ad64eb11810d5b6393"
 dependencies = [
- "rand_core 0.6.4",
+ "rand_core",
  "subtle",
 ]
 
@@ -1069,12 +1057,6 @@ name = "flagset"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
-
-[[package]]
-name = "foldhash"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "fpe"
@@ -1221,7 +1203,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0f9ef7462f7c099f518d754361858f86d8a07af53ba9af0fe635bbccb151a63"
 dependencies = [
  "ff",
- "rand_core 0.6.4",
+ "rand_core",
  "subtle",
 ]
 
@@ -1248,8 +1230,8 @@ dependencies = [
  "fpe",
  "getrandom 0.2.17",
  "num-bigint",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand",
+ "rand_chacha",
  "serde",
 ]
 
@@ -1258,9 +1240,6 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
-dependencies = [
- "foldhash",
-]
 
 [[package]]
 name = "heck"
@@ -1468,7 +1447,7 @@ source = "git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5e
 dependencies = [
  "aes",
  "cipher",
- "rand 0.8.5",
+ "rand",
  "rayon",
  "serde",
  "zeroize",
@@ -1487,17 +1466,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "libsqlite3-sys"
-version = "0.37.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1f111c8c41e7c61a49cd34e44c7619462967221a6443b0ec299e0ac30cfb9b1"
-dependencies = [
- "cc",
- "pkg-config",
- "vcpkg",
 ]
 
 [[package]]
@@ -1568,7 +1536,7 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "rand 0.8.5",
+ "rand",
  "smallvec",
  "zeroize",
 ]
@@ -1701,7 +1669,7 @@ dependencies = [
  "arc",
  "hex",
  "k256",
- "rand_core 0.6.4",
+ "rand_core",
  "sha2",
 ]
 
@@ -1748,7 +1716,7 @@ version = "0.1.0"
 dependencies = [
  "chacha20poly1305",
  "hkdf",
- "rand_core 0.6.4",
+ "rand_core",
  "sha2",
  "x25519-dalek",
 ]
@@ -1781,21 +1749,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-identity-authority"
-version = "0.1.0"
-dependencies = [
- "clap",
- "ed25519-dalek",
- "hex",
- "pir-identity",
- "pir-private-files",
- "rusqlite",
- "sha2",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
 name = "pir-private-files"
 version = "0.1.0"
 dependencies = [
@@ -1824,7 +1777,7 @@ dependencies = [
  "pir-core",
  "pir-identity",
  "pir-private-files",
- "rand_core 0.6.4",
+ "rand_core",
  "rayon",
  "serde",
  "serde_json",
@@ -1873,14 +1826,14 @@ dependencies = [
  "pir-db-attest",
  "pir-identity",
  "pir-sdk",
- "rand 0.8.5",
- "rand_core 0.6.4",
+ "rand",
+ "rand_core",
  "rustls",
  "serde_json",
  "sha2",
  "thiserror 1.0.69",
  "tokio",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
  "wasm-bindgen",
@@ -1888,23 +1841,6 @@ dependencies = [
  "web-sys",
  "x25519-dalek",
  "zeroize",
-]
-
-[[package]]
-name = "pir-sdk-server"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "futures-util",
- "log",
- "pir-core",
- "pir-runtime-core",
- "pir-sdk",
- "serde",
- "thiserror 1.0.69",
- "tokio",
- "tokio-tungstenite 0.26.2",
- "toml",
 ]
 
 [[package]]
@@ -1924,7 +1860,7 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "rand_core 0.6.4",
+ "rand_core",
  "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
@@ -1933,24 +1869,6 @@ dependencies = [
  "tracing-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "zeroize",
-]
-
-[[package]]
-name = "pir-service-protocol"
-version = "0.1.0"
-dependencies = [
- "sha2",
-]
-
-[[package]]
-name = "pir-strict-https"
-version = "0.1.0"
-dependencies = [
- "httparse",
- "rustls",
- "sha2",
- "webpki-roots 0.26.11",
  "zeroize",
 ]
 
@@ -1974,12 +1892,6 @@ dependencies = [
  "der",
  "spki",
 ]
-
-[[package]]
-name = "pkg-config"
-version = "0.3.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plotters"
@@ -2084,18 +1996,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
 dependencies = [
  "libc",
- "rand_chacha 0.3.1",
- "rand_core 0.6.4",
-]
-
-[[package]]
-name = "rand"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ec095654a25171c2124e9e3393a930bddbffdc939556c914957a4c3e0a87166"
-dependencies = [
- "rand_chacha 0.9.0",
- "rand_core 0.9.5",
+ "rand_chacha",
+ "rand_core",
 ]
 
 [[package]]
@@ -2105,18 +2007,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
- "rand_core 0.6.4",
+ "rand_core",
  "serde",
-]
-
-[[package]]
-name = "rand_chacha"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
-dependencies = [
- "ppv-lite86",
- "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -2129,21 +2021,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "rand_core"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
-dependencies = [
- "getrandom 0.3.4",
-]
-
-[[package]]
 name = "rand_xoshiro"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
 dependencies = [
- "rand_core 0.6.4",
+ "rand_core",
 ]
 
 [[package]]
@@ -2305,21 +2188,11 @@ dependencies = [
  "num-traits",
  "pkcs1",
  "pkcs8",
- "rand_core 0.6.4",
+ "rand_core",
  "signature",
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rsqlite-vfs"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c51c9ae4df8a7fba42103df5c621fa3c37eccf3a3c650879e90fc48b11cc192c"
-dependencies = [
- "hashbrown",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2346,9 +2219,8 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "pir-strict-https",
- "rand 0.8.5",
- "rand_chacha 0.3.1",
+ "rand",
+ "rand_chacha",
  "rayon",
  "rustix",
  "rustls",
@@ -2357,23 +2229,9 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.24.0",
+ "tokio-tungstenite",
  "toml",
  "zeroize",
-]
-
-[[package]]
-name = "rusqlite"
-version = "0.39.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0d2b0146dd9661bf67bb107c0bb2a55064d556eeb3fc314151b957f313bcd4e"
-dependencies = [
- "bitflags",
- "fallible-iterator",
- "fallible-streaming-iterator",
- "libsqlite3-sys",
- "smallvec",
- "sqlite-wasm-rs",
 ]
 
 [[package]]
@@ -2710,7 +2568,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
- "rand_core 0.6.4",
+ "rand_core",
 ]
 
 [[package]]
@@ -2749,18 +2607,6 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
-]
-
-[[package]]
-name = "sqlite-wasm-rs"
-version = "0.5.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc3efc0da82635d7e1ced0053bbbfa8c7ab9645d0bf36ceb4f7127bb85315d75"
-dependencies = [
- "cc",
- "js-sys",
- "rsqlite-vfs",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -2956,20 +2802,8 @@ dependencies = [
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
- "tungstenite 0.24.0",
+ "tungstenite",
  "webpki-roots 0.26.11",
-]
-
-[[package]]
-name = "tokio-tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a9daff607c6d2bf6c16fd681ccb7eecc83e4e2cdc1ca067ffaadfca5de7f084"
-dependencies = [
- "futures-util",
- "log",
- "tokio",
- "tungstenite 0.26.2",
 ]
 
 [[package]]
@@ -3091,28 +2925,11 @@ dependencies = [
  "http",
  "httparse",
  "log",
- "rand 0.8.5",
+ "rand",
  "rustls",
  "rustls-pki-types",
  "sha1",
  "thiserror 1.0.69",
- "utf-8",
-]
-
-[[package]]
-name = "tungstenite"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4793cb5e56680ecbb1d843515b23b6de9a75eb04b66643e256a396d43be33c13"
-dependencies = [
- "bytes",
- "data-encoding",
- "http",
- "httparse",
- "log",
- "rand 0.9.3",
- "sha1",
- "thiserror 2.0.18",
  "utf-8",
 ]
 
@@ -3183,12 +3000,6 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
-
-[[package]]
-name = "vcpkg"
-version = "0.2.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "vecdb"
@@ -3467,7 +3278,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7e468321c81fb07fa7f4c636c3972b9100f0346e5b6a9f2bd0603a52f7ed277"
 dependencies = [
  "curve25519-dalek",
- "rand_core 0.6.4",
+ "rand_core",
  "serde",
  "zeroize",
 ]

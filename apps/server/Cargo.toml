@@ -24,28 +24,12 @@ path = "src/bin/client.rs"
 name = "onionpir_client"
 path = "src/bin/onionpir_client.rs"
 
-[[bin]]
-name = "onionpir_bench"
-path = "src/bin/onionpir_bench.rs"
-
 # NOTE: `harmonypir_hint_server` (standalone HarmonyPIR hint server) was
 # removed — superseded by `unified_server --serve-hints`.
 
 [[bin]]
-name = "harmonypir_e2e_test"
-path = "src/bin/harmonypir_e2e_test.rs"
-
-[[bin]]
 name = "harmonypir_gen_hints"
 path = "src/bin/harmonypir_gen_hints.rs"
-
-[[bin]]
-name = "harmonypir_real_test"
-path = "src/bin/harmonypir_real_test.rs"
-
-[[bin]]
-name = "harmonypir_hint_bench"
-path = "src/bin/harmonypir_hint_bench.rs"
 
 # NOTE: the stale HarmonyPIR e2e/trace harnesses (harmonypir_index_to_chunk_e2e,
 # harmonypir_full_e2e, harmonypir_batch_e2e, harmonypir_batch_trace) were
@@ -72,7 +56,6 @@ pir-runtime-core = { path = "../../crates/protocol/runtime" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
-pir-strict-https = { path = "../../crates/net/strict-https" }
 ed25519-dalek = "2"
 hex = "0.4"
 zeroize = "1"

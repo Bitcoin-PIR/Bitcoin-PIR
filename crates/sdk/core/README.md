@@ -6,8 +6,7 @@
 
 Core types, traits, and abstractions for **Private Information Retrieval** (PIR)
 on Bitcoin UTXO data. This crate is the foundation layer shared by the native
-client (`pir-sdk-client`), the browser bindings (`pir-sdk-wasm`), and the
-server-side SDK (`pir-sdk-server`).
+client (`pir-sdk-client`) and the browser bindings (`pir-sdk-wasm`).
 
 PIR is a family of cryptographic protocols where a client can look up an entry
 in a server-hosted database without revealing which entry was looked up — even
@@ -19,7 +18,6 @@ the server cannot tell which address a wallet is querying.
 |-------------------|---------------------------------------------------------|
 | `pir-sdk`         | **You are here** — shared types, traits, sync planning  |
 | `pir-sdk-client`  | Native Rust client for DPF / Harmony / Onion backends   |
-| `pir-sdk-server`  | Server-side builder (load databases, serve requests)    |
 | `pir-sdk-wasm`    | WASM bindings (sync planning, Merkle verify, client)    |
 
 ## What this crate provides

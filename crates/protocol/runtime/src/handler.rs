@@ -1,8 +1,7 @@
 //! Request handler for PIR protocols.
 //!
 //! This module provides a reusable `RequestHandler` that processes PIR requests
-//! against loaded databases. It can be used by both the `unified_server` binary
-//! and the `pir-sdk-server` crate.
+//! against loaded databases for the `unified_server` binary.
 
 use crate::eval::{self, GroupTiming};
 use crate::protocol::*;

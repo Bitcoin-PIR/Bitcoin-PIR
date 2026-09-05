@@ -15,7 +15,6 @@ and the toolchain cost of turning them on.
 | `pir-core`        | _(none)_     |   —      | all       | No feature flags; core primitives are always available.               |
 | `pir-runtime-core`| _(none)_     |   —      | native    | No feature flags; shared server primitives are always available.      |
 | `pir-sdk-wasm`    | _(none)_     |   —      | wasm32    | No cargo features; `wasm-pack --target` picks the JS module style.    |
-| `pir-sdk-server`  | _(none)_     |   —      | native    | No feature flags currently; builder + loader always compiled.         |
 
 "Compat" column:
 - **all**: compiles on both native and `wasm32-unknown-unknown`.
@@ -119,11 +118,6 @@ need `no_std` in a downstream crate, open an issue.
 `tracing-subscriber` feature is a follow-up tracked in
 [`PUBLISHING.md`](PUBLISHING.md).
 
-## `pir-sdk-server`
-
-`pir-sdk-server` has no feature flags currently. The builder API
-(`PirServerBuilder`, `PirServer`, `ServerConfig`) is always compiled.
-
 ## Combining features
 
 Multiple features can be enabled simultaneously. The workspace-level
@@ -144,11 +138,11 @@ cargo build -p pir-sdk-client
 
 ## Cross-target compatibility at a glance
 
-| Target family               | `pir-sdk` | `pir-sdk-client`                    | `pir-sdk-wasm` | `pir-runtime-core` | `pir-sdk-server` | `pir-core` |
-|-----------------------------|:---------:|-------------------------------------|:--------------:|:------------------:|:----------------:|:----------:|
-| Linux / macOS / Windows     | ✅         | ✅ (any feature combo)               | ❌              | ✅                  | ✅                | ✅          |
-| `wasm32-unknown-unknown`    | ✅         | ✅ without `onion`, ❌ with `onion`    | ✅              | ❌                  | ❌                | ✅          |
-| `wasm32-wasi`               | ✅         | ❌ (tokio-tungstenite is tokio-only) | ❌              | ❌                  | ❌                | ✅          |
+| Target family               | `pir-sdk` | `pir-sdk-client`                    | `pir-sdk-wasm` | `pir-runtime-core` | `pir-core` |
+|-----------------------------|:---------:|-------------------------------------|:--------------:|:------------------:|:----------:|
+| Linux / macOS / Windows     | ✅         | ✅ (any feature combo)               | ❌              | ✅                  | ✅          |
+| `wasm32-unknown-unknown`    | ✅         | ✅ without `onion`, ❌ with `onion`    | ✅              | ❌                  | ✅          |
+| `wasm32-wasi`               | ✅         | ❌ (tokio-tungstenite is tokio-only) | ❌              | ❌                  | ✅          |
 
 ## Preserving PIR padding invariants
 
