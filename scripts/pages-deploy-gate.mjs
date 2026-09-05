@@ -353,7 +353,7 @@ function verifyNoOtherPagesPublisher(workflowsDirectory, selectedWorkflow) {
 }
 
 if (process.argv.length > 3) {
-  fail('usage: payment-v1-pages-deploy-gate.mjs [workflow-path]');
+  fail('usage: pages-deploy-gate.mjs [workflow-path]');
 }
 const workflowPath = resolve(
   process.argv[2] ??
