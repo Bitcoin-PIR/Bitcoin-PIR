@@ -23,7 +23,7 @@ Documentation index: [`docs/README.md`](docs/README.md).
   one test with `-- --exact <name> --nocapture`. Do not escalate to a wider
   suite, a second crate, or a CI lane.
 - Forbidden unless the user names them: `gh run watch`, polling `gh run list`,
-  `sleep` loops waiting on CI, local `scripts/payment-v1-ci-lane.sh` full
+  `sleep` loops waiting on CI, local `scripts/rust-ci-lane.sh` full
   matrix, production or browser tests, local EasyCrypt / formal-proof runs.
 - At most one background cargo job. Process e2e tests must be serial.
 - No production/browser tests unless the user explicitly asks.
