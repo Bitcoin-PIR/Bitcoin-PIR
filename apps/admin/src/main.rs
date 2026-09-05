@@ -30,6 +30,7 @@ mod channel_test;
 mod db_proof;
 mod generate_identity;
 mod keygen;
+mod pir2_sealed_receipt_verify;
 mod pir2_sealed_release;
 mod show_vcek_url;
 mod sign_identity;
@@ -75,6 +76,10 @@ enum Command {
     /// Verify a fresh SNP observation and emit one canonical pir2 release.
     #[command(name = "pir2-sealed-release")]
     Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
+    /// Offline acceptance of one Enroll, Probe, or Ready phase receipt
+    /// against the operator-signed release (Flow G receipt gate).
+    #[command(name = "pir2-sealed-receipt-verify")]
+    Pir2SealedReceiptVerify(Box<pir2_sealed_receipt_verify::Pir2SealedReceiptVerifyArgs>),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -135,6 +140,13 @@ async fn main() {
                 1
             }
         },
+        Command::Pir2SealedReceiptVerify(args) => match pir2_sealed_receipt_verify::run(*args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("pir2-sealed-receipt-verify: {e}");
+                1
+            }
+        },
     };
     std::process::exit(exit_code);
 }
@@ -159,6 +171,7 @@ mod cli_tests {
             "upload",
             "db-proof",
             "pir2-sealed-release",
+            "pir2-sealed-receipt-verify",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }

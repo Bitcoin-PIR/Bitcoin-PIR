@@ -23,7 +23,7 @@ use sha2::{Digest as _, Sha256};
 const MAX_UKI_LEN: usize = 256 * 1024 * 1024;
 const MAX_OVMF_LEN: usize = 64 * 1024 * 1024;
 const MAX_CERT_LEN: usize = 128 * 1024;
-const MAX_RELEASE_LEN: usize = 4096;
+pub(crate) const MAX_RELEASE_LEN: usize = 4096;
 
 const REQUIRED_VCPUS: u32 = 4;
 const REQUIRED_VCPU_SIGNATURE: u32 = 0x00B1_0F10;
@@ -187,7 +187,7 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
         snp: args.minimum_tcb_snp,
         microcode: args.minimum_tcb_microcode,
     };
-    validate_verified_observation(
+    validate_signed_report_against_pins(
         &report,
         expected_report_data,
         measurement,
@@ -216,7 +216,7 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn verify_offline_report(
+pub(crate) fn verify_offline_report(
     report_bytes: &[u8],
     ark_path: &Path,
     ask_path: &Path,
@@ -261,7 +261,7 @@ fn validate_launch_tuple(
     Ok(())
 }
 
-fn validate_report_cpu(report: &SnpReport) -> Result<(), String> {
+pub(crate) fn validate_report_cpu(report: &SnpReport) -> Result<(), String> {
     if report.cpuid_fam_id != Some(REQUIRED_CPU_FAMILY)
         || report.cpuid_mod_id != Some(REQUIRED_CPU_MODEL)
         || report.cpuid_step != Some(REQUIRED_CPU_STEPPING)
@@ -319,7 +319,9 @@ fn compute_exact_launch_measurement(
         .map_err(|_| "exact launch measurement has the wrong length".to_owned())
 }
 
-fn validate_verified_observation(
+/// Shared by the release command (Observe) and the phase-receipt verifier:
+/// REPORT_DATA, measurement, full guest policy, and TCB floor.
+pub(crate) fn validate_signed_report_against_pins(
     report: &SnpReport,
     expected_report_data: [u8; 64],
     measurement: [u8; 48],
@@ -397,7 +399,7 @@ fn parse_hex_u64(value: &str, label: &str) -> Result<u64, String> {
     u64::from_str_radix(value, 16).map_err(|_| format!("{label} is not valid hexadecimal"))
 }
 
-fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
+pub(crate) fn parse_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u8; N], String> {
     let value = value.strip_prefix("0x").unwrap_or(value);
     if value.len() != N * 2 {
         return Err(format!("{label} must contain exactly {} hex digits", N * 2));
@@ -436,7 +438,7 @@ fn public_file_snapshot_v1(stat: &rustix::fs::Stat) -> PublicFileSnapshotV1 {
 }
 
 #[cfg(unix)]
-fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
     use rustix::fs::{self as rustix_fs, FileType, Mode, OFlags};
 
     let fd = rustix_fs::open(
@@ -470,7 +472,7 @@ fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, 
 }
 
 #[cfg(not(unix))]
-fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn read_public_bounded(path: &Path, max: usize, label: &str) -> Result<Vec<u8>, String> {
     let _ = (path, max);
     Err(format!(
         "reading {label} requires a local Unix/POSIX filesystem"
@@ -753,7 +755,7 @@ mod tests {
         let report = verified_report();
         let claims = release_claims();
 
-        assert!(validate_verified_observation(
+        assert!(validate_signed_report_against_pins(
             &report,
             [0x45; 64],
             claims.expected_measurement,
@@ -763,7 +765,7 @@ mod tests {
         .is_err());
         let mut wrong_measurement = claims.expected_measurement;
         wrong_measurement[0] ^= 1;
-        assert!(validate_verified_observation(
+        assert!(validate_signed_report_against_pins(
             &report,
             report.report_data,
             wrong_measurement,
@@ -771,7 +773,7 @@ mod tests {
             claims.minimum_tcb,
         )
         .is_err());
-        assert!(validate_verified_observation(
+        assert!(validate_signed_report_against_pins(
             &report,
             report.report_data,
             claims.expected_measurement,
@@ -782,7 +784,7 @@ mod tests {
         let mut missing_reserved_one = report;
         missing_reserved_one.policy =
             sev::firmware::guest::GuestPolicy::from_bytes(&0_u64.to_le_bytes()).unwrap();
-        assert!(validate_verified_observation(
+        assert!(validate_signed_report_against_pins(
             &missing_reserved_one,
             missing_reserved_one.report_data,
             claims.expected_measurement,

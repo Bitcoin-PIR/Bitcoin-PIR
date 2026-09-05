@@ -728,7 +728,10 @@ pub struct Pir2SealedSigningMaterialV1 {
 }
 
 impl Pir2SealedSigningMaterialV1 {
-    fn from_seed(service_identity_seed: &[u8; 32]) -> Self {
+    /// Derive the signing material for one service identity seed. The
+    /// measured runtime calls this after unsealing; offline tooling uses it
+    /// only in tests, never with a production seed.
+    pub fn from_seed(service_identity_seed: &[u8; 32]) -> Self {
         let service_identity = SigningKey::from_bytes(service_identity_seed);
         let fingerprints = fingerprints_for_key_v1(&service_identity);
         Self {
@@ -994,6 +997,42 @@ pub enum Pir2SealedReceiptPhaseV1 {
     Ready = 4,
 }
 
+impl Pir2SealedReceiptPhaseV1 {
+    /// Wire byte to phase; unknown bytes are rejected rather than mapped.
+    pub fn from_wire(byte: u8) -> Result<Self, SnpSealedSecretsErrorV1> {
+        match byte {
+            1 => Ok(Self::Observe),
+            2 => Ok(Self::Enroll),
+            3 => Ok(Self::Probe),
+            4 => Ok(Self::Ready),
+            _ => Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "unknown receipt phase",
+            )),
+        }
+    }
+
+    /// Lowercase name shared with `startup.env` and operator tooling.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::Enroll => "enroll",
+            Self::Probe => "probe",
+            Self::Ready => "ready",
+        }
+    }
+
+    /// Inverse of [`Self::name`].
+    pub fn parse_name(name: &str) -> Option<Self> {
+        match name {
+            "observe" => Some(Self::Observe),
+            "enroll" => Some(Self::Enroll),
+            "probe" => Some(Self::Probe),
+            "ready" => Some(Self::Ready),
+            _ => None,
+        }
+    }
+}
+
 /// Canonical non-secret receipt claims. The verifier nonce, channel key and
 /// boot ID jointly prevent a successful receipt from an earlier boot from
 /// authorizing this process.
@@ -1079,6 +1118,55 @@ impl Pir2SealedReceiptClaimsV1 {
             ));
         }
         Ok(())
+    }
+
+    /// Strict inverse of `encode_claims`: fixed layout, validated contract,
+    /// and byte-for-byte canonical re-encoding.
+    fn decode_claims(bytes: &[u8]) -> Result<Self, SnpSealedSecretsErrorV1> {
+        let truncated = |_| SnpSealedSecretsErrorV1::InvalidReceipt("receipt claims are truncated");
+        let mut decoder = DecoderV1::new(bytes);
+        let phase =
+            Pir2SealedReceiptPhaseV1::from_wire(decoder.u8("receipt phase").map_err(truncated)?)?;
+        let ordinal = decoder.u64("receipt ordinal").map_err(truncated)?;
+        let verifier_nonce = decoder.array("verifier nonce").map_err(truncated)?;
+        let current_channel_pubkey = decoder
+            .array("current channel public key")
+            .map_err(truncated)?;
+        let boot_id = decoder.array("boot ID").map_err(truncated)?;
+        let release_artifact_digest = decoder
+            .array("release artifact digest")
+            .map_err(truncated)?;
+        let service_identity_key = decoder
+            .array("service identity public key")
+            .map_err(truncated)?;
+        let service_identity_fingerprint = decoder
+            .array("service identity fingerprint")
+            .map_err(truncated)?;
+        let identity_generation = decoder.u64("identity generation").map_err(truncated)?;
+        decoder.finish().map_err(|_| {
+            SnpSealedSecretsErrorV1::InvalidReceipt("receipt claims have trailing bytes")
+        })?;
+        let claims = Self {
+            phase,
+            ordinal,
+            verifier_nonce,
+            current_channel_pubkey,
+            boot_id,
+            release_artifact_digest,
+            public_keys: Pir2SealedPublicKeysV1 {
+                service_identity: service_identity_key,
+            },
+            public_fingerprints: Pir2SealedPublicFingerprintsV1 {
+                service_identity: service_identity_fingerprint,
+            },
+            identity_generation,
+        };
+        if claims.encode_claims()? != bytes {
+            return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
+                "receipt claims are not canonical",
+            ));
+        }
+        Ok(claims)
     }
 
     fn encode_claims(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
@@ -1188,6 +1276,85 @@ impl Pir2SealedReceiptV1 {
         out.extend_from_slice(&report_len.to_le_bytes());
         out.extend_from_slice(&self.fresh_report.raw_report);
         Ok(out)
+    }
+}
+
+/// Encoded length of [`Pir2SealedReceiptClaimsV1`].
+const SEALED_RECEIPT_CLAIMS_LEN_V1: usize = 1 + 8 + 32 + 32 + 16 + 32 + 32 + 32 + 8;
+/// Bound for a persisted receipt file: header, claims, and the largest fresh
+/// report the runtime accepts.
+pub const MAX_SEALED_RECEIPT_FILE_LEN_V1: usize = SEALED_RECEIPT_MAGIC_V1.len()
+    + 2
+    + 4
+    + SEALED_RECEIPT_CLAIMS_LEN_V1
+    + 4
+    + MAX_FRESH_SNP_REPORT_LEN_V1;
+
+/// A persisted phase receipt as an offline verifier reads it back: the
+/// canonical claims plus the exact raw SNP report bytes. Decoding checks the
+/// magic, codec, lengths, claim contract, canonical re-encoding, and that the
+/// raw report's `REPORT_DATA` carries the claims digest. It verifies neither
+/// the AMD chain nor the report signature; the operator command does.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Pir2SealedReceiptFileV1 {
+    pub claims: Pir2SealedReceiptClaimsV1,
+    pub raw_report: Vec<u8>,
+}
+
+impl Pir2SealedReceiptFileV1 {
+    pub fn decode(exact_bytes: &[u8]) -> Result<Self, SnpSealedSecretsErrorV1> {
+        use SnpSealedSecretsErrorV1::InvalidReceipt;
+        if exact_bytes.len() > MAX_SEALED_RECEIPT_FILE_LEN_V1 {
+            return Err(InvalidReceipt("receipt exceeds its source bound"));
+        }
+        let mut decoder = DecoderV1::new(exact_bytes);
+        decoder
+            .exact(SEALED_RECEIPT_MAGIC_V1, "receipt magic")
+            .map_err(|_| InvalidReceipt("invalid receipt magic"))?;
+        if decoder
+            .u16("receipt codec")
+            .map_err(|_| InvalidReceipt("truncated receipt codec"))?
+            != SEALED_CODEC_VERSION
+        {
+            return Err(InvalidReceipt("unsupported sealed receipt codec"));
+        }
+        let claims_len = decoder
+            .u32("receipt claims length")
+            .map_err(|_| InvalidReceipt("truncated receipt claims length"))?;
+        if usize::try_from(claims_len).ok() != Some(SEALED_RECEIPT_CLAIMS_LEN_V1) {
+            return Err(InvalidReceipt("receipt claims length is not canonical"));
+        }
+        let claims_bytes = decoder
+            .bytes(SEALED_RECEIPT_CLAIMS_LEN_V1, "receipt claims")
+            .map_err(|_| InvalidReceipt("truncated receipt claims"))?;
+        let report_len = usize::try_from(
+            decoder
+                .u32("fresh report length")
+                .map_err(|_| InvalidReceipt("truncated fresh report length"))?,
+        )
+        .map_err(|_| InvalidReceipt("fresh report length overflow"))?;
+        if report_len == 0 || report_len > MAX_FRESH_SNP_REPORT_LEN_V1 {
+            return Err(InvalidReceipt(
+                "fresh SNP report bytes are absent or oversized",
+            ));
+        }
+        let raw_report = decoder
+            .bytes(report_len, "fresh report")
+            .map_err(|_| InvalidReceipt("truncated fresh SNP report"))?
+            .to_vec();
+        decoder
+            .finish()
+            .map_err(|_| InvalidReceipt("receipt has trailing bytes"))?;
+        let claims = Pir2SealedReceiptClaimsV1::decode_claims(claims_bytes)?;
+        let embedded = pir_core::attest::extract_report_data(&raw_report).ok_or(InvalidReceipt(
+            "fresh SNP report is too short for REPORT_DATA",
+        ))?;
+        if embedded != claims.report_data()? {
+            return Err(InvalidReceipt(
+                "fresh SNP REPORT_DATA does not bind the receipt digest",
+            ));
+        }
+        Ok(Self { claims, raw_report })
     }
 }
 
@@ -2284,7 +2451,9 @@ mod tests {
         old_codec[8..10].copy_from_slice(&1_u16.to_le_bytes());
         assert!(matches!(
             VerifiedPir2SealedReleaseV1::decode_and_verify(&old_codec, &operator.verifying_key()),
-            Err(SnpSealedSecretsErrorV1::InvalidRelease("unsupported sealed release codec"))
+            Err(SnpSealedSecretsErrorV1::InvalidRelease(
+                "unsupported sealed release codec"
+            ))
         ));
     }
 
@@ -2369,6 +2538,64 @@ mod tests {
         let mut old_channel = claims;
         old_channel.current_channel_pubkey[0] ^= 1;
         assert!(receipt.verify_binding(&old_channel).is_err());
+    }
+
+    #[test]
+    fn persisted_receipt_decodes_canonically_and_rejects_tampering() {
+        let (verified, _) = verified_release();
+        let material = Pir2SealedSigningMaterialV1::from_seed(&[0x71; 32]);
+        let claims = Pir2SealedReceiptClaimsV1::for_release(
+            &verified,
+            Pir2SealedReceiptPhaseV1::Enroll,
+            45,
+            [0x81; 32],
+            [0x82; 32],
+            [0x83; 16],
+            Some(&material),
+        )
+        .unwrap();
+        let provider = MockProviderV1::good(verified.release(), [0x42; 32]);
+        let receipt = Pir2SealedReceiptV1::request(&verified, claims.clone(), &provider).unwrap();
+        let encoded = receipt.encode().unwrap();
+        assert!(encoded.len() <= MAX_SEALED_RECEIPT_FILE_LEN_V1);
+
+        let decoded = Pir2SealedReceiptFileV1::decode(&encoded).unwrap();
+        assert_eq!(decoded.claims, claims);
+        assert_eq!(decoded.raw_report, receipt.fresh_report.raw_report);
+        assert_eq!(decoded.claims.phase.name(), "enroll");
+        assert_eq!(
+            Pir2SealedReceiptPhaseV1::parse_name("ready"),
+            Some(Pir2SealedReceiptPhaseV1::Ready)
+        );
+        assert_eq!(Pir2SealedReceiptPhaseV1::parse_name("Ready"), None);
+        assert!(Pir2SealedReceiptPhaseV1::from_wire(5).is_err());
+
+        // Header, claims, and REPORT_DATA bytes are all bound by decode alone;
+        // the report signature is the offline AMD-chain verifier's job.
+        let claims_start = SEALED_RECEIPT_MAGIC_V1.len() + 2 + 4;
+        let report_start = claims_start + SEALED_RECEIPT_CLAIMS_LEN_V1 + 4;
+        for index in [
+            0,
+            SEALED_RECEIPT_MAGIC_V1.len(),
+            claims_start - 1,
+            claims_start,
+            claims_start + 9,
+            claims_start + SEALED_RECEIPT_CLAIMS_LEN_V1 - 1,
+            report_start + 0x50,
+        ] {
+            let mut tampered = encoded.clone();
+            tampered[index] ^= 1;
+            assert!(
+                Pir2SealedReceiptFileV1::decode(&tampered).is_err(),
+                "byte {index} was not bound"
+            );
+        }
+        let mut truncated = encoded.clone();
+        truncated.pop();
+        assert!(Pir2SealedReceiptFileV1::decode(&truncated).is_err());
+        let mut extended = encoded.clone();
+        extended.push(0);
+        assert!(Pir2SealedReceiptFileV1::decode(&extended).is_err());
     }
 
     #[test]

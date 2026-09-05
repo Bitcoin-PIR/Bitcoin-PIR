@@ -376,6 +376,7 @@ do not leave a mixed fleet.
 | Check pir2 after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/pir2-post-switch-check.sh` | `PASS action=post_switch_check` |
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
 | Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
+| Accept an Enroll, Probe, or Ready receipt | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh receipt` | `PASS pir2_sealed_receipt_verify` |
 
 Paid access (cashier-signed session grants, outside the measured image) is
 described in [`SESSION_GRANTS.md`](SESSION_GRANTS.md); the retired Payment V1
