@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-# One PIR service plus a single designated issuer (issue/verify cashu+ARC;
-# collection is later work). The Payment V1 crates are deleted; unused
-# support crates (strict-https, service-protocol, identity-authority,
-# sdk/server) were removed in 2026-09.
+# One PIR service. Paid access is a cashier-signed session grant that the
+# server verifies offline (crates/trust/session-grant); the cashier itself
+# lives in a separate repository. The Payment V1 crates, the ARC/Cashu
+# verifiers, and the payment-issuer app were deleted in 2026-09.
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
@@ -11,6 +11,7 @@ members = [
     "crates/trust/identity",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
+    "crates/trust/session-grant",
     "crates/sdk/core",
     "crates/protocol/runtime",
     "crates/sdk/client",
@@ -19,7 +20,6 @@ members = [
     "tools/db-builder",
     "apps/server",
     "tools/block-reader",
-    "apps/payment-issuer",
 ]
 exclude = ["vendor/bitcoinpir-oram"]
 

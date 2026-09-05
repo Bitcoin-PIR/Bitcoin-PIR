@@ -19,11 +19,11 @@ script's status subcommand for the rest.
 
 ## Technical references
 
-- Paid queries present a designated issuer's cashu/ARC credential on
-  opcodes `0x08`/`0x09`. The issuer app is [`apps/payment-issuer`](../apps/payment-issuer);
-  boundaries are in [Payment integration](RATELIMIT_INTEGRATION.md). The retired
-  Payment V1 material was removed from the working tree in 2026-09 and lives
-  only in git history.
+- Paid queries present a cashier-signed session grant on opcode `0x0b`;
+  the design, metering rule, and server flags are in
+  [Session grants](SESSION_GRANTS.md). The cashier (payment side) is a
+  separate repository. The retired Payment V1 material and the 2026-09
+  ARC/Cashu verifiers live only in git history.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).
 - Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).

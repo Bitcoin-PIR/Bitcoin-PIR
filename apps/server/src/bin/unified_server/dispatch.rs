@@ -23,9 +23,7 @@ pub(crate) async fn handle_variant<S>(
     client_id: u64,
     peer: std::net::SocketAddr,
     admin_state: &mut pir_runtime_core::admin::AdminConnectionState,
-    arc_ok: &mut bool,
-    cashu_ok: &mut bool,
-    arc_pres_ctx: &mut Option<Vec<u8>>,
+    session_grant: &mut Option<pir_session_grant::GrantId>,
     client_supports_chunks: bool,
 ) where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -93,91 +91,26 @@ pub(crate) async fn handle_variant<S>(
                         };
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
-                    REQ_CREDENTIAL_PRESENT => {
-                        // Wire format:
-                        //   [1B variant=0x08]
-                        //   [1B request_context_len][request_context]
-                        //   [1B presentation_context_len][presentation_context]
-                        //   [8B presentation_limit LE]
-                        //   [presentation_bytes...]
-                        if body.len() < 11 {
-                            let resp = Response::Error("malformed REQ_CREDENTIAL_PRESENT: too short".into());
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            return;
-                        }
-                        let req_ctx_len = body[0] as usize;
-                        if body.len() < 1 + req_ctx_len + 1 {
-                            let resp = Response::Error("malformed REQ_CREDENTIAL_PRESENT: truncated".into());
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            return;
-                        }
-                        let req_ctx = &body[1..1 + req_ctx_len];
-                        let off = 1 + req_ctx_len;
-                        let pres_ctx_len = body[off] as usize;
-                        if body.len() < off + 1 + pres_ctx_len + 8 {
-                            let resp = Response::Error("malformed REQ_CREDENTIAL_PRESENT: truncated".into());
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            return;
-                        }
-                        let pres_ctx = &body[off + 1..off + 1 + pres_ctx_len];
-                        let limit_off = off + 1 + pres_ctx_len;
-                        let limit = u64::from_le_bytes(
-                            body[limit_off..limit_off + 8].try_into().unwrap()
-                        );
-                        let pres_bytes = &body[limit_off + 8..];
-
-                        let result = match &server.arc_verifier {
-                            None => Err(pir_runtime_core::arc_verifier::ArcVerifyError::InvalidProof(
-                                "ARC disabled on this server".into()
-                            )),
-                            Some(verifier) => {
-                                let mut v = verifier.lock().unwrap();
-                                v.verify(req_ctx, pres_ctx, pres_bytes, limit)
-                            }
+                    REQ_SESSION_GRANT_PRESENT => {
+                        // Wire format: [1B variant=0x0b][133B session grant]
+                        let resp = match server.session_grants.as_ref() {
+                            None => Response::Error(
+                                "session grants not enabled on this server".into(),
+                            ),
+                            Some(gate) => match current_unix_seconds_v1()
+                                .and_then(|now| gate.present(body, now))
+                            {
+                                Ok((grant_id, remaining_credits)) => {
+                                    *session_grant = Some(grant_id);
+                                    Response::SessionGrantOk { remaining_credits }
+                                }
+                                Err(message) => {
+                                    *session_grant = None;
+                                    Response::Error(message)
+                                }
+                            },
                         };
-
-                        match result {
-                            Ok(()) => {
-                                *arc_ok = true;
-                                *arc_pres_ctx = Some(pres_ctx.to_vec());
-                                let resp = Response::ArcCredentialOk;
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                            Err(e) => {
-                                *arc_ok = false;
-                                let resp = Response::Error(format!("ARC: {}", e));
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                        }
-                    }
-                    REQ_CASHU_BAT_PRESENT => {
-                        // Wire format: [1B variant=0x09][bat_base64url bytes...]
-                        let bat_str = match std::str::from_utf8(body) {
-                            Ok(s) => s,
-                            Err(_) => {
-                                let resp = Response::Error("invalid UTF-8 in Cashu BAT".into());
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                                return;
-                            }
-                        };
-                        let result = match &server.cashu_verifier {
-                            None => Err(pir_runtime_core::cashu_verifier::CashuVerifyError::InvalidFormat(
-                                "Cashu disabled on this server".into(),
-                            )),
-                            Some(v) => v.lock().unwrap().verify(bat_str),
-                        };
-                        match result {
-                            Ok(()) => {
-                                *cashu_ok = true;
-                                let resp = Response::CashuBatOk;
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                            Err(e) => {
-                                *cashu_ok = false;
-                                let resp = Response::Error(format!("Cashu: {}", e));
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                        }
+                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
                     REQ_ADMIN_AUTH_CHALLENGE => {
                         match server.admin_config {

@@ -50,16 +50,6 @@ pub use merkle_verify::{
     BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 
-/// ARC (Anonymous Rate-limited Credentials) presentation state.
-/// Exposes `WasmArcPresentationState` for the browser to produce
-/// unlinkable rate-limited credential presentations.
-pub mod arc;
-
-/// Cashu Blind Auth (NUT-22) client-side BDHKE. Exposes `WasmCashuBlind`
-/// for the browser to blind a secret, send it to the mint, and unblind the
-/// returned signature into a single-use BAT.
-pub mod cashu;
-
 /// Same-socket attestation and encrypted-frame bridge for the standalone
 /// browser OnionPIR/SEAL implementation.
 pub mod standalone_channel;

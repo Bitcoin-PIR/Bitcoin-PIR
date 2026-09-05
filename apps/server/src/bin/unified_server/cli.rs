@@ -88,18 +88,12 @@ pub(crate) struct CliArgs {
     /// Legacy `--pool-db-id`/`--pool-dir` normalizes to one entry; repeated
     /// `--harmony-pool-db <db_id>=<dir>` entries enable explicit multi-pool.
     pub(crate) harmony_pool_bindings: Vec<HarmonyPoolBinding>,
-    /// Require ARC credential presentation before serving PIR queries.
-    pub(crate) require_arc: bool,
-    /// Path to the 128-byte ARC private key (`arc_key.bin`) shared with the
-    /// issuer. When set with `--require-arc`, the verifier loads this key so
-    /// externally-issued credentials verify. Without it, a random key is
-    /// generated (no external credential can verify — dev/test only).
-    pub(crate) arc_key_path: Option<PathBuf>,
-    /// Operator-local admission configuration (`--local-admission-config`).
-    /// Replaces the legacy signed-policy surface; mutually exclusive with it.
-    pub(crate) local_admission_config: Option<PathBuf>,
-    pub(crate) require_cashu: bool,
-    pub(crate) cashu_keysets: Vec<(String, String)>,
+    /// Cashier public keys (`--session-grant-pubkey FILE`, repeatable) that
+    /// sign session grants. Empty means no grant is accepted.
+    pub(crate) session_grant_pubkeys: Vec<PathBuf>,
+    /// Reject query-bearing opcodes until a valid session grant is presented
+    /// (`--require-session-grant`). Needs at least one pinned key.
+    pub(crate) require_session_grant: bool,
     /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
@@ -325,11 +319,8 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut pool_db_id_explicit = false;
     let mut pool_dir: Option<PathBuf> = None;
     let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
-    let mut require_arc = false;
-    let mut arc_key_path: Option<PathBuf> = None;
-    let mut local_admission_config: Option<PathBuf> = None;
-    let mut require_cashu = false;
-    let mut cashu_keysets: Vec<(String, String)> = Vec::new();
+    let mut session_grant_pubkeys: Vec<PathBuf> = Vec::new();
+    let mut require_session_grant = false;
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
@@ -466,34 +457,15 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     .push(parse_harmony_pool_db_arg(spec).unwrap_or_else(|error| fatal_cli(error)));
                 i += 1;
             }
-            "--require-arc" => {
-                require_arc = true;
-            }
-            "--arc-key" => {
-                if let Some(p) = args.get(i + 1) {
-                    arc_key_path = Some(PathBuf::from(p));
-                }
-                i += 1;
-            }
-            "--local-admission-config" => {
+            "--session-grant-pubkey" => {
                 let Some(p) = args.get(i + 1) else {
-                    fatal_cli("--local-admission-config requires a file path");
+                    fatal_cli("--session-grant-pubkey requires a file path");
                 };
-                local_admission_config = Some(PathBuf::from(p));
+                session_grant_pubkeys.push(PathBuf::from(p));
                 i += 1;
             }
-            "--require-cashu" => {
-                require_cashu = true;
-            }
-            "--cashu-keyset" => {
-                // Format: --cashu-keyset <id>:<hex_secret_key>
-                // Can be repeated for multiple keysets.
-                if let Some(kv) = args.get(i + 1) {
-                    if let Some((id, sk_hex)) = kv.split_once(':') {
-                        cashu_keysets.push((id.to_string(), sk_hex.to_string()));
-                    }
-                }
-                i += 1;
+            "--require-session-grant" => {
+                require_session_grant = true;
             }
             "--max-connections" => {
                 max_connections = args
@@ -786,11 +758,8 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         vcek_dir,
         pool_size,
         harmony_pool_bindings,
-        require_arc,
-        arc_key_path,
-        local_admission_config,
-        require_cashu,
-        cashu_keysets,
+        session_grant_pubkeys,
+        require_session_grant,
         pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,

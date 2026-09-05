@@ -1,0 +1,19 @@
+[package]
+name = "pir-session-grant"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "Cashier-signed session grants for BitcoinPIR paid queries: canonical wire format, Ed25519 issue/verify, expiry, and the per-grant credit ledger a PIR server meters offline. No payment logic, filesystem, clock, or network."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+readme = "README.md"
+publish = false
+
+[dependencies]
+# Ed25519 sign + verify; the same crate pir-identity, pir-runtime-core, and
+# bpir-admin already use, so no new dependency enters the workspace.
+ed25519-dalek = "2"
+# Operator-facing public-key files may be 64 hex characters.
+hex = "0.4"

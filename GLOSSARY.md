@@ -45,6 +45,13 @@ understand the system by reading this page.
 | **HarmonyPIR** | 2-server stateful PIR with offline hints. Each PBC group is a WASM `HarmonyGroup` instance. |
 | **OnionPIR** | 1-server FHE-based PIR (OnionPIRv2). Each PBC group has its own preprocessed OnionPIR database. |
 
+## Paid access
+
+| Term | Description |
+|------|-----------|
+| **session grant** | Cashier-signed, 133-byte credit voucher (`pir_session_grant::SessionGrant`) a client presents on opcode `0x0b` before query-bearing opcodes. One credit per query-bearing request frame; verified offline by the server. See `docs/SESSION_GRANTS.md`. |
+| **cashier** | Operator-run service outside the PIR hosts that takes payment (Cashu ecash, Lightning) and issues session grants. Lives in a separate repository; the PIR server pins only its public key. |
+
 ## OnionPIR note
 
 OnionPIR's internal `push_chunk()` method refers to FHE plaintext subdivisions,

@@ -129,35 +129,6 @@ interface PirSdkWasm {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): WasmDatabaseProof;
-  // ARC (Anonymous Rate-limited Credentials) presentation state. Opaque
-  // wrapper over the Rust `arc::PresentationState`; mirrored in TS by
-  // `web/src/credential-manager.ts::ArcCredentialManager`. The constructor
-  // takes the 131-byte credential blob from the payment service plus a
-  // per-session presentation_context and a query limit; `present()` returns
-  // wire-format bytes for `REQ_CREDENTIAL_PRESENT` (server opcode 0x08) and
-  // bumps the internal nonce. `serialize()` / `deserialize()` enable
-  // encrypted IndexedDB persistence across page reloads.
-  WasmArcPresentationState: {
-    new(
-      credentialBytes: Uint8Array,
-      presentationContext: Uint8Array,
-      limit: bigint,
-    ): WasmArcPresentationState;
-    deserialize(bytes: Uint8Array): WasmArcPresentationState;
-  };
-  // ARC "obtain" leg — `WasmArcCredentialRequest`. `request_bytes()` is the
-  // 226-byte CredentialRequest POSTed to the issuer; `finalize()` combines
-  // the issuer's 99-byte pubkey + 454-byte response into the 131-byte
-  // credential consumed by `WasmArcPresentationState`.
-  WasmArcCredentialRequest: {
-    new(requestContext: Uint8Array): WasmArcCredentialRequest;
-  };
-  // Cashu Blind Auth (NUT-22) "obtain" leg — `WasmCashuBlind`. One per BAT:
-  // `blinded_message()` is POSTed to the mint, `unblind()` combines the
-  // returned 33-byte blind signature into the unblinded BAT signature.
-  WasmCashuBlind: {
-    new(): WasmCashuBlind;
-  };
   PRP_HMR12: () => number;
   PRP_FASTPRP: () => number;
   /**
@@ -779,70 +750,6 @@ interface AtomicMetricsSnapshot {
  * counters (via an `Arc` clone on the native side), so this single
  * handle aggregates events from an entire PIR deployment.
  */
-/**
- * Opaque WASM handle wrapping the Rust `arc::PresentationState`. Held by
- * `ArcCredentialManager` and mutated by `present()`; serialise / deserialise
- * round-trip the full state through caller-owned durable storage
- * so a page reload restores the remaining-presentation count without
- * re-fetching the credential from the issuer.
- */
-export interface WasmArcPresentationState {
-  free(): void;
-  /** Legacy/demo only. Reviewed ARC states reject this non-durable transition. */
-  present(): Uint8Array;
-  /** Prepare a transition whose wire bytes stay withheld until persistence. */
-  prepare_presentation(): WasmPreparedArcPresentationV1;
-  /** Remaining presentations before the credential is exhausted. */
-  remaining(): bigint;
-  /** Total presentation limit baked into the credential at issue time. */
-  limit(): bigint;
-  /** Current nonce — i.e. how many presentations were already produced. */
-  nonce(): bigint;
-  /** Serialise full state (credential + presCtx + nonce + limit) for persistence. */
-  serialize(): Uint8Array;
-}
-
-/** One-shot ARC state transition with a persist-before-release boundary. */
-export interface WasmPreparedArcPresentationV1 {
-  free(): void;
-  successor_state_bytes(): Uint8Array;
-  remaining(): bigint;
-  release_after_persisted(): Uint8Array;
-}
-
-/**
- * Opaque WASM handle for the ARC issuance "obtain" leg (pir-sdk-wasm
- * `arc.rs`). Holds the per-request `ClientSecrets` inside WASM so the
- * blinding factors never reach JS.
- */
-interface WasmArcCredentialRequest {
-  free(): void;
-  /** 226-byte `CredentialRequest` to POST to the issuer (`/dev/arc/issue`). */
-  request_bytes(): Uint8Array;
-  /**
-   * Combine the issuer's 99-byte pubkey + 454-byte `CredentialResponse`
-   * into the 131-byte credential blob for `WasmArcPresentationState`.
-   */
-  finalize(pubkeyBytes: Uint8Array, responseBytes: Uint8Array): Uint8Array;
-}
-
-/**
- * Opaque WASM handle for one Cashu blind/unblind (pir-sdk-wasm `cashu.rs`).
- * Holds the blinding scalar + secret inside WASM. Create one per BAT.
- */
-interface WasmCashuBlind {
-  free(): void;
-  /** The Cashu "secret" string (64-char hex) for the authA token. */
-  secret_string(): string;
-  /** 33-byte blinded message `B'` to POST to the mint (`/dev/cashu/mint`). */
-  blinded_message(): Uint8Array;
-  /**
-   * Unblind the mint's 33-byte `C'` with the 33-byte keyset pubkey `K`:
-   * `C = C' − r·K`. Returns the 33-byte unblinded signature.
-   */
-  unblind(keysetPubkey: Uint8Array, signature: Uint8Array): Uint8Array;
-}
-
 interface WasmAtomicMetrics {
   free(): void;
   /**

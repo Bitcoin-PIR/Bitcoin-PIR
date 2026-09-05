@@ -55,11 +55,11 @@ Wallet sync typically touches dozens of addresses at once. Bitcoin PIR packs mul
 The server hosts the complete Bitcoin UTXO set (~815K active script types at time of writing), filtered to exclude dust and very heavy addresses. Light wallets see the same data a full node would return.
 
 ### Open and self-hostable
-Anyone can run PIR servers from a public Bitcoin Core snapshot. Providers may
-publish independent workload-specific Free or paid admission offers; clients
-choose each server separately, and the directory is discovery metadata rather
-than a query or payment trust root. No production payment gate is enabled by
-merely building this repository.
+Anyone can run PIR servers from a public Bitcoin Core snapshot. Free queries
+are open; a provider can gate paid queries behind cashier-signed session
+grants ([`docs/SESSION_GRANTS.md`](docs/SESSION_GRANTS.md)) without giving
+the PIR host any payment secret. No payment gate is enabled by merely
+building this repository.
 
 ## Project Layout
 
@@ -71,8 +71,7 @@ BitcoinPIR/
 │   └── trust/         Identity, attestation, and database-proof verification
 ├── apps/
 │   ├── server/        Production server and diagnostic binaries
-│   ├── admin/         Operator CLI
-│   └── payment-issuer/ Designated cashu/ARC credential issuer
+│   └── admin/         Operator CLI
 ├── tools/
 │   ├── db-builder/    Database generation pipeline
 │   └── block-reader/  Bitcoin Core block/UTXO inspection utilities

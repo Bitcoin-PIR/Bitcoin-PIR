@@ -1,9 +1,9 @@
 use crate::cli::{CliArgs, ServerRole};
 use crate::io::*;
+use crate::session_grant::is_query_bearing_variant;
 use crate::state::UnifiedServerData;
 use crate::unsafe_debug_log;
 use futures_util::{SinkExt, StreamExt};
-use runtime::onionpir::*;
 use runtime::protocol::*;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -135,13 +135,10 @@ pub(crate) async fn serve_connections(
             // application frame; legacy clients keep working.
             let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
 
-            // Per-connection ARC state: set to true after the first valid
-            // REQ_CREDENTIAL_PRESENT. The presentation_context for this
-            // connection is the client-supplied bytes (typically a random
-            // session nonce). Tags are scoped to this context.
-            let mut arc_ok: bool = false;
-            let mut arc_pres_ctx: Option<Vec<u8>> = None;
-            let mut cashu_ok: bool = false;
+            // Per-connection session grant: the id of the last grant this
+            // client presented successfully (REQ_SESSION_GRANT_PRESENT).
+            // Credits live in the server-wide ledger, not here.
+            let mut session_grant: Option<pir_session_grant::GrantId> = None;
 
             // Per-connection transport-level chunk reassembly state. A
             // client that sends a multi-MB message (OnionPIR RegisterKeys
@@ -345,38 +342,6 @@ pub(crate) async fn serve_connections(
                 }
                 let variant = payload[0];
 
-                // ARC gate: if --require-arc is set and no valid credential
-                // presented yet, reject PIR-bearing request variants. Whitelisted
-                // variants (info, ping, auth, attest, handshake, hints, and the
-                // credential presentation itself) pass through.
-                if (server.require_arc || server.require_cashu) && !arc_ok && !cashu_ok {
-                    match variant {
-                        REQ_INDEX_BATCH
-                        | REQ_CHUNK_BATCH
-                        | REQ_BUCKET_MERKLE_SIB_BATCH
-                        | REQ_BUCKET_MERKLE_TREE_TOPS
-                        | REQ_HARMONY_QUERY
-                        | REQ_HARMONY_BATCH_QUERY
-                        | REQ_ORAM_LOOKUP
-                        | REQ_REGISTER_KEYS
-                        | REQ_ONIONPIR_INDEX_QUERY
-                        | REQ_ONIONPIR_CHUNK_QUERY
-                        | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
-                        | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
-                        | REQ_ONIONPIR_MERKLE_DATA_SIBLING
-                        | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP => {
-                            let resp = Response::Error(
-                                "ARC credential required — send REQ_CREDENTIAL_PRESENT first"
-                                    .into(),
-                            );
-                            let _ =
-                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                            continue;
-                        }
-                        _ => {}
-                    }
-                }
-
                 // Mode gate: reject hint or query requests this server isn't
                 // configured for (`--serve-hints` / `--serve-queries` flags).
                 // Whitelisted opcodes (info / ping / attest / handshake /
@@ -396,30 +361,36 @@ pub(crate) async fn serve_connections(
                         _ => {}
                     }
                 }
-                if !server.serve_queries {
-                    match variant {
-                        REQ_INDEX_BATCH
-                        | REQ_CHUNK_BATCH
-                        | REQ_BUCKET_MERKLE_SIB_BATCH
-                        | REQ_BUCKET_MERKLE_TREE_TOPS
-                        | REQ_HARMONY_QUERY
-                        | REQ_HARMONY_BATCH_QUERY
-                        | REQ_ORAM_LOOKUP
-                        | REQ_REGISTER_KEYS
-                        | REQ_ONIONPIR_INDEX_QUERY
-                        | REQ_ONIONPIR_CHUNK_QUERY
-                        | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
-                        | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
-                        | REQ_ONIONPIR_MERKLE_DATA_SIBLING
-                        | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP => {
-                            let resp = Response::Error(
-                                "server not configured to answer queries — start with --serve-queries (see deploy/systemd/*.service)".into(),
-                            );
+                if !server.serve_queries && is_query_bearing_variant(variant) {
+                    let resp = Response::Error(
+                        "server not configured to answer queries — start with --serve-queries (see deploy/systemd/*.service)".into(),
+                    );
+                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                    continue;
+                }
+
+                // Session-grant gate: query-bearing variants spend one credit
+                // of the presented grant, or are refused when grants are
+                // required and none was presented. Runs after the mode gates
+                // so a frame this host does not serve never costs a credit.
+                if let Some(gate) = server.session_grants.as_ref() {
+                    if is_query_bearing_variant(variant) {
+                        let refusal = match session_grant {
+                            Some(grant_id) => current_unix_seconds_v1()
+                                .and_then(|now| gate.consume(&grant_id, now))
+                                .err(),
+                            None if gate.require() => Some(
+                                "session grant required — send REQ_SESSION_GRANT_PRESENT first"
+                                    .to_owned(),
+                            ),
+                            None => None,
+                        };
+                        if let Some(message) = refusal {
+                            let resp = Response::Error(message);
                             let _ =
                                 send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                             continue;
                         }
-                        _ => {}
                     }
                 }
 
@@ -433,18 +404,10 @@ pub(crate) async fn serve_connections(
                     client_id,
                     peer,
                     &mut admin_state,
-                    &mut arc_ok,
-                    &mut cashu_ok,
-                    &mut arc_pres_ctx,
+                    &mut session_grant,
                     client_supports_chunks,
                 )
                 .await;
-            }
-
-            // ARC cleanup: remove the seen-tag set for this connection's
-            // presentation context so memory doesn't grow unboundedly.
-            if let (Some(ctx), Some(verifier)) = (arc_pres_ctx, &server.arc_verifier) {
-                verifier.lock().unwrap().remove_context(&ctx);
             }
 
             unsafe_debug_log!("[{}] Disconnected (id={})", peer, client_id);
