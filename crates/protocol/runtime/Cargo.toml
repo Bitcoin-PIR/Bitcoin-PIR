@@ -34,15 +34,11 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 getrandom = "0.2"
 parking_lot = "0.12"
-hmac = "0.12"
-arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
-k256 = { version = "0.13", features = ["arithmetic", "ecdsa"] }
 sha2 = "0.10"
 hkdf = { version = "0.12", default-features = false }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
 hex = "0.4"
-serde_json = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The typed guest firmware API keeps the message-version-1 derived-key ABI in

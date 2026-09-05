@@ -377,6 +377,6 @@ do not leave a mixed fleet.
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
 | Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
 
-Paid-query integration boundaries are in
-[`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md); the retired
-Payment V1 material lives only in git history.
+Paid access (cashier-signed session grants, outside the measured image) is
+described in [`SESSION_GRANTS.md`](SESSION_GRANTS.md); the retired Payment V1
+material lives only in git history.

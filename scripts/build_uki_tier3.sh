@@ -349,7 +349,7 @@ if grep -Eq -- 'etc/bitcoinpir/identity/server\.key$' <<< "$INITRD_LISTING"; the
 fi
 
 # No admission policy or payment artifact is embedded in the runtime UKI.
-# Access control lives outside the measured image (see docs/RATELIMIT_INTEGRATION.md).
+# Access control lives outside the measured image (see docs/SESSION_GRANTS.md).
 if grep -Eq -- 'etc/bitcoinpir/payment/' <<< "$INITRD_LISTING"; then
     echo "ERROR: payment artifacts must not be embedded in the Tier 3 UKI" >&2
     exit 1

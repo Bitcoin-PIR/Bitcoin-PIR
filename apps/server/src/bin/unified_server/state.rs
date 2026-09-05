@@ -114,17 +114,9 @@ pub(crate) struct UnifiedServerData {
     /// any moment), so lock contention is negligible vs the network
     /// IO it gates.
     pub(crate) v2_half_pending: Arc<tokio::sync::Mutex<HashMap<[u8; 16], V2HalfPending>>>,
-    /// ARC presentation verifier + seen-tag set. Wrapped in a Mutex because
-    /// `verify()` mutates the per-context tag set. `None` if ARC is disabled
-    /// (server started without --require-arc).
-    pub(crate) arc_verifier: Option<std::sync::Mutex<pir_runtime_core::arc_verifier::ArcVerifier>>,
-    /// Whether ARC credential presentation is required for PIR queries.
-    pub(crate) require_arc: bool,
-    /// Cashu blind auth verifier.
-    pub(crate) cashu_verifier:
-        Option<std::sync::Mutex<pir_runtime_core::cashu_verifier::CashuVerifier>>,
-    /// Whether Cashu BAT presentation is required for PIR queries.
-    pub(crate) require_cashu: bool,
+    /// Session-grant verifier and credit ledger. `None` when no cashier key
+    /// is pinned (`--session-grant-pubkey`); presentations are then refused.
+    pub(crate) session_grants: Option<crate::session_grant::SessionGrantGateV1>,
     /// Whether this server accepts `REQ_HARMONY_HINTS` /
     /// `REQ_HARMONY_HINTS_V2` opcodes (set via `--serve-hints`).
     /// Mirrors `CliArgs::serve_hints`. Gated in the dispatch loop.

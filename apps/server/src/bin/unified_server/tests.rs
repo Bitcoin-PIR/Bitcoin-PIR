@@ -1791,3 +1791,228 @@ mod secret_loader_tests_v1 {
         assert!(read_exact_secret_v1::<32>(&path, "test key").is_err());
     }
 }
+
+mod session_grant_gate {
+    //! `--session-grant-pubkey` / `--require-session-grant` wiring and the
+    //! shared credit ledger behind `REQ_SESSION_GRANT_PRESENT`.
+
+    use crate::parse_args_from;
+    use crate::session_grant::{is_query_bearing_variant, SessionGrantGateV1};
+    use pir_session_grant::{GrantSigner, SESSION_GRANT_LEN};
+    use runtime::onionpir::*;
+    use runtime::protocol::*;
+    use std::path::PathBuf;
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn args(extra: &[&str]) -> crate::CliArgs {
+        let mut argv = vec!["unified_server".to_owned()];
+        argv.extend(extra.iter().map(|s| (*s).to_owned()));
+        parse_args_from(argv)
+    }
+
+    fn signer() -> GrantSigner {
+        GrantSigner::from_seed(&[42u8; 32])
+    }
+
+    fn pubkey_file(dir: &std::path::Path, name: &str, contents: &[u8]) -> String {
+        let path = dir.join(name);
+        std::fs::write(&path, contents).expect("write public key file");
+        path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn cli_collects_repeated_pubkeys_and_the_require_flag() {
+        let parsed = args(&[
+            "--session-grant-pubkey",
+            "/a.pub",
+            "--session-grant-pubkey",
+            "/b.pub",
+            "--require-session-grant",
+        ]);
+        assert_eq!(
+            parsed.session_grant_pubkeys,
+            vec![PathBuf::from("/a.pub"), PathBuf::from("/b.pub")]
+        );
+        assert!(parsed.require_session_grant);
+        let defaults = args(&[]);
+        assert!(defaults.session_grant_pubkeys.is_empty());
+        assert!(!defaults.require_session_grant);
+    }
+
+    #[test]
+    fn gate_is_absent_without_keys_and_require_needs_a_key() {
+        assert!(SessionGrantGateV1::from_cli(&args(&[]))
+            .expect("no keys is fine")
+            .is_none());
+        let mut require_only = args(&[]);
+        require_only.require_session_grant = true;
+        let error = SessionGrantGateV1::from_cli(&require_only).unwrap_err();
+        assert!(error.contains("--session-grant-pubkey"), "{error}");
+    }
+
+    #[test]
+    fn gate_loads_hex_and_raw_key_files_and_rejects_bad_ones() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let hex_path = pubkey_file(
+            dir.path(),
+            "cashier.hex",
+            format!("{}\n", hex::encode(signer().public_key())).as_bytes(),
+        );
+        let raw_path = pubkey_file(
+            dir.path(),
+            "other.raw",
+            &GrantSigner::from_seed(&[43u8; 32]).public_key(),
+        );
+        let gate = SessionGrantGateV1::from_cli(&args(&[
+            "--session-grant-pubkey",
+            &hex_path,
+            "--session-grant-pubkey",
+            &raw_path,
+        ]))
+        .expect("loads")
+        .expect("gate present");
+        assert!(!gate.require());
+        assert_eq!(
+            gate.startup_log_line(),
+            "Session grants: accepted, not required (2 cashier key(s) pinned)"
+        );
+
+        let bad_path = pubkey_file(dir.path(), "bad.txt", b"not a key");
+        let error = SessionGrantGateV1::from_cli(&args(&["--session-grant-pubkey", &bad_path]))
+            .unwrap_err();
+        assert!(error.contains("session grant public key"), "{error}");
+
+        let duplicate = SessionGrantGateV1::from_cli(&args(&[
+            "--session-grant-pubkey",
+            &hex_path,
+            "--session-grant-pubkey",
+            &hex_path,
+        ]))
+        .unwrap_err();
+        assert!(duplicate.contains("duplicate"), "{duplicate}");
+
+        let missing = dir
+            .path()
+            .join("missing.pub")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            SessionGrantGateV1::from_cli(&args(&["--session-grant-pubkey", &missing])).is_err()
+        );
+    }
+
+    #[test]
+    fn presented_grant_is_metered_across_reconnects_until_exhausted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let signer = signer();
+        let path = pubkey_file(
+            dir.path(),
+            "cashier.hex",
+            hex::encode(signer.public_key()).as_bytes(),
+        );
+        let gate = SessionGrantGateV1::from_cli(&args(&[
+            "--session-grant-pubkey",
+            &path,
+            "--require-session-grant",
+        ]))
+        .expect("loads")
+        .expect("gate present");
+        assert!(gate.require());
+        assert_eq!(
+            gate.startup_log_line(),
+            "Session grants: required for queries (1 cashier key(s) pinned)"
+        );
+        let grant = signer
+            .issue([9u8; 16], NOW - 1, NOW + 600, 2)
+            .expect("issue");
+        let bytes = grant.encode();
+        assert_eq!(bytes.len(), SESSION_GRANT_LEN);
+
+        let (id, remaining) = gate.present(&bytes, NOW).expect("accepted");
+        assert_eq!((id, remaining), ([9u8; 16], 2));
+        assert_eq!(gate.consume(&id, NOW), Ok(1));
+        // A reconnecting client re-presents the same grant and keeps its balance.
+        assert_eq!(gate.present(&bytes, NOW).expect("re-attached").1, 1);
+        assert_eq!(gate.consume(&id, NOW), Ok(0));
+        assert!(gate.consume(&id, NOW).unwrap_err().contains("exhausted"));
+        assert!(gate.present(&bytes, NOW).unwrap_err().contains("exhausted"));
+        // An id that was never presented cannot spend.
+        assert!(gate
+            .consume(&[1u8; 16], NOW)
+            .unwrap_err()
+            .contains("not been presented"));
+    }
+
+    #[test]
+    fn foreign_expired_and_malformed_grants_are_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let signer = signer();
+        let path = pubkey_file(
+            dir.path(),
+            "cashier.hex",
+            hex::encode(signer.public_key()).as_bytes(),
+        );
+        let gate = SessionGrantGateV1::from_cli(&args(&["--session-grant-pubkey", &path]))
+            .expect("loads")
+            .expect("gate present");
+        let foreign = GrantSigner::from_seed(&[1u8; 32])
+            .issue([1u8; 16], NOW - 1, NOW + 600, 1)
+            .expect("issue");
+        assert!(gate
+            .present(&foreign.encode(), NOW)
+            .unwrap_err()
+            .contains("not a pinned cashier key"));
+        let expired = signer.issue([2u8; 16], NOW - 100, NOW, 1).expect("issue");
+        assert!(gate
+            .present(&expired.encode(), NOW)
+            .unwrap_err()
+            .contains("expired"));
+        assert!(gate
+            .present(&[0u8; 10], NOW)
+            .unwrap_err()
+            .contains("133 bytes"));
+    }
+
+    #[test]
+    fn query_bearing_variants_are_exactly_the_metered_set() {
+        for variant in [
+            REQ_INDEX_BATCH,
+            REQ_CHUNK_BATCH,
+            REQ_BUCKET_MERKLE_SIB_BATCH,
+            REQ_BUCKET_MERKLE_TREE_TOPS,
+            REQ_HARMONY_QUERY,
+            REQ_HARMONY_BATCH_QUERY,
+            REQ_ORAM_LOOKUP,
+            REQ_REGISTER_KEYS,
+            REQ_ONIONPIR_INDEX_QUERY,
+            REQ_ONIONPIR_CHUNK_QUERY,
+            REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+            REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+        ] {
+            assert!(is_query_bearing_variant(variant), "0x{variant:02x}");
+        }
+        for variant in [
+            REQ_PING,
+            REQ_GET_INFO,
+            REQ_GET_DB_CATALOG,
+            REQ_GET_DB_PROOF,
+            REQ_GET_DB_PROOF_V2,
+            REQ_ATTEST,
+            REQ_HANDSHAKE,
+            REQ_ANNOUNCE,
+            REQ_SESSION_GRANT_PRESENT,
+            REQ_HARMONY_GET_INFO,
+            REQ_HARMONY_HINTS,
+            REQ_HARMONY_HINTS_V2,
+            REQ_HARMONY_HINTS_V2_HALF,
+            REQ_ADMIN_AUTH_CHALLENGE,
+            REQ_ADMIN_AUTH_RESPONSE,
+            0x03,
+        ] {
+            assert!(!is_query_bearing_variant(variant), "0x{variant:02x}");
+        }
+    }
+}

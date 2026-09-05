@@ -89,21 +89,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arc"
-version = "0.1.0"
-source = "git+https://github.com/Bitcoin-PIR/arc.git?rev=de6c1709eee0faa32985d5a452be11904ee95de4#de6c1709eee0faa32985d5a452be11904ee95de4"
-dependencies = [
- "crypto-bigint",
- "elliptic-curve",
- "p256",
- "rand_core",
- "sha2",
- "sha3",
- "subtle",
- "zeroize",
-]
-
-[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1417,15 +1402,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "keccak"
-version = "0.1.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
-dependencies = [
- "cpufeatures",
-]
-
-[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1616,18 +1592,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
-name = "p256"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
-dependencies = [
- "ecdsa",
- "elliptic-curve",
- "primeorder",
- "sha2",
-]
-
-[[package]]
 name = "p384"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1660,17 +1624,6 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
-]
-
-[[package]]
-name = "payment-issuer"
-version = "0.1.0"
-dependencies = [
- "arc",
- "hex",
- "k256",
- "rand_core",
- "sha2",
 ]
 
 [[package]]
@@ -1761,14 +1714,11 @@ dependencies = [
 name = "pir-runtime-core"
 version = "0.1.0"
 dependencies = [
- "arc",
  "chacha20poly1305",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
  "hkdf",
- "hmac",
- "k256",
  "libc",
  "libdpf",
  "memmap2",
@@ -1780,7 +1730,6 @@ dependencies = [
  "rand_core",
  "rayon",
  "serde",
- "serde_json",
  "sev",
  "sha2",
  "tempfile",
@@ -1847,12 +1796,10 @@ dependencies = [
 name = "pir-sdk-wasm"
 version = "0.1.0"
 dependencies = [
- "arc",
  "console_error_panic_hook",
  "getrandom 0.2.17",
  "hex",
  "js-sys",
- "k256",
  "pir-attest-verify",
  "pir-channel",
  "pir-core",
@@ -1860,16 +1807,22 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "rand_core",
  "send_wrapper",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "sha2",
  "tracing-wasm",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "zeroize",
+]
+
+[[package]]
+name = "pir-session-grant"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "hex",
 ]
 
 [[package]]
@@ -2199,7 +2152,6 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
- "arc",
  "bitcoinpir-oram",
  "build",
  "clap",
@@ -2219,6 +2171,7 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
+ "pir-session-grant",
  "rand",
  "rand_chacha",
  "rayon",
@@ -2524,16 +2477,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
-]
-
-[[package]]
-name = "sha3"
-version = "0.10.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
-dependencies = [
- "digest",
- "keccak",
 ]
 
 [[package]]

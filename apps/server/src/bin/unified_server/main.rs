@@ -11,7 +11,6 @@
 //!     [--checkpoint /path/to/checkpoint <height>]...
 //!     [--delta /path/to/delta <base_height> <tip_height>]...
 
-mod admission;
 mod cli;
 mod dispatch;
 mod harmony_hints;
@@ -20,6 +19,7 @@ mod logging;
 mod onion;
 mod oram;
 mod serve;
+mod session_grant;
 mod state;
 mod unified_server_pir2_sealed;
 
@@ -34,12 +34,11 @@ pub(crate) use onion::*;
 pub(crate) use oram::*;
 pub(crate) use state::*;
 
-use admission::arc::ArcAdmissionV1;
-use admission::local::LocalAdmissionV1;
 use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
 use runtime::hint_pool;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase, ServerState};
+use session_grant::SessionGrantGateV1;
 use unified_server_pir2_sealed::{
     dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
     validate_pir2_sealed_cli_v1, Pir2SealedStartupV1, PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1,
@@ -60,11 +59,6 @@ use std::sync::atomic::Ordering;
 #[tokio::main]
 async fn main() {
     let args = parse_args();
-    if args.require_arc {
-        eprintln!(
-            "!!! WARNING: EXPERIMENTAL ARC ENABLED FOR THIS PIR SERVER; THE IMPLEMENTATION IS UNAUDITED AND MUST NOT BE USED IN PRODUCTION !!!"
-        );
-    }
     #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
     {
         UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
@@ -856,30 +850,17 @@ async fn main() {
     };
     println!("  Data root: {}", data_root.display());
 
-    // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
-    let arc_admission = ArcAdmissionV1::from_cli(&args).unwrap_or_else(|error| panic!("{error}"));
-    let (arc_verifier, require_arc) = arc_admission.into_parts();
-    let local_admission = LocalAdmissionV1::load(args.local_admission_config.as_deref())
-        .unwrap_or_else(|error| fatal_cli(error));
-    println!("  {}", local_admission.startup_log_line());
-
-    let (cashu_verifier, require_cashu) = if args.require_cashu {
-        if args.cashu_keysets.is_empty() {
-            panic!("--require-cashu requires at least one --cashu-keyset <id>:<hex_sk>");
+    // ── Session-grant admission (cashier keys pinned by flag) ────────────
+    let session_grants =
+        SessionGrantGateV1::from_cli(&args).unwrap_or_else(|error| fatal_cli(error));
+    match session_grants.as_ref() {
+        Some(gate) => println!("  {}", gate.startup_log_line()),
+        None => {
+            println!("  Session grants: disabled (pin a cashier key with --session-grant-pubkey)")
         }
-        let verifier =
-            pir_runtime_core::cashu_verifier::CashuVerifier::from_keys(&args.cashu_keysets)
-                .expect("valid Cashu keysets");
-        println!(
-            "  Cashu: enabled — {} keyset(s) loaded",
-            verifier.keyset_count()
-        );
-        (Some(std::sync::Mutex::new(verifier)), true)
-    } else {
-        println!("  Cashu: disabled (use --require-cashu to enable)");
-        (None, false)
-    };
+    }
 
+    // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
     let mut hint_pools = BTreeMap::new();
     for binding in &args.harmony_pool_bindings {
         let pool_config = hint_pool::HintPoolConfig {
@@ -943,10 +924,7 @@ async fn main() {
         #[cfg(feature = "cuckoo-oram")]
         direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        arc_verifier,
-        require_arc,
-        cashu_verifier,
-        require_cashu,
+        session_grants,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
     });
