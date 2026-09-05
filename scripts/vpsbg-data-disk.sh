@@ -95,7 +95,7 @@ require_data_path() {
 require_startup_env_schema() {
   local path=$1
   [[ -f "$path" && -s "$path" ]] || { echo "local startup.env is missing or empty: $path" >&2; exit 2; }
-  grep -qx 'schema=bitcoinpir-pir2-sealed-startup-v2' "$path" \
+  grep -qx 'schema=bitcoinpir-pir2-sealed-startup-v3' "$path" \
     || { echo 'startup.env is not a ceremony v2 file' >&2; exit 2; }
   grep -qx 'profile=pir2-snp-sealed-v1' "$path" \
     || { echo 'startup.env is not a pir2 sealed profile file' >&2; exit 2; }

@@ -18,11 +18,6 @@ use pir_runtime_core::snp_sealed_secrets::{
 };
 use super::read_regular_file_bounded_v1;
 
-// Ceremony still supplies these files until the R5 sealed-startup
-// simplification. S4 only stops decoding them as deleted-world types.
-const MAX_ACCOUNTING_AUTHORIZATION_LEN_V1: usize = 16 * 1024;
-const MAX_ISSUER_APPROVAL_LEN_V1: usize = 145;
-
 const MAX_IDENTITY_CERT_LEN_V1: usize = 4096;
 const MAX_RELEASE_LEN_V1: usize = 2048;
 pub(super) const PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1: i32 = 42;
@@ -86,8 +81,6 @@ pub(super) struct Pir2SealedCliV1 {
     pub current_boot_id_hex: Option<String>,
     pub current_channel_pubkey_hex: Option<String>,
     pub identity_cert_path: Option<PathBuf>,
-    pub accounting_authorization_path: Option<PathBuf>,
-    pub issuer_approval_path: Option<PathBuf>,
 }
 
 impl Pir2SealedCliV1 {
@@ -104,8 +97,6 @@ impl Pir2SealedCliV1 {
             || self.current_boot_id_hex.is_some()
             || self.current_channel_pubkey_hex.is_some()
             || self.identity_cert_path.is_some()
-            || self.accounting_authorization_path.is_some()
-            || self.issuer_approval_path.is_some()
     }
 }
 
@@ -143,8 +134,6 @@ struct CompletePir2SealedCliV1<'a> {
     current_boot_id: [u8; 16],
     expected_current_channel_pubkey: Option<[u8; 32]>,
     identity_cert_path: Option<&'a Path>,
-    accounting_authorization_path: Option<&'a Path>,
-    issuer_approval_path: Option<&'a Path>,
 }
 
 /// Validate the all-or-nothing group and its exclusions without touching a
@@ -152,16 +141,13 @@ struct CompletePir2SealedCliV1<'a> {
 pub(super) fn validate_pir2_sealed_cli_v1(
     cli: &Pir2SealedCliV1,
     plaintext_identity_configured: bool,
-    plaintext_clearing_configured: bool,
 ) -> Result<(), String> {
     if !cli.any_configured() {
         return Ok(());
     }
     complete_cli_v1(cli)?;
-    if plaintext_identity_configured || plaintext_clearing_configured {
-        return Err(
-            "pir2 SNP-sealed mode forbids plaintext identity or clearing-key inputs".to_owned(),
-        );
+    if plaintext_identity_configured {
+        return Err("pir2 SNP-sealed mode forbids plaintext identity inputs".to_owned());
     }
     Ok(())
 }
@@ -185,20 +171,13 @@ fn complete_cli_v1(cli: &Pir2SealedCliV1) -> Result<CompletePir2SealedCliV1<'_>,
         .ordinal
         .filter(|value| *value > 0)
         .ok_or_else(|| "--pir2-snp-sealed-ordinal must be non-zero".to_owned())?;
-    let ready_paths = (
-        cli.identity_cert_path.as_deref(),
-        cli.accounting_authorization_path.as_deref(),
-        cli.issuer_approval_path.as_deref(),
-    );
+    let identity_cert_path = cli.identity_cert_path.as_deref();
     if phase == Pir2SealedStartupPhaseV1::Ready {
-        if ready_paths.0.is_none() || ready_paths.1.is_none() || ready_paths.2.is_none() {
-            return Err("ready sealed mode requires identity cert, accounting authorization, and issuer approval paths".to_owned());
+        if identity_cert_path.is_none() {
+            return Err("ready sealed mode requires --pir2-snp-sealed-identity-cert".to_owned());
         }
-    } else if ready_paths.0.is_some() || ready_paths.1.is_some() || ready_paths.2.is_some() {
-        return Err(
-            "inert sealed phases forbid premature identity/accounting authorization artifacts"
-                .to_owned(),
-        );
+    } else if identity_cert_path.is_some() {
+        return Err("inert sealed phases forbid a premature identity certificate".to_owned());
     }
     let release_path = match phase {
         Pir2SealedStartupPhaseV1::Observe => {
@@ -238,9 +217,7 @@ fn complete_cli_v1(cli: &Pir2SealedCliV1) -> Result<CompletePir2SealedCliV1<'_>,
                 decode_hex_array_v1(Some(value), "--pir2-snp-sealed-current-channel-pubkey-hex")
             })
             .transpose()?,
-        identity_cert_path: ready_paths.0,
-        accounting_authorization_path: ready_paths.1,
-        issuer_approval_path: ready_paths.2,
+        identity_cert_path,
     })
 }
 
@@ -460,19 +437,6 @@ fn load_ready_artifacts_v1(
         );
     }
 
-    // Presence-only: the measured ceremony still writes these files. S4
-    // stops decoding the deleted clearing types; R5 drops the files.
-    let _accounting_bytes = read_regular_file_bounded_v1(
-        cli.accounting_authorization_path
-            .expect("ready paths checked"),
-        MAX_ACCOUNTING_AUTHORIZATION_LEN_V1,
-        "pir2 accounting authorization",
-    )?;
-    let _approval_bytes = read_regular_file_bounded_v1(
-        cli.issuer_approval_path.expect("ready paths checked"),
-        MAX_ISSUER_APPROVAL_LEN_V1,
-        "pir2 issuer approval",
-    )?;
     Ok(identity_cert)
 }
 
@@ -550,8 +514,6 @@ mod tests {
             current_boot_id_hex: Some("22".repeat(16)),
             current_channel_pubkey_hex: Some("33".repeat(32)),
             identity_cert_path: ready.then(|| "identity.cert".into()),
-            accounting_authorization_path: ready.then(|| "accounting.bin".into()),
-            issuer_approval_path: ready.then(|| "approval.bin".into()),
         }
     }
 
@@ -564,32 +526,31 @@ mod tests {
                 .as_slice()
         );
         let disabled = Pir2SealedCliV1::default();
-        assert!(validate_pir2_sealed_cli_v1(&disabled, false, false).is_ok());
+        assert!(validate_pir2_sealed_cli_v1(&disabled, false).is_ok());
         let mut partial = Pir2SealedCliV1::default();
         partial.preflight_only = true;
-        assert!(validate_pir2_sealed_cli_v1(&partial, false, false).is_err());
+        assert!(validate_pir2_sealed_cli_v1(&partial, false).is_err());
         let ready = complete(Pir2SealedStartupPhaseV1::Ready);
-        assert!(validate_pir2_sealed_cli_v1(&ready, false, false).is_ok());
-        assert!(validate_pir2_sealed_cli_v1(&ready, true, false).is_err());
-        assert!(validate_pir2_sealed_cli_v1(&ready, false, true).is_err());
+        assert!(validate_pir2_sealed_cli_v1(&ready, false).is_ok());
+        assert!(validate_pir2_sealed_cli_v1(&ready, true).is_err());
 
         let mut ready_preflight = complete(Pir2SealedStartupPhaseV1::Ready);
         ready_preflight.preflight_only = true;
         ready_preflight.require_ready = false;
-        assert!(validate_pir2_sealed_cli_v1(&ready_preflight, false, false).is_ok());
+        assert!(validate_pir2_sealed_cli_v1(&ready_preflight, false).is_ok());
 
         let mut invalid_probe = complete(Pir2SealedStartupPhaseV1::Probe);
         invalid_probe.preflight_only = false;
         invalid_probe.require_ready = true;
-        assert!(validate_pir2_sealed_cli_v1(&invalid_probe, false, false).is_err());
+        assert!(validate_pir2_sealed_cli_v1(&invalid_probe, false).is_err());
 
         let mut observe_with_release = complete(Pir2SealedStartupPhaseV1::Observe);
         observe_with_release.release_path = Some("premature-release.bin".into());
-        assert!(validate_pir2_sealed_cli_v1(&observe_with_release, false, false).is_err());
+        assert!(validate_pir2_sealed_cli_v1(&observe_with_release, false).is_err());
 
         let mut enroll_without_release = complete(Pir2SealedStartupPhaseV1::Enroll);
         enroll_without_release.release_path = None;
-        assert!(validate_pir2_sealed_cli_v1(&enroll_without_release, false, false).is_err());
+        assert!(validate_pir2_sealed_cli_v1(&enroll_without_release, false).is_err());
     }
 
     #[test]
@@ -598,7 +559,7 @@ mod tests {
         probe.identity_cert_path = Some("too-early.cert".into());
         assert!(complete_cli_v1(&probe).is_err());
         let mut ready = complete(Pir2SealedStartupPhaseV1::Ready);
-        ready.issuer_approval_path = None;
+        ready.identity_cert_path = None;
         assert!(complete_cli_v1(&ready).is_err());
     }
 
@@ -676,7 +637,7 @@ mod tests {
         operator: SigningKey,
         provider: ReadyProviderV1,
         cli: Pir2SealedCliV1,
-        accounting_path: PathBuf,
+        identity_cert_path: PathBuf,
         receipt_path: PathBuf,
         marker_path: PathBuf,
     }
@@ -735,11 +696,6 @@ mod tests {
         let identity_cert_path = directory.path().join("identity.cert");
         std::fs::write(&identity_cert_path, identity_cert.encode()).unwrap();
 
-        let accounting_path = directory.path().join("accounting.bin");
-        std::fs::write(&accounting_path, [0xA1; 32]).unwrap();
-        let issuer_approval_path = directory.path().join("approval.bin");
-        std::fs::write(&issuer_approval_path, [0xA2; 32]).unwrap();
-
         let receipt_path = directory.path().join("ready-preflight-receipt.bin");
         let marker_path = directory.path().join("ready-preflight.marker");
         let cli = Pir2SealedCliV1 {
@@ -754,9 +710,7 @@ mod tests {
             verifier_nonce_hex: Some("41".repeat(32)),
             current_boot_id_hex: Some("42".repeat(16)),
             current_channel_pubkey_hex: Some("43".repeat(32)),
-            identity_cert_path: Some(identity_cert_path),
-            accounting_authorization_path: Some(accounting_path.clone()),
-            issuer_approval_path: Some(issuer_approval_path),
+            identity_cert_path: Some(identity_cert_path.clone()),
         };
         let provider = ReadyProviderV1::new(verified.release());
 
@@ -765,7 +719,7 @@ mod tests {
             operator,
             provider,
             cli,
-            accounting_path,
+            identity_cert_path,
             receipt_path,
             marker_path,
         }
@@ -897,8 +851,8 @@ mod tests {
     fn ready_preflight_bad_artifact_writes_neither_receipt_nor_marker() {
         let fixture = ready_preflight_fixture_v1();
         std::fs::write(
-            &fixture.accounting_path,
-            vec![0xA1; MAX_ACCOUNTING_AUTHORIZATION_LEN_V1 + 1],
+            &fixture.identity_cert_path,
+            vec![0xA1; MAX_IDENTITY_CERT_LEN_V1 + 1],
         )
         .unwrap();
 
@@ -913,7 +867,7 @@ mod tests {
             Ok(_) => panic!("bad Ready artifact unexpectedly passed preflight"),
             Err(error) => error,
         };
-        assert!(error.contains("accounting authorization"));
+        assert!(error.contains("identity certificate"), "unexpected error: {error}");
         assert_eq!(fixture.provider.report_calls.get(), 1);
         assert_eq!(fixture.provider.derive_calls.get(), 1);
         assert!(!fixture.receipt_path.exists());

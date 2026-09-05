@@ -86,39 +86,14 @@ function run(command, args, options = {}) {
   return result;
 }
 
-function writeSealedStartup(
-  root,
-  phase,
-  ordinal = 1,
-  servicePolicyPath = path.join(root, "service-policy.bin"),
-) {
-  const currentClassPath = path.join(root, `public/classes/${"43".repeat(32)}.bin`);
-  const accountingAuthorizationPath = path.join(root, "provider-accounting-authorization.bin");
-  const accountingApprovalPath = path.join(root, "issuer-accounting-approval.bin");
-  if (!existsSync(servicePolicyPath)) write(servicePolicyPath, "fixture current policy\n");
-  write(currentClassPath, "fixture current class\n");
-  write(accountingAuthorizationPath, "provider-accounting-authorization.bin fixture\n");
-  write(accountingApprovalPath, "issuer-accounting-approval.bin fixture\n");
-  const artifactSet = `schema=bitcoinpir-pir2-bat-v2-public-artifact-set-v1
-current_policy=${"42".repeat(32)}=${sha256(readFileSync(servicePolicyPath))}=${servicePolicyPath}
-current_class=${"43".repeat(32)}=${sha256(readFileSync(currentClassPath))}=${currentClassPath}
-accounting_authorization=${"49".repeat(32)}=${sha256(readFileSync(accountingAuthorizationPath))}=${accountingAuthorizationPath}
-accounting_approval=${"4a".repeat(32)}=${sha256(readFileSync(accountingApprovalPath))}=${accountingApprovalPath}
-`;
-  const artifactSetPath = path.join(root, "public-artifact-set.env");
-  write(artifactSetPath, artifactSet);
+function writeSealedStartup(root, phase, ordinal = 1) {
   write(
     path.join(root, "startup.env"),
-    `schema=bitcoinpir-pir2-sealed-startup-v2
+    `schema=bitcoinpir-pir2-sealed-startup-v3
 profile=pir2-snp-sealed-v1
 phase=${phase}
 ordinal=${ordinal}
 verifier_nonce_hex=${"41".repeat(32)}
-current_policy_digest_hex=${"42".repeat(32)}
-class_digest_hex=${"43".repeat(32)}
-artifact_set_path=${artifactSetPath}
-artifact_set_sha256=${sha256(artifactSet)}
-minimum_authorization_epoch=7
 `,
   );
 }
@@ -129,23 +104,15 @@ function authoritativeAttemptToken({
   bootIdHex,
   ordinal = 1,
   nonce = "41".repeat(32),
-  policy = "42".repeat(32),
-  classDigest = "43".repeat(32),
-  artifactSetSha256 = "49".repeat(32),
-  minimumAuthorizationEpoch = 7,
   receiptProtocolDigest = "44".repeat(32),
   receiptFileSha256 = "45".repeat(32),
 }) {
-  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v2
+  return `schema=bitcoinpir-pir2-sealed-authoritative-attempt-v3
 kind=${kind}
 phase=${phase}
 boot_id=${bootIdHex}
 ordinal=${ordinal}
 verifier_nonce_hex=${nonce}
-current_policy_digest_hex=${policy}
-class_digest_hex=${classDigest}
-artifact_set_sha256=${artifactSetSha256}
-minimum_authorization_epoch=${minimumAuthorizationEpoch}
 receipt_protocol_digest=${receiptProtocolDigest}
 receipt_file_sha256=${receiptFileSha256}
 `;
@@ -162,7 +129,7 @@ try {
   );
   assert.doesNotMatch(
     tier3RunText,
-    /(?:server\.key|--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/,
+    /(?:server\.key|--identity-key-path|--service-)/,
     "sealed pir2 startup must not accept a plaintext signing-key path",
   );
   assert.match(tier3RunText, /ulimit -c 0/);
@@ -184,14 +151,14 @@ try {
   );
   assert.match(tier3RunText, /ready-preflight-\$PIR2_BOOT_ID_HEX\.bin/);
   assert.match(tier3RunText, /ready-runtime-\$PIR2_BOOT_ID_HEX\.bin/);
-  assert.match(
+  assert.doesNotMatch(
     tier3RunText,
-    /validate_pir2_public_artifact_set[\s\S]*run_pir2_with_public_artifacts exec[\s\S]*--pir2-snp-sealed-require-ready/,
-    "final serving must use sealed Ready plus the validated public artifact set",
+    /public-artifact-set|service-policy|accounting-authorization|issuer-approval|class_digest|minimum_authorization_epoch/,
+    "measured startup must not read any payment-era artifact or policy input",
   );
   assert.doesNotMatch(
     tier3RunText,
-    /--service-storeless-bat-v2-|--require-service-auth-v1|--service-policy |--service-provider-id-hex|--service-policy-key-hex|--service-max-concurrent|--service-pre-auth-timeout-ms/,
+    /--service-|--require-service-auth-v1/,
     "measured argv must not pass deleted Payment V1 flags",
   );
   assert.doesNotMatch(
@@ -612,7 +579,6 @@ exit_code=42
   const bhtmProof = path.join(mismatchRoot, "height-940611.leaf-proof.json");
   const mismatchBootId = path.join(mismatchRoot, "boot_id");
   const mismatchSwaps = path.join(mismatchRoot, "swaps");
-  const mismatchServicePolicy = path.join(mismatchRoot, "service-policy.bin");
   write(oramctl, `#!/bin/sh\nprintf invoked > "${marker}"\n`);
   write(
     unifiedServer,
@@ -648,13 +614,12 @@ exit 0
   chmodSync(unifiedServer, 0o755);
   write(bhtmProof, "{}\n");
   write(mismatchSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
-  write(mismatchServicePolicy, "fixture policy\n");
   writeFileSync(mismatchBootId, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\n");
   write(path.join(mismatchData, "runtime-db0/MANIFEST.toml"), "runtime manifest\n");
   createProofV1(mismatchData, "proof-v1-db0");
   createProofV1(mismatchData, "proof-v1-db1");
   write(path.join(mismatchData, "proof-v2-db0/server-db/MANIFEST.toml"), "proof manifest\n");
-  writeSealedStartup(path.join(mismatchData, "pir2-sealed"), "ready", 1, mismatchServicePolicy);
+  writeSealedStartup(path.join(mismatchData, "pir2-sealed"), "ready", 1);
   write(
     path.join(mismatchData, "databases.toml"),
     `[[database]]\nname = "main"\ntype = "full"\npath = "runtime-db0"\nproof_dir = "proof-v1-db0"\nproof_v2_dir = "proof-v2-db0"\nbase_height = 0\nheight = 948454\n\n[[database]]\nname = "delta"\ntype = "delta"\npath = "runtime-db1"\nproof_dir = "proof-v1-db1"\nproof_v2_dir = "proof-v2-db1"\nbase_height = 940611\nheight = 948454\n`,
@@ -663,7 +628,6 @@ exit 0
   const fixtureRunScript = path.join(mismatchRoot, "unified-server-run.sh");
   const transformed = readFileSync(tier3RunScript, "utf8")
     .replaceAll("/home/pir/data", mismatchData)
-    .replace("SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin", `SERVICE_POLICY_PATH=${mismatchServicePolicy}`)
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", bhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${oramctl}`)
     .replace(
@@ -734,19 +698,11 @@ exit 0
   writeDirectDb("db1", "db1 runtime manifest\n", db1Index, db1Chunks);
   createProofV1(directData, "db0-proof-v1");
   createProofV1(directData, "db1-proof-v1");
-  const directServicePolicy = path.join(directRoot, "service-policy.bin");
   const directSwaps = path.join(directRoot, "swaps");
   const directSealedRoot = path.join(directData, "pir2-sealed");
-  write(directServicePolicy, "fixture policy\n");
   write(directSwaps, "Filename\tType\tSize\tUsed\tPriority\n");
-  writeSealedStartup(directSealedRoot, "ready", 1, directServicePolicy);
-  for (const relative of [
-    "release.bin",
-    "credentials.envelope.bin",
-    "provider-accounting-authorization.bin",
-    "issuer-accounting-approval.bin",
-    "bat-acceptance-class.bin",
-  ]) {
+  writeSealedStartup(directSealedRoot, "ready", 1);
+  for (const relative of ["release.bin", "credentials.envelope.bin"]) {
     write(path.join(directSealedRoot, relative), `${relative} fixture\n`);
   }
   write(
@@ -839,7 +795,6 @@ exit 1
   const directRunScript = path.join(directRoot, "unified-server-run.sh");
   const directTransformed = readFileSync(tier3RunScript, "utf8")
     .replaceAll("/home/pir/data", directData)
-    .replace("SERVICE_POLICY_PATH=/etc/bitcoinpir/payment/service-policy.bin", `SERVICE_POLICY_PATH=${directServicePolicy}`)
     .replace("/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json", directBhtmProof)
     .replace("ORAMCTL=/usr/local/bin/oramctl", `ORAMCTL=${directOramctl}`)
     .replaceAll("/run/bitcoinpir-oram-status-api", directStatusApiRoot)
@@ -901,11 +856,11 @@ exit 1
   const completeStartup = readFileSync(path.join(directSealedRoot, "startup.env"), "utf8");
   writeFileSync(
     path.join(directSealedRoot, "startup.env"),
-    completeStartup.replace(/^class_digest_hex=.*\n/m, ""),
+    completeStartup.replace(/^verifier_nonce_hex=.*\n/m, ""),
   );
   const partialSealedConfig = run("sh", [directRunScript], { env: directEnv });
   assert.notEqual(partialSealedConfig.status, 0, partialSealedConfig.stdout + partialSealedConfig.stderr);
-  assert.match(partialSealedConfig.stderr, /exactly one non-empty class_digest_hex/);
+  assert.match(partialSealedConfig.stderr, /exactly one non-empty verifier_nonce_hex/);
   assert.equal(existsSync(directMarker), false, "ORAM must not run with partial sealed config");
   assert.equal(existsSync(unifiedStarts), false, "server must not run with partial sealed config");
   writeFileSync(path.join(directSealedRoot, "startup.env"), completeStartup);
@@ -924,13 +879,9 @@ exit 1
   assert.match(finalArgs, /--direct-oram-db\n0=.*db0-mainnet-948454/);
   assert.match(finalArgs, /--direct-oram-db\n1=.*db1-delta-940611-948454/);
   assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
-  assert.match(finalArgs, /--pir2-snp-sealed-accounting-authorization/);
-  assert.match(finalArgs, /--pir2-snp-sealed-issuer-approval/);
-  assert.doesNotMatch(
-    finalArgs,
-    /--service-storeless-bat-v2-|--require-service-auth-v1|--service-policy |--service-provider-id-hex|--service-policy-key-hex|--service-max-concurrent|--service-pre-auth-timeout-ms/,
-  );
-  assert.doesNotMatch(finalArgs, /(?:--identity-key-path|--service-shared-clearing-key|--service-storeless-bat-v2-pir1-clearing-key)/);
+  assert.match(finalArgs, /--pir2-snp-sealed-identity-cert/);
+  assert.doesNotMatch(finalArgs, /--pir2-snp-sealed-(?:accounting-authorization|issuer-approval)/);
+  assert.doesNotMatch(finalArgs, /--service-|--require-service-auth-v1|--identity-key-path/);
   assert.deepEqual(
     readFileSync(directEvents, "utf8").trim().split("\n").map((event) =>
       event
@@ -967,17 +918,7 @@ exit 1
   );
   const readyPreflightTokenText = readFileSync(readyPreflightToken, "utf8");
   assert.match(readyPreflightTokenText, /kind=ready-preflight\nphase=ready\n/);
-  const directArtifactSet = path.join(directSealedRoot, "public-artifact-set.env");
-  assert.match(
-    readyPreflightTokenText,
-    new RegExp(`artifact_set_sha256=${sha256(readFileSync(directArtifactSet))}`),
-  );
-  const trustedArtifactSet = path.join(
-    directEnv.BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT,
-    `public-artifact-set-${firstBootHex}.env`,
-  );
-  assert.equal(readFileSync(trustedArtifactSet, "utf8"), readFileSync(directArtifactSet, "utf8"));
-  assert.equal(statSync(trustedArtifactSet).mode & 0o777, 0o600);
+  assert.equal(readyPreflightTokenText.trim().split("\n").length, 8, "attempt token carries exactly eight fields");
   assert.match(
     readyPreflightTokenText,
     new RegExp(`receipt_file_sha256=${sha256(readFileSync(readyPreflightReceipt))}`),

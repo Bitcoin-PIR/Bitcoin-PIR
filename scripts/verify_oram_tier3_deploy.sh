@@ -12,14 +12,6 @@ SERVER=${SERVER:-wss://weikeng2.bitcoinpir.org}
 EXPECT_ARK_FINGERPRINT=${EXPECT_ARK_FINGERPRINT:-1f084161a44bb6d93778a904877d4819cafa5d05ef4193b2ded9dd9c73dd3f6a}
 ORAM_SMOKE_HASH=${ORAM_SMOKE_HASH:-4242424242424242424242424242424242424242}
 ORAM_PADDED_SLOTS=${ORAM_PADDED_SLOTS:-25}
-SERVICE_PROVIDER_ID=${SERVICE_PROVIDER_ID:-a6465c49877dcc7062f383085ddf0479c76af8b2aee28bf3d3a40f4f202d888d}
-SERVICE_POLICY_SIGNING_KEY=${SERVICE_POLICY_SIGNING_KEY:-791d6e18d6ed2147a0925ec23a157e7ef1f9314d7add7d13b179ef14c16e91b2}
-DB0_MANIFEST_ROOT=${DB0_MANIFEST_ROOT:-91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6}
-DB1_MANIFEST_ROOT=${DB1_MANIFEST_ROOT:-047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c}
-DB0_PROOF_PARAMS=${DB0_PROOF_PARAMS:-a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563}
-DB1_PROOF_PARAMS=${DB1_PROOF_PARAMS:-fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d}
-PROOF_BUILDER_BINARY=${PROOF_BUILDER_BINARY:-cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f}
-PROOF_BUILDER_GIT_COMMIT=${PROOF_BUILDER_GIT_COMMIT:-8d9d21a6be560236cb666269cf1f93a3de53bb1f}
 
 if [ -n "${BPIR_ADMIN:-}" ]; then
     ADMIN_CMD=("$BPIR_ADMIN")
@@ -45,22 +37,8 @@ echo
 echo
 cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
     --server "$SERVER" --db-id 0 --padded-slots "$ORAM_PADDED_SLOTS" \
-    --service-free-pow \
-    --service-provider-id-hex "$SERVICE_PROVIDER_ID" \
-    --service-policy-signing-key-hex "$SERVICE_POLICY_SIGNING_KEY" \
-    --service-manifest-root-hex "$DB0_MANIFEST_ROOT" \
-    --service-proof-params-hash-hex "$DB0_PROOF_PARAMS" \
-    --service-builder-binary-sha256-hex "$PROOF_BUILDER_BINARY" \
-    --service-builder-git-commit "$PROOF_BUILDER_GIT_COMMIT" \
     "$ORAM_SMOKE_HASH"
 echo
 cargo run --locked -p pir-sdk-client --example oram_local_smoke -- \
     --server "$SERVER" --db-id 1 --padded-slots "$ORAM_PADDED_SLOTS" \
-    --service-free-pow \
-    --service-provider-id-hex "$SERVICE_PROVIDER_ID" \
-    --service-policy-signing-key-hex "$SERVICE_POLICY_SIGNING_KEY" \
-    --service-manifest-root-hex "$DB1_MANIFEST_ROOT" \
-    --service-proof-params-hash-hex "$DB1_PROOF_PARAMS" \
-    --service-builder-binary-sha256-hex "$PROOF_BUILDER_BINARY" \
-    --service-builder-git-commit "$PROOF_BUILDER_GIT_COMMIT" \
     "$ORAM_SMOKE_HASH"

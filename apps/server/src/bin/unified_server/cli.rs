@@ -100,7 +100,7 @@ pub(crate) struct CliArgs {
     pub(crate) local_admission_config: Option<PathBuf>,
     pub(crate) require_cashu: bool,
     pub(crate) cashu_keysets: Vec<(String, String)>,
-    /// Measurement-bound pir2 identity/clearing dispatcher. This group is
+    /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
     /// Hard cap on live TCP/WebSocket tasks. Connections over the cap are
@@ -618,20 +618,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                 pir2_sealed.identity_cert_path =
                     Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
                         fatal_cli("--pir2-snp-sealed-identity-cert requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-accounting-authorization" => {
-                pir2_sealed.accounting_authorization_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-accounting-authorization requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-issuer-approval" => {
-                pir2_sealed.issuer_approval_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-issuer-approval requires a path")
                     })));
                 i += 1;
             }

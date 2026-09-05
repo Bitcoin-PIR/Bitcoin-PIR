@@ -318,7 +318,7 @@ export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
  * backed up out-of-band) and signs the pir1 `IdentityCert`
  * (`bpir-admin sign-identity`, valid_until 2029-05).
  *
- * Since the 2026-08-21 BAT V2 genesis sealed ceremony, pir2's
+ * Since the 2026-08-21 genesis sealed ceremony, pir2's
  * `IdentityCert` is signed by its own per-provider operator key. The
  * product flow takes each provider's operator pin from
  * `functional-beta-trusted-bootstrap.json` (`operatorSigningKeyHex`),

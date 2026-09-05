@@ -5,7 +5,7 @@
 # Fills every field it can compute locally:
 #   - recorded_at from the clock
 #   - uki_name / uki_bytes / uki_sha256 from the UKI file
-#   - unified_server_sha256 / oramctl_sha256 / service_policy_sha256 from
+#   - unified_server_sha256 / oramctl_sha256 from
 #     the UKI's sibling .meta file (build_uki_tier3.sh output), if present
 #   - runtime_git_revision / web_pin_git_revision from flags (or HEAD)
 # Everything else (measurement, db manifests, acceptance evidence) must be
@@ -93,10 +93,9 @@ runtime_git_revision="$(rev_or_head "$runtime_rev")"
 web_pin_git_revision="$(rev_or_head "$web_pin_rev")"
 unified_server_sha256="$(meta_get binary_sha256)"
 oramctl_sha256="$(meta_get oramctl_sha256)"
-service_policy_sha256="$(meta_get service_policy_sha256)"
 
 if [ ! -f "$meta" ]; then
-    echo "NOTE: no sibling .meta file at $meta — binary/policy hashes left as TODO" >&2
+    echo "NOTE: no sibling .meta file at $meta — binary hashes left as TODO" >&2
 fi
 
 [ -n "$out" ] || out="$REPO_ROOT/docs/data-retention/production-release-image-$image_id.env"
@@ -117,7 +116,6 @@ runtime_git_revision=$runtime_git_revision
 web_pin_git_revision=$web_pin_git_revision
 unified_server_sha256=$unified_server_sha256
 oramctl_sha256=$oramctl_sha256
-service_policy_sha256=$service_policy_sha256
 measurement=$measurement
 db0_server_manifest_sha256=$db0
 db1_server_manifest_sha256=$db1

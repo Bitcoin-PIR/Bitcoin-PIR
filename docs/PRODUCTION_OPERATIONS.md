@@ -232,7 +232,7 @@ Never build a provisioner UKI. Detach body is
 Details: [Sealed release](runbooks/pir2-sealed-release.md).
 
 1. Local — `scripts/pir2-sealed-ceremony.sh phase --phase observe ...`
-   (`--dry-run` first). Inputs (ordinal, nonce, digests, epoch) are
+   (`--dry-run` first). Inputs (ordinal, nonce) are
    supplied by the operator; do not invent them.
 2. Auth — Flow F to place that exact file at
    `/home/pir/data/pir2-sealed/startup.env`, then boot the measured UKI.

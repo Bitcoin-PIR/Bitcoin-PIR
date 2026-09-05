@@ -40,7 +40,7 @@ close_preview=$("$script_dir/vpsbg-data-disk.sh" close --server-id 25285 --image
 grep -qx 'PASS action=close dry_run=true' <<<"$close_preview"
 
 printf '%s\n' \
-  'schema=bitcoinpir-pir2-sealed-startup-v2' \
+  'schema=bitcoinpir-pir2-sealed-startup-v3' \
   'profile=pir2-snp-sealed-v1' \
   'phase=observe' >"$tmp/observe.startup.env"
 put_preview=$("$script_dir/vpsbg-data-disk.sh" put \

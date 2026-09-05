@@ -5,14 +5,11 @@ usage() { cat <<'EOF'
 usage: scripts/pir2-sealed-ceremony.sh release [bpir-admin pir2-sealed-release options] [--dry-run]
        scripts/pir2-sealed-ceremony.sh phase \
          --phase observe|enroll|probe|ready --out PATH --ordinal NON_ZERO \
-         --verifier-nonce-hex HEX64 --policy-digest-hex HEX64 \
-         --class-digest-hex HEX64 --artifact-set-sha256 HEX64 \
-         --minimum-authorization-epoch NON_ZERO [--dry-run]
+         --verifier-nonce-hex HEX64 [--dry-run]
 
 `release` forwards its options exactly to `bpir-admin pir2-sealed-release`.
-`phase` writes the public, canonical-v2 startup.env consumed by the measured
-UKI. Its artifact-set path is fixed to /home/pir/data/pir2-sealed/public-artifact-set.env.
---dry-run never reads a signing key, release input, or host state.
+`phase` writes the public, canonical-v3 startup.env consumed by the measured
+UKI. --dry-run never reads a signing key, release input, or host state.
 EOF
 }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -20,8 +17,7 @@ action=${1:-}; [[ "$action" != --help && "$action" != -h ]] || { usage; exit 0; 
 [[ "$action" =~ ^(release|phase)$ ]] || { usage >&2; exit 2; }; shift || true
 if [[ "$action" == phase ]]; then
   dry_run=0
-  phase= out= ordinal= verifier_nonce_hex= policy_digest_hex= class_digest_hex=
-  artifact_set_sha256= minimum_authorization_epoch=
+  phase= out= ordinal= verifier_nonce_hex=
   require_value() {
     [[ $# -ge 2 && -n "$2" ]] || { echo "$1 requires a value" >&2; exit 2; }
   }
@@ -32,10 +28,6 @@ if [[ "$action" == phase ]]; then
       --out) require_value "$1" "${2:-}"; out=$2; shift 2 ;;
       --ordinal) require_value "$1" "${2:-}"; ordinal=$2; shift 2 ;;
       --verifier-nonce-hex) require_value "$1" "${2:-}"; verifier_nonce_hex=$2; shift 2 ;;
-      --policy-digest-hex) require_value "$1" "${2:-}"; policy_digest_hex=$2; shift 2 ;;
-      --class-digest-hex) require_value "$1" "${2:-}"; class_digest_hex=$2; shift 2 ;;
-      --artifact-set-sha256) require_value "$1" "${2:-}"; artifact_set_sha256=$2; shift 2 ;;
-      --minimum-authorization-epoch) require_value "$1" "${2:-}"; minimum_authorization_epoch=$2; shift 2 ;;
       -h|--help) usage; exit 0 ;;
       *) echo "unknown phase option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -43,7 +35,6 @@ if [[ "$action" == phase ]]; then
   [[ "$phase" =~ ^(observe|enroll|probe|ready)$ ]] || { echo 'phase requires observe, enroll, probe, or ready' >&2; exit 2; }
   [[ -n "$out" ]] || { echo 'phase requires --out PATH' >&2; exit 2; }
   [[ "$ordinal" =~ ^[0-9]+$ && "$ordinal" != 0 ]] || { echo 'ordinal must be a non-zero decimal integer' >&2; exit 2; }
-  [[ "$minimum_authorization_epoch" =~ ^[0-9]+$ && "$minimum_authorization_epoch" != 0 ]] || { echo 'minimum authorization epoch must be a non-zero decimal integer' >&2; exit 2; }
   validate_hex64() {
     local value=$1 label=$2
     [[ "$value" =~ ^[0-9a-f]{64}$ && "$value" =~ [1-9a-f] ]] || {
@@ -52,9 +43,6 @@ if [[ "$action" == phase ]]; then
     }
   }
   validate_hex64 "$verifier_nonce_hex" 'verifier nonce'
-  validate_hex64 "$policy_digest_hex" 'policy digest'
-  validate_hex64 "$class_digest_hex" 'class digest'
-  validate_hex64 "$artifact_set_sha256" 'artifact-set sha256'
   if ((dry_run)); then
     echo '[stage] sealed phase config preview'
     echo "planned_startup_env=$out"
@@ -72,16 +60,11 @@ if [[ "$action" == phase ]]; then
   cleanup_phase_tmp() { rm -f "$tmp"; }
   trap cleanup_phase_tmp EXIT HUP INT TERM
   printf '%s\n' \
-    'schema=bitcoinpir-pir2-sealed-startup-v2' \
+    'schema=bitcoinpir-pir2-sealed-startup-v3' \
     'profile=pir2-snp-sealed-v1' \
     "phase=$phase" \
     "ordinal=$ordinal" \
-    "verifier_nonce_hex=$verifier_nonce_hex" \
-    "current_policy_digest_hex=$policy_digest_hex" \
-    "class_digest_hex=$class_digest_hex" \
-    'artifact_set_path=/home/pir/data/pir2-sealed/public-artifact-set.env' \
-    "artifact_set_sha256=$artifact_set_sha256" \
-    "minimum_authorization_epoch=$minimum_authorization_epoch" >"$tmp"
+    "verifier_nonce_hex=$verifier_nonce_hex" >"$tmp"
   chmod 600 "$tmp"
   ln "$tmp" "$out" || { echo "startup.env target already exists or cannot be created: $out" >&2; exit 2; }
   rm -f "$tmp"
