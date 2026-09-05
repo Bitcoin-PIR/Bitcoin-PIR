@@ -1,9 +1,9 @@
 # Cashier HTTP contract (v1)
 
 The cashier sells [session grants](SESSION_GRANTS.md) for Cashu ecash. It is
-operator-run, lives in its own repository under the Bitcoin-PIR
-organisation, and is the only component that holds the grant signing key or
-talks to a mint. The PIR servers pin its **public** key; the browser pins
+operator-run, lives in its own repository
+([Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier)), and is the
+only component that holds the grant signing key or talks to a mint. The PIR servers pin its **public** key; the browser pins
 its **URL** (`PRODUCTION_CASHIER_URL` in `web/src/constants.ts`). This page
 is the contract both sides code against; the implementation is free to add
 fields, never to change the meaning of the ones below.

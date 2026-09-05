@@ -10,7 +10,7 @@ retired and never reassigned.
 
 | Role | Where | Holds |
 | --- | --- | --- |
-| Cashier | separate repository under the Bitcoin-PIR organisation; operator-run, outside the PIR hosts | payment integration (Cashu ecash, Lightning, …) and the grant signing key |
+| Cashier | [Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier); operator-run, outside the PIR hosts | payment integration (Cashu ecash, Lightning, …) and the grant signing key |
 | PIR server (`unified_server`) | pir1 / pir2 | the cashier's **public** key(s) and an in-memory credit ledger |
 | Client | browser / SDK | buys a grant from the cashier and presents it once per connection |
 
