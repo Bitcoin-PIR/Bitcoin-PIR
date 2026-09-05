@@ -10,8 +10,7 @@ Probe, and Ready.
 ## Inputs
 
 - An unused output path for each phase's `startup.env`.
-- The phase ordinal, verifier nonce, current policy digest, BAT V2 class digest,
-  public artifact-set SHA-256, and minimum authorization epoch.
+- The phase ordinal and a fresh verifier nonce.
 - The exact measured UKI/OVMF values and Observe receipt required by the
   sealed-release command.
 
@@ -20,14 +19,10 @@ Probe, and Ready.
 ```sh
 scripts/pir2-sealed-ceremony.sh phase \
   --phase observe --out /absolute/observe.startup.env --ordinal ORDINAL \
-  --verifier-nonce-hex HEX64 --policy-digest-hex HEX64 \
-  --class-digest-hex HEX64 --artifact-set-sha256 HEX64 \
-  --minimum-authorization-epoch EPOCH --dry-run
+  --verifier-nonce-hex HEX64 --dry-run
 scripts/pir2-sealed-ceremony.sh phase \
   --phase observe --out /absolute/observe.startup.env --ordinal ORDINAL \
-  --verifier-nonce-hex HEX64 --policy-digest-hex HEX64 \
-  --class-digest-hex HEX64 --artifact-set-sha256 HEX64 \
-  --minimum-authorization-epoch EPOCH
+  --verifier-nonce-hex HEX64
 scripts/pir2-sealed-ceremony.sh release [existing release arguments]
 ```
 
@@ -92,13 +87,11 @@ server is listening it is WebSocket-only, so an ordinary HTTPS request to
 `/status.json` is not a Ready health check. Use the repository attestation and
 encrypted-channel checks instead.
 
-The current sealed production artifact set has signed BAT V2 production
-offers, not an exact manifest-bound Free-PoW offer. Therefore the Free-PoW query in
-`verify_oram_tier3_deploy.sh` is not a pre-activation Ready canary: it must stop
-locally with no query when that offer is absent. Do not bypass the policy or
-substitute a paid authorization before the separately authorized issuer
-activation. Attestation, channel verification, and strict Ready receipt
-acceptance remain valid Flow G evidence.
+Free queries are open, so the ORAM smoke query in
+`scripts/verify_oram_tier3_deploy.sh` (run by `pir2-post-switch-check.sh`)
+is a valid Ready canary together with attestation, channel verification, and
+strict Ready receipt acceptance. The measured image carries no admission
+policy or payment artifact; paid access is handled outside it.
 
 The incident that motivated the receipt-transport and acceptance rules in this
 section is recorded in

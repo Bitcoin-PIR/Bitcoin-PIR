@@ -9,25 +9,18 @@ Both are git-ignored (see `.gitignore`) and must never be committed.
 | File | Purpose |
 | --- | --- |
 | `pir1-operator.key` | pir1 provider-operator Ed25519 seed |
-| `pir1-policy.key` | pir1 service-policy signing Ed25519 seed |
-| `pir1-clearing.key` | pir1 provider-clearing Ed25519 seed |
 | `pir1-server-identity.key` | pir1 server identity Ed25519 seed |
 | `pir2-operator.key` | pir2 provider-operator Ed25519 seed (used by `pir2-sealed-release`) |
-| `pir2-policy.key` | pir2 service-policy signing Ed25519 seed |
-| `issuer-root.key` | Issuer-root Ed25519 seed (BAT V2 class signing) |
-| `issuer-settlement.key` | Issuer-settlement Ed25519 seed (accounting approval) |
-| `bat-current.key` | Cashu BAT secp256k1 scalar for the current class epoch |
-| `credential-derivation.key` | Credential derivation seed |
-| `quote.key` | Quote-delegation seed |
-| `redeem-derivation.key` | Redeem idempotency seed |
 | `vpsbg-ssh.key` | SSH Ed25519 key for the VPSBG Ubuntu host |
+
+Key files of the retired Payment V1 roles (policy, clearing, issuer, BAT,
+quote, redeem) may still exist locally; nothing in the repository reads them.
 
 ### `.keys/pir2-ceremony/` — sealed ceremony artifacts
 
-Subdirectory holding AMD certs (ARK/ASK/VCEK PEMs), per-epoch
-`release.bin`, `credentials.envelope.bin`, `identity.cert`,
-`public-artifact-set.env`, BAT V2 class/authorization/approval
-binaries, and per-ordinal `startup.env` files.
+Subdirectory holding AMD certs (ARK/ASK/VCEK PEMs), per-generation
+`release.bin`, `credentials.envelope.bin`, `identity.cert`, and
+per-ordinal `startup.env` files.
 
 The owner identity-authority activation certificate and the sealed runtime
 certificate are different wire artifacts. `GenerationBoundIdentityCertV2`
@@ -86,7 +79,6 @@ before concluding the final power state; never infer it from the first
 snapshot or from the HTTP response alone.
 
 A sealed `startup.env` must be placed at
-`/home/pir/data/pir2-sealed/startup.env`. Never build a dedicated
-"provisioner UKI" to write files to the data disk. The provisioner
-approach (`scripts/dracut/97bpir-pir2-sealed-provisioner/`) was an
-error; the leftover builder is unused by the production UKI.
+`/home/pir/data/pir2-sealed/startup.env` through this data-disk window.
+Never build a dedicated "provisioner UKI" to write files to the data
+disk; that approach was tried, judged an error, and removed.

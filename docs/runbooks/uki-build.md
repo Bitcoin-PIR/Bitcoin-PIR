@@ -32,7 +32,6 @@ the approved Linux build host. Set every release input explicitly:
 - `BINARY` and `BPIR_UNIFIED_SERVER_BIN`: the same stripped pir2 binary;
 - `ORAMCTL`: exact executable to embed;
 - `BHTM_FROM_LEAF_PROOF`: exact retained proof input;
-- `BPIR_TIER3_SERVICE_POLICY`: reviewed policy matching the source lock;
 - `OUT`: unique absolute candidate path;
 - archive locations, including a required off-host mirror when applicable.
 
@@ -50,7 +49,6 @@ sudo env \
   BPIR_UNIFIED_SERVER_BIN=/absolute/clean-checkout/target/release/unified_server \
   ORAMCTL=/absolute/oramctl \
   BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json \
-  BPIR_TIER3_SERVICE_POLICY=/absolute/service-policy.bin \
   OUT=/absolute/unique-release.efi \
   UKI_ARCHIVE_REMOTE=archive-host:/home/pir/uki-archive/tier3 \
   UKI_ARCHIVE_REMOTE_REQUIRED=1 \
