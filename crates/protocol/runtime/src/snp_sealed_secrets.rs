@@ -1,13 +1,17 @@
-//! Measurement-bound persistence for pir2's two long-lived signing roles.
+//! Measurement-bound persistence for pir2's long-lived service identity key.
 //!
-//! This module seals exactly two independently generated Ed25519 seeds: the
-//! pir2 service identity seed and the issuer-clearing authentication seed. It
-//! does not persist BATs, payment state, ORAM keys, or any plaintext secret.
-//! The ciphertext file is intentionally treated as untrusted and does not
-//! provide rollback protection by itself; public identity generations and
-//! issuer clearing epochs close replay in their respective authorities.
-//! Core-dump and swap controls belong to the later measured startup profile;
-//! this crypto/IO core neither enables them nor claims to enforce them.
+//! This module seals exactly one generated Ed25519 seed, the pir2 service
+//! identity seed. It does not persist ORAM keys, access tokens, or any other
+//! plaintext secret. The ciphertext file is intentionally treated as untrusted
+//! and does not provide rollback protection by itself; the public identity
+//! generation closes replay in the identity authority. Core-dump and swap
+//! controls belong to the later measured startup profile; this crypto/IO core
+//! neither enables them nor claims to enforce them.
+//!
+//! Wire codec 2 (R5b, 2026-09) removed the second "clearing" seed and the
+//! clearing authorization epoch from every artifact. Codec-1 releases,
+//! envelopes, and receipts are rejected; the `V1` type suffixes name the API
+//! generation, not the wire codec.
 
 use std::fmt;
 use std::path::Path;
@@ -41,14 +45,14 @@ pub const SNP_DERIVED_KEY_LAUNCH_MIT_VECTOR_V1: u64 = 0;
 pub const SNP_DERIVED_KEY_EVIDENCE_LEN_V1: usize = 44;
 const DERIVED_KEY_EVIDENCE_LEN_V1: usize = SNP_DERIVED_KEY_EVIDENCE_LEN_V1;
 const ENVELOPE_MAGIC_V1: &[u8; 8] = b"BPIRSLD1";
-const ENVELOPE_CODEC_VERSION_V1: u16 = 1;
+/// Wire codec shared by the release, envelope, and receipt artifacts.
+const SEALED_CODEC_VERSION: u16 = 2;
 const ENVELOPE_HEADER_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-header/v1";
 const ENVELOPE_PLAINTEXT_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-plaintext/v1";
 const ENVELOPE_KDF_SALT_V1: &[u8] = b"BitcoinPIR/pir2/sealed-kek-salt/v1";
 const ENVELOPE_KDF_INFO_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/sealed-kek-info/v1";
 const SERVICE_IDENTITY_FINGERPRINT_DOMAIN_V1: &[u8] =
     b"BitcoinPIR/pir2/service-identity-fingerprint/v1";
-const CLEARING_FINGERPRINT_DOMAIN_V1: &[u8] = b"BitcoinPIR/pir2/clearing-fingerprint/v1";
 const MAX_STABLE_SERVER_ID_LEN_V1: usize = 255;
 const MAX_ENVELOPE_HEADER_LEN_V1: usize = 1024;
 const MAX_ENVELOPE_FILE_LEN_V1: usize = 4096;
@@ -243,7 +247,6 @@ pub struct Pir2SealedReleaseClaimsV1 {
     pub minimum_tcb: SnpTcbVersionV1,
     pub derived_key_request: [u8; DERIVED_KEY_EVIDENCE_LEN_V1],
     pub identity_generation: u64,
-    pub clearing_authorization_epoch: u64,
 }
 
 impl Pir2SealedReleaseClaimsV1 {
@@ -272,7 +275,6 @@ impl Pir2SealedReleaseClaimsV1 {
             expected_guest_policy: self.expected_guest_policy,
             minimum_tcb: self.minimum_tcb,
             identity_generation: self.identity_generation,
-            clearing_authorization_epoch: self.clearing_authorization_epoch,
         }
     }
 
@@ -281,7 +283,7 @@ impl Pir2SealedReleaseClaimsV1 {
         let server_id = self.stable_server_id.as_bytes();
         let mut out = Vec::with_capacity(256 + server_id.len());
         out.extend_from_slice(SEALED_RELEASE_MAGIC_V1);
-        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
         out.extend_from_slice(&self.provider_id);
         out.extend_from_slice(&(server_id.len() as u16).to_le_bytes());
         out.extend_from_slice(server_id);
@@ -291,7 +293,6 @@ impl Pir2SealedReleaseClaimsV1 {
         self.minimum_tcb.encode_into(&mut out);
         out.extend_from_slice(&self.derived_key_request);
         out.extend_from_slice(&self.identity_generation.to_le_bytes());
-        out.extend_from_slice(&self.clearing_authorization_epoch.to_le_bytes());
         Ok(out)
     }
 }
@@ -336,7 +337,7 @@ impl VerifiedPir2SealedReleaseV1 {
         if decoder
             .u16("sealed release codec")
             .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated release codec"))?
-            != ENVELOPE_CODEC_VERSION_V1
+            != SEALED_CODEC_VERSION
         {
             return Err(SnpSealedSecretsErrorV1::InvalidRelease(
                 "unsupported sealed release codec",
@@ -385,10 +386,6 @@ impl VerifiedPir2SealedReleaseV1 {
                 .map_err(|_| {
                     SnpSealedSecretsErrorV1::InvalidRelease("truncated identity generation")
                 })?,
-            clearing_authorization_epoch: decoder
-                .array::<8>("clearing_authorization_epoch")
-                .map(u64::from_le_bytes)
-                .map_err(|_| SnpSealedSecretsErrorV1::InvalidRelease("truncated clearing epoch"))?,
         };
         claims.validate_for_signing()?;
         let signature_bytes: [u8; 64] = decoder
@@ -469,7 +466,6 @@ pub struct Pir2SealedReleaseV1 {
     pub expected_guest_policy: u64,
     pub minimum_tcb: SnpTcbVersionV1,
     pub identity_generation: u64,
-    pub clearing_authorization_epoch: u64,
 }
 
 impl Pir2SealedReleaseV1 {
@@ -498,9 +494,9 @@ impl Pir2SealedReleaseV1 {
                 "expected measurement must not be all zero",
             ));
         }
-        if self.identity_generation == 0 || self.clearing_authorization_epoch == 0 {
+        if self.identity_generation == 0 {
             return Err(SnpSealedSecretsErrorV1::InvalidRelease(
-                "identity generation and clearing epoch must be non-zero reservations",
+                "identity generation must be a non-zero reservation",
             ));
         }
         if self.minimum_tcb.fmc.unwrap_or(0) == 0
@@ -704,86 +700,65 @@ fn snp_tcb_from_sev_v1(value: sev::firmware::host::TcbVersion) -> SnpTcbVersionV
     }
 }
 
-/// Public identifiers for the two independently generated signing roles.
+/// Public identifier of the sealed service identity key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Pir2SealedPublicFingerprintsV1 {
     pub service_identity: [u8; 32],
-    pub clearing: [u8; 32],
 }
 
-/// Raw non-secret Ed25519 public keys authorized after the enrollment
-/// ceremony. Fingerprints alone are insufficient to construct the identity
-/// certificate or issuer clearing authorization.
+/// Raw non-secret Ed25519 public key authorized after the enrollment
+/// ceremony. The fingerprint alone is insufficient to construct the identity
+/// certificate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Pir2SealedPublicKeysV1 {
     pub service_identity: [u8; 32],
-    pub clearing: [u8; 32],
 }
 
-/// Owned role-separated signing keys transferred exactly once into the ready
-/// server profile. This type intentionally has no `Clone` or `Debug`.
+/// Owned signing key transferred exactly once into the ready server profile.
+/// This type intentionally has no `Clone` or `Debug`.
 pub struct Pir2SealedSigningKeysV1 {
     pub service_identity: SigningKey,
-    pub clearing: SigningKey,
 }
 
-/// Controlled in-memory signing material. The private keys are non-cloneable,
-/// have no raw-secret getter or `Debug`, and zeroize on drop in ed25519-dalek.
+/// Controlled in-memory signing material. The private key is non-cloneable,
+/// has no raw-secret getter or `Debug`, and zeroizes on drop in ed25519-dalek.
 pub struct Pir2SealedSigningMaterialV1 {
     service_identity: SigningKey,
-    clearing: SigningKey,
     fingerprints: Pir2SealedPublicFingerprintsV1,
 }
 
 impl Pir2SealedSigningMaterialV1 {
-    fn from_seed_pair(
-        service_identity_seed: &[u8; 32],
-        clearing_seed: &[u8; 32],
-    ) -> Result<Self, SnpSealedSecretsErrorV1> {
-        if service_identity_seed == clearing_seed {
-            return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
-                "the two role seeds are equal",
-            ));
-        }
+    fn from_seed(service_identity_seed: &[u8; 32]) -> Self {
         let service_identity = SigningKey::from_bytes(service_identity_seed);
-        let clearing = SigningKey::from_bytes(clearing_seed);
-        let fingerprints = fingerprints_for_keys_v1(&service_identity, &clearing);
-        Ok(Self {
+        let fingerprints = fingerprints_for_key_v1(&service_identity);
+        Self {
             service_identity,
-            clearing,
             fingerprints,
-        })
+        }
     }
 
-    /// Sign only in the service-identity role.
+    /// Sign in the service-identity role.
     pub fn sign_service_identity(&self, message: &[u8]) -> Signature {
         self.service_identity.sign(message)
     }
 
-    /// Sign only in the provider-to-issuer clearing-authentication role.
-    pub fn sign_clearing_authentication(&self, message: &[u8]) -> Signature {
-        self.clearing.sign(message)
-    }
-
-    /// Non-secret fingerprints bound into the envelope header and AAD.
+    /// Non-secret fingerprint bound into the envelope header and AAD.
     pub const fn public_fingerprints(&self) -> Pir2SealedPublicFingerprintsV1 {
         self.fingerprints
     }
 
-    /// Raw public keys for certificate/authorization binding and receipts.
+    /// Raw public key for certificate binding and receipts.
     pub fn public_keys(&self) -> Pir2SealedPublicKeysV1 {
         Pir2SealedPublicKeysV1 {
             service_identity: self.service_identity.verifying_key().to_bytes(),
-            clearing: self.clearing.verifying_key().to_bytes(),
         }
     }
 
-    /// Consume the sealed handle and hand each non-cloneable signing key to
-    /// its one runtime role without exposing either seed.
+    /// Consume the sealed handle and hand the non-cloneable signing key to
+    /// the runtime without exposing the seed.
     pub fn into_signing_keys(self) -> Pir2SealedSigningKeysV1 {
         Pir2SealedSigningKeysV1 {
             service_identity: self.service_identity,
-            clearing: self.clearing,
         }
     }
 }
@@ -914,7 +889,7 @@ impl Pir2PreReleaseObservationReceiptV1 {
             SnpSealedSecretsErrorV1::InvalidReceipt(
                 "pre-release observation receipt codec is truncated",
             )
-        })? != ENVELOPE_CODEC_VERSION_V1
+        })? != SEALED_CODEC_VERSION
         {
             return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
                 "pre-release observation receipt codec is unsupported",
@@ -1001,7 +976,7 @@ impl Pir2PreReleaseObservationReceiptV1 {
         let claims = self.claims.encode_claims()?;
         let mut out = Vec::with_capacity(PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1);
         out.extend_from_slice(PRE_RELEASE_OBSERVATION_MAGIC_V1);
-        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
         out.extend_from_slice(&claims);
         out.extend_from_slice(&self.raw_report);
         debug_assert_eq!(out.len(), PIR2_PRE_RELEASE_OBSERVATION_RECEIPT_LEN_V1);
@@ -1033,7 +1008,6 @@ pub struct Pir2SealedReceiptClaimsV1 {
     pub public_keys: Pir2SealedPublicKeysV1,
     pub public_fingerprints: Pir2SealedPublicFingerprintsV1,
     pub identity_generation: u64,
-    pub clearing_authorization_epoch: u64,
 }
 
 impl Pir2SealedReceiptClaimsV1 {
@@ -1051,11 +1025,9 @@ impl Pir2SealedReceiptClaimsV1 {
             None => (
                 Pir2SealedPublicKeysV1 {
                     service_identity: [0_u8; 32],
-                    clearing: [0_u8; 32],
                 },
                 Pir2SealedPublicFingerprintsV1 {
                     service_identity: [0_u8; 32],
-                    clearing: [0_u8; 32],
                 },
             ),
         };
@@ -1069,7 +1041,6 @@ impl Pir2SealedReceiptClaimsV1 {
             public_keys,
             public_fingerprints,
             identity_generation: release.release.identity_generation,
-            clearing_authorization_epoch: release.release.clearing_authorization_epoch,
         };
         claims.validate()?;
         Ok(claims)
@@ -1082,16 +1053,13 @@ impl Pir2SealedReceiptClaimsV1 {
             || self.boot_id == [0_u8; 16]
             || self.release_artifact_digest == [0_u8; 32]
             || self.identity_generation == 0
-            || self.clearing_authorization_epoch == 0
         {
             return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
                 "receipt contains an empty freshness or release binding",
             ));
         }
         let keys_absent = self.public_keys.service_identity == [0_u8; 32]
-            && self.public_keys.clearing == [0_u8; 32]
-            && self.public_fingerprints.service_identity == [0_u8; 32]
-            && self.public_fingerprints.clearing == [0_u8; 32];
+            && self.public_fingerprints.service_identity == [0_u8; 32];
         if self.phase == Pir2SealedReceiptPhaseV1::Observe {
             if !keys_absent {
                 return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
@@ -1101,13 +1069,10 @@ impl Pir2SealedReceiptClaimsV1 {
             return Ok(());
         }
         if keys_absent
-            || self.public_keys.service_identity == self.public_keys.clearing
             || public_key_fingerprint_v1(
                 SERVICE_IDENTITY_FINGERPRINT_DOMAIN_V1,
                 &self.public_keys.service_identity,
             ) != self.public_fingerprints.service_identity
-            || public_key_fingerprint_v1(CLEARING_FINGERPRINT_DOMAIN_V1, &self.public_keys.clearing)
-                != self.public_fingerprints.clearing
         {
             return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
                 "receipt credential public keys or fingerprints are invalid",
@@ -1118,7 +1083,7 @@ impl Pir2SealedReceiptClaimsV1 {
 
     fn encode_claims(&self) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
         self.validate()?;
-        let mut out = Vec::with_capacity(280);
+        let mut out = Vec::with_capacity(208);
         out.push(self.phase as u8);
         out.extend_from_slice(&self.ordinal.to_le_bytes());
         out.extend_from_slice(&self.verifier_nonce);
@@ -1126,11 +1091,8 @@ impl Pir2SealedReceiptClaimsV1 {
         out.extend_from_slice(&self.boot_id);
         out.extend_from_slice(&self.release_artifact_digest);
         out.extend_from_slice(&self.public_keys.service_identity);
-        out.extend_from_slice(&self.public_keys.clearing);
         out.extend_from_slice(&self.public_fingerprints.service_identity);
-        out.extend_from_slice(&self.public_fingerprints.clearing);
         out.extend_from_slice(&self.identity_generation.to_le_bytes());
-        out.extend_from_slice(&self.clearing_authorization_epoch.to_le_bytes());
         Ok(out)
     }
 
@@ -1169,7 +1131,6 @@ impl Pir2SealedReceiptV1 {
     ) -> Result<Self, SnpSealedSecretsErrorV1> {
         if claims.release_artifact_digest != release.artifact_digest()
             || claims.identity_generation != release.release.identity_generation
-            || claims.clearing_authorization_epoch != release.release.clearing_authorization_epoch
         {
             return Err(SnpSealedSecretsErrorV1::InvalidReceipt(
                 "receipt does not match the verified release",
@@ -1221,7 +1182,7 @@ impl Pir2SealedReceiptV1 {
             .map_err(|_| SnpSealedSecretsErrorV1::InvalidReceipt("fresh report length overflow"))?;
         let mut out = Vec::with_capacity(18 + claims.len() + self.fresh_report.raw_report.len());
         out.extend_from_slice(SEALED_RECEIPT_MAGIC_V1);
-        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
         out.extend_from_slice(&(claims.len() as u32).to_le_bytes());
         out.extend_from_slice(&claims);
         out.extend_from_slice(&report_len.to_le_bytes());
@@ -1295,23 +1256,14 @@ pub fn enroll_new_pir2_sealed_credentials_v1<P: SnpDerivedKeyProvider + ?Sized>(
     let derived_key = provider.derive_key(&request)?;
 
     let mut service_seed = Zeroizing::new([0_u8; SEED_LEN_V1]);
-    let mut clearing_seed = Zeroizing::new([0_u8; SEED_LEN_V1]);
     getrandom::getrandom(service_seed.as_mut()).map_err(|_| SnpSealedSecretsErrorV1::Randomness)?;
-    getrandom::getrandom(clearing_seed.as_mut())
-        .map_err(|_| SnpSealedSecretsErrorV1::Randomness)?;
-    if *service_seed == *clearing_seed {
-        clearing_seed.zeroize();
+    if *service_seed == [0_u8; SEED_LEN_V1] {
         return Err(SnpSealedSecretsErrorV1::Randomness);
     }
 
-    let material = Pir2SealedSigningMaterialV1::from_seed_pair(&service_seed, &clearing_seed)?;
+    let material = Pir2SealedSigningMaterialV1::from_seed(&service_seed);
     let header = EnvelopeHeaderV1::from_release(release, material.public_fingerprints());
-    let envelope = seal_envelope_v1(
-        &header,
-        derived_key.as_bytes(),
-        &service_seed,
-        &clearing_seed,
-    )?;
+    let envelope = seal_envelope_v1(&header, derived_key.as_bytes(), &service_seed)?;
     write_atomic_noreplace_private_file_v1(
         path,
         &envelope,
@@ -1425,18 +1377,11 @@ fn request_and_validate_fresh_report_v1<P: SnpDerivedKeyProvider + ?Sized>(
     Ok(report)
 }
 
-fn fingerprints_for_keys_v1(
-    service_identity: &SigningKey,
-    clearing: &SigningKey,
-) -> Pir2SealedPublicFingerprintsV1 {
+fn fingerprints_for_key_v1(service_identity: &SigningKey) -> Pir2SealedPublicFingerprintsV1 {
     Pir2SealedPublicFingerprintsV1 {
         service_identity: public_key_fingerprint_v1(
             SERVICE_IDENTITY_FINGERPRINT_DOMAIN_V1,
             service_identity.verifying_key().as_bytes(),
-        ),
-        clearing: public_key_fingerprint_v1(
-            CLEARING_FINGERPRINT_DOMAIN_V1,
-            clearing.verifying_key().as_bytes(),
         ),
     }
 }
@@ -1460,7 +1405,6 @@ struct EnvelopeHeaderV1 {
     expected_guest_policy: u64,
     minimum_tcb: SnpTcbVersionV1,
     identity_generation: u64,
-    clearing_authorization_epoch: u64,
     public_fingerprints: Pir2SealedPublicFingerprintsV1,
 }
 
@@ -1481,7 +1425,6 @@ impl EnvelopeHeaderV1 {
             expected_guest_policy: release.expected_guest_policy,
             minimum_tcb: release.minimum_tcb,
             identity_generation: release.identity_generation,
-            clearing_authorization_epoch: release.clearing_authorization_epoch,
             public_fingerprints,
         }
     }
@@ -1490,7 +1433,7 @@ impl EnvelopeHeaderV1 {
         let server_id = self.stable_server_id.as_bytes();
         let mut out = Vec::with_capacity(320 + server_id.len());
         out.extend_from_slice(ENVELOPE_HEADER_DOMAIN_V1);
-        out.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+        out.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
         out.push(self.purpose);
         out.extend_from_slice(&self.provider_id);
         out.extend_from_slice(&(server_id.len() as u16).to_le_bytes());
@@ -1501,16 +1444,14 @@ impl EnvelopeHeaderV1 {
         out.extend_from_slice(&self.expected_guest_policy.to_le_bytes());
         self.minimum_tcb.encode_into(&mut out);
         out.extend_from_slice(&self.identity_generation.to_le_bytes());
-        out.extend_from_slice(&self.clearing_authorization_epoch.to_le_bytes());
         out.extend_from_slice(&self.public_fingerprints.service_identity);
-        out.extend_from_slice(&self.public_fingerprints.clearing);
         out
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, SnpSealedSecretsErrorV1> {
         let mut decoder = DecoderV1::new(bytes);
         decoder.exact(ENVELOPE_HEADER_DOMAIN_V1, "header domain")?;
-        if decoder.u16("header schema")? != ENVELOPE_CODEC_VERSION_V1 {
+        if decoder.u16("header schema")? != SEALED_CODEC_VERSION {
             return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
                 "unsupported header schema",
             ));
@@ -1553,10 +1494,8 @@ impl EnvelopeHeaderV1 {
             expected_guest_policy: decoder.u64("expected_guest_policy")?,
             minimum_tcb: SnpTcbVersionV1::decode(&mut decoder)?,
             identity_generation: decoder.u64("identity_generation")?,
-            clearing_authorization_epoch: decoder.u64("clearing_authorization_epoch")?,
             public_fingerprints: Pir2SealedPublicFingerprintsV1 {
                 service_identity: decoder.array("service_identity_fingerprint")?,
-                clearing: decoder.array("clearing_fingerprint")?,
             },
         };
         decoder.finish()?;
@@ -1618,11 +1557,6 @@ impl EnvelopeHeaderV1 {
                 "identity_generation",
             ));
         }
-        if self.clearing_authorization_epoch != expected.clearing_authorization_epoch {
-            return Err(SnpSealedSecretsErrorV1::EnvelopeDoesNotMatchRelease(
-                "clearing_authorization_epoch",
-            ));
-        }
         Ok(())
     }
 }
@@ -1638,22 +1572,15 @@ fn seal_envelope_v1(
     header: &EnvelopeHeaderV1,
     derived_key: &[u8; 32],
     service_seed: &[u8; 32],
-    clearing_seed: &[u8; 32],
 ) -> Result<Vec<u8>, SnpSealedSecretsErrorV1> {
-    if service_seed == clearing_seed {
-        return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
-            "the two role seeds are equal",
-        ));
-    }
     let header_bytes = header.encode();
     let aad = envelope_aad_v1(&header_bytes)?;
     let mut plaintext = Zeroizing::new(Vec::with_capacity(
-        ENVELOPE_PLAINTEXT_DOMAIN_V1.len() + 2 + (2 * SEED_LEN_V1),
+        ENVELOPE_PLAINTEXT_DOMAIN_V1.len() + 2 + SEED_LEN_V1,
     ));
     plaintext.extend_from_slice(ENVELOPE_PLAINTEXT_DOMAIN_V1);
-    plaintext.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+    plaintext.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
     plaintext.extend_from_slice(service_seed);
-    plaintext.extend_from_slice(clearing_seed);
 
     let kek = derive_envelope_kek_v1(header, derived_key)?;
     let cipher = XChaCha20Poly1305::new_from_slice(kek.as_slice())
@@ -1687,7 +1614,7 @@ fn envelope_aad_v1(header_bytes: &[u8]) -> Result<Vec<u8>, SnpSealedSecretsError
     }
     let mut aad = Vec::with_capacity(ENVELOPE_MAGIC_V1.len() + 2 + 4 + header_bytes.len());
     aad.extend_from_slice(ENVELOPE_MAGIC_V1);
-    aad.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+    aad.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
     aad.extend_from_slice(&header_len.to_le_bytes());
     aad.extend_from_slice(header_bytes);
     Ok(aad)
@@ -1696,7 +1623,7 @@ fn envelope_aad_v1(header_bytes: &[u8]) -> Result<Vec<u8>, SnpSealedSecretsError
 fn decode_envelope_v1(bytes: &[u8]) -> Result<DecodedEnvelopeV1, SnpSealedSecretsErrorV1> {
     let mut decoder = DecoderV1::new(bytes);
     decoder.exact(ENVELOPE_MAGIC_V1, "envelope magic")?;
-    if decoder.u16("envelope codec")? != ENVELOPE_CODEC_VERSION_V1 {
+    if decoder.u16("envelope codec")? != SEALED_CODEC_VERSION {
         return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
             "unsupported envelope codec",
         ));
@@ -1714,7 +1641,7 @@ fn decode_envelope_v1(bytes: &[u8]) -> Result<DecodedEnvelopeV1, SnpSealedSecret
     let nonce = decoder.array("nonce")?;
     let ciphertext_len = usize::try_from(decoder.u32("ciphertext length")?)
         .map_err(|_| SnpSealedSecretsErrorV1::CorruptEnvelope("ciphertext length overflow"))?;
-    let expected_plaintext_len = ENVELOPE_PLAINTEXT_DOMAIN_V1.len() + 2 + (2 * SEED_LEN_V1);
+    let expected_plaintext_len = ENVELOPE_PLAINTEXT_DOMAIN_V1.len() + 2 + SEED_LEN_V1;
     if ciphertext_len != expected_plaintext_len + AEAD_TAG_LEN_V1 {
         return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
             "ciphertext length is not canonical",
@@ -1749,17 +1676,15 @@ fn open_decoded_envelope_v1(
     let plaintext = Zeroizing::new(plaintext);
     let mut decoder = DecoderV1::new(plaintext.as_slice());
     decoder.exact(ENVELOPE_PLAINTEXT_DOMAIN_V1, "plaintext domain")?;
-    if decoder.u16("plaintext schema")? != ENVELOPE_CODEC_VERSION_V1 {
+    if decoder.u16("plaintext schema")? != SEALED_CODEC_VERSION {
         return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
             "unsupported plaintext schema",
         ));
     }
     let mut service_seed = Zeroizing::new(decoder.array("service identity seed")?);
-    let mut clearing_seed = Zeroizing::new(decoder.array("clearing seed")?);
     decoder.finish()?;
-    let material = Pir2SealedSigningMaterialV1::from_seed_pair(&service_seed, &clearing_seed)?;
+    let material = Pir2SealedSigningMaterialV1::from_seed(&service_seed);
     service_seed.zeroize();
-    clearing_seed.zeroize();
     if material.public_fingerprints() != decoded.header.public_fingerprints {
         return Err(SnpSealedSecretsErrorV1::CorruptEnvelope(
             "public key fingerprints do not match the decrypted seeds",
@@ -1774,20 +1699,18 @@ fn derive_envelope_kek_v1(
 ) -> Result<Zeroizing<[u8; 32]>, SnpSealedSecretsErrorV1> {
     let mut info = Vec::with_capacity(256 + header.stable_server_id.len());
     info.extend_from_slice(ENVELOPE_KDF_INFO_DOMAIN_V1);
-    info.extend_from_slice(&ENVELOPE_CODEC_VERSION_V1.to_le_bytes());
+    info.extend_from_slice(&SEALED_CODEC_VERSION.to_le_bytes());
     info.push(header.purpose);
     info.extend_from_slice(&header.provider_id);
     info.extend_from_slice(&(header.stable_server_id.len() as u16).to_le_bytes());
     info.extend_from_slice(header.stable_server_id.as_bytes());
     info.extend_from_slice(&header.identity_generation.to_le_bytes());
-    info.extend_from_slice(&header.clearing_authorization_epoch.to_le_bytes());
     info.extend_from_slice(&header.expected_measurement);
     info.extend_from_slice(&header.expected_guest_policy.to_le_bytes());
     info.extend_from_slice(&header.derived_key_request);
     info.extend_from_slice(&header.release_artifact_digest);
     header.minimum_tcb.encode_into(&mut info);
     info.extend_from_slice(&header.public_fingerprints.service_identity);
-    info.extend_from_slice(&header.public_fingerprints.clearing);
 
     let hkdf = Hkdf::<Sha256>::new(Some(ENVELOPE_KDF_SALT_V1), derived_key);
     let mut kek = Zeroizing::new([0_u8; 32]);
@@ -1964,7 +1887,6 @@ mod tests {
                 microcode: 4,
             },
             identity_generation: 7,
-            clearing_authorization_epoch: 11,
         }
     }
 
@@ -1980,7 +1902,6 @@ mod tests {
             minimum_tcb: baseline.minimum_tcb,
             derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
             identity_generation: baseline.identity_generation,
-            clearing_authorization_epoch: baseline.clearing_authorization_epoch,
         };
         let bytes = encode_signed_pir2_sealed_release_v1(&claims, &operator).unwrap();
         let verified =
@@ -2066,19 +1987,12 @@ mod tests {
             enrollment_provider.last_request.borrow().as_ref(),
             Some(&SnpDerivedKeyRequestV1::production().canonical_evidence())
         );
-        assert_ne!(
-            enrolled.public_fingerprints().service_identity,
-            enrolled.public_fingerprints().clearing,
-            "the independently generated role keys must differ"
-        );
-        assert_ne!(
-            enrolled
-                .sign_service_identity(b"role-separation")
-                .to_bytes(),
-            enrolled
-                .sign_clearing_authentication(b"role-separation")
-                .to_bytes()
-        );
+        assert_ne!(enrolled.public_fingerprints().service_identity, [0_u8; 32]);
+        let signature = enrolled.sign_service_identity(b"service-identity");
+        VerifyingKey::from_bytes(&enrolled.public_keys().service_identity)
+            .unwrap()
+            .verify(b"service-identity", &signature)
+            .unwrap();
 
         let open_provider = MockProviderV1::good(&release, key);
         let opened = open_pir2_sealed_credentials_v1(&path, &release, &open_provider).unwrap();
@@ -2151,9 +2065,6 @@ mod tests {
         let mut generation = original.clone();
         generation.identity_generation += 1;
         variants.push(generation);
-        let mut epoch = original.clone();
-        epoch.clearing_authorization_epoch += 1;
-        variants.push(epoch);
         let mut measurement = original.clone();
         measurement.expected_measurement[0] ^= 1;
         variants.push(measurement);
@@ -2333,14 +2244,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_role_seeds_are_rejected() {
-        assert!(matches!(
-            Pir2SealedSigningMaterialV1::from_seed_pair(&[7_u8; 32], &[7_u8; 32]),
-            Err(SnpSealedSecretsErrorV1::CorruptEnvelope(_))
-        ));
-    }
-
-    #[test]
     fn signed_release_is_canonical_source_pinned_and_request_exact() {
         let (verified, operator) = verified_release();
         assert_eq!(verified.claims().uki_sha256, [0x44; 32]);
@@ -2375,20 +2278,25 @@ mod tests {
             &operator.verifying_key()
         )
         .is_err());
+
+        // Codec-1 artifacts (two seeds, clearing epoch) are rejected outright.
+        let mut old_codec = verified.exact_bytes().to_vec();
+        old_codec[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        assert!(matches!(
+            VerifiedPir2SealedReleaseV1::decode_and_verify(&old_codec, &operator.verifying_key()),
+            Err(SnpSealedSecretsErrorV1::InvalidRelease("unsupported sealed release codec"))
+        ));
     }
 
     #[test]
-    fn signing_key_handoff_exposes_only_distinct_roles() {
-        let material =
-            Pir2SealedSigningMaterialV1::from_seed_pair(&[0x71; 32], &[0x72; 32]).unwrap();
+    fn signing_key_handoff_exposes_the_identity_key() {
+        let material = Pir2SealedSigningMaterialV1::from_seed(&[0x71; 32]);
         let public = material.public_keys();
         let keys = material.into_signing_keys();
         assert_eq!(
             public.service_identity,
             keys.service_identity.verifying_key().to_bytes()
         );
-        assert_eq!(public.clearing, keys.clearing.verifying_key().to_bytes());
-        assert_ne!(public.service_identity, public.clearing);
     }
 
     #[test]
@@ -2431,8 +2339,7 @@ mod tests {
     #[test]
     fn receipt_binds_current_boot_channel_nonce_release_and_raw_keys() {
         let (verified, _) = verified_release();
-        let material =
-            Pir2SealedSigningMaterialV1::from_seed_pair(&[0x71; 32], &[0x72; 32]).unwrap();
+        let material = Pir2SealedSigningMaterialV1::from_seed(&[0x71; 32]);
         let claims = Pir2SealedReceiptClaimsV1::for_release(
             &verified,
             Pir2SealedReceiptPhaseV1::Probe,

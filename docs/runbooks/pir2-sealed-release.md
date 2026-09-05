@@ -61,8 +61,8 @@ together:
 - the receipt digest duplicated in the signed SNP `REPORT_DATA`;
 - the exact signed release digest, measurement, guest policy, and TCB floor;
 - the expected phase, ordinal, fresh verifier nonce, and current boot ID; and
-- for non-Observe phases, distinct valid Ed25519 public keys, their
-  role-separated fingerprints, identity generation, and clearing epoch.
+- for non-Observe phases, a valid Ed25519 service identity public key, its
+  fingerprint, and the identity generation.
 
 The repository currently has a dedicated verifier for the fixed Observe
 receipt as part of `bpir-admin pir2-sealed-release`, but no generic offline

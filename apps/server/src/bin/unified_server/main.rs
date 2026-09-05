@@ -122,9 +122,7 @@ async fn main() {
         &pir_runtime_core::snp_sealed_secrets::LinuxSevSnpDerivedKeyProviderV1,
     )
     .unwrap_or_else(|error| fatal_cli(format!("pir2 sealed startup: {error}")));
-    // Only the attestation identity is consumed here. The envelope still
-    // unseals a second (clearing) seed for format compatibility; R5b drops
-    // it from the sealed formats.
+    // Only the attestation identity is consumed here.
     let sealed_identity = match sealed_startup {
         Pir2SealedStartupV1::Disabled => None,
         Pir2SealedStartupV1::InertSuccess {
@@ -141,7 +139,6 @@ async fn main() {
         Pir2SealedStartupV1::Ready {
             identity_key,
             identity_cert,
-            ..
         } => Some((identity_key, identity_cert)),
     };
 
