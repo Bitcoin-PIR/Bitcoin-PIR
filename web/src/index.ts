@@ -254,32 +254,9 @@ export {
   sdkCuckooHashInt,
 } from './sdk-bridge.js';
 
-// ARC anonymous rate limiting
-export { ArcCredentialManager, ARC_LOW_WARNING } from './credential-manager.js';
-export type { ArcCredentialState } from './credential-manager.js';
-export { sendArcPresentation } from './arc-present.js';
-
-// Cashu Blind Auth (NUT-22) rate limiting
-export { CashuBatPool, mintBatPool } from './cashu-bat.js';
-export type { Bat } from './cashu-bat.js';
-
 export { trustedNowUnixV1 } from './trusted-time.js';
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export { type HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
 
-// Credential issuer HTTP client (the "obtain" leg)
-export {
-  getArcPubkey,
-  issueArcCredential,
-  getCashuKeyset,
-  mintCashuBats,
-  presentArc,
-  presentCashu,
-  ARC_PUBKEY_BYTES,
-  ARC_REQUEST_BYTES,
-  ARC_RESPONSE_BYTES,
-  CASHU_POINT_BYTES,
-} from './payment-client.js';
-export type { CashuKeyset, PresentResult } from './payment-client.js';
 export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';

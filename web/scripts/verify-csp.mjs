@@ -10,9 +10,6 @@ const onionLoader = readFileSync(onionModuleUrl, 'utf8');
 const htmlFiles = readdirSync(distUrl)
   .filter((name) => name.endsWith('.html'))
   .sort();
-if (htmlFiles.includes('ratelimit-demo.html')) {
-  throw new Error('development-only rate-limit demo was included in production');
-}
 const expectedInlineCounts = new Map([
   ['index.html', 2],
   ['reproduce.html', 1],

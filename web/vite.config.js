@@ -35,9 +35,6 @@ export default defineConfig({
         // to verify the SEV-SNP MEASUREMENT pin against the chip-signed
         // value via sev-snp-measure + bpir-admin attest.
         reproduce: 'reproduce.html',
-        // ratelimit-demo.html remains available from the development server,
-        // but is intentionally excluded from production: it targets only the
-        // free loopback dev-issuer and is not a production payment surface.
       },
     },
   },
