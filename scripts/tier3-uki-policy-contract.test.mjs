@@ -16,44 +16,21 @@ const runPath = resolve(
   repository,
   "scripts/dracut/97bpir-tier3-init/unified-server-run.sh",
 );
-const reviewedPolicySha256 =
-  "324b07017cfa1f8ce3f8efc57433a5593bb72fc3ab24b3e23ef851164c50778d";
+
+// The runtime UKI carries no admission policy, payment artifact, or plaintext
+// identity input. Access control lives outside the measured image, so a
+// payment change never forces a new measurement or sealed ceremony.
+const PAYMENT_RESIDUE = /BPIR_TIER3_SERVICE_POLICY|service-policy|service_policy|public-artifact-set|accounting-authorization|issuer-approval|class_digest|minimum_authorization_epoch/;
 
 function validateBuildContract(source) {
-  assert.match(
-    source,
-    /for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT/,
-  );
+  assert.match(source, /for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT/);
   assert.match(
     source,
     /error: \$input_name must be set explicitly for a production Tier 3 UKI/,
   );
-  const policyRequirement = source.indexOf(
-    '[ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ] || {',
-  );
-  const dracutBuild = source.indexOf("SOURCE_DATE_EPOCH=0 dracut");
-  assert.ok(policyRequirement >= 0, "Tier3 build must require an explicit policy");
-  assert.ok(
-    policyRequirement < dracutBuild,
-    "Tier3 build must reject a missing policy before invoking dracut",
-  );
-  assert.match(
-    source,
-    new RegExp(`TIER3_SERVICE_POLICY_SHA256=${reviewedPolicySha256}`),
-  );
-  assert.match(
-    source,
-    /\[ "\$SERVICE_POLICY_HASH" != "\$TIER3_SERVICE_POLICY_SHA256" \]/,
-  );
-  assert.match(
-    source,
-    /lsinitrd -f \/etc\/bitcoinpir\/payment\/service-policy\.bin/,
-  );
-  assert.match(
-    source,
-    /\[ "\$EMBEDDED_SERVICE_POLICY_HASH" != "\$SERVICE_POLICY_HASH" \]/,
-  );
-  assert.match(source, /"service_policy_sha256=\$SERVICE_POLICY_HASH"/);
+  assert.doesNotMatch(source, PAYMENT_RESIDUE);
+  assert.match(source, /etc\/bitcoinpir\/payment\//);
+  assert.match(source, /payment artifacts must not be embedded in the Tier 3 UKI/);
   assert.match(source, /TIER3_INITRD_COMPRESSION=zstd/);
   assert.match(source, /TIER3_INITRD_MAGIC=28b52ffd/);
   assert.match(source, /TIER3_MAX_UKI_BYTES=\$\(\(256 \* 1024 \* 1024\)\)/);
@@ -82,14 +59,8 @@ function validateBuildContract(source) {
 }
 
 function validateDracutModuleContract(source) {
-  assert.match(source, /\[ -z "\$service_policy" \]/);
-  assert.match(source, /\[ ! -f "\$service_policy" \]/);
-  assert.match(source, /\[ ! -r "\$service_policy" \]/);
-  assert.match(source, /\[ ! -s "\$service_policy" \]/);
-  assert.match(
-    source,
-    /inst_simple "\$service_policy" \/etc\/bitcoinpir\/payment\/service-policy\.bin/,
-  );
+  assert.doesNotMatch(source, PAYMENT_RESIDUE);
+  assert.doesNotMatch(source, /inst_dir \/etc\/bitcoinpir\/payment/);
   assert.doesNotMatch(source, /BPIR_TIER3_IDENTITY_KEY/);
   assert.doesNotMatch(source, /server\.key/);
 }
@@ -101,33 +72,26 @@ function validateMeasuredRunContract(source) {
   assert.doesNotMatch(source, /target\/release\/oramctl/);
   assert.doesNotMatch(source, /--identity-key-path/);
   assert.doesNotMatch(source, /server\.key/);
-  assert.doesNotMatch(source, /--service-shared-clearing-key/);
-  assert.doesNotMatch(source, /--service-shared-idempotency-key/);
-  assert.doesNotMatch(source, /--service-storeless-bat-v2-pir1-clearing-key/);
-  assert.doesNotMatch(source, /--service-storeless-bat-v2-/);
-  assert.doesNotMatch(source, /--require-service-auth-v1/);
+  assert.doesNotMatch(source, /--service-|--require-service-auth-v1/);
+  assert.doesNotMatch(source, PAYMENT_RESIDUE);
   assert.match(source, /--pir2-snp-sealed-envelope/);
   assert.match(source, /--pir2-snp-sealed-identity-cert/);
-  assert.match(source, /--pir2-snp-sealed-accounting-authorization/);
-  assert.match(source, /--pir2-snp-sealed-issuer-approval/);
 }
 
-test("production Tier3 build requires and byte-verifies reviewed policy", () => {
+test("production Tier3 build takes exactly the runtime inputs and embeds no policy", () => {
   validateBuildContract(readFileSync(buildPath, "utf8"));
 });
 
-test("production Tier3 build rejects policy lock or embedded-byte regressions", () => {
+test("production Tier3 build rejects a policy or payment-artifact regression", () => {
   const source = readFileSync(buildPath, "utf8");
   assert.throws(() =>
-    validateBuildContract(
-      source.replace(reviewedPolicySha256, "0".repeat(64)),
-    ),
+    validateBuildContract(`${source}\nBPIR_TIER3_SERVICE_POLICY=/tmp/policy.bin\n`),
   );
   assert.throws(() =>
     validateBuildContract(
       source.replace(
-        '[ "$EMBEDDED_SERVICE_POLICY_HASH" != "$SERVICE_POLICY_HASH" ]',
-        '[ "$EMBEDDED_SERVICE_POLICY_HASH" = "$SERVICE_POLICY_HASH" ]',
+        "payment artifacts must not be embedded in the Tier 3 UKI",
+        "payment artifacts embedded in the Tier 3 UKI",
       ),
     ),
   );
@@ -153,19 +117,19 @@ test("production Tier3 build pins compression and rejects oversized output", () 
   );
 });
 
-test("dracut module refuses to omit the measured policy", () => {
+test("dracut module installs no policy and no identity seed", () => {
   validateDracutModuleContract(readFileSync(modulePath, "utf8"));
 });
 
-test("Tier3 UKI and measured run path contain no plaintext identity fallback", () => {
+test("Tier3 UKI and measured run path contain no plaintext identity or payment input", () => {
   validateMeasuredRunContract(readFileSync(runPath, "utf8"));
 });
 
-test("dracut module rejects an optional-policy regression", () => {
+test("dracut module rejects a policy re-introduction", () => {
   const source = readFileSync(modulePath, "utf8");
   assert.throws(() =>
     validateDracutModuleContract(
-      source.replace('[ -z "$service_policy" ]', '[ -n "$service_policy" ]'),
+      `${source}\ninst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin\n`,
     ),
   );
 });

@@ -41,7 +41,6 @@ install() {
     local bin=${BPIR_UNIFIED_SERVER_BIN:-${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}}
     local oramctl=${BPIR_ORAMCTL_BIN:-${ORAMCTL:-/home/pir/bitcoin-pir/oram/target/release/oramctl}}
     local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
-    local service_policy=${BPIR_TIER3_SERVICE_POLICY:-}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
@@ -67,18 +66,4 @@ install() {
     inst "$oramctl" /usr/local/bin/oramctl
     inst_simple "$bhtm_from_leaf_proof" \
         /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
-
-    # The public signed admission policy must change atomically with the
-    # measured runtime.  A missing input must fail the build instead of
-    # allowing the guest to select a stale mutable-rootfs policy at boot.
-    if [ -z "$service_policy" ] \
-        || [ ! -f "$service_policy" ] \
-        || [ ! -r "$service_policy" ] \
-        || [ ! -s "$service_policy" ]; then
-        derror "bpir-unified-server: BPIR_TIER3_SERVICE_POLICY must name a readable non-empty file"
-        return 1
-    fi
-    inst_dir /etc/bitcoinpir/payment
-    inst_simple "$service_policy" /etc/bitcoinpir/payment/service-policy.bin
-    chmod 0644 "$initdir/etc/bitcoinpir/payment/service-policy.bin"
 }

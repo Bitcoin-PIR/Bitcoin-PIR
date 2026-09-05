@@ -9,9 +9,6 @@ usage: scripts/build_uki_tier3.sh [--dry-run]
 
 Builds the Tier 3 UKI on the selected Linux build host.
 
-Required environment:
-  BPIR_TIER3_SERVICE_POLICY  Reviewed signed service-policy file.
-
 Production release inputs (set explicitly in the operator command):
   KERNEL, BINARY, ORAMCTL, BHTM_FROM_LEAF_PROOF, OUT
 
@@ -29,7 +26,7 @@ case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     --dry-run)
         echo '[stage] Tier 3 UKI build preview'
-        for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT; do
+        for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT; do
             input_value=${!input_name:-MISSING}
             echo "$input_name=$input_value"
         done
@@ -42,7 +39,7 @@ case "${1:-}" in
     *) usage >&2; exit 2 ;;
 esac
 
-for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF BPIR_TIER3_SERVICE_POLICY OUT; do
+for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT; do
     if [ -z "${!input_name:-}" ]; then
         echo "error: $input_name must be set explicitly for a production Tier 3 UKI" >&2
         exit 1
@@ -56,10 +53,6 @@ fi
 
 # ─── Defaults (override via env) ───────────────────────────────────────────
 CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
-# The next reviewed image accepts service-policy epoch 5 with this exact
-# digest. A policy rotation is a production behavior change and must update
-# this reviewed lock in source before a new UKI can be emitted.
-TIER3_SERVICE_POLICY_SHA256=324b07017cfa1f8ce3f8efc57433a5593bb72fc3ab24b3e23ef851164c50778d
 TIER3_INITRD_COMPRESSION=zstd
 TIER3_INITRD_MAGIC=28b52ffd
 TIER3_MAX_UKI_BYTES=$((256 * 1024 * 1024))
@@ -125,28 +118,6 @@ export BPIR_ORAMCTL_BIN="$ORAMCTL_BIN"
     exit 1
 }
 export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
-
-# The public signed policy is part of the measured production identity.  It is
-# not a credential key or issuer secret.  Requiring an explicit input prevents
-# a release from silently falling back to an older mutable-rootfs policy whose
-# epoch has already been superseded by a newer accepted epoch.
-[ -n "${BPIR_TIER3_SERVICE_POLICY:-}" ] || {
-    echo "error: BPIR_TIER3_SERVICE_POLICY is required for a production Tier 3 UKI" >&2
-    exit 1
-}
-[ -f "$BPIR_TIER3_SERVICE_POLICY" ] \
-    && [ -r "$BPIR_TIER3_SERVICE_POLICY" ] \
-    && [ -s "$BPIR_TIER3_SERVICE_POLICY" ] || {
-    echo "error: BPIR_TIER3_SERVICE_POLICY is not a readable non-empty file: $BPIR_TIER3_SERVICE_POLICY" >&2
-    exit 1
-}
-SERVICE_POLICY_HASH=$(sha256sum "$BPIR_TIER3_SERVICE_POLICY" | awk '{print $1}')
-if [ "$SERVICE_POLICY_HASH" != "$TIER3_SERVICE_POLICY_SHA256" ]; then
-    echo "error: BPIR_TIER3_SERVICE_POLICY is not the reviewed production policy" >&2
-    echo "  expected sha256: $TIER3_SERVICE_POLICY_SHA256" >&2
-    echo "  actual sha256:   $SERVICE_POLICY_HASH" >&2
-    exit 1
-fi
 
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
 # Production builds never auto-select the newest installed kernel: package
@@ -247,8 +218,6 @@ echo "BHTM from-leaf proof:     $BHTM_FROM_LEAF_PROOF"
 echo "binary sha256:            $BIN_HASH"
 echo "oramctl sha256:           $ORAMCTL_HASH"
 echo "BHTM proof sha256:        $BHTM_PROOF_HASH"
-echo "service policy:          $BPIR_TIER3_SERVICE_POLICY"
-echo "service policy sha256:   $SERVICE_POLICY_HASH"
 echo "dracut:                  $DRACUT_VERSION"
 echo "ukify:                   $UKIFY_VERSION"
 echo "initrd compression:      $TIER3_INITRD_COMPRESSION ($ZSTD_VERSION)"
@@ -379,23 +348,12 @@ if grep -Eq -- 'etc/bitcoinpir/identity/server\.key$' <<< "$INITRD_LISTING"; the
     exit 1
 fi
 
-if ! grep -Eq -- '-rw-r--r--[[:space:]]+.*etc/bitcoinpir/payment/service-policy\.bin$' <<< "$INITRD_LISTING"; then
-    echo "ERROR: measured service policy missing or has an unsafe mode" >&2
+# No admission policy or payment artifact is embedded in the runtime UKI.
+# Access control lives outside the measured image (see docs/RATELIMIT_INTEGRATION.md).
+if grep -Eq -- 'etc/bitcoinpir/payment/' <<< "$INITRD_LISTING"; then
+    echo "ERROR: payment artifacts must not be embedded in the Tier 3 UKI" >&2
     exit 1
 fi
-EMBEDDED_SERVICE_POLICY_HASH=$(
-    /usr/bin/lsinitrd -f /etc/bitcoinpir/payment/service-policy.bin \
-        "$CUSTOM_INITRD" 2>/dev/null \
-        | sha256sum \
-        | awk '{print $1}'
-)
-if [ "$EMBEDDED_SERVICE_POLICY_HASH" != "$SERVICE_POLICY_HASH" ]; then
-    echo "ERROR: measured service policy bytes do not match BPIR_TIER3_SERVICE_POLICY" >&2
-    echo "  input sha256:    $SERVICE_POLICY_HASH" >&2
-    echo "  embedded sha256: $EMBEDDED_SERVICE_POLICY_HASH" >&2
-    exit 1
-fi
-echo "measured service policy confirmed in initramfs: $SERVICE_POLICY_HASH"
 
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1
@@ -442,7 +400,6 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "binary_sha256=$BIN_HASH" \
     "oramctl_sha256=$ORAMCTL_HASH" \
     "bhtm_from_leaf_sha256=$BHTM_PROOF_HASH" \
-    "service_policy_sha256=$SERVICE_POLICY_HASH" \
     "initrd_compression=$TIER3_INITRD_COMPRESSION" \
     "initrd_size_bytes=$INITRD_BYTES" \
     "dracut_version=$DRACUT_VERSION" \
