@@ -61,7 +61,25 @@ error and serves free queries as before. Production activation is an
 operator decision routed through
 [Production operations](PRODUCTION_OPERATIONS.md).
 
-## Client discovery
+## Client flow
 
-The client pins the cashier URL itself. The server announces no payment
-endpoint, so a compromised server cannot redirect payments.
+The client pins the cashier URL itself (`PRODUCTION_CASHIER_URL` in
+`web/src/constants.ts`); the server announces no payment endpoint, so a
+compromised server cannot redirect payments. The cashier's HTTP contract is
+[Cashier API](CASHIER_API.md).
+
+1. Buy: the page loads the cashier's offers, gets a bolt11 mint quote from
+   a listed mint, the user pays the invoice, the page mints the ecash and
+   hands the token to the cashier (`web/src/cashu-purchase.ts`, cashu-ts
+   loaded on demand). A token from any Cashu wallet can be pasted instead.
+   Pending purchases are persisted so a reload or cashier outage never
+   loses paid sats.
+2. Store: the grant lives in `localStorage` (`web/src/session-grant.ts`).
+3. Present: every PIR client (`DpfClient`, `HarmonyClient`, `OnionClient`,
+   `OramClient`, their wasm bindings, the three web adapters, and the
+   standalone OnionPIR web client) exposes `present_session_grant` /
+   `presentSessionGrant` and, when a grant is configured, presents it right
+   after the encrypted channel and operator-identity checks. The grant is a
+   bearer token, so it is never sent in cleartext. Each server answers with
+   its own remaining balance; "session grants not enabled" from a server is
+   the free path, not an error.

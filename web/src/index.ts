@@ -87,6 +87,36 @@ export {
   REQ_BUCKET_MERKLE_TREE_TOPS, RESP_BUCKET_MERKLE_TREE_TOPS,
 } from './constants.js';
 
+export { PRODUCTION_CASHIER_URL, SESSION_GRANT_LEN } from './constants.js';
+
+export {
+  CashierClient,
+  CashierError,
+  SessionGrantStore,
+  base64ToBytes,
+  bytesToBase64,
+  classifySessionGrantFailure,
+  decodeSessionGrantFields,
+  encodeSessionGrantPresentFrame,
+  parseSessionGrantResponsePayload,
+  type CashierInfo,
+  type CashierOffer,
+  type IssuedGrant,
+  type SessionGrantPresentation,
+  type SessionGrantProvider,
+  type StoredSessionGrant,
+} from './session-grant.js';
+
+export {
+  PendingPurchaseStore,
+  checkQuoteStatus,
+  mintTokenForQuote,
+  requestLightningQuote,
+  waitForQuotePayment,
+  type MintQuoteStatus,
+  type PendingPurchase,
+} from './cashu-purchase.js';
+
 export {
   computeDataHash,
   computeParentN,

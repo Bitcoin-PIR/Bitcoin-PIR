@@ -2564,6 +2564,32 @@ impl DpfClient {
         crate::announce::announce(conn.as_mut()).await
     }
 
+    /// Attach a cashier-signed session grant to one server connection
+    /// (`server_index` 0 or 1) and return the credits remaining on that
+    /// server's ledger. The grant is a bearer token: call this after
+    /// [`Self::upgrade_to_secure_channel`]. See [`crate::session_grant`].
+    pub async fn present_session_grant(
+        &mut self,
+        server_index: u8,
+        grant: &[u8],
+    ) -> PirResult<u32> {
+        let conn = match server_index {
+            0 => self.conn0.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_session_grant: server0 not connected".into())
+            })?,
+            1 => self.conn1.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_session_grant: server1 not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_session_grant: server_index must be 0 or 1, got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::session_grant::present_session_grant(conn.as_mut(), grant).await
+    }
+
     /// Upgrade exactly one staged provider transport using the ephemeral seed
     /// already committed to by that leg's attestation request.
     pub async fn upgrade_server_to_secure_channel_with_seed(

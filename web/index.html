@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-k5FAty64spX3AcS6LCw/45546KMACyrx05o66WWZNCY=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-eQIl8nrW7Jev0+BZql8ItM8ICrQQXkbFAL9Tdhv2Dv8=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -855,6 +855,42 @@
                 </div>
             </section>
 
+            <!-- Paid access: session grants (docs/SESSION_GRANTS.md). Shown on
+                 every tab; a stored grant is presented on each fresh connection. -->
+            <section class="card" id="paidAccessCard" aria-labelledby="paidAccessTitle" style="margin-top: 16px;">
+                <div class="card-head">
+                    <div class="card-title"><span id="paidAccessTitle">Paid access</span></div>
+                </div>
+                <div class="card-body">
+                    <p id="pa-grant" style="margin: 0 0 8px;">No session grant stored — free queries only.</p>
+                    <div id="pa-balances" style="font-family: monospace; font-size: 12px; margin-bottom: 8px;"></div>
+                    <p id="pa-status" style="margin: 0 0 8px; min-height: 1.2em;"></p>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                        <button type="button" id="pa-loadOffersBtn" class="btn sm">Load cashier offers</button>
+                        <button type="button" id="pa-resumeBtn" class="btn accent sm" hidden>Resume pending purchase</button>
+                        <button type="button" id="pa-forgetBtn" class="btn ghost sm" disabled>Forget grant</button>
+                        <span id="pa-cashierUrl" style="font-family: monospace; font-size: 12px;"></span>
+                    </div>
+                    <div id="pa-offers" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;"></div>
+                    <div id="pa-invoiceBox" hidden style="margin-top: 8px;">
+                        <div>Pay this Lightning invoice with any wallet. The page then mints the ecash and redeems it for a grant.</div>
+                        <textarea id="pa-invoice" readonly rows="3" style="width: 100%; font-family: monospace; font-size: 11px; margin-top: 4px;"></textarea>
+                        <div style="display: flex; gap: 8px; margin-top: 4px;">
+                            <button type="button" id="pa-copyInvoiceBtn" class="btn sm">Copy invoice</button>
+                            <button type="button" id="pa-cancelBtn" class="btn ghost sm">Cancel</button>
+                        </div>
+                    </div>
+                    <details style="margin-top: 8px;">
+                        <summary>Redeem a Cashu token instead</summary>
+                        <textarea id="pa-token" rows="3" placeholder="cashuB…" style="width: 100%; font-family: monospace; font-size: 11px; margin-top: 4px;"></textarea>
+                        <div style="display: flex; gap: 8px; margin-top: 4px; align-items: center;">
+                            <select id="pa-tokenOffer"></select>
+                            <button type="button" id="pa-redeemBtn" class="btn sm">Redeem token</button>
+                        </div>
+                    </details>
+                </div>
+            </section>
+
         <!-- ═══ DPF Tab ═══ -->
         <div id="tab-dpf" class="tab-content active">
           <div class="grid">
@@ -1573,6 +1609,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         import { PIR1_PROVIDER, PIR2_PROVIDER } from './src/production-providers.js';
+        import { CashierClient, SessionGrantStore, PendingPurchaseStore, requestLightningQuote, waitForQuotePayment, mintTokenForQuote, PRODUCTION_CASHIER_URL } from './src/index.ts';
         window.__bitcoinPirPrepareQueryInspectorRenderDataV1 = prepareQueryInspectorRenderDataV1;
         // Initialize SDK WASM (optional - falls back to TS if unavailable)
         initSdkWasm().then(ok => {
@@ -1638,6 +1675,188 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         let client = null;
+
+        // ─── Paid access: session grants (docs/SESSION_GRANTS.md) ──────────
+        // The cashier URL is a build-time pin; the servers announce nothing.
+        // A stored grant is presented on every fresh connection right after
+        // the encrypted channel comes up, and each server reports its own
+        // remaining balance (servers meter independently).
+        const sessionGrantStore = new SessionGrantStore();
+        const pendingPurchaseStore = new PendingPurchaseStore();
+        const cashier = new CashierClient(PRODUCTION_CASHIER_URL);
+        const sessionGrantBalances = new Map();
+        let cashierInfo = null;
+        let purchaseAbort = null;
+
+        function currentSessionGrant() {
+            return sessionGrantStore.grantBytes();
+        }
+
+        function noteSessionGrant(key, info) {
+            sessionGrantBalances.set(key, info);
+            renderPaidAccess();
+        }
+
+        function paStatus(text, level = 'info') {
+            const el = document.getElementById('pa-status');
+            el.textContent = text;
+            el.dataset.level = level;
+            if (text) log(`Paid access: ${text}`, level);
+        }
+
+        function renderPaidAccess() {
+            const grant = sessionGrantStore.load();
+            const grantEl = document.getElementById('pa-grant');
+            grantEl.textContent = grant
+                ? `Session grant ${grant.grantIdHex.slice(0, 8)}…: ${grant.credits} credits bought, expires ${new Date(grant.expiresAt * 1000).toLocaleString()}.`
+                : 'No session grant stored — free queries only.';
+            document.getElementById('pa-forgetBtn').disabled = !grant;
+            const balances = document.getElementById('pa-balances');
+            balances.replaceChildren();
+            for (const [key, info] of sessionGrantBalances) {
+                const line = document.createElement('div');
+                line.textContent = info.state === 'accepted'
+                    ? `${key}: ${info.remaining} credits remaining`
+                    : info.state === 'not-enabled'
+                        ? `${key}: free path (grants not enabled)`
+                        : `${key}: refused — ${info.error}`;
+                balances.appendChild(line);
+            }
+            document.getElementById('pa-resumeBtn').hidden = !pendingPurchaseStore.load();
+            document.getElementById('pa-cashierUrl').textContent = cashier.baseUrl;
+        }
+
+        function renderOffers() {
+            const offersEl = document.getElementById('pa-offers');
+            const select = document.getElementById('pa-tokenOffer');
+            offersEl.replaceChildren();
+            select.replaceChildren();
+            if (!cashierInfo) return;
+            cashierInfo.offers.forEach((offer, index) => {
+                const label = `${offer.credits} credits for ${offer.amount} ${offer.unit}`;
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'btn accent sm';
+                button.textContent = `Buy ${label} (Lightning)`;
+                button.addEventListener('click', () => {
+                    paBuy(offer).catch(e => paStatus(`purchase failed: ${e?.message || e}`, 'error'));
+                });
+                offersEl.appendChild(button);
+                const option = document.createElement('option');
+                option.value = String(index);
+                option.textContent = label;
+                select.appendChild(option);
+            });
+        }
+
+        async function paLoadOffers() {
+            paStatus('loading cashier offers…');
+            cashierInfo = await cashier.info();
+            renderOffers();
+            paStatus(`cashier ${cashierInfo.service}: ${cashierInfo.offers.length} offer(s), mint ${cashierInfo.mints[0]}`, 'success');
+        }
+
+        async function paStoreGrant(offer, token, cashierUrl) {
+            const issued = await cashier.redeem(offer, token);
+            sessionGrantStore.save({ version: 1, ...issued, cashierUrl });
+            pendingPurchaseStore.clear();
+            sessionGrantBalances.clear();
+            renderPaidAccess();
+            paStatus(`grant issued: ${issued.credits} credits — presented on the next connection`, 'success');
+        }
+
+        async function paCompletePending(pending) {
+            if (!pending.token) {
+                paStatus('waiting for the invoice to be paid…');
+                await waitForQuotePayment(pending.mintUrl, pending.offer.unit, pending.quoteId, {
+                    signal: purchaseAbort?.signal,
+                    onStatus: (state) => paStatus(`invoice ${state.toLowerCase()}`),
+                });
+                paStatus('invoice paid — minting ecash…');
+                pending.token = await mintTokenForQuote(pending.mintUrl, pending.offer, pending.quoteId);
+                pendingPurchaseStore.save(pending);
+            }
+            paStatus('redeeming the token at the cashier…');
+            await paStoreGrant(pending.offer, pending.token, pending.cashierUrl);
+            document.getElementById('pa-invoiceBox').hidden = true;
+        }
+
+        async function paBuy(offer) {
+            if (!cashierInfo) throw new Error('load the cashier offers first');
+            if (pendingPurchaseStore.load()) throw new Error('finish or cancel the pending purchase first');
+            purchaseAbort?.abort();
+            purchaseAbort = new AbortController();
+            const mintUrl = cashierInfo.mints[0];
+            paStatus(`requesting a Lightning invoice from ${mintUrl}…`);
+            const quote = await requestLightningQuote(mintUrl, offer);
+            const pending = {
+                version: 1,
+                cashierUrl: cashier.baseUrl,
+                mintUrl,
+                offer,
+                quoteId: quote.quoteId,
+                invoice: quote.invoice,
+                quoteExpiry: quote.expiry,
+                token: null,
+                createdAt: Math.floor(Date.now() / 1000),
+            };
+            pendingPurchaseStore.save(pending);
+            document.getElementById('pa-invoice').value = quote.invoice;
+            document.getElementById('pa-invoiceBox').hidden = false;
+            renderPaidAccess();
+            await paCompletePending(pending);
+        }
+
+        async function paResume() {
+            const pending = pendingPurchaseStore.load();
+            if (!pending) return;
+            purchaseAbort?.abort();
+            purchaseAbort = new AbortController();
+            if (!pending.token) {
+                document.getElementById('pa-invoice').value = pending.invoice;
+                document.getElementById('pa-invoiceBox').hidden = false;
+            }
+            await paCompletePending(pending);
+        }
+
+        async function paRedeemPastedToken() {
+            if (!cashierInfo) await paLoadOffers();
+            const offer = cashierInfo.offers[Number(document.getElementById('pa-tokenOffer').value) || 0];
+            const token = document.getElementById('pa-token').value.trim();
+            if (!token) throw new Error('paste a Cashu token first');
+            paStatus('redeeming the pasted token…');
+            await paStoreGrant(offer, token, cashier.baseUrl);
+            document.getElementById('pa-token').value = '';
+        }
+
+        function paHandle(id, action) {
+            document.getElementById(id).addEventListener('click', () => {
+                action().catch(e => paStatus(`${e?.message || e}`, 'error'));
+            });
+        }
+        paHandle('pa-loadOffersBtn', paLoadOffers);
+        paHandle('pa-resumeBtn', paResume);
+        paHandle('pa-redeemBtn', paRedeemPastedToken);
+        paHandle('pa-copyInvoiceBtn', async () => {
+            await navigator.clipboard.writeText(document.getElementById('pa-invoice').value);
+            paStatus('invoice copied');
+        });
+        paHandle('pa-cancelBtn', async () => {
+            purchaseAbort?.abort();
+            const pending = pendingPurchaseStore.load();
+            if (pending?.token) throw new Error('a minted token is pending — resume to redeem it; it is not lost');
+            pendingPurchaseStore.clear();
+            document.getElementById('pa-invoiceBox').hidden = true;
+            renderPaidAccess();
+            paStatus('purchase cancelled (an unpaid invoice can simply be ignored)');
+        });
+        paHandle('pa-forgetBtn', async () => {
+            sessionGrantStore.clear();
+            sessionGrantBalances.clear();
+            renderPaidAccess();
+            paStatus('grant forgotten');
+        });
+        renderPaidAccess();
 
         // ─── Free/open product connection ──────────────────────────────────
         // Free queries are open: connect the pinned production provider(s),
@@ -2815,6 +3034,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`Connecting to DPF server ${serverIndex} only...`);
 
                 if (!client) client = new BatchPirClientAdapter({
+                    sessionGrant: currentSessionGrant,
+                    onSessionGrant: (idx, info) => noteSessionGrant(`DPF server${idx}`, info),
                     server0Url: '',
                     server1Url: '',
                     strictVerification: true,
@@ -3689,6 +3910,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const sdkReady = isSdkWasmReady() || await initSdkWasm();
                 if (!sdkReady) throw new Error('strict database-proof WASM failed to load');
                 candidate = new OnionPirWebClient({
+                    sessionGrant: currentSessionGrant,
+                    onSessionGrant: (info) => noteSessionGrant('OnionPIR', info),
                     serverUrl,
                     strictVerification: true,
                     expectedArkFingerprint: provider.expectedArkFingerprint,
@@ -4336,6 +4559,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
 
                 if (providerIndex === 0) candidate = new HarmonyPirClientAdapter({
+                    sessionGrant: currentSessionGrant,
+                    onSessionGrant: (idx, info) => noteSessionGrant(idx === 0 ? 'HarmonyPIR hint' : 'HarmonyPIR query', info),
                     hintServerUrl: '',
                     queryServerUrl: '',
                     prpBackend: hpCurrentPrp,
@@ -5241,6 +5466,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 document.getElementById('oram-connectBtn').disabled = true;
 
                 oramClient = new OramPirClientAdapter({
+                    sessionGrant: currentSessionGrant,
+                    onSessionGrant: (info) => noteSessionGrant('ORAM TEE', info),
                     serverUrl,
                     strictVerification: true,
                     expectedArkFingerprint: provider.expectedArkFingerprint,

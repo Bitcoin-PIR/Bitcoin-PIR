@@ -21,8 +21,9 @@ script's status subcommand for the rest.
 
 - Paid queries present a cashier-signed session grant on opcode `0x0b`;
   the design, metering rule, and server flags are in
-  [Session grants](SESSION_GRANTS.md). The cashier (payment side) is a
-  separate repository. The retired Payment V1 material and the 2026-09
+  [Session grants](SESSION_GRANTS.md); the cashier's HTTP contract is
+  [Cashier API](CASHIER_API.md). The cashier (payment side) is a separate
+  repository. The retired Payment V1 material and the 2026-09
   ARC/Cashu verifiers live only in git history.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).

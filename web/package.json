@@ -22,6 +22,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@cashu/cashu-ts": "4.10.1",
     "buffer": "^6.0.3",
     "hash.js": "^1.1.7",
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"

@@ -600,6 +600,31 @@ impl HarmonyClient {
         crate::announce::announce(conn.as_mut()).await
     }
 
+    /// Attach a cashier-signed session grant to the hint (0) or query (1)
+    /// server and return the credits remaining there. See
+    /// [`crate::DpfClient::present_session_grant`].
+    pub async fn present_session_grant(
+        &mut self,
+        server_index: u8,
+        grant: &[u8],
+    ) -> PirResult<u32> {
+        let conn = match server_index {
+            0 => self.hint_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_session_grant: hint server not connected".into())
+            })?,
+            1 => self.query_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_session_grant: query server not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_session_grant: server_index must be 0 (hint) or 1 (query), got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::session_grant::present_session_grant(conn.as_mut(), grant).await
+    }
+
     /// Upgrade one staged Harmony role using the seed committed by that
     /// role's attestation. No peer URL, key, or connection is involved.
     pub async fn upgrade_provider_to_secure_channel_with_seed(
