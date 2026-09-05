@@ -45,6 +45,11 @@ import {
   assertStrictDatabasePinCoverage,
   assertStrictSingleTransportReady,
 } from './strict-verification.js';
+import {
+  classifySessionGrantFailure,
+  type SessionGrantPresentation,
+  type SessionGrantProvider,
+} from './session-grant.js';
 
 export interface OramLayoutInfo {
   backend: 'oram-direct';
@@ -122,6 +127,13 @@ export interface OramPirClientConfig {
   pinnedOperatorPubkey?: Uint8Array;
   maxAnnounceAgeSeconds?: number;
   onOperatorIdentity?: (info: OperatorIdentity) => void;
+  /**
+   * Cashier-signed session grant to present once the encrypted channel is
+   * up (`docs/SESSION_GRANTS.md`). Evaluated per connection; return `null`
+   * for the free path. The outcome arrives via `onSessionGrant`.
+   */
+  sessionGrant?: SessionGrantProvider;
+  onSessionGrant?: (info: SessionGrantPresentation) => void;
   databaseProofPins?: DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
   /**
@@ -593,10 +605,48 @@ export class OramPirClientAdapter {
         this.operatorIdentity = oid;
         this.config.onOperatorIdentity?.(oid);
       }
+
+      if (this.secureChannelEstablished) {
+        await this.presentSessionGrant();
+      }
     } finally {
       policyReqs.free();
       att?.free();
     }
+  }
+
+  /**
+   * Present a session grant on the connection: `grant`, or the configured
+   * provider's current grant when omitted. Never throws; the outcome is
+   * logged and reported via `onSessionGrant`. Runs only over an
+   * established encrypted channel, because the grant is a bearer token.
+   */
+  async presentSessionGrant(grant?: Uint8Array): Promise<SessionGrantPresentation | null> {
+    const bytes = grant ?? this.config.sessionGrant?.() ?? null;
+    if (!bytes) return null;
+    let outcome: SessionGrantPresentation;
+    const client = this.wasmClient;
+    if (!client || !client.isConnected) {
+      outcome = { state: 'refused', error: 'ORAM server is not connected' };
+    } else if (!this.secureChannelEstablished) {
+      outcome = { state: 'refused', error: 'session grant withheld: channel is cleartext' };
+    } else {
+      try {
+        const remaining = await client.presentSessionGrant(bytes);
+        outcome = { state: 'accepted', remaining };
+      } catch (e) {
+        outcome = classifySessionGrantFailure((e as Error)?.message ?? String(e));
+      }
+    }
+    if (outcome.state === 'accepted') {
+      this.log(`ORAM: session grant accepted (${outcome.remaining} credits remaining)`, 'success');
+    } else if (outcome.state === 'not-enabled') {
+      this.log('ORAM: session grants not enabled (free path)', 'info');
+    } else {
+      this.log(`ORAM: session grant refused — ${outcome.error}`, 'error');
+    }
+    this.config.onSessionGrant?.(outcome);
+    return outcome;
   }
 
   private summariseAttestation(

@@ -1685,6 +1685,30 @@ impl WasmDpfClient {
         Ok(WasmAnnounceVerification { inner: v })
     }
 
+    /// Attach a cashier-signed session grant (133 bytes) to one connected
+    /// server (`serverIndex` ∈ {0, 1}) and return the credits remaining on
+    /// that server. Call after [`Self::upgrade_to_secure_channel`] so the
+    /// bearer grant rides the encrypted channel. Rejects with the server's
+    /// RESP_ERROR text when grants are not enabled there, the issuer is not
+    /// pinned, or the grant is expired or exhausted.
+    #[wasm_bindgen(js_name = presentSessionGrant)]
+    pub async fn present_session_grant(
+        &mut self,
+        server_index: u8,
+        grant: &[u8],
+    ) -> Result<u32, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentSessionGrant: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_session_grant(server_index, grant)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections with the encrypted-channel
     /// transport.
     ///
@@ -2248,6 +2272,27 @@ impl WasmHarmonyClient {
         Ok(WasmAnnounceVerification { inner: v })
     }
 
+    /// Attach a cashier-signed session grant to the hint (`serverIndex=0`)
+    /// or query (`serverIndex=1`) server. See
+    /// [`WasmDpfClient::present_session_grant`].
+    #[wasm_bindgen(js_name = presentSessionGrant)]
+    pub async fn present_session_grant(
+        &mut self,
+        server_index: u8,
+        grant: &[u8],
+    ) -> Result<u32, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentSessionGrant: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_session_grant(server_index, grant)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections (hint + query) with the encrypted
     /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`]
     /// — same eph_seed caching + binding flow. Argument order matches
@@ -2805,6 +2850,17 @@ impl WasmOramClient {
     pub async fn announce(&mut self) -> Result<WasmAnnounceVerification, JsError> {
         let v = self.inner.announce().await.map_err(err_to_js)?;
         Ok(WasmAnnounceVerification { inner: v })
+    }
+
+    /// Attach a cashier-signed session grant to the connection and return
+    /// the credits remaining on this server. See
+    /// [`WasmDpfClient::present_session_grant`].
+    #[wasm_bindgen(js_name = presentSessionGrant)]
+    pub async fn present_session_grant(&mut self, grant: &[u8]) -> Result<u32, JsError> {
+        self.inner
+            .present_session_grant(grant)
+            .await
+            .map_err(err_to_js)
     }
 
     /// Wrap the single server connection with the encrypted-channel transport.

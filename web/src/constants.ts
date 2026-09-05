@@ -153,6 +153,13 @@ export const REQ_SESSION_GRANT_PRESENT = 0x0b;
 export const RESP_SESSION_GRANT_OK = 0x0b;
 /** Encoded length of a version-1 `pir_session_grant::SessionGrant`. */
 export const SESSION_GRANT_LEN = 133;
+/**
+ * Client-side pin of the cashier that sells session grants
+ * (`docs/SESSION_GRANTS.md`, `docs/CASHIER_API.md`). The server announces
+ * no payment endpoint, so this is the only place the browser learns where
+ * to pay. Operator-owned; change it here, not at runtime.
+ */
+export const PRODUCTION_CASHIER_URL = 'https://cashier.bitcoinpir.org';
 
 /** Branching factor for per-bucket bin Merkle */
 export const BUCKET_MERKLE_ARITY = 8;

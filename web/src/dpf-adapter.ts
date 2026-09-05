@@ -70,6 +70,11 @@ import {
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
 import { ManagedWebSocket } from './ws.js';
 import { trustedNowUnixV1 } from './trusted-time.js';
+import {
+  classifySessionGrantFailure,
+  type SessionGrantPresentation,
+  type SessionGrantProvider,
+} from './session-grant.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -340,6 +345,15 @@ export interface BatchPirClientConfig {
    *  operator-identity check (only when `verifyOperatorIdentity`). Use to
    *  surface a "verified operator" badge — gate it on `state === 'verified'`. */
   onOperatorIdentity?: (serverIndex: 0 | 1, info: OperatorIdentity) => void;
+  /**
+   * Cashier-signed session grant to present on each leg once its encrypted
+   * channel is up (`docs/SESSION_GRANTS.md`). Evaluated per connection;
+   * return `null` for the free path. Outcomes arrive via `onSessionGrant`.
+   */
+  sessionGrant?: SessionGrantProvider;
+  /** Fired per leg after a presentation: accepted with the credits left on
+   *  that server, refused with the server's reason, or not enabled there. */
+  onSessionGrant?: (serverIndex: 0 | 1, info: SessionGrantPresentation) => void;
   /** Database proof pins the frontend should fetch and verify after the
    * catalog is loaded. Empty/default means no db-proof UI check. */
   databaseProofPins?: DatabaseProofPin[];
@@ -1683,6 +1697,10 @@ export class BatchPirClientAdapter {
         else this.operatorIdentity.server1 = identity;
         this.config.onOperatorIdentity?.(serverIndex, identity);
       }
+
+      this.assertLegOwner(serverIndex, owner);
+      await this.presentSessionGrant(serverIndex);
+      this.assertLegOwner(serverIndex, owner);
     } finally {
       attestation?.free();
     }
@@ -1951,6 +1969,11 @@ export class BatchPirClientAdapter {
           this.config.onOperatorIdentity?.(1, oid1);
         }
 
+        if (this.secureChannelEstablished) {
+          await this.presentSessionGrant(0);
+          await this.presentSessionGrant(1);
+        }
+
       } finally {
         policyReqs.free();
       }
@@ -1972,6 +1995,60 @@ export class BatchPirClientAdapter {
    * `serverStaticPub` the bundle's `channel_pub` is bound against, so a
    * `null` att (attest failed) yields `state: 'error'`.
    */
+  /**
+   * Present a session grant on one connected leg: `grant`, or the
+   * configured provider's current grant when omitted (nothing happens on
+   * the free path). Never throws — the outcome is logged and reported via
+   * `onSessionGrant`. Runs only over an established encrypted channel,
+   * because the grant is a bearer token.
+   */
+  async presentSessionGrant(
+    serverIndex: 0 | 1,
+    grant?: Uint8Array,
+  ): Promise<SessionGrantPresentation | null> {
+    const bytes = grant ?? this.config.sessionGrant?.() ?? null;
+    if (!bytes) return null;
+    const client = this.wasmClient;
+    if (!client || !client.isServerConnected(serverIndex)) {
+      return this.reportSessionGrant(serverIndex, {
+        state: 'refused',
+        error: `server${serverIndex} is not connected`,
+      });
+    }
+    if (!this.secureChannelLegs[serverIndex]) {
+      return this.reportSessionGrant(serverIndex, {
+        state: 'refused',
+        error: 'session grant withheld: channel is cleartext',
+      });
+    }
+    let outcome: SessionGrantPresentation;
+    try {
+      const remaining = await client.presentSessionGrant(serverIndex, bytes);
+      outcome = { state: 'accepted', remaining };
+    } catch (e) {
+      outcome = classifySessionGrantFailure((e as Error)?.message ?? String(e));
+    }
+    return this.reportSessionGrant(serverIndex, outcome);
+  }
+
+  private reportSessionGrant(
+    serverIndex: 0 | 1,
+    outcome: SessionGrantPresentation,
+  ): SessionGrantPresentation {
+    if (outcome.state === 'accepted') {
+      this.log(
+        `server${serverIndex}: session grant accepted (${outcome.remaining} credits remaining)`,
+        'success',
+      );
+    } else if (outcome.state === 'not-enabled') {
+      this.log(`server${serverIndex}: session grants not enabled (free path)`, 'info');
+    } else {
+      this.log(`server${serverIndex}: session grant refused — ${outcome.error}`, 'error');
+    }
+    this.config.onSessionGrant?.(serverIndex, outcome);
+    return outcome;
+  }
+
   private async verifyOperatorIdentityOne(
     idx: 0 | 1,
     att: WasmAttestVerification | null,

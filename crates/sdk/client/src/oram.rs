@@ -252,6 +252,13 @@ impl OramClient {
         crate::announce::announce(self.conn_mut()?.as_mut()).await
     }
 
+    /// Attach a cashier-signed session grant to the current connection and
+    /// return the credits remaining there. See
+    /// [`crate::DpfClient::present_session_grant`].
+    pub async fn present_session_grant(&mut self, grant: &[u8]) -> PirResult<u32> {
+        crate::session_grant::present_session_grant(self.conn_mut()?.as_mut(), grant).await
+    }
+
     /// Upgrade the existing connection to the encrypted channel.
     ///
     /// The `server_static_pub` must come from a verified attestation or

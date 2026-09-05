@@ -440,6 +440,12 @@ export interface WasmDpfClient {
    *  without `--identity-*` flags. See `WasmAnnounceVerification` for the
    *  verification methods to run on the result. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
+  /** Attach a cashier-signed session grant (133 bytes) to one connected
+   *  server and return the credits remaining on that server. Call after
+   *  `upgradeToSecureChannel` — the grant is a bearer token. Rejects with
+   *  the server's error text when grants are not enabled there, the
+   *  issuer is not pinned, or the grant is expired or exhausted. */
+  presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
    *  source (call `attest` first; ideally also check the SEV-SNP report's
@@ -545,6 +551,12 @@ export interface WasmHarmonyClient {
    *  1 = query server. Rejects with "announce not configured" when the
    *  server was started without `--identity-*` flags. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
+  /** Attach a cashier-signed session grant (133 bytes) to one connected
+   *  server and return the credits remaining on that server. Call after
+   *  `upgradeToSecureChannel` — the grant is a bearer token. Rejects with
+   *  the server's error text when grants are not enabled there, the
+   *  issuer is not pinned, or the grant is expired or exhausted. */
+  presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
@@ -665,6 +677,8 @@ export interface WasmOramClient {
   disconnect(): Promise<void>;
   attest(): Promise<WasmAttestVerification>;
   announce(): Promise<WasmAnnounceVerification>;
+  /** Attach a cashier-signed session grant; see `WasmDpfClient.presentSessionGrant`. */
+  presentSessionGrant(grant: Uint8Array): Promise<number>;
   upgradeToSecureChannel(serverStaticPub: Uint8Array): Promise<void>;
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   verifyDatabaseProof(
