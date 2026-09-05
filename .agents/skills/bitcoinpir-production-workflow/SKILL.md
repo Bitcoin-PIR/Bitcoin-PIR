@@ -6,7 +6,7 @@ description: Run BitcoinPIR's production workflow through its repository command
 # BitcoinPIR production workflow
 
 Open [`docs/PRODUCTION_OPERATIONS.md`](../../../docs/PRODUCTION_OPERATIONS.md).
-Classify the ask as one campaign (a named release, or one flow A–I) and
+Classify the ask as one campaign (a named release, or one flow A–H) and
 run that campaign to completion. Do not invent a second campaign (for
 example Lightning or issuer deploy) from a free-query release.
 
@@ -27,7 +27,6 @@ mutations into one argv. Inside an authorized campaign, keep going.
 | Edit `/home/pir/data/` or place `startup.env` | F |
 | Sealed Observe / Enroll / Probe / Ready | G |
 | New DB / DPF / Harmony / Onion / ORAM proofs / pins | H (producer scope: attested-builder README; UKI: ATTESTED_BUILDER_TIER3_UKI.md) |
-| Payment artifacts or source-readiness | I |
 
 Before a long step, state the duration, hard stop, and progress signal
 from the workload table on that page.
@@ -35,7 +34,7 @@ from the workload table on that page.
 ## Commands the flows already own
 
 Status, images, UKI, measured-boot, data-disk, post-switch check, sealed
-phase/release, payment wrappers, and Pages dispatch are listed in
+phase/release, and Pages dispatch are listed in
 Production operations. Copy commands from the matching flow; do not
 invent issuer deploy, keygen, funds, or image delete.
 

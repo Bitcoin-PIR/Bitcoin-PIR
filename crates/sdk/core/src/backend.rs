@@ -124,5 +124,4 @@ impl ServerConfig {
 }
 
 // Note: this is a protocol-level config type intended to be built
-// programmatically. For TOML loading, use `pir_sdk_server::ServerConfig::load`
-// which has the deserialize impls wired up.
+// programmatically; TOML loading lives in `apps/server`.

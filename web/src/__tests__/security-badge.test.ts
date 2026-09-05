@@ -154,7 +154,6 @@ describe('pre-verification security badge rendering', () => {
       expect(html).not.toContain('fonts.gstatic.com');
     }
     const viteConfig = readFileSync(new URL('../../vite.config.js', import.meta.url), 'utf8');
-    expect(viteConfig).not.toContain("'ratelimit-demo':");
     expect(viteConfig).toContain('strip-production-loopback-csp');
   });
 });

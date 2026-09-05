@@ -20,7 +20,6 @@ resolved first. Each blocker is listed below with a suggested fix.
 | `pir-sdk-client`                  | crates.io  | 🟡 Blocked — git deps and unpublished internal path deps. |
 | `pir-sdk-wasm` (as a crate)       | crates.io  | 🟡 Blocked — direct and transitive non-registry deps.     |
 | `pir-sdk-wasm` (as npm package)   | npm        | 🟢 Packageable (wasm-pack bundles all Rust deps).         |
-| `pir-sdk-server`                  | crates.io  | 🟡 Blocked — transitively via `pir-runtime-core`.         |
 
 🟢 = ready; 🟡 = blocked, unblocking is tracked below; 🔴 = needs
 upstream refactoring, no ETA.
@@ -82,6 +81,9 @@ registry `version` fallback.
 
 ## Blocker 2 — `pir-sdk-server` depends on internal binary crates (RESOLVED)
 
+> `pir-sdk-server` itself was removed in 2026-09 (it had no consumers);
+> `pir-runtime-core` remains the publishable server-side library.
+
 ### Resolution
 
 Extracted the shared server runtime primitives into a new publishable
@@ -98,7 +100,7 @@ incompatibilities are the git-only `libdpf` and `arc` dependencies.
 After both have registry versions, the server-side publish order is:
 
 ```
-pir-core + pir-channel + pir-identity → pir-sdk → pir-runtime-core → pir-sdk-server
+pir-core + pir-channel + pir-identity → pir-sdk → pir-runtime-core
 ```
 
 🔒 PIR invariants preserved. The extraction is a pure code move; the
@@ -121,8 +123,8 @@ the dependency graph:
    than being folded into publishable parents.
 5. `pir-runtime-core` (depends on `pir-core`, `pir-channel`,
    `pir-identity`, `libdpf`, and `arc`).
-6. `pir-sdk-server` and `pir-sdk-client` after their respective
-   dependency graphs are available from crates.io.
+6. `pir-sdk-client` after its dependency graph is available from
+   crates.io.
 7. `pir-sdk-wasm` as a crate (depends on `pir-sdk-client`,
    `pir-attest-verify`, `pir-db-attest`, and `arc`).
 

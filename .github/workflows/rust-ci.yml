@@ -1,0 +1,105 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
+      - 'apps/**'
+      - 'crates/**'
+      - 'scripts/rust-ci-lane.sh'
+      - '.github/workflows/rust-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'rust-toolchain.toml'
+      - '.cargo/**'
+      - 'vendor/**'
+      - 'apps/**'
+      - 'crates/**'
+      - 'scripts/rust-ci-lane.sh'
+      - '.github/workflows/rust-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-lanes:
+    name: Rust lane (${{ matrix.lane }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [core, runtime-default-security, runtime-features]
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_TEST_LTO: "off"
+      CARGO_INCREMENTAL: "0"
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_RW_MODE: ${{ github.event_name == 'push' && 'READ_WRITE' || 'READ_ONLY' }}
+      RUSTC_WRAPPER: sccache
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+      - name: Install sccache compiler cache
+        uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - name: Run lane
+        run: bash scripts/rust-ci-lane.sh --lane "${{ matrix.lane }}"
+      - name: Report sccache compiler-cache statistics
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${SCCACHE_PATH:-}" ]]; then
+            "$SCCACHE_PATH" --show-stats
+          else
+            echo "sccache was unavailable before stats collection" >&2
+          fi
+      - name: Upload Cargo compile timing reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rust-${{ matrix.lane }}-cargo-timings-${{ github.run_id }}
+          path: target/cargo-timings
+          if-no-files-found: ignore
+          retention-days: 7
+
+  rust:
+    name: Rust lanes
+    if: ${{ always() }}
+    needs: rust-lanes
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all Rust lanes to pass
+        env:
+          LANE_RESULT: ${{ needs.rust-lanes.result }}
+        run: test "$LANE_RESULT" = success
+
+  wasm-boundary:
+    name: wasm32 check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain with wasm32
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
+      - name: Check pir-sdk-wasm on wasm32
+        run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm

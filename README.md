@@ -67,7 +67,7 @@ merely building this repository.
 BitcoinPIR/
 ├── crates/
 │   ├── protocol/      Shared database, channel, and server-runtime primitives
-│   ├── sdk/           Rust, native-client, server, and WASM SDK crates
+│   ├── sdk/           Rust core, native-client, and WASM SDK crates
 │   └── trust/         Identity, attestation, and database-proof verification
 ├── apps/
 │   ├── server/        Production server and diagnostic binaries

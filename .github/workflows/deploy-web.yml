@@ -78,7 +78,7 @@ jobs:
         run: npm ci
 
       - name: Enforce manual main-only production Pages deployment
-        run: node scripts/payment-v1-pages-deploy-gate.mjs
+        run: node scripts/pages-deploy-gate.mjs
 
       - name: TypeScript strict typecheck
         working-directory: web

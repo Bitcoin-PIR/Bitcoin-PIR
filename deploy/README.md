@@ -9,11 +9,10 @@ not listed below is local-only by construction.
 
 | Path | What it is |
 |---|---|
-| `payment-v1/**` | Reviewed Payment V1 deployment templates (`.in`/`.example` source files, own README) |
 | `installimage.conf` | Hetzner installimage config for the pir1 host (partitioning/RAID; no credentials) |
 | `known_hosts` | Pinned SSH public host keys for the Hetzner host (65.21.91.217) — the host-key-swap defense used by the ops runbooks |
 | `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (87.120.8.198, Slice 2 only) |
-| `systemd/*.service` | The five host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`, `dev-issuer`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
+| `systemd/*.service` | The four host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
 
 These files are *facts about the deployment*, not activation levers: editing
 them here changes nothing on a host. Applying a unit change to a host is a

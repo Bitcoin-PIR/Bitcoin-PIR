@@ -2,7 +2,7 @@
 
 Start here for any authorized production change. Query live state first —
 never infer it from documents. Classify the ask as **one campaign**: a
-named release (for example R5.1) or one flow A–I. One explicit
+named release (for example R5.1) or one flow A–H. One explicit
 authorization covers that whole campaign. Run the campaign's numbered
 steps in order. Do not invent a second campaign, and do not re-ask
 between steps of the same campaign.
@@ -63,7 +63,7 @@ stop and report.
 | Local web check (`tsc` + vitest + `build-web`) | 2–10 min | 15 min | npm scripts exit 0 |
 | PR `web-build.yml` | 10–25 min | 30 min job | wasm-pack, tsc, vitest, `build-web` |
 | PR `ci-summary.yml` | waits for siblings | 75 min | one green/red advisory status |
-| Pages `deploy-web.yml` | 20–60 min | 75 min build | Playwright e2e, then deploy job |
+| Pages `deploy-web.yml` | 20–60 min | 75 min build | `build-web`, then deploy job |
 | pir1 `cargo build --release -p runtime` | 2–5 min | 15 min | compiler output, then systemd active |
 | Tier 3 **runtime** UKI (`build_uki_tier3.sh`) | 5–15 min | 15 min | dracut, inventory, `ukify`, `PASS uki_build` |
 | Attested-builder **producer** UKI | 5–15 min | 15 min | archive `.efi` + `.meta` |
@@ -86,11 +86,10 @@ stop and report.
 | F | Edit `/home/pir/data/` on VPSBG, including `startup.env` | [Key management](KEY_MANAGEMENT.md) |
 | G | pir2 sealed Observe / Enroll / Probe / Ready | [Sealed release](runbooks/pir2-sealed-release.md) |
 | H | Produce or rotate DPF / Harmony / Onion v2 / ORAM proofs | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
-| I | Payment artifacts or source-readiness only | [Payment artifacts](runbooks/payment-artifacts.md) |
 
 Payment issuer deploy, mainnet Lightning, key generation, funds, and
-image deletion are **not** flows. Signet / functional-beta is archive
-only (`docs/archive/payment/`).
+image deletion are **not** flows. The retired Payment V1 material lives
+only in git history.
 
 ## A. Diagnose — Read
 
@@ -122,7 +121,7 @@ Usual PR workflows, when their paths match:
 | --- | --- | --- |
 | `web-build.yml` | wasm-pack, `tsc`, vitest, `build-web` | GitHub Pages |
 | `pir-sdk-integration.yml` | deterministic SDK jobs | live servers (live jobs are schedule/dispatch) |
-| `payment-platform.yml` | Payment source/process lanes | issuer or Lightning |
+| `rust-ci.yml` | Rust test/clippy lanes and the wasm32 check | production hosts |
 | `build-determinism.yml` | pir-core reproducibility | databases |
 | `workflow-supply-chain.yml` | workflow/UKI contract scripts | a UKI |
 | `generated-proof-lock.yml` | lock files | live proofs |
@@ -136,7 +135,7 @@ The site is `https://www.bitcoinpir.org/`. A push to `main` does **not**
 publish. `.github/workflows/deploy-web.yml` deploys only on
 `workflow_dispatch` from `main` with `confirm_production_deploy=true`.
 The build job has contents-read only; Pages write/OIDC is confined to
-the deploy job. `scripts/payment-v1-pages-deploy-gate.mjs` enforces that
+the deploy job. `scripts/pages-deploy-gate.mjs` enforces that
 shape.
 
 1. Local — land the web or pin change through Flow B. Pin edits must
@@ -146,8 +145,8 @@ shape.
 2. Local — wait for `web-build.yml` on that `main` commit.
 3. Auth — dispatch `deploy-web.yml` on `main` with
    `confirm_production_deploy=true`. Expected 20–60 min, hard stop
-   75 min. Progress: wasm-pack, tsc, vitest, three Playwright payment
-   e2e jobs, `npm run build-web`, then the deploy job.
+   75 min. Progress: wasm-pack, tsc, vitest, `npm run build-web`, then the
+   deploy job.
 4. Read — optional live browser check, only if the user asks:
    dispatch `web-strict-production-canary.yml` (45 min timeout) or the
    [production-test skill](../.claude/skills/production-test/SKILL.md).
@@ -350,18 +349,6 @@ Rollback is rotation §7: restore both hosts to the last generation
 proven on both, then Flow C for the prior pins. If one host fails,
 do not leave a mixed fleet.
 
-## I. Payment source-ready — Local, not a production enablement
-
-| Step | Type | Command | Success |
-| --- | --- | --- | --- |
-| 1 | Local | `scripts/payment-v1-artifacts.sh KIND --dry-run` then without | `PASS artifact=...` |
-| 2 | Local | `scripts/payment-v1-issuer-state.sh init\|check` | `PASS issuer_state=...` |
-| 3 | Auth | `scripts/payment-v1-activate.sh private ... --apply` | `PASS private_start` |
-| 4 | Local | `scripts/payment-v1-activate.sh production` | `PASS production_source_readiness` |
-
-Step 4 is an offline source check. It does not install, start, fund, or
-enable a production issuer. Mainnet Lightning is not decided.
-
 ## Human-only — do not start from this page
 
 - Key generation and writing `.keys/` from scratch.
@@ -388,12 +375,8 @@ enable a production issuer. Mainnet Lightning is not decided.
 | Open or close a VPSBG data-disk window | [Key management](KEY_MANAGEMENT.md) | `scripts/vpsbg-data-disk.sh` | `PASS action=open\|put\|get\|ssh\|close` |
 | Check pir2 after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/pir2-post-switch-check.sh` | `PASS action=post_switch_check` |
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
-| Prepare Payment V1 artifacts | [Payment artifacts](runbooks/payment-artifacts.md) | `scripts/payment-v1-artifacts.sh` | `PASS artifact=...` |
-| Initialize issuer state | [Issuer state](runbooks/issuer-state.md) | `scripts/payment-v1-issuer-state.sh` | `PASS issuer_state=...` |
 | Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
-| Start the private publisher network | [Private start](runbooks/payment-private-start.md) | `scripts/payment-v1-activate.sh private` | `PASS private_start` |
-| Prepare final production enablement | [Production enablement](runbooks/production-enable.md) | `scripts/payment-v1-activate.sh production` | `PASS production_source_readiness` |
 
-Technical payment references remain in [`docs/payment/`](payment/);
-prior plans and evidence are in
-[`docs/archive/payment/`](archive/payment/README.md).
+Paid-query integration boundaries are in
+[`RATELIMIT_INTEGRATION.md`](RATELIMIT_INTEGRATION.md); the retired
+Payment V1 material lives only in git history.

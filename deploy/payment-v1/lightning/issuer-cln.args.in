@@ -1,6 +1,0 @@
-# Replace only the three guarded Core Lightning adapter arguments in the
-# reviewed payment-issuer service. This is not an executable fragment. The
-# issuer has no native CLN group and cannot traverse `/srv/lightning`.
---cln-rpc-socket /run/bitcoinpir-cln-rpc-guard/issuer/issuer-rpc
---cln-rpc-expected-uid @CLN_GUARD_UID@
---cln-rpc-expected-gid @ISSUER_GID@
