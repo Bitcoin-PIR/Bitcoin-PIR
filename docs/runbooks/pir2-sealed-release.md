@@ -64,13 +64,27 @@ together:
 - for non-Observe phases, a valid Ed25519 service identity public key, its
   fingerprint, and the identity generation.
 
-The repository currently has a dedicated verifier for the fixed Observe
-receipt as part of `bpir-admin pir2-sealed-release`, but no generic offline
-decoder/verifier command for Enroll, Probe, or Ready receipts. Do not treat a
-successful hex/field parser, the status JSON, or a file hash as a substitute.
-Until a reviewed repository command exists, stop after downloading the receipt
-and use a reviewed offline verifier that performs the checks above before
-constructing identity or accounting artifacts.
+The pre-release Observe receipt is verified inside `bpir-admin
+pir2-sealed-release`. Every later receipt is accepted with the reviewed
+repository command, which runs exactly the checks above and prints the
+enrolled service identity public key:
+
+```sh
+scripts/pir2-sealed-ceremony.sh receipt \
+  --receipt /absolute/enroll.receipt.bin --release /absolute/release.bin \
+  --operator-pubkey-hex HEX64 \
+  --expected-phase enroll --expected-ordinal ORDINAL \
+  --expected-verifier-nonce-hex HEX64 --expected-boot-id-hex HEX32 \
+  --expected-receipt-sha256-hex HEX64 \
+  --ark ark.pem --ask ask.pem --vcek vcek.pem --expected-ark-sha256-hex HEX64
+```
+
+Take the ordinal and nonce from the phase's own `startup.env`, the boot ID
+and receipt hash from its status JSON or persisted marker, and the operator
+key from the source pin. A successful run prints `PASS
+pir2_sealed_receipt_verify` and `NEXT_STEP`; anything else is rejecting
+evidence. Do not treat a hex/field parser, the status JSON, or a file hash
+as a substitute for this command.
 
 Ready writes two receipts for the same boot: `ready-preflight-BOOT.bin` before
 ORAM access and `ready-runtime-BOOT.bin` when the final server opens the sealed
