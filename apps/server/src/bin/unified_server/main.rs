@@ -104,7 +104,6 @@ async fn main() {
         args.identity_key_path.is_some()
             || args.identity_cert_path.is_some()
             || args.identity_server_id.is_some(),
-        false,
     )
     .unwrap_or_else(|error| fatal_cli(error));
     // Generate the boot-fresh channel before sealed preflight so the same raw
@@ -123,10 +122,9 @@ async fn main() {
         &pir_runtime_core::snp_sealed_secrets::LinuxSevSnpDerivedKeyProviderV1,
     )
     .unwrap_or_else(|error| fatal_cli(format!("pir2 sealed startup: {error}")));
-    // Clearing-side sealed outputs (clearing key, accounting authorization,
-    // issuer approval) are part of the deleted payment world. Only the
-    // attestation identity is consumed here; the ceremony itself is
-    // simplified at the R5 production switch.
+    // Only the attestation identity is consumed here. The envelope still
+    // unseals a second (clearing) seed for format compatibility; R5b drops
+    // it from the sealed formats.
     let sealed_identity = match sealed_startup {
         Pir2SealedStartupV1::Disabled => None,
         Pir2SealedStartupV1::InertSuccess {
