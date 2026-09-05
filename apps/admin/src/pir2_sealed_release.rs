@@ -91,7 +91,7 @@ pub struct Pir2SealedReleaseArgs {
     #[arg(long)]
     pub expected_guest_policy_hex: String,
 
-    /// Payment provider identifier.
+    /// Provider identifier bound into the release, envelope, and receipts.
     #[arg(long)]
     pub provider_id_hex: String,
     /// Stable server identifier bound into the release.
@@ -111,9 +111,6 @@ pub struct Pir2SealedReleaseArgs {
     /// Pre-reserved identity generation (must be nonzero).
     #[arg(long)]
     pub identity_generation: u64,
-    /// Pre-reserved clearing authorization epoch (must be nonzero).
-    #[arg(long)]
-    pub clearing_authorization_epoch: u64,
 
     /// Owner-only raw 32-byte Ed25519 operator signing key.
     #[arg(long)]
@@ -207,7 +204,6 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
         minimum_tcb,
         derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
         identity_generation: args.identity_generation,
-        clearing_authorization_epoch: args.clearing_authorization_epoch,
     };
 
     // This is intentionally the first operator-key access in the command.
@@ -548,7 +544,6 @@ mod tests {
             },
             derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
             identity_generation: 1,
-            clearing_authorization_epoch: 1,
         }
     }
 
@@ -586,7 +581,6 @@ mod tests {
             minimum_tcb_snp: 1,
             minimum_tcb_microcode: 1,
             identity_generation: 1,
-            clearing_authorization_epoch: 1,
             operator_signing_key: dir.join("must-not-read-operator.key"),
             out: dir.join("must-not-create-release.bin"),
         }

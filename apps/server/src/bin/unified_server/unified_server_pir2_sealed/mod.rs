@@ -3,8 +3,8 @@
 //! This module is a directory module so Cargo never discovers it as another
 //! binary.  The dispatcher runs before database/ORAM construction and before
 //! a listener exists.  Observe never derives a key; enroll/probe always exit
-//! inert after writing a current-boot receipt; only Ready transfers the two
-//! role-separated signing keys to the server.
+//! inert after writing a current-boot receipt; only Ready transfers the
+//! service identity signing key to the server.
 
 use std::path::{Path, PathBuf};
 
@@ -112,11 +112,6 @@ pub(super) enum Pir2SealedStartupV1 {
     },
     Ready {
         identity_key: SigningKey,
-        // Clearing-side ceremony outputs. Still unsealed by the current
-        // measured-boot ceremony, but no longer consumed by the server;
-        // the R5 ceremony simplification removes them from the variant.
-        #[allow(dead_code)]
-        clearing_key: SigningKey,
         identity_cert: IdentityCert,
     },
 }
@@ -398,7 +393,6 @@ fn dispatch_pir2_sealed_startup_with_security_v1<
     let keys = material.into_signing_keys();
     Ok(Pir2SealedStartupV1::Ready {
         identity_key: keys.service_identity,
-        clearing_key: keys.clearing,
         identity_cert,
     })
 }
@@ -661,7 +655,6 @@ mod tests {
             },
             derived_key_request: SnpDerivedKeyRequestV1::production().canonical_evidence(),
             identity_generation: 7,
-            clearing_authorization_epoch: 11,
         };
         let release_bytes = encode_signed_pir2_sealed_release_v1(&claims, &operator).unwrap();
         let release_path = directory.path().join("release.bin");
