@@ -126,19 +126,19 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-08-30
- * after the R5.1 free-query switch (Observe/Enroll/Probe/Ready on image 301,
- * source `bd346d39`). Image 301 serves DPF, Harmony-query and TEE ORAM.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-09-06
+ * after the R5 session-grant switch (Observe/Enroll/Probe/Ready on image 303,
+ * source `039b3c66`). Image 303 serves DPF, Harmony-query and TEE ORAM.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from live image 301 after AMD chain + REPORT_DATA verification
+  // Captured from live image 303 after AMD chain + REPORT_DATA verification
   // in scripts/pir2-post-switch-check.sh. binary_sha256 and MEASUREMENT
-  // mismatched the previous image-295 pin, as expected for this UKI.
+  // mismatched the previous image-301 pin, as expected for this UKI.
   measurementHex:
-    '6e2f4f9346342da6cc0fd6fd430e3511d0b3b8ac267ef44d289fa85651ff86437c2cdd84de821f5356a242bdee0d7f93',
+    '726f288c2c1b0187468ffa022d2534990bd274b1386fe068c873ee2a928bb05fcdbf8b09c50115b4dea52c1c97f576e3',
   binarySha256Hex:
-    '86d65881c9a7479716d23d80cfd44a10704a2ea2f09f000adc2d48af96cf6f78',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 301, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, R5.1)',
+    '5a24a73f6f94aecc6f7b60680e6cc90c360738fb5e67133edd2b2c7ab7cb49eb',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 303, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, R5 session grants)',
 };
 
 /**
@@ -151,11 +151,11 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Live hashed unified_server from the R5.1 Flow D rebuild of 3e4e74a9
-  // (Payment V1 flags dropped; ARC/Cashu remain off).
+  // Live hashed unified_server from the R5 Flow D rebuild of 039b3c66
+  // (session-grant runtime; ARC/Cashu code removed).
   binarySha256Hex:
-    'bba403e0cf31c5a37241a3f5b5c46fadd8c71d4f2428bc301684c86b61e62289',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, R5.1 free-query unified_server)',
+    'be719a801cb2decec1c5e4073d16790f05f869d647447d2a00f910d1474fb61f',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, R5 session-grant unified_server)',
 };
 
 /**
