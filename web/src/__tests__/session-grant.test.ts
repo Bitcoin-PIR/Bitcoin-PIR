@@ -277,3 +277,37 @@ describe('PendingPurchaseStore', () => {
     expect(storage.size()).toBe(0);
   });
 });
+
+describe('CashierClient fetch binding', () => {
+  it('never invokes the fetch implementation as a method of the client', async () => {
+    let receiver: unknown = 'unset';
+    const fake = function (this: unknown): Promise<Response> {
+      receiver = this;
+      return Promise.resolve(
+        new Response(JSON.stringify({ service: 'bitcoinpir-cashier', version: 1, cashier_pubkey_hex: 'ab'.repeat(32), mints: ['https://mint.example'], offers: [{ credits: 1, amount: 1, unit: 'sat' }], grant_ttl_secs: 60 }), { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
+    } as unknown as typeof fetch;
+    const client = new CashierClient('https://cashier.example', fake);
+    await client.info();
+    // A native `fetch` called with any receiver other than the global throws
+    // "Illegal invocation" in browsers; the client must call it unbound.
+    expect(receiver === client).toBe(false);
+    expect(receiver === undefined || receiver === globalThis).toBe(true);
+  });
+
+  it('uses a wrapper around the global fetch by default', async () => {
+    const original = globalThis.fetch;
+    let receiver: unknown = 'unset';
+    globalThis.fetch = function (this: unknown): Promise<Response> {
+      receiver = this;
+      return Promise.resolve(new Response('{}', { status: 500 }));
+    } as unknown as typeof fetch;
+    try {
+      const client = new CashierClient('https://cashier.example');
+      await expect(client.info()).rejects.toThrow(/cashier responded 500/);
+      expect(receiver === globalThis).toBe(true);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+});
