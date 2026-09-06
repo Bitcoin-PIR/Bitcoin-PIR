@@ -328,9 +328,13 @@ export class CashierClient {
       throw new Error('cashier URL must be https:// (or a loopback http:// for development)');
     }
     this.baseUrl = baseUrl.replace(/\/+$/, '');
-    const impl = fetchImpl ?? (globalThis as { fetch?: typeof fetch }).fetch;
-    if (!impl) throw new Error('fetch is unavailable in this environment');
-    this.fetchImpl = impl;
+    // Never store the native `fetch` itself: calling it as a method of this
+    // object (`this.fetchImpl(...)`) makes the browser throw "Illegal
+    // invocation". The default is a wrapper that calls the global with the
+    // global receiver; an injected implementation is invoked unbound below.
+    const native = (globalThis as { fetch?: typeof fetch }).fetch;
+    if (!fetchImpl && !native) throw new Error('fetch is unavailable in this environment');
+    this.fetchImpl = fetchImpl ?? ((input, init) => native!.call(globalThis, input, init));
   }
 
   async info(): Promise<CashierInfo> {
@@ -354,8 +358,9 @@ export class CashierClient {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (json !== undefined) headers['content-type'] = 'application/json';
     let response: Response;
+    const fetchImpl = this.fetchImpl; // unbound call: `this` must not be the client
     try {
-      response = await this.fetchImpl(this.baseUrl + path, {
+      response = await fetchImpl(this.baseUrl + path, {
         method,
         headers,
         body: json === undefined ? undefined : JSON.stringify(json),
