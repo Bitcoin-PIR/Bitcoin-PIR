@@ -39,6 +39,10 @@ export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([
   "scripts/github-workflow-supply-chain-gate.mjs",
   "scripts/tier3-uki-policy-contract.test.mjs",
   "scripts/build_uki_tier3.sh",
+  "scripts/vpsbg-data-disk.sh",
+  "scripts/vpsbg-data-disk.test.mjs",
+  "scripts/vpsbg-production-status.sh",
+  "scripts/testdata/**",
   "web/package.json",
   "web/package-lock.json",
   "web/npm-shrinkwrap.json",
@@ -200,7 +204,7 @@ export function validateSupplyChainGateValidatorCoverage(
     `${label} must retain workflow policy validation`,
   );
   for (const command of [
-    "node --test scripts/tier3-uki-policy-contract.test.mjs",
+    "node --test scripts/tier3-uki-policy-contract.test.mjs scripts/vpsbg-data-disk.test.mjs",
     "node scripts/github-workflow-supply-chain-gate.mjs",
   ]) {
     if (!policyStep.run.includes(command)) {

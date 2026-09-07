@@ -13,7 +13,9 @@ Each item: what hurt, evidence, proposed cleanup.
    detach, then the delayed stop lands after the wrapper's start; the wrapper either
    exits 22 or waits forever on a stopped guest (hit 4 times; one 900 s hard stop).
    Fix: after detach, poll state; treat 423 as "retry stop later"; if stock+stopped,
-   issue start; wait for SSH with a single loop (a session-local wrapper that watched until SSH was ready and started the guest once when it found it stock+stopped).
+   issue start; wait for SSH with a single loop.
+   **Fixed:** `open` now settles by readback (`settle_to_stock_ssh`), with an
+   offline simulation of the race in `scripts/vpsbg-data-disk.test.mjs`.
 2. `scripts/pir2-post-switch-check.sh`: `status_args[@]: unbound variable` when no
    `--server-id` is given (noted in the epoch-5 handoff, still unfixed).
 3. Hint-pool generation timing is compiled out in production
