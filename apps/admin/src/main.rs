@@ -22,6 +22,8 @@
 //!   Probe, or Ready receipt against the operator-signed release.
 //! - `pir2-sealed-receipt-fetch` — copy a serving Ready guest's receipts
 //!   and preflight marker out over its public WebSocket endpoint.
+//! - `pir2-sealed-observe-fields` — print an Observe receipt's public
+//!   claim fields (input extraction, no verification).
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -34,6 +36,7 @@ mod channel_test;
 mod db_proof;
 mod generate_identity;
 mod keygen;
+mod pir2_sealed_observe_fields;
 mod pir2_sealed_receipt_fetch;
 mod pir2_sealed_receipt_verify;
 mod pir2_sealed_release;
@@ -90,6 +93,11 @@ enum Command {
     /// accept them afterwards with `pir2-sealed-receipt-verify`.
     #[command(name = "pir2-sealed-receipt-fetch")]
     Pir2SealedReceiptFetch(pir2_sealed_receipt_fetch::Pir2SealedReceiptFetchArgs),
+    /// Print the public claim fields of a pre-release Observe receipt
+    /// (input extraction for `pir2-sealed-release` and the pin update; no
+    /// verification).
+    #[command(name = "pir2-sealed-observe-fields")]
+    Pir2SealedObserveFields(pir2_sealed_observe_fields::Pir2SealedObserveFieldsArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -147,6 +155,13 @@ async fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("pir2-sealed-release: {e}");
+                1
+            }
+        },
+        Command::Pir2SealedObserveFields(args) => match pir2_sealed_observe_fields::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("pir2-sealed-observe-fields: {}", e);
                 1
             }
         },
