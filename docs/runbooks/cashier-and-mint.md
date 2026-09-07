@@ -43,9 +43,10 @@ secret; `keygen` and `pubkey` print only the public key.
 ## Server pins
 
 - pir1: `pir-primary.service` passes
-  `--session-grant-pubkey /etc/bitcoinpir/cashier/grant.pub`. The free
-  path stays open until `--require-session-grant` is added, which is an
-  operator decision.
+  `--session-grant-pubkey /etc/bitcoinpir/cashier/grant.pub` (and
+  `--session-grant-hint-credits 150` for the HarmonyPIR hint price). The
+  free path stays open until `--require-session-grant` is added, which is
+  an operator decision.
 - pir2: the flags live in `unified-server-run.sh` inside the measured UKI,
   so pinning requires a new image (Flow E/G). Until then pir2 answers
   "session grants not enabled" and the client treats it as the free path.

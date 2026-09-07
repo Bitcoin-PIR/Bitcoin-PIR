@@ -1797,7 +1797,9 @@ mod session_grant_gate {
     //! shared credit ledger behind `REQ_SESSION_GRANT_PRESENT`.
 
     use crate::parse_args_from;
-    use crate::session_grant::{is_query_bearing_variant, SessionGrantGateV1};
+    use crate::session_grant::{
+        credit_cost, is_query_bearing_variant, SessionGrantGateV1, DEFAULT_HINT_SET_CREDITS,
+    };
     use pir_session_grant::{GrantSigner, SESSION_GRANT_LEN};
     use runtime::onionpir::*;
     use runtime::protocol::*;
@@ -1819,6 +1821,106 @@ mod session_grant_gate {
         let path = dir.join(name);
         std::fs::write(&path, contents).expect("write public key file");
         path.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn hint_set_price_is_a_cli_option_with_the_measured_default() {
+        assert_eq!(DEFAULT_HINT_SET_CREDITS, 150);
+        assert_eq!(
+            args(&[]).session_grant_hint_credits,
+            DEFAULT_HINT_SET_CREDITS
+        );
+        assert_eq!(
+            args(&["--session-grant-hint-credits", "200"]).session_grant_hint_credits,
+            200
+        );
+    }
+
+    #[test]
+    fn credit_cost_prices_hint_sets_and_query_frames_only() {
+        use runtime::protocol::{
+            REQ_ANNOUNCE, REQ_ATTEST, REQ_CHUNK_BATCH, REQ_HARMONY_GET_INFO, REQ_HARMONY_HINTS,
+            REQ_HARMONY_HINTS_V2, REQ_HARMONY_HINTS_V2_HALF, REQ_HARMONY_QUERY, REQ_INDEX_BATCH,
+            REQ_ORAM_LOOKUP, REQ_SESSION_GRANT_PRESENT,
+        };
+        assert_eq!(credit_cost(REQ_HARMONY_HINTS_V2, 150), 150);
+        assert_eq!(credit_cost(REQ_HARMONY_HINTS, 150), 150);
+        assert_eq!(
+            credit_cost(REQ_HARMONY_HINTS_V2_HALF, 150),
+            0,
+            "continuation of a paid entry"
+        );
+        for query in [
+            REQ_INDEX_BATCH,
+            REQ_CHUNK_BATCH,
+            REQ_HARMONY_QUERY,
+            REQ_ORAM_LOOKUP,
+        ] {
+            assert!(is_query_bearing_variant(query));
+            assert_eq!(credit_cost(query, 150), 1);
+        }
+        for free in [
+            REQ_HARMONY_GET_INFO,
+            REQ_ATTEST,
+            REQ_ANNOUNCE,
+            REQ_SESSION_GRANT_PRESENT,
+        ] {
+            assert_eq!(credit_cost(free, 150), 0);
+        }
+        assert!(
+            !is_query_bearing_variant(REQ_HARMONY_HINTS_V2),
+            "hint requests stay hint-gated"
+        );
+    }
+
+    #[test]
+    fn hint_set_charge_is_all_or_nothing_and_names_the_shortfall() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let signer = signer();
+        let file = pubkey_file(
+            dir.path(),
+            "cashier.pub",
+            hex::encode(signer.public_key()).as_bytes(),
+        );
+        let gate = SessionGrantGateV1::from_cli(&args(&[
+            "--session-grant-pubkey",
+            &file,
+            "--session-grant-hint-credits",
+            "150",
+        ]))
+        .expect("gate")
+        .expect("present");
+        let bytes = signer
+            .issue([8u8; 16], NOW - 1, NOW + 600, 174)
+            .expect("grant")
+            .encode();
+        let (id, remaining) = gate.present(&bytes, NOW).expect("accepted");
+        assert_eq!(remaining, 174);
+        assert_eq!(
+            gate.consume_n(
+                &id,
+                gate.credit_cost(runtime::protocol::REQ_HARMONY_HINTS_V2),
+                NOW
+            ),
+            Ok(24)
+        );
+        let refused = gate
+            .consume_n(
+                &id,
+                gate.credit_cost(runtime::protocol::REQ_HARMONY_HINTS_V2),
+                NOW,
+            )
+            .unwrap_err();
+        assert!(
+            refused.contains("24 credits left") && refused.contains("needs 150"),
+            "{refused}"
+        );
+        assert_eq!(
+            gate.consume(&id, NOW),
+            Ok(23),
+            "the refused hint charge took nothing"
+        );
+        assert!(gate.startup_log_line().contains("hint set = 150 credits"));
     }
 
     #[test]
@@ -1875,7 +1977,7 @@ mod session_grant_gate {
         assert!(!gate.require());
         assert_eq!(
             gate.startup_log_line(),
-            "Session grants: accepted, not required (2 cashier key(s) pinned)"
+            "Session grants: accepted, not required (2 cashier key(s) pinned; query frame = 1 credit, hint set = 150 credits)"
         );
 
         let bad_path = pubkey_file(dir.path(), "bad.txt", b"not a key");
@@ -1921,7 +2023,7 @@ mod session_grant_gate {
         assert!(gate.require());
         assert_eq!(
             gate.startup_log_line(),
-            "Session grants: required for queries (1 cashier key(s) pinned)"
+            "Session grants: required for queries (1 cashier key(s) pinned; query frame = 1 credit, hint set = 150 credits)"
         );
         let grant = signer
             .issue([9u8; 16], NOW - 1, NOW + 600, 2)

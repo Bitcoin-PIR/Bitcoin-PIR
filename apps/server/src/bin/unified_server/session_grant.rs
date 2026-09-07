@@ -24,7 +24,8 @@ use runtime::onionpir::{
 };
 use runtime::protocol::{
     REQ_BUCKET_MERKLE_SIB_BATCH, REQ_BUCKET_MERKLE_TREE_TOPS, REQ_CHUNK_BATCH,
-    REQ_HARMONY_BATCH_QUERY, REQ_HARMONY_QUERY, REQ_INDEX_BATCH, REQ_ORAM_LOOKUP,
+    REQ_HARMONY_BATCH_QUERY, REQ_HARMONY_HINTS, REQ_HARMONY_HINTS_V2, REQ_HARMONY_QUERY,
+    REQ_INDEX_BATCH, REQ_ORAM_LOOKUP,
 };
 
 use crate::{read_regular_file_bounded_v1, CliArgs};
@@ -36,6 +37,25 @@ const MAX_PUBLIC_KEY_FILE_BYTES: usize = 128;
 /// when one is required. Everything else (info, ping, attest, handshake,
 /// announce, catalog, DB proofs, HarmonyPIR hints, admin, and the grant
 /// presentation itself) stays free.
+/// Credits one HarmonyPIR hint set costs unless `--session-grant-hint-credits`
+/// says otherwise. Measured on pir1 (i7-8700): regenerating one pool entry
+/// takes about 136 CPU-seconds, a metered DPF frame about 0.9, so 150 keeps
+/// hint sets priced by compute with some margin (docs/SESSION_GRANTS.md).
+pub(crate) const DEFAULT_HINT_SET_CREDITS: u32 = 150;
+
+/// Credits a request frame costs: one per query-bearing frame, the hint-set
+/// price for the two HarmonyPIR hint requests that take a pool entry
+/// (`REQ_HARMONY_HINTS`, `REQ_HARMONY_HINTS_V2`), nothing for everything
+/// else. `REQ_HARMONY_HINTS_V2_HALF` streams the second half of an entry the
+/// `_V2` request already paid for, so it is free.
+pub(crate) fn credit_cost(variant: u8, hint_set_credits: u32) -> u32 {
+    match variant {
+        REQ_HARMONY_HINTS | REQ_HARMONY_HINTS_V2 => hint_set_credits,
+        _ if is_query_bearing_variant(variant) => 1,
+        _ => 0,
+    }
+}
+
 pub(crate) fn is_query_bearing_variant(variant: u8) -> bool {
     matches!(
         variant,
@@ -62,6 +82,7 @@ pub(crate) struct SessionGrantGateV1 {
     issuers: TrustedIssuers,
     ledger: Mutex<GrantLedger>,
     require: bool,
+    hint_set_credits: u32,
 }
 
 impl SessionGrantGateV1 {
@@ -88,6 +109,7 @@ impl SessionGrantGateV1 {
             issuers,
             ledger: Mutex::new(GrantLedger::new()),
             require: args.require_session_grant,
+            hint_set_credits: args.session_grant_hint_credits,
         }))
     }
 
@@ -95,15 +117,21 @@ impl SessionGrantGateV1 {
         self.require
     }
 
+    /// Credits `variant` costs on this host (see [`credit_cost`]).
+    pub(crate) fn credit_cost(&self, variant: u8) -> u32 {
+        credit_cost(variant, self.hint_set_credits)
+    }
+
     pub(crate) fn startup_log_line(&self) -> String {
         format!(
-            "Session grants: {} ({} cashier key(s) pinned)",
+            "Session grants: {} ({} cashier key(s) pinned; query frame = 1 credit, hint set = {} credits)",
             if self.require {
                 "required for queries"
             } else {
                 "accepted, not required"
             },
-            self.issuers.len()
+            self.issuers.len(),
+            self.hint_set_credits
         )
     }
 
@@ -124,13 +152,26 @@ impl SessionGrantGateV1 {
         Ok((verified.grant_id, remaining))
     }
 
-    /// Spend one credit of an attached grant; returns the remaining credits.
-    pub(crate) fn consume(&self, grant_id: &GrantId, now: u64) -> Result<u32, String> {
+    /// Spend `credits` credits of an attached grant at once; returns the
+    /// remaining credits. A grant that cannot cover the amount is left
+    /// untouched and the error names both numbers.
+    pub(crate) fn consume_n(
+        &self,
+        grant_id: &GrantId,
+        credits: u32,
+        now: u64,
+    ) -> Result<u32, String> {
         self.ledger
             .lock()
             .unwrap()
-            .consume(grant_id, now)
+            .consume_n(grant_id, credits, now)
             .map_err(|error| format!("session grant: {error}"))
+    }
+
+    /// Spend one credit of an attached grant; returns the remaining credits.
+    #[cfg(test)]
+    pub(crate) fn consume(&self, grant_id: &GrantId, now: u64) -> Result<u32, String> {
+        self.consume_n(grant_id, 1, now)
     }
 }
 

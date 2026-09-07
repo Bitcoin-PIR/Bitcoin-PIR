@@ -97,6 +97,9 @@ pub enum GrantError {
     LifetimeTooLong,
     /// Every credit of the grant has been spent.
     Exhausted,
+    /// The request costs more credits than the grant has left; nothing was
+    /// charged.
+    Insufficient { needed: u32, remaining: u32 },
     /// The grant id is unknown to this ledger (never presented, or evicted).
     NotAdmitted,
     /// The grant id was already admitted with different credits or expiry.
@@ -131,6 +134,10 @@ impl core::fmt::Display for GrantError {
                 "session grant lifetime exceeds {MAX_LIFETIME_SECS} seconds"
             ),
             Self::Exhausted => f.write_str("session grant credits are exhausted"),
+            Self::Insufficient { needed, remaining } => write!(
+                f,
+                "session grant has {remaining} credits left, this request needs {needed}"
+            ),
             Self::NotAdmitted => f.write_str("session grant has not been presented on this server"),
             Self::Conflict => {
                 f.write_str("session grant id was already admitted with different terms")
@@ -464,6 +471,20 @@ impl GrantLedger {
     /// Spend one credit of an admitted grant. Returns the remaining
     /// credits. An expired entry is evicted on contact.
     pub fn consume(&mut self, grant_id: &GrantId, now: u64) -> Result<u32, GrantError> {
+        self.consume_n(grant_id, 1, now)
+    }
+
+    /// Spend `credits` credits of an admitted grant at once (a hint set, for
+    /// example) and return the remaining balance. A grant that cannot cover
+    /// the whole amount is left untouched: [`GrantError::Exhausted`] when it
+    /// has nothing left, [`GrantError::Insufficient`] when it has some.
+    /// `credits == 0` charges nothing and reports the balance.
+    pub fn consume_n(
+        &mut self,
+        grant_id: &GrantId,
+        credits: u32,
+        now: u64,
+    ) -> Result<u32, GrantError> {
         let expired = matches!(self.entries.get(grant_id), Some(entry) if now >= entry.expires_at);
         if expired {
             self.entries.remove(grant_id);
@@ -473,10 +494,17 @@ impl GrantLedger {
             .entries
             .get_mut(grant_id)
             .ok_or(GrantError::NotAdmitted)?;
-        if entry.used >= entry.credits {
+        let remaining = entry.credits - entry.used;
+        if remaining == 0 && credits > 0 {
             return Err(GrantError::Exhausted);
         }
-        entry.used += 1;
+        if credits > remaining {
+            return Err(GrantError::Insufficient {
+                needed: credits,
+                remaining,
+            });
+        }
+        entry.used += credits;
         Ok(entry.credits - entry.used)
     }
 
@@ -769,5 +797,40 @@ mod tests {
         assert_eq!(two.len(), 2);
         assert!(!two.is_empty());
         assert!(two.contains(&key));
+    }
+    #[test]
+    fn consume_n_charges_whole_amounts_or_nothing() {
+        let signer = signer();
+        let trusted = TrustedIssuers::new(&[signer.public_key()]).expect("trusted");
+        let grant = signer.issue(ID, NOW - 10, NOW + 3600, 200).expect("valid");
+        let verified = grant.verify(&trusted, NOW).expect("verifies");
+        let mut ledger = GrantLedger::new();
+        assert_eq!(ledger.admit(&verified, NOW), Ok(200));
+        assert_eq!(ledger.consume_n(&ID, 0, NOW), Ok(200));
+        assert_eq!(ledger.consume_n(&ID, 150, NOW), Ok(50));
+        assert_eq!(
+            ledger.consume_n(&ID, 150, NOW),
+            Err(GrantError::Insufficient {
+                needed: 150,
+                remaining: 50
+            })
+        );
+        assert_eq!(
+            ledger.remaining(&ID),
+            Some(50),
+            "a refused charge leaves the balance untouched"
+        );
+        assert_eq!(ledger.consume(&ID, NOW), Ok(49));
+        assert_eq!(ledger.consume_n(&ID, 49, NOW), Ok(0));
+        assert_eq!(ledger.consume_n(&ID, 1, NOW), Err(GrantError::Exhausted));
+        assert_eq!(ledger.consume_n(&ID, 150, NOW), Err(GrantError::Exhausted));
+        assert_eq!(
+            GrantError::Insufficient {
+                needed: 150,
+                remaining: 24
+            }
+            .to_string(),
+            "session grant has 24 credits left, this request needs 150"
+        );
     }
 }
