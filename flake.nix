@@ -152,8 +152,8 @@
         # Pinned by content hash, so `fetchurl` stays a hermetic
         # fixed-output derivation (this part needs no `--impure`).
         cloudflaredStatic = pkgs.fetchurl {
-          url = "https://github.com/cloudflare/cloudflared/releases/download/2026.3.0/cloudflared-linux-amd64";
-          hash = "sha256-Sp5Q5tbXmOkPzQGTMVGpC/ft2ZoKVcKK0Y8uFiY6XDA=";
+          url = "https://github.com/cloudflare/cloudflared/releases/download/2026.8.3/cloudflared-linux-amd64";
+          hash = "sha256-8pMk/pNNHhAGF0hMeN7vgDxNws01HWRbveQulrT8zF4=";
         };
 
         # Boot scripts — copied verbatim from scripts/dracut/97bpir-tier3-init/.

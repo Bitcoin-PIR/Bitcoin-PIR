@@ -21,6 +21,13 @@ NEXT_STEP. --dry-run lists inputs without inspecting the host or reading files.
 EOF
 }
 
+# The baked tunnel client is part of MEASUREMENT: pin the exact official
+# static release (cloudflared-linux-amd64) so unnoticed build-host drift can
+# never change the image. Refresh both values together, only with a new image
+# (docs/runbooks/uki-build.md section 2).
+TIER3_CLOUDFLARED_VERSION=2026.8.3
+TIER3_CLOUDFLARED_SHA256=f29324fe934d1e100617484c78deef803c4dc2cd351d645bbde42e96b4fccc5e
+
 case "${1:-}" in
     '') ;;
     -h|--help) usage; exit 0 ;;
@@ -30,6 +37,7 @@ case "${1:-}" in
             input_value=${!input_name:-MISSING}
             echo "$input_name=$input_value"
         done
+        echo "cloudflared_pin=$TIER3_CLOUDFLARED_VERSION"
         echo 'initrd_compression=zstd'
         echo 'max_uki_bytes=268435456'
         echo 'PASS uki_build dry_run=true'
@@ -97,6 +105,23 @@ done
     echo "error: /usr/local/bin/cloudflared not executable" >&2
     exit 1
 }
+cloudflared_version=$(/usr/local/bin/cloudflared --version 2>/dev/null \
+    | awk '/^cloudflared version /{ print $3; exit }')
+[ "$cloudflared_version" = "$TIER3_CLOUDFLARED_VERSION" ] || {
+    echo "error: /usr/local/bin/cloudflared reports '${cloudflared_version:-unknown}', expected $TIER3_CLOUDFLARED_VERSION" >&2
+    echo "  Install the official static cloudflared-linux-amd64 release $TIER3_CLOUDFLARED_VERSION on this build host first." >&2
+    exit 1
+}
+if command -v sha256sum >/dev/null 2>&1; then
+    cloudflared_sha256=$(sha256sum /usr/local/bin/cloudflared | awk '{print $1}')
+else
+    cloudflared_sha256=$(shasum -a 256 /usr/local/bin/cloudflared | awk '{print $1}')
+fi
+[ "$cloudflared_sha256" = "$TIER3_CLOUDFLARED_SHA256" ] || {
+    echo "error: /usr/local/bin/cloudflared sha256 $cloudflared_sha256 is not the pinned official $TIER3_CLOUDFLARED_VERSION asset" >&2
+    exit 1
+}
+echo "cloudflared: $TIER3_CLOUDFLARED_VERSION (sha256 pinned)"
 
 # The unified_server and oramctl binaries must be built and present.
 [ -x "$BINARY" ] || {

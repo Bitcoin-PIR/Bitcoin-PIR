@@ -23,6 +23,12 @@ const runPath = resolve(
 const PAYMENT_RESIDUE = /BPIR_TIER3_SERVICE_POLICY|service-policy|service_policy|public-artifact-set|accounting-authorization|issuer-approval|class_digest|minimum_authorization_epoch/;
 
 function validateBuildContract(source) {
+  // The baked cloudflared is inside MEASUREMENT: the build must pin the exact
+  // official release by version and SHA-256 rather than take whatever the
+  // build host has installed.
+  assert.match(source, /^TIER3_CLOUDFLARED_VERSION=\d{4}\.\d+\.\d+$/m);
+  assert.match(source, /^TIER3_CLOUDFLARED_SHA256=[0-9a-f]{64}$/m);
+  assert.match(source, /"\$cloudflared_sha256" = "\$TIER3_CLOUDFLARED_SHA256"/);
   assert.match(source, /for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT/);
   assert.match(
     source,
@@ -80,6 +86,16 @@ function validateMeasuredRunContract(source) {
 
 test("production Tier3 build takes exactly the runtime inputs and embeds no policy", () => {
   validateBuildContract(readFileSync(buildPath, "utf8"));
+});
+
+test("production Tier3 build pins the baked cloudflared release", () => {
+  const source = readFileSync(buildPath, "utf8");
+  assert.throws(() =>
+    validateBuildContract(source.replace(/^TIER3_CLOUDFLARED_SHA256=[0-9a-f]{64}$/m, "")),
+  );
+  assert.throws(() =>
+    validateBuildContract(source.replace(/^TIER3_CLOUDFLARED_VERSION=.*$/m, "TIER3_CLOUDFLARED_VERSION=latest")),
+  );
 });
 
 test("production Tier3 build rejects a policy or payment-artifact regression", () => {

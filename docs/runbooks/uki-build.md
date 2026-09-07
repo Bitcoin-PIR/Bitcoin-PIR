@@ -33,7 +33,14 @@ the approved Linux build host. Set every release input explicitly:
 - `ORAMCTL`: exact executable to embed;
 - `BHTM_FROM_LEAF_PROOF`: exact retained proof input;
 - `OUT`: unique absolute candidate path;
-- archive locations, including a required off-host mirror when applicable.
+- archive locations, including a required off-host mirror when applicable;
+- `/usr/local/bin/cloudflared` on the build host: the official static
+  `cloudflared-linux-amd64` release that the script pins by version and
+  SHA-256 (`TIER3_CLOUDFLARED_VERSION`, `TIER3_CLOUDFLARED_SHA256`). It is
+  baked into the initramfs and therefore into MEASUREMENT, so the pin moves
+  only together with a new image; place the pinned asset on the build host
+  before building, and after the build extract `/usr/bin/cloudflared` from
+  the candidate UKI's initrd to confirm it is the pinned bytes.
 
 The script pins Zstandard compression, excludes early microcode, GPU firmware,
 and unrelated globally installed BitcoinPIR dracut modules, validates the
