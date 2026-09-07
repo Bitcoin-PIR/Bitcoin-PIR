@@ -44,6 +44,11 @@ Each item: what hurt, evidence, proposed cleanup.
 9. Receipt evidence tooling lives in the session scratchpad (`observe-receipt-fields.py`,
    `fetch-receipt.sh`, `poll-receipt.sh`, `receipt-verify.sh`): promote the useful ones
    into `scripts/` (Observe field extraction + hash-checked fetch + phase poll).
+   **Fixed:** `bpir-admin pir2-sealed-observe-fields`, `scripts/pir2-sealed-recovery-receipt.sh`
+   (poll + hash-checked fetch + quarantine, tested against a fake origin), and the whole
+   r7 window orchestration as `scripts/pir2-sealed-campaign.sh plan|build|enroll|probe|ready`
+   with `scripts/pir2-sealed-remote/` guest-side build steps, `--dry-run` plans, and an
+   offline test of every plan; the runbook's "Campaign" section documents the env file.
 10. `unified_server` rejects `--help` (breaks install sanity checks); add `--help`/
     `--version`.
 11. `scripts/pir2-sealed-ceremony.sh` runs `cargo run --locked --offline -p bpir-admin`

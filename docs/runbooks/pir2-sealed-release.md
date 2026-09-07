@@ -14,7 +14,52 @@ Probe, and Ready.
 - The exact measured UKI/OVMF values and Observe receipt required by the
   sealed-release command.
 
-## Run
+## Campaign
+
+[`scripts/pir2-sealed-campaign.sh`](../../scripts/pir2-sealed-campaign.sh) runs
+one release as five reviewed windows over the scripts below; every action has
+`--dry-run`, which prints each external command as a `PLAN:` line and touches
+nothing. Inputs come from an env file of `KEY=VALUE` lines (allowlisted keys,
+plain values) and an evidence directory (mode 0700) holding one
+`<phase>-ordinal<N>.startup.env` per phase, written with the `phase` action:
+
+```
+REV=<release commit>            TAG=r8-<sha8>          GEN=8
+ROLLBACK_IMAGE=307              ROLLBACK_LABEL=image307-YYYYMMDD
+EVIDENCE_DIR=/absolute/.keys/pir2-ceremony/epoch9
+ORD_OBSERVE=61 ORD_ENROLL=62 ORD_PROBE1=63 ORD_PROBE2=64 ORD_READY=65
+INPUTS_FROM=/home/pir/data/production-builds/<previous tag>
+ORAMCTL_SHA256=<from the previous sidecar>  BHTM_SHA256=<from the previous sidecar>
+BPIR_ADMIN=/absolute/target/release/bpir-admin
+OPERATOR_PUBKEY_HEX=<pin in web/src/production-providers.ts>
+ARK_SHA256=<AMD ARK pin>        PROVIDER_ID_HEX=<pir2 provider id>
+HETZNER_ARCHIVE=pir-hetzner:/home/pir/uki-archive/tier3
+```
+
+```sh
+scripts/pir2-sealed-campaign.sh plan   --env campaign.env
+scripts/pir2-sealed-campaign.sh build  --env campaign.env --dry-run   # then without --dry-run
+scripts/pir2-sealed-campaign.sh enroll --env campaign.env
+scripts/pir2-sealed-campaign.sh probe  --env campaign.env --ordinal 63 --with-cert
+scripts/pir2-sealed-campaign.sh probe  --env campaign.env --ordinal 64
+scripts/pir2-sealed-campaign.sh ready  --env campaign.env
+```
+
+`build` preserves the previous image's rollback set, builds the runtime and
+UKI on the stock rootfs (`scripts/pir2-sealed-remote/`, pinned cloudflared
+placed first), archives the trio locally and on Hetzner, places the Observe
+startup, uploads the UKI (the returned image id is appended to the env file as
+`IMAGE`), boots Observe, fetches its receipt from the recovery root, and signs
+the release. `enroll` detaches the old envelope, places release + startup,
+accepts the Enroll receipt, and signs the runtime identity cert. `probe` runs
+one Probe and requires the enrolled identity. `ready` boots Ready, waits for
+the live attestation, runs the post-switch check against a candidate pin built
+from the evidence, the channel test, fetches and accepts both Ready receipts
+over the WebSocket, and drafts the release record from the attestation. The
+pin update (`web/src/attest-pin.ts`) stays a reviewed code change made from
+the two `pin_*` values the `ready` action prints.
+
+## Run (individual steps)
 
 ```sh
 scripts/pir2-sealed-ceremony.sh phase \
@@ -84,6 +129,12 @@ downloaded receipt, require its hash to equal the receipt hash declared by the
 phase's status response; if the two disagree, treat the download as rejecting
 evidence, rename it out of the way, and retrieve the persisted receipt through
 the Flow F data-disk window instead of retrying the public URL.
+[`scripts/pir2-sealed-recovery-receipt.sh`](../../scripts/pir2-sealed-recovery-receipt.sh)
+implements exactly this (cache-busted polling for the expected phase and
+ordinal, hash check, quarantine of mismatches, at most three attempts), and
+`bpir-admin pir2-sealed-observe-fields --receipt FILE` prints an Observe
+receipt's public claim fields for the release command and the pin update
+without verifying anything.
 
 Before a later authority signs or activates anything derived from an Enroll,
 Probe, or Ready receipt, an offline verifier must accept all of the following
