@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-eQIl8nrW7Jev0+BZql8ItM8ICrQQXkbFAL9Tdhv2Dv8=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-QTm40Ng03NnAH0tZ7DbhpbEtaT/YX1uZP+OE1OeaxSg=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1704,8 +1704,17 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (text) log(`Paid access: ${text}`, level);
         }
 
+        // The DPF composer button says what the next query costs: free, or one
+        // credit per query-bearing frame from the stored grant (servers that do
+        // not meter grants still answer on the free path).
+        function queryButtonLabel() {
+            return sessionGrantStore.load() ? 'Run query (session grant)' : 'Run free query';
+        }
+
         function renderPaidAccess() {
             const grant = sessionGrantStore.load();
+            const queryButton = document.getElementById('queryBtn');
+            if (queryButton && !queryButton.disabled) queryButton.textContent = queryButtonLabel();
             const grantEl = document.getElementById('pa-grant');
             grantEl.textContent = grant
                 ? `Session grant ${grant.grantIdHex.slice(0, 8)}…: ${grant.credits} credits bought, expires ${new Date(grant.expiresAt * 1000).toLocaleString()}.`
@@ -3394,7 +3403,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 log(`DPF query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
-                button.textContent = 'Run free query';
+                button.textContent = queryButtonLabel();
             }
         }
 
