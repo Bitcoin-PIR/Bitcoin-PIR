@@ -22,9 +22,11 @@ script's status subcommand for the rest.
 - Paid queries present a cashier-signed session grant on opcode `0x0b`;
   the design, metering rule, and server flags are in
   [Session grants](SESSION_GRANTS.md); the cashier's HTTP contract is
-  [Cashier API](CASHIER_API.md). The cashier (payment side) is a separate
-  repository. The retired Payment V1 material and the 2026-09
-  ARC/Cashu verifiers live only in git history.
+  [Cashier API](CASHIER_API.md). The cashier (payment side) is
+  [Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier); running it
+  and the mint on pir1 is [Cashier and mint](runbooks/cashier-and-mint.md).
+  The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live
+  only in git history.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).
 - Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).
