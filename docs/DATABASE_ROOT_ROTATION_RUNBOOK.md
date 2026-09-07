@@ -314,9 +314,14 @@ For each run, record that:
 After acceptance, write the release record: generate
 `docs/data-retention/production-release-image-<id>.env` with
 `scripts/generate-release-record.sh` (schema and field reference:
-`docs/data-retention/release-record.env.template`), fill any remaining
-TODO fields (measurement, served manifest hashes, acceptance tag), and
-commit it with or immediately after the pin change. Use a unique `--out` path
+`docs/data-retention/release-record.env.template`). Pass `--attest-log` with
+the saved output of `bpir-admin attest --expect-ark-fingerprint ...` against
+the serving guest: it fills the measurement and both served-manifest digests
+from chip-attested values (the per-DB manifest root is sha256 of the served
+`MANIFEST.toml`), and refuses a log whose REPORT_DATA or AMD-chain check did
+not verify or whose binary is not the recorded UKI's. Fill any remaining
+TODO field (acceptance tag) and commit the record with or immediately after
+the pin change. Use a unique `--out` path
 for a database-only rotation that reuses an image ID; never use `--force` to
 overwrite an earlier point-in-time record. Every production release — UKI
 switch, database rotation, or both — gets one record.

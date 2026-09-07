@@ -82,3 +82,9 @@ attestation passed, so no Ready N+1 boot was needed. Two smaller items remain:
 14. The release record's `db0/db1_server_manifest_sha256` still need a Flow F read of
     `<db>/server-db/MANIFEST.toml`; the serving guest could publish those digests
     (for example in the JSON info response) so the record closes without a window.
+    **Fixed:** no server change needed — the per-DB manifest root the guest already
+    attests is sha256 of the served `MANIFEST.toml`, and `bpir-admin attest` prints
+    it; `scripts/generate-release-record.sh --attest-log` takes the measurement and
+    both digests from a verified attest run (tested by
+    `scripts/generate-release-record.test.mjs`). Image 307's record is regenerated
+    from its live attestation; 303/305 keep TODO (their guests are retired).

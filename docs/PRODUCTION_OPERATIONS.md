@@ -342,8 +342,9 @@ never from a live server or from the proof printing itself.
    SNP + ORAM smoke. Do not invent a unified “verify all proofs”
    command.
 10. Auth — publish pins with Flow C. Write the release record with
-    `scripts/generate-release-record.sh` (unique `--out`; never
-    `--force` over an earlier record).
+    `scripts/generate-release-record.sh --attest-log <saved bpir-admin
+    attest output>` (unique `--out`; never `--force` over an earlier
+    record); the attested manifest roots fill the served-manifest fields.
 
 Rollback is rotation §7: restore both hosts to the last generation
 proven on both, then Flow C for the prior pins. If one host fails,
