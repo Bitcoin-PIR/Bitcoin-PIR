@@ -4,6 +4,7 @@ set -euo pipefail
 usage() { cat <<'EOF'
 usage: scripts/pir2-sealed-ceremony.sh release [bpir-admin pir2-sealed-release options] [--dry-run]
        scripts/pir2-sealed-ceremony.sh receipt [bpir-admin pir2-sealed-receipt-verify options] [--dry-run]
+       scripts/pir2-sealed-ceremony.sh fetch [bpir-admin pir2-sealed-receipt-fetch options] [--dry-run]
        scripts/pir2-sealed-ceremony.sh phase \
          --phase observe|enroll|probe|ready --out PATH --ordinal NON_ZERO \
          --verifier-nonce-hex HEX64 [--dry-run]
@@ -11,13 +12,16 @@ usage: scripts/pir2-sealed-ceremony.sh release [bpir-admin pir2-sealed-release o
 `release` forwards its options exactly to `bpir-admin pir2-sealed-release`.
 `receipt` forwards its options exactly to `bpir-admin pir2-sealed-receipt-verify`,
 the offline acceptance of an Enroll, Probe, or Ready receipt.
+`fetch` forwards its options exactly to `bpir-admin pir2-sealed-receipt-fetch`,
+which copies a serving Ready guest's two receipts and preflight marker out over
+its public WebSocket endpoint (no Flow F window); accept them with `receipt`.
 `phase` writes the public, canonical-v3 startup.env consumed by the measured
 UKI. --dry-run never reads a signing key, release input, or host state.
 EOF
 }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 action=${1:-}; [[ "$action" != --help && "$action" != -h ]] || { usage; exit 0; }
-[[ "$action" =~ ^(release|phase|receipt)$ ]] || { usage >&2; exit 2; }; shift || true
+[[ "$action" =~ ^(release|phase|receipt|fetch)$ ]] || { usage >&2; exit 2; }; shift || true
 if [[ "$action" == phase ]]; then
   dry_run=0
   phase= out= ordinal= verifier_nonce_hex=
@@ -85,11 +89,11 @@ while (($#)); do
     *) args+=("$1"); shift ;;
   esac
 done
-if [[ "$action" == receipt ]]; then
-  subcommand=pir2-sealed-receipt-verify
-else
-  subcommand=pir2-sealed-release
-fi
+case "$action" in
+  receipt) subcommand=pir2-sealed-receipt-verify ;;
+  fetch) subcommand=pir2-sealed-receipt-fetch ;;
+  *) subcommand=pir2-sealed-release ;;
+esac
 if ((${#args[@]})) && [[ "${args[0]}" == --help || "${args[0]}" == -h ]]; then
   (cd "$root" && exec cargo run --locked --offline -p bpir-admin -- "$subcommand" --help)
   exit $?
@@ -103,6 +107,17 @@ if [[ "$action" == receipt ]]; then
     exit 0
   fi
   echo '[stage] accept sealed phase receipt against the operator-signed release'
+  (cd "$root" && "${cmd[@]}")
+  exit 0
+fi
+if [[ "$action" == fetch ]]; then
+  if ((dry_run)); then
+    echo '[stage] sealed Ready receipt fetch command preview'; printf 'COMMAND='; printf '%q ' "${cmd[@]}"; echo
+    echo 'PASS sealed_receipt_fetch dry_run=true'
+    echo 'NEXT_STEP=run without --dry-run against the serving Ready guest, then accept each receipt with the receipt action'
+    exit 0
+  fi
+  echo '[stage] fetch the Ready receipts from the serving guest'
   (cd "$root" && "${cmd[@]}")
   exit 0
 fi

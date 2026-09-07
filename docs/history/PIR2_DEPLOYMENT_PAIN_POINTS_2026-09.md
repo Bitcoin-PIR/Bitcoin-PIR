@@ -25,6 +25,11 @@ Each item: what hurt, evidence, proposed cleanup.
    full ORAM rebuild (Ready N → window → Ready N+1). Fix: let Ready publish the two
    receipts through the bounded recovery root like Observe/Enroll/Probe do, or copy
    them to a world-readable data-disk path the status API can serve.
+   **Fixed:** the serving Ready guest answers the read-only opcode
+   `REQ_PIR2_SEALED_RECEIPT_GET` with both receipts and the preflight marker;
+   `scripts/pir2-sealed-ceremony.sh fetch` (`bpir-admin pir2-sealed-receipt-fetch`)
+   copies them out and `receipt` accepts them offline. Effective from the first
+   image built after that change; image 305 still needs the Flow F window.
 5. UFW rate-limits SSH (6 conns/30 s); scripted campaigns that open one ssh per step
    get locked out. Fix: document; batch steps per session; consider a control
    socket (`ControlMaster`) in the wrapper.

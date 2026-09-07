@@ -210,6 +210,12 @@ impl RequestHandler {
                         .into(),
                 ),
             },
+            // Ready evidence is loaded by the unified_server binary from
+            // the sealed pir2 startup flags; the stateless handler has none.
+            Request::Pir2SealedReceiptGet { .. } => Response::Error(
+                "pir2 sealed receipts are served only by the unified_server's per-connection path"
+                    .into(),
+            ),
             // Handshake needs per-connection state to mint a fresh
             // ephemeral keypair, derive the session key, and stash it
             // for subsequent encrypted-frame open/seal. The stateless

@@ -18,6 +18,10 @@
 //!   build proof directory.
 //! - `pir2-sealed-release` — verify a fresh SNP observation and emit one
 //!   canonical pir2 release.
+//! - `pir2-sealed-receipt-verify` — offline acceptance of one Enroll,
+//!   Probe, or Ready receipt against the operator-signed release.
+//! - `pir2-sealed-receipt-fetch` — copy a serving Ready guest's receipts
+//!   and preflight marker out over its public WebSocket endpoint.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -30,6 +34,7 @@ mod channel_test;
 mod db_proof;
 mod generate_identity;
 mod keygen;
+mod pir2_sealed_receipt_fetch;
 mod pir2_sealed_receipt_verify;
 mod pir2_sealed_release;
 mod show_vcek_url;
@@ -80,6 +85,11 @@ enum Command {
     /// against the operator-signed release (Flow G receipt gate).
     #[command(name = "pir2-sealed-receipt-verify")]
     Pir2SealedReceiptVerify(Box<pir2_sealed_receipt_verify::Pir2SealedReceiptVerifyArgs>),
+    /// Copy the serving sealed pir2 guest's Ready receipts and preflight
+    /// marker out over its public WebSocket endpoint (no Flow F window);
+    /// accept them afterwards with `pir2-sealed-receipt-verify`.
+    #[command(name = "pir2-sealed-receipt-fetch")]
+    Pir2SealedReceiptFetch(pir2_sealed_receipt_fetch::Pir2SealedReceiptFetchArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -137,6 +147,13 @@ async fn main() {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("pir2-sealed-release: {e}");
+                1
+            }
+        },
+        Command::Pir2SealedReceiptFetch(args) => match pir2_sealed_receipt_fetch::run(args).await {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("pir2-sealed-receipt-fetch: {}", e);
                 1
             }
         },
