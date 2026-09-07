@@ -127,19 +127,20 @@ export interface ServerAttestPin {
 
 /**
  * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-09-07
- * after the session-grant pin rollout (Observe/Enroll/Probe/Ready on image 305,
- * source `2a343072`). Image 305 serves DPF, Harmony-query and TEE ORAM and
- * meters session grants (hint set = 150 credits).
+ * after the r7 rollout (Observe/Enroll/Probe/Ready on image 307, source
+ * `6a407bdb`). Image 307 serves DPF, Harmony-query and TEE ORAM, meters session
+ * grants (hint set = 150 credits), serves its own Ready receipts read-only
+ * (REQ_PIR2_SEALED_RECEIPT_GET), and bakes cloudflared 2026.8.3.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from live image 305 after AMD chain + REPORT_DATA verification
+  // Captured from live image 307 after AMD chain + REPORT_DATA verification
   // in scripts/pir2-post-switch-check.sh. binary_sha256 and MEASUREMENT
-  // mismatched the previous image-303 pin, as expected for this UKI.
+  // mismatched the previous image-305 pin, as expected for this UKI.
   measurementHex:
-    '0201dd3997ad185f2eb101da9c516cdd9faa020bd63c0af65481ac64a3e44244bac9c1b149a5572930dca86f67e4d6b9',
+    'de353c325cc59d6d45d5bc880086f846686161554dffc44a68dd941e9d99f354ba8db0c0131b8f7fdc7b033b2e9b3369',
   binarySha256Hex:
-    '985e130c1fee43672e373139b6b2a5eff96b9d5178c1c6fdab272ef13e97e4d1',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 305, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, session grants metered)',
+    '0583bab081fa3c8ab523c44f028605d1b0693d43bf11e2e603aa2122ec73096f',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 307, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, session grants metered, Ready receipts over WS)',
 };
 
 /**
