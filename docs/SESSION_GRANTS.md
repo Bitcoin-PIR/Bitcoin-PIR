@@ -66,6 +66,11 @@ cashier.key` produces one and prints the public key hex.
 | `--require-session-grant` | Reject query-bearing frames until a valid grant is presented. Needs at least one pinned key. |
 | `--session-grant-hint-credits N` | Credits one HarmonyPIR hint set costs (default 150). The cashier advertises the same number in `GET /v1/info` `costs`. |
 
+On pir1 the flags live in the systemd unit. On pir2 they live in the measured
+UKI (`scripts/dracut/97bpir-tier3-init/unified-server-run.sh` pins the cashier
+public key and the hint-set price next to `--admin-pubkey-hex`), so changing
+the key or the price is a new image and a sealed ceremony.
+
 With no pinned key the server refuses `REQ_SESSION_GRANT_PRESENT` with an
 error and serves free queries as before. Production activation is an
 operator decision routed through

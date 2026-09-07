@@ -133,3 +133,12 @@ test("dracut module rejects a policy re-introduction", () => {
     ),
   );
 });
+
+test("runtime UKI pins the cashier key and the hint-set price, never --require-session-grant", () => {
+  const source = readFileSync(runPath, "utf8");
+  assert.match(source, /^PIR2_SESSION_GRANT_PUBKEY_HEX=[0-9a-f]{64}$/m);
+  assert.match(source, /^PIR2_SESSION_GRANT_HINT_CREDITS=[1-9][0-9]*$/m);
+  assert.match(source, /--session-grant-pubkey "\$PIR2_SESSION_GRANT_PUBKEY_FILE"/);
+  assert.match(source, /--session-grant-hint-credits "\$PIR2_SESSION_GRANT_HINT_CREDITS"/);
+  assert.doesNotMatch(source, /--require-session-grant/);
+});
