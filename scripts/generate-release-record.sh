@@ -8,15 +8,22 @@
 #   - unified_server_sha256 / oramctl_sha256 from
 #     the UKI's sibling .meta file (build_uki_tier3.sh output), if present
 #   - runtime_git_revision / web_pin_git_revision from flags (or HEAD)
-# Everything else (measurement, db manifests, acceptance evidence) must be
-# supplied via flags or filled in by hand afterwards — the script writes
-# TODO markers and lists them, and a record with TODO fields is not
-# complete release evidence.
+#   - measurement and db0/db1 served-manifest sha256 from --attest-log, the
+#     saved output of `bpir-admin attest` against the serving guest: the
+#     per-DB manifest root the server attests IS sha256(MANIFEST.toml as
+#     served), bound in REPORT_DATA, so no data-disk read is needed. The
+#     log is accepted only if it carries both verification lines
+#     (REPORT_DATA binding and the AMD certificate chain + report
+#     signature) and its binary_sha256 equals the UKI sidecar's.
+# Everything else (acceptance evidence) must be supplied via flags or
+# filled in by hand afterwards — the script writes TODO markers and lists
+# them, and a record with TODO fields is not complete release evidence.
 #
 # Usage:
 #   scripts/generate-release-record.sh --uki deploy/uki/<name>.efi --image-id 265 \
 #       [--server-id 25285] \
 #       [--runtime-rev <commit>] [--web-pin-rev <commit>] \
+#       [--attest-log <bpir-admin attest output>] \
 #       [--measurement <hex>] \
 #       [--db0-manifest-sha256 <hex>] [--db1-manifest-sha256 <hex>] \
 #       [--acceptance <tag>] \
@@ -31,9 +38,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 uki="" image_id="" server_id="TODO"
 runtime_rev="" web_pin_rev=""
 measurement="TODO" db0="TODO" db1="TODO" acceptance="TODO"
+attest_log=""
 out="" force=0
 
-usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -42,6 +50,7 @@ while [ $# -gt 0 ]; do
         --server-id)           server_id="$2"; shift 2 ;;
         --runtime-rev)         runtime_rev="$2"; shift 2 ;;
         --web-pin-rev)         web_pin_rev="$2"; shift 2 ;;
+        --attest-log)          attest_log="$2"; shift 2 ;;
         --measurement)         measurement="$2"; shift 2 ;;
         --db0-manifest-sha256) db0="$2"; shift 2 ;;
         --db1-manifest-sha256) db1="$2"; shift 2 ;;
@@ -96,6 +105,39 @@ oramctl_sha256="$(meta_get oramctl_sha256)"
 
 if [ ! -f "$meta" ]; then
     echo "NOTE: no sibling .meta file at $meta — binary hashes left as TODO" >&2
+fi
+
+# Attested values from a saved `bpir-admin attest` run. Only a log whose
+# REPORT_DATA binding and AMD chain + report signature both verified may fill
+# measurement and the served-manifest digests, and it must describe the
+# binary this record is about.
+attest_field() { sed -n "s/^[[:space:]]*$1[[:space:]]*\([0-9a-f]*\).*$/\1/p" "$attest_log" | head -n 1; }
+if [ -n "$attest_log" ]; then
+    [ -f "$attest_log" ] || { echo "ERROR: --attest-log is not a file: $attest_log" >&2; exit 2; }
+    grep -q 'SEV-SNP REPORT_DATA binding verified' "$attest_log" \
+        || { echo "ERROR: attest log lacks the REPORT_DATA binding verification line" >&2; exit 1; }
+    grep -q "AMD ARK→ASK→VCEK chain and this attestation report's signature verified" "$attest_log" \
+        || { echo "ERROR: attest log lacks the AMD chain + report-signature verification line" >&2; exit 1; }
+    attested_binary="$(attest_field 'binary_sha256:')"
+    if [ "$unified_server_sha256" != "TODO" ] && [ "$attested_binary" != "$unified_server_sha256" ]; then
+        echo "ERROR: attest log binary_sha256 differs from the UKI sidecar's binary hash" >&2
+        exit 1
+    fi
+    attested_measurement="$(attest_field 'Launch MEASUREMENT:')"
+    attested_db0="$(attest_field 'db_id=0:')"
+    attested_db1="$(attest_field 'db_id=1:')"
+    [ ${#attested_measurement} -eq 96 ] || { echo "ERROR: attest log measurement is not 96 hex" >&2; exit 1; }
+    for pair in "measurement:$attested_measurement" "db0:$attested_db0" "db1:$attested_db1"; do
+        key="${pair%%:*}"; val="${pair#*:}"
+        [ ${#val} -eq 64 ] || [ "$key" = measurement ] || { echo "ERROR: attest log has no value for $key" >&2; exit 1; }
+        current="$(eval "printf '%s' \"\$$key\"")"
+        if [ "$current" != "TODO" ] && [ "$current" != "$val" ]; then
+            echo "ERROR: --$key flag disagrees with the attest log" >&2
+            exit 1
+        fi
+        eval "$key=\"\$val\""
+    done
+    echo "attested values taken from $attest_log" >&2
 fi
 
 [ -n "$out" ] || out="$REPO_ROOT/docs/data-retention/production-release-image-$image_id.env"
