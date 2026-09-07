@@ -12,8 +12,10 @@ usage: scripts/vpsbg-data-disk.sh <open|put|get|ssh|close> [options]
   get   --remote /home/pir/data/... --local FILE [--server-id ID]
   ssh   [--server-id ID] [--] [REMOTE_COMMAND...]
 
-open detaches measured boot (kernel_image_id=null), stop/starts the guest,
-and waits until boot_mode=stock and SSH works. close switches back to the
+open detaches measured boot (kernel_image_id=null), then settles the guest
+by readback: a still-measured guest gets a stop request (HTTP 423 is retried,
+not fatal), a stock-but-off guest gets a start (at most 3), and open returns
+once boot_mode=stock and SSH answers. close switches back to the
 caller-supplied image ID; it never remembers the previous image. put/get/ssh
 refuse to run unless the guest is already stock. There is no provisioner UKI
 path. Mutations default to a dry-run preview unless --apply is set.
@@ -24,7 +26,16 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly API_BASE='https://api.vpsbg.eu/v1'
 readonly DEFAULT_SERVER_ID=25285
 readonly VPSBG_HOST=87.120.8.198
-readonly HARD_STOP_SECONDS=900
+readonly HARD_STOP_SECONDS=${VPSBG_DATA_DISK_HARD_STOP_SECONDS:-900}
+# Status poll interval while waiting for the stock rootfs (tests set 0).
+readonly POLL_SECONDS=${VPSBG_DATA_DISK_POLL_SECONDS:-10}
+# Starts the wrapper may issue while settling one open (the platform's delayed
+# stop can land after a start and leave the guest off again).
+readonly MAX_SETTLE_STARTS=3
+readonly START_COOLDOWN_SECONDS=${VPSBG_DATA_DISK_START_COOLDOWN_SECONDS:-30}
+# A guest that reports stock+running but never answers SSH is still on the old
+# measured kernel: after this long, ask for a stop so the detach takes effect.
+readonly STALL_SECONDS=${VPSBG_DATA_DISK_STALL_SECONDS:-180}
 readonly DEFAULT_TOKEN_FILE="$root/.secrets/vpsbg-api-token"
 readonly DEFAULT_SSH_KEY="$root/.keys/vpsbg-ssh.key"
 readonly DEFAULT_KNOWN_HOSTS="$root/deploy/vpsbg_known_hosts"
@@ -173,11 +184,37 @@ api_post() {
   unset token
 }
 
-wait_for_stock_ssh() {
-  local started now snapshot boot_mode running ssh_ready
+# Like api_post, but never fails the script: prints the HTTP status code so
+# the caller can treat 423 (guest locked by a transition in progress) as
+# "retry later" instead of aborting a half-done open.
+api_post_code() {
+  local path=$1 body=$2
+  local token code
+  token=$(api_token)
+  code=$(curl --silent --max-time 30 --retry 0 -o /dev/null -w '%{http_code}' \
+    -H 'Accept: application/json' \
+    -H "Authorization: Bearer $token" \
+    -H 'Content-Type: application/json' \
+    -d "$body" \
+    "$API_BASE$path" || printf '000')
+  unset token
+  printf '%s\n' "$code"
+}
+
+# Settle the guest onto the stock rootfs with SSH after a detach, driving the
+# VPSBG control plane by readback instead of by a fixed stop/start sequence.
+# Observed platform behaviour this handles: the detach itself reboots the
+# guest into stock; an immediate stop answers HTTP 423 (locked) and then lands
+# tens of seconds later, leaving the guest off; a guest that is stock but off
+# never comes back without a start. Each iteration reads status and acts on
+# it: still measured → request a stop (423 is retried next round); stock and
+# off → start (bounded by MAX_SETTLE_STARTS); stock and running → probe SSH.
+settle_to_stock_ssh() {
+  local started now snapshot boot_mode running ssh_ready code
+  local starts=0 last_start=0 stop_requested=0
   started=$(date -u +%s)
   ssh_base
-  echo "[stage] wait for stock rootfs and SSH (hard_stop_seconds=$HARD_STOP_SECONDS)"
+  echo "[stage] settle onto stock rootfs with SSH (hard_stop_seconds=$HARD_STOP_SECONDS)"
   while :; do
     now=$(date -u +%s)
     if (( now - started >= HARD_STOP_SECONDS )); then
@@ -188,17 +225,42 @@ wait_for_stock_ssh() {
     boot_mode=$(status_field boot_mode <<<"$snapshot")
     running=$(status_field control_plane_running <<<"$snapshot")
     ssh_ready=false
-    if [[ "$boot_mode" == stock ]]; then
+    if [[ "$boot_mode" == stock && "$running" == true ]]; then
       if "${SSH_BASE[@]}" -o BatchMode=yes "root@$VPSBG_HOST" true >/dev/null 2>&1; then
         ssh_ready=true
       fi
     fi
-    printf 'boot_mode=%s control_plane_running=%s ssh_ready=%s elapsed_seconds=%s\n' \
-      "$boot_mode" "$running" "$ssh_ready" "$((now - started))"
-    if [[ "$boot_mode" == stock && "$ssh_ready" == true ]]; then
+    printf 'boot_mode=%s control_plane_running=%s ssh_ready=%s starts=%s elapsed_seconds=%s\n' \
+      "$boot_mode" "$running" "$ssh_ready" "$starts" "$((now - started))"
+    if [[ "$ssh_ready" == true ]]; then
       return 0
     fi
-    sleep 10
+    if [[ "$boot_mode" == stock && "$running" == false ]]; then
+      if (( starts >= MAX_SETTLE_STARTS )); then
+        echo "guest is stock but off after $starts start requests; refusing to loop" >&2
+        exit 1
+      fi
+      if (( now - last_start >= START_COOLDOWN_SECONDS )); then
+        code=$(api_post_code "/servers/$server_id/start" '{}')
+        starts=$((starts + 1)); last_start=$now
+        echo "[stage] start guest (stock but off) http=$code"
+      fi
+    elif [[ "$boot_mode" == measured ]] || (( now - started >= STALL_SECONDS )); then
+      # The detach is applied by a power cycle. The platform usually does it
+      # by itself (a locked guest answers 423 meanwhile); if the guest still
+      # reports the old kernel, or sits stock+running without sshd past the
+      # stall limit, ask for the stop once and let the readback drive the
+      # start.
+      if (( ! stop_requested )); then
+        code=$(api_post_code "/servers/$server_id/stop" '{}')
+        case "$code" in
+          2*) stop_requested=1; echo "[stage] stop guest http=$code" ;;
+          423) echo "[stage] stop deferred (HTTP 423: transition in progress)" ;;
+          *) echo "[stage] stop request answered http=$code; retrying" ;;
+        esac
+      fi
+    fi
+    sleep "$POLL_SECONDS"
   done
 }
 
@@ -210,7 +272,7 @@ case "$action" in
     (( dry_run + apply <= 1 )) || { echo 'open accepts only one of --dry-run or --apply' >&2; exit 2; }
     echo 'expected_duration=up to 15 minutes'
     echo "hard_stop_seconds=$HARD_STOP_SECONDS"
-    echo 'progress=detach,stop,start,boot_mode=stock,ssh_ready'
+    echo 'progress=detach,settle(stop|start by readback),boot_mode=stock,ssh_ready'
     echo "recorded_close_image_id=$image_id"
     echo 'detach_body={"kernel_image_id":null}'
     if ((dry_run || !apply)); then
@@ -235,14 +297,10 @@ case "$action" in
     if [[ "$live_boot_mode" != stock ]]; then
       echo '[stage] detach measured boot'
       api_post "/servers/$server_id/measured-boot" '{"kernel_image_id":null}' >/dev/null
-      echo '[stage] stop guest'
-      api_post "/servers/$server_id/stop" '{}' >/dev/null
-      echo '[stage] start guest'
-      api_post "/servers/$server_id/start" '{}' >/dev/null
     else
       echo '[stage] already stock; skip detach'
     fi
-    wait_for_stock_ssh
+    settle_to_stock_ssh
     echo 'PASS action=open'
     echo "NEXT_STEP=copy files with put/get/ssh, then close --image-id $image_id --apply"
     ;;
