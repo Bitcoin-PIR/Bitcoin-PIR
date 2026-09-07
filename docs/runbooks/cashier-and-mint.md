@@ -47,9 +47,11 @@ secret; `keygen` and `pubkey` print only the public key.
   `--session-grant-hint-credits 150` for the HarmonyPIR hint price). The
   free path stays open until `--require-session-grant` is added, which is
   an operator decision.
-- pir2: the flags live in `unified-server-run.sh` inside the measured UKI,
-  so pinning requires a new image (Flow E/G). Until then pir2 answers
-  "session grants not enabled" and the client treats it as the free path.
+- pir2: the flags live in `unified-server-run.sh` inside the measured UKI
+  (`PIR2_SESSION_GRANT_PUBKEY_HEX`, `PIR2_SESSION_GRANT_HINT_CREDITS`), so a
+  key or price change is a new image (Flow E/G). An image built before the
+  pin answers "session grants not enabled" and the client treats it as the
+  free path.
 
 ## Read — health
 
@@ -120,7 +122,8 @@ to the crate.
    (Human), then `bpir-cashier pubkey` into a new `grant.pub`.
 2. Pin the new public key on every server **before** switching the
    cashier (`--session-grant-pubkey` is repeatable, so both keys can be
-   accepted during the overlap; pir2 needs a new image).
+   accepted during the overlap; pir2 needs a new image with the new
+   `PIR2_SESSION_GRANT_PUBKEY_HEX`).
 3. Move the new key into place, restart the cashier; unexpired grants
    under the old key stay valid on servers that still pin it.
 

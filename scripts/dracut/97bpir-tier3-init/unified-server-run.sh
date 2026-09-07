@@ -50,6 +50,16 @@ PIR2_SEALED_RECEIPT_DIR="$PIR2_SEALED_ROOT/receipts"
 PIR2_SEALED_MARKER_DIR="$PIR2_SEALED_ROOT/markers"
 PIR2_SEALED_ATTEMPT_DIR=${BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT:-/run/bitcoinpir-pir2-sealed}
 PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
+# Paid queries (docs/SESSION_GRANTS.md): the cashier public key this image
+# pins for session grants, and the price of one HarmonyPIR hint set. Both
+# are part of the measured image, like --admin-pubkey-hex below; changing
+# either is a new UKI. The flag takes a file, so the key is materialized
+# under /run right before the final exec. Requiring a grant for every query
+# (closing the free path) is an operator decision and is deliberately not
+# enabled here.
+PIR2_SESSION_GRANT_PUBKEY_HEX=59392a0738106c4954c317f9bfae2e4918fe809fa0c49fdf23493ce709b9c6e0
+PIR2_SESSION_GRANT_PUBKEY_FILE=/run/bitcoinpir-session-grant.pub
+PIR2_SESSION_GRANT_HINT_CREDITS=150
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
 # Inert Observe/Enroll/Probe runs leave no listener behind.  VPSBG currently
 # has no console or file-extraction API, so expose only the canonical receipt
@@ -1223,6 +1233,8 @@ remove_direct_oram_status_api_root || fatal "failed to remove Direct ORAM status
 trap - EXIT
 trap - HUP INT TERM
 start_unified_server_runtime_log
+(umask 022; printf '%s\n' "$PIR2_SESSION_GRANT_PUBKEY_HEX" > "$PIR2_SESSION_GRANT_PUBKEY_FILE") \
+    || fatal "failed to materialize the session grant public key"
 
 # Ready reopens the sealed identity in the final exec. Deleted Payment V1
 # service flags must not be passed (unknown CLI flags are fatal).
@@ -1253,5 +1265,7 @@ exec "$UNIFIED_SERVER" \
     --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
     --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX" \
     --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
+    --session-grant-pubkey "$PIR2_SESSION_GRANT_PUBKEY_FILE" \
+    --session-grant-hint-credits "$PIR2_SESSION_GRANT_HINT_CREDITS" \
     --connection-idle-timeout-ms 300000 \
     2>&1
