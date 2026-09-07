@@ -369,15 +369,18 @@ pub(crate) async fn serve_connections(
                     continue;
                 }
 
-                // Session-grant gate: query-bearing variants spend one credit
-                // of the presented grant, or are refused when grants are
-                // required and none was presented. Runs after the mode gates
-                // so a frame this host does not serve never costs a credit.
+                // Session-grant gate: metered variants spend their credit cost
+                // (one per query-bearing frame, the hint-set price for a
+                // HarmonyPIR hint request) from the presented grant, or are
+                // refused when grants are required and none was presented.
+                // Runs after the mode gates so a frame this host does not
+                // serve never costs a credit.
                 if let Some(gate) = server.session_grants.as_ref() {
-                    if is_query_bearing_variant(variant) {
+                    let cost = gate.credit_cost(variant);
+                    if cost > 0 {
                         let refusal = match session_grant {
                             Some(grant_id) => current_unix_seconds_v1()
-                                .and_then(|now| gate.consume(&grant_id, now))
+                                .and_then(|now| gate.consume_n(&grant_id, cost, now))
                                 .err(),
                             None if gate.require() => Some(
                                 "session grant required — send REQ_SESSION_GRANT_PRESENT first"

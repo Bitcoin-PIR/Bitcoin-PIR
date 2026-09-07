@@ -24,7 +24,8 @@ cookies and no referrer.
   "offers": [
     { "credits": 1000, "amount": 210, "unit": "sat" }
   ],
-  "grant_ttl_secs": 86400
+  "grant_ttl_secs": 86400,
+  "costs": { "frame": 1, "harmony_hint_set": 150 }
 }
 ```
 
@@ -35,6 +36,10 @@ cookies and no referrer.
   `credits`; there is no fractional pricing.
 - `grant_ttl_secs`: lifetime the cashier stamps on issued grants (bounded by
   the server-side maximum of 30 days).
+- `costs` (optional, informational): what the servers charge, in credits,
+  for one query-bearing frame and for one HarmonyPIR hint set. The servers
+  enforce their own flags (`--session-grant-hint-credits`); the cashier
+  publishes the same numbers so the client can show prices before spending.
 
 ## `POST /v1/grants`
 

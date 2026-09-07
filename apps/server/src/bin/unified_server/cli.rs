@@ -94,6 +94,9 @@ pub(crate) struct CliArgs {
     /// Reject query-bearing opcodes until a valid session grant is presented
     /// (`--require-session-grant`). Needs at least one pinned key.
     pub(crate) require_session_grant: bool,
+    /// Credits one HarmonyPIR hint set costs
+    /// (`--session-grant-hint-credits N`, default 150; query frames cost 1).
+    pub(crate) session_grant_hint_credits: u32,
     /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
@@ -321,6 +324,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut session_grant_pubkeys: Vec<PathBuf> = Vec::new();
     let mut require_session_grant = false;
+    let mut session_grant_hint_credits: u32 = crate::session_grant::DEFAULT_HINT_SET_CREDITS;
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
@@ -466,6 +470,16 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--require-session-grant" => {
                 require_session_grant = true;
+            }
+            "--session-grant-hint-credits" => {
+                let Some(v) = args.get(i + 1) else {
+                    fatal_cli("--session-grant-hint-credits requires a positive integer");
+                };
+                session_grant_hint_credits = match v.parse::<u32>() {
+                    Ok(n) if n >= 1 => n,
+                    _ => fatal_cli("--session-grant-hint-credits must be an integer >= 1"),
+                };
+                i += 1;
             }
             "--max-connections" => {
                 max_connections = args
@@ -760,6 +774,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         harmony_pool_bindings,
         session_grant_pubkeys,
         require_session_grant,
+        session_grant_hint_credits,
         pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,

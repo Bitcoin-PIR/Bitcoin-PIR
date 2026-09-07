@@ -34,9 +34,18 @@ cashier.key` produces one and prints the public key hex.
 
 - One credit per **query-bearing request frame**: INDEX / CHUNK / bucket
   Merkle batches, HarmonyPIR query and batch query, ORAM lookup, OnionPIR
-  key registration and queries. Info, ping, attest, handshake, announce,
-  catalog, DB proofs, HarmonyPIR hints, admin opcodes, and the presentation
-  itself are free.
+  key registration and queries.
+- One **hint set** (`REQ_HARMONY_HINTS` or `REQ_HARMONY_HINTS_V2`, the
+  requests that take an entry from the hint pool) costs
+  `--session-grant-hint-credits` credits, default 150. Priced by compute:
+  regenerating a pool entry measured 136 CPU-seconds on pir1 against about
+  0.9 for a metered DPF frame, and a set serves roughly 26 queries, so the
+  amortised cost per HarmonyPIR query is close to a DPF query's. The
+  `_V2_HALF` continuation of an already-paid entry is free. A grant that
+  cannot cover the whole set is refused with the shortfall named and
+  nothing charged.
+- Info, ping, attest, handshake, announce, catalog, DB proofs, admin
+  opcodes, and the presentation itself are free.
 - The credit is spent after the mode gates and before dispatch, so a frame
   this host does not serve costs nothing and a malformed query still costs
   one.
@@ -55,6 +64,7 @@ cashier.key` produces one and prints the public key hex.
 | --- | --- |
 | `--session-grant-pubkey FILE` (repeatable) | Pin a cashier public key: 32 raw bytes or 64 hex characters. Enables verification and metering. |
 | `--require-session-grant` | Reject query-bearing frames until a valid grant is presented. Needs at least one pinned key. |
+| `--session-grant-hint-credits N` | Credits one HarmonyPIR hint set costs (default 150). The cashier advertises the same number in `GET /v1/info` `costs`. |
 
 With no pinned key the server refuses `REQ_SESSION_GRANT_PRESENT` with an
 error and serves free queries as before. Production activation is an
