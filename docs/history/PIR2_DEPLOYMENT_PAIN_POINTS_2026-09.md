@@ -59,3 +59,22 @@ Each item: what hurt, evidence, proposed cleanup.
 12. `vpsbg-measured-boot.sh upload` returns the image id but the name is truncated by
     VPSBG (`tier3-20260907T05043`); the sidecar has the real name — record both in
     the release record.
+    **Fixed:** the image-307 release record carries both `uki_name` (sidecar) and
+    `vpsbg_image_name` (control plane), written by the record generator from the
+    evidence files.
+
+## Observed in the r7 campaign (image 307, 2026-09-07)
+
+With #301–#304 in place the whole campaign (build → Observe → release → Enroll →
+two Probes → Ready → receipts accepted) took 34 minutes and five data-disk windows;
+the Ready receipts came back over `REQ_PIR2_SEALED_RECEIPT_GET` 60 s after the live
+attestation passed, so no Ready N+1 boot was needed. Two smaller items remain:
+
+13. `remote-prep-enroll` (the rollback-preserving step before Enroll) copies whatever
+    `startup.env` is current, which by then is the new image's Observe file; the
+    previous image's Ready startup survives only as the `.bak` taken in the build
+    window. Fix: make the rollback set explicit (envelope, release, cert, and the
+    previous Ready startup) in a reviewed script under `scripts/`.
+14. The release record's `db0/db1_server_manifest_sha256` still need a Flow F read of
+    `<db>/server-db/MANIFEST.toml`; the serving guest could publish those digests
+    (for example in the JSON info response) so the record closes without a window.
