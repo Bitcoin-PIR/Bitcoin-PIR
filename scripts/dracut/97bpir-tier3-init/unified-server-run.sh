@@ -54,8 +54,9 @@ PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
 # pins for session grants, and the price of one HarmonyPIR hint set. Both
 # are part of the measured image, like --admin-pubkey-hex below; changing
 # either is a new UKI. The flag takes a file, so the key is materialized
-# under /run right before the final exec. --require-session-grant is an
-# operator decision and is deliberately not set here.
+# under /run right before the final exec. Requiring a grant for every query
+# (closing the free path) is an operator decision and is deliberately not
+# enabled here.
 PIR2_SESSION_GRANT_PUBKEY_HEX=59392a0738106c4954c317f9bfae2e4918fe809fa0c49fdf23493ce709b9c6e0
 PIR2_SESSION_GRANT_PUBKEY_FILE=/run/bitcoinpir-session-grant.pub
 PIR2_SESSION_GRANT_HINT_CREDITS=150
