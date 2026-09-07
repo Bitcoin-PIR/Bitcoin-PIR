@@ -151,10 +151,10 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Live hashed unified_server from the R5 Flow D rebuild of 039b3c66
-  // (session-grant runtime; ARC/Cashu code removed).
+  // Live hashed unified_server from the Flow D rebuild of a07cc67e
+  // (session grants; HarmonyPIR hint sets priced by --session-grant-hint-credits).
   binarySha256Hex:
-    'be719a801cb2decec1c5e4073d16790f05f869d647447d2a00f910d1474fb61f',
+    '10de7315d3894bb38ff14ba0329a488c06b48ba3723b65be95e18468122647bd',
   description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, R5 session-grant unified_server)',
 };
 
