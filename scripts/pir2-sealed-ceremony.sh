@@ -17,6 +17,8 @@ which copies a serving Ready guest's two receipts and preflight marker out over
 its public WebSocket endpoint (no Flow F window); accept them with `receipt`.
 `phase` writes the public, canonical-v3 startup.env consumed by the measured
 UKI. --dry-run never reads a signing key, release input, or host state.
+BPIR_ADMIN=/absolute/path/to/bpir-admin runs that prebuilt binary for release,
+receipt, and fetch instead of `cargo run --locked --offline -p bpir-admin`.
 EOF
 }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -94,11 +96,23 @@ case "$action" in
   fetch) subcommand=pir2-sealed-receipt-fetch ;;
   *) subcommand=pir2-sealed-release ;;
 esac
+# How bpir-admin is invoked. The default cargo run rebuilds the debug binary
+# whenever the tree changed, which has cost more than ten minutes inside a
+# maintenance window; BPIR_ADMIN names a prebuilt binary (for example
+# `cargo build --locked --offline --release -p bpir-admin` before the ceremony).
+if [[ -n "${BPIR_ADMIN:-}" ]]; then
+  [[ "$BPIR_ADMIN" == /* && -f "$BPIR_ADMIN" && -x "$BPIR_ADMIN" ]] \
+    || { echo "BPIR_ADMIN must be an absolute path to an executable file: $BPIR_ADMIN" >&2; exit 2; }
+  admin=("$BPIR_ADMIN")
+else
+  admin=(cargo run --locked --offline -p bpir-admin --)
+fi
 if ((${#args[@]})) && [[ "${args[0]}" == --help || "${args[0]}" == -h ]]; then
-  (cd "$root" && exec cargo run --locked --offline -p bpir-admin -- "$subcommand" --help)
+  (cd "$root" && exec "${admin[@]}" "$subcommand" --help)
   exit $?
 fi
-cmd=(cargo run --locked --offline -p bpir-admin -- "$subcommand" "${args[@]}")
+# `${args[@]+"${args[@]}"}` keeps an empty option list valid under set -u on bash 3.2.
+cmd=("${admin[@]}" "$subcommand" ${args[@]+"${args[@]}"})
 if [[ "$action" == receipt ]]; then
   if ((dry_run)); then
     echo '[stage] sealed receipt acceptance command preview'; printf 'COMMAND='; printf '%q ' "${cmd[@]}"; echo

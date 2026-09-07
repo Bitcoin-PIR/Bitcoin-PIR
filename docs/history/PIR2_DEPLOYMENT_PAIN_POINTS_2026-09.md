@@ -51,6 +51,11 @@ Each item: what hurt, evidence, proposed cleanup.
     recompiles for >10 min in the middle of a ceremony window (observed 2026-09-07).
     Fix: accept `BPIR_ADMIN=/path/to/reviewed/bpir-admin` like
     `verify_oram_tier3_deploy.sh` does, or build once before the window.
+    **Fixed:** `BPIR_ADMIN=/absolute/path/bpir-admin` runs a prebuilt binary for
+    `release`/`receipt`/`fetch` (the runbook builds it once before the ceremony);
+    `scripts/pir2-sealed-ceremony.test.mjs` checks the previews, the override, and
+    the forwarded exit status, and `receipt --dry-run` no longer dies on an empty
+    option list under bash 3.2.
 12. `vpsbg-measured-boot.sh upload` returns the image id but the name is truncated by
     VPSBG (`tier3-20260907T05043`); the sidecar has the real name — record both in
     the release record.

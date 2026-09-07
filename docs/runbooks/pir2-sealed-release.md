@@ -36,6 +36,16 @@ scripts/vpsbg-data-disk.sh put --local /absolute/observe.startup.env \
 scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
 ```
 
+`release`, `receipt`, and `fetch` run `cargo run --locked --offline -p bpir-admin`,
+which rebuilds the debug binary whenever the tree changed; inside a maintenance
+window that has cost more than ten minutes. Build once before the ceremony and
+point the wrapper at the result (`--dry-run` previews show it in `COMMAND=`):
+
+```sh
+cargo build --locked --offline --release -p bpir-admin
+export BPIR_ADMIN="$PWD/target/release/bpir-admin"
+```
+
 Do not build a provisioner UKI. Run the release after the Observe receipt is
 available. Generate new startup files for `enroll`, `probe`, and `ready`, and
 boot each in that order. A completed release prints `PASS sealed_release`;
