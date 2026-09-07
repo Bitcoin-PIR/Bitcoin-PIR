@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-QTm40Ng03NnAH0tZ7DbhpbEtaT/YX1uZP+OE1OeaxSg=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-/Paty+iS6bicoLbE64G6aZ+fIna6CzE6h+WSpPokiYQ=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1765,9 +1765,23 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             paStatus(`cashier ${cashierInfo.service}: ${cashierInfo.offers.length} offer(s), mint ${cashierInfo.mints[0]}`, 'success');
         }
 
+        // Price of one HarmonyPIR hint set in credits: remembered with the
+        // grant at purchase, otherwise asked from the cashier; null if unknown.
+        async function paHintSetCost() {
+            const stored = sessionGrantStore.load();
+            if (stored?.costs?.harmonyHintSet) return stored.costs.harmonyHintSet;
+            try {
+                cashierInfo = cashierInfo ?? await cashier.info();
+                return cashierInfo.costs?.harmonyHintSet ?? null;
+            } catch {
+                return null;
+            }
+        }
+
         async function paStoreGrant(offer, token, cashierUrl) {
             const issued = await cashier.redeem(offer, token);
-            sessionGrantStore.save({ version: 1, ...issued, cashierUrl });
+            const costs = cashierInfo?.costs;
+            sessionGrantStore.save({ version: 1, ...issued, cashierUrl, ...(costs ? { costs } : {}) });
             pendingPurchaseStore.clear();
             sessionGrantBalances.clear();
             renderPaidAccess();
@@ -4499,6 +4513,26 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const offlineStatus = document.getElementById('hp-offlineStatus');
             const offlineFill = document.getElementById('hp-offlineFill');
             const offlineLabel = document.getElementById('hp-offlineLabel');
+            // Paid access: a hint set is charged to the session grant on the
+            // hint server, so every fetch (first load, DB switch, refresh
+            // after exhaustion) is an explicit, confirmed step.
+            const paidGrant = sessionGrantStore.load();
+            if (paidGrant) {
+                const cost = await paHintSetCost();
+                const hintBalance = sessionGrantBalances.get('HarmonyPIR hint');
+                const balanceText = hintBalance?.state === 'accepted'
+                    ? `${hintBalance.remaining} credits remaining on the hint server`
+                    : hintBalance?.state === 'not-enabled'
+                        ? 'the hint server does not meter grants'
+                        : 'hint-server balance unknown';
+                const question = `Fetch a HarmonyPIR hint set? This charges ${cost ?? "the server's hint-set price in"} credits to session grant ${paidGrant.grantIdHex.slice(0, 8)}… (${balanceText}). A set serves a limited number of queries; the count is shown once it is loaded.`;
+                if (!window.confirm(question)) {
+                    offlineStatus.textContent = 'Not loaded';
+                    offlineLabel.textContent = 'Hint set not fetched — declined.';
+                    log('HarmonyPIR: hint fetch declined (no credits spent)', 'warn');
+                    return false;
+                }
+            }
             offlineStatus.textContent = 'Downloading...';
             offlineFill.style.width = '0%';
             offlineLabel.textContent = 'Fetching hints from Hint Server...';
@@ -4511,6 +4545,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 offlineLabel.textContent = 'Hints loaded (~' + client.estimateHintSize() + ' MB, ' + remaining + ' queries available). Ready.';
                 if (client === hpClient) hpHintsLoaded = true;
                 log('HarmonyPIR: Hints downloaded successfully', 'success');
+                if (paidGrant) {
+                    // Re-present the grant so the balance line reflects the charge.
+                    try { await client.presentSessionGrant(0); } catch { /* balance refresh is best effort */ }
+                }
                 return true;
             } catch (error) {
                 offlineStatus.textContent = 'Failed';
