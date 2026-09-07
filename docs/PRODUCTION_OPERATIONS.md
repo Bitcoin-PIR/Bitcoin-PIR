@@ -378,6 +378,7 @@ do not leave a mixed fleet.
 | Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
 | Accept an Enroll, Probe, or Ready receipt | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh receipt` | `PASS pir2_sealed_receipt_verify` |
 | Fetch the Ready receipts from the serving pir2 guest | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh fetch` | `PASS pir2_sealed_receipt_fetch` |
+| Preserve, verify, or restore a pir2 rollback set (guest side, via `vpsbg-data-disk.sh ssh`) | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-rollback-set.sh` | `PASS action=preserve\|verify\|detach-envelope\|restore` |
 | Check the cashier and mint on pir1 | [Cashier and mint](runbooks/cashier-and-mint.md) | `curl https://cashier.bitcoinpir.org/v1/info`; `bpir-cashier balance` | both units active, `/v1/info` lists offers |
 
 Paid access (cashier-signed session grants, outside the measured image) is

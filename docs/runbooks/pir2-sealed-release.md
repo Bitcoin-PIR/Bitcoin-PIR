@@ -46,6 +46,28 @@ cargo build --locked --offline --release -p bpir-admin
 export BPIR_ADMIN="$PWD/target/release/bpir-admin"
 ```
 
+## Rollback set
+
+Before the previous image's `startup.env` is replaced by the new image's Observe
+file (that is, in the build window, before `put`), preserve the four files a
+rollback to that image needs — `credentials.envelope.bin`, `release.bin`,
+`identity.cert`, and its Ready `startup.env` — with the reviewed guest-side
+script, run over `scripts/vpsbg-data-disk.sh ssh` on the stock rootfs:
+
+```sh
+scripts/pir2-sealed-rollback-set.sh preserve --label imagePREV-YYYYMMDD
+```
+
+`preserve` refuses a `startup.env` that is not a Ready file (pass
+`--startup-from` for an explicit previous Ready startup), never overwrites a
+label, and writes `rollback/LABEL/MANIFEST.sha256`. In the Enroll window run
+`detach-envelope --label LABEL --apply`: it re-verifies the set, requires the
+canonical envelope to equal the preserved copy, and only then removes it so
+Enroll on the new image mints a fresh one. A rollback is `restore --label LABEL
+--apply` in a Flow F window followed by `close` onto that image and Flow E
+step 6; `verify --label LABEL` checks a set at any time. Every action has a
+`--dry-run` plan and ends with `PASS action=...`.
+
 Do not build a provisioner UKI. Run the release after the Observe receipt is
 available. Generate new startup files for `enroll`, `probe`, and `ready`, and
 boot each in that order. A completed release prints `PASS sealed_release`;
