@@ -88,11 +88,28 @@ as a substitute for this command.
 
 Ready writes two receipts for the same boot: `ready-preflight-BOOT.bin` before
 ORAM access and `ready-runtime-BOOT.bin` when the final server opens the sealed
-keys. Unlike Observe, Enroll, and Probe, a successful Ready boot does not expose
-either receipt through the finite recovery HTTP root. Retrieve them only in a
-separately authorized Flow F maintenance window, using the exact boot ID from
-the persisted ORAM published marker; a later boot must use a new ordinal and
-fresh nonce.
+keys, plus the preflight marker `ready-preflight-BOOT.env`. Unlike Observe,
+Enroll, and Probe, a successful Ready boot does not expose them through the
+finite recovery HTTP root. Instead, the serving guest answers the read-only
+opcode `REQ_PIR2_SEALED_RECEIPT_GET` with the persisted bytes verbatim (images
+built from the revision that added it onward). Once attestation and the
+channel check pass, copy them out without a Flow F window:
+
+```sh
+scripts/pir2-sealed-ceremony.sh fetch wss://weikeng2.bitcoinpir.org \
+  --out-dir /absolute/evidence-dir --dry-run
+scripts/pir2-sealed-ceremony.sh fetch wss://weikeng2.bitcoinpir.org \
+  --out-dir /absolute/evidence-dir
+```
+
+`PASS pir2_sealed_receipt_fetch boot_id_hex=BOOT` names the boot all three
+replies agree on; the command trusts nothing it downloads. Accept
+`ready-preflight-BOOT.bin` and `ready-runtime-BOOT.bin` with the `receipt`
+action (`--expected-phase ready --expected-boot-id-hex BOOT`) before treating
+the Ready boot as accepted. A `RESP_ERROR` reply means the guest predates the
+opcode; retrieve the files in a separately authorized Flow F maintenance
+window instead, using the exact boot ID from the persisted ORAM published
+marker. Either way a later boot must use a new ordinal and fresh nonce.
 
 After the ORAM progress API releases port 8091, the final server still loads the
 large database mappings before it listens. During that interval the public

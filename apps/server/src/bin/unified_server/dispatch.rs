@@ -1,6 +1,7 @@
 use crate::harmony_hints::*;
 use crate::io::*;
 use crate::onion::PirCommand;
+use crate::pir2_sealed_receipts::build_pir2_sealed_receipt_response;
 use crate::state::{UnifiedServerData, V2HalfPending};
 use crate::unsafe_debug_log;
 use rayon::prelude::*;
@@ -266,6 +267,16 @@ pub(crate) async fn handle_variant<S>(
                         // --identity-* flags are set. `None` means the server
                         // lacks an identity key / operator cert.
                         let resp = build_announce_response(&server.state.announcement_bundle);
+                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
+                    }
+                    REQ_PIR2_SEALED_RECEIPT_GET => {
+                        // Read-only Ready evidence of this boot, loaded at
+                        // startup into `UnifiedServerData.pir2_sealed_receipts`
+                        // on sealed Ready pir2 guests; `None` → RESP_ERROR.
+                        let resp = build_pir2_sealed_receipt_response(
+                            server.pir2_sealed_receipts.as_ref(),
+                            body,
+                        );
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
                     REQ_HANDSHAKE => {

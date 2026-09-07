@@ -18,6 +18,7 @@ mod io;
 mod logging;
 mod onion;
 mod oram;
+mod pir2_sealed_receipts;
 mod serve;
 mod session_grant;
 mod state;
@@ -135,6 +136,21 @@ async fn main() {
             identity_cert,
         } => Some((identity_key, identity_cert)),
     };
+    // A Ready boot serves its own persisted Ready receipts read-only
+    // (REQ_PIR2_SEALED_RECEIPT_GET) so the operator can accept them offline
+    // without a Flow F window. Loaded before any database is touched; a
+    // failure disables only that opcode and never changes whether we serve.
+    let pir2_sealed_receipts = if sealed_identity.is_some() {
+        match pir2_sealed_receipts::Pir2SealedReadyReceiptsV1::load(&args.pir2_sealed) {
+            Ok(receipts) => Some(receipts),
+            Err(error) => {
+                eprintln!("pir2 sealed Ready receipts: DISABLED — {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     println!("=== Unified PIR Server ({}) ===", role_name);
     println!("  Bind:     {}:{}", args.bind_address, args.port);
@@ -143,6 +159,9 @@ async fn main() {
         if args.serve_hints { "yes" } else { "no" },
         if args.serve_queries { "yes" } else { "no" },
     );
+    if let Some(receipts) = pir2_sealed_receipts.as_ref() {
+        println!("  {}", receipts.startup_log_line());
+    }
     if let Some(ref config_path) = args.config_path {
         println!("  Config:   {}", config_path.display());
     } else {
@@ -925,6 +944,7 @@ async fn main() {
         direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         session_grants,
+        pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
     });
