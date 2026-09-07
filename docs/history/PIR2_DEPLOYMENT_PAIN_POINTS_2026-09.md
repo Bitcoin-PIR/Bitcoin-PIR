@@ -75,6 +75,10 @@ attestation passed, so no Ready N+1 boot was needed. Two smaller items remain:
     previous image's Ready startup survives only as the `.bak` taken in the build
     window. Fix: make the rollback set explicit (envelope, release, cert, and the
     previous Ready startup) in a reviewed script under `scripts/`.
+    **Fixed:** `scripts/pir2-sealed-rollback-set.sh preserve|verify|detach-envelope|restore`
+    (guest side, manifest-checked, tested offline by
+    `scripts/pir2-sealed-rollback-set.test.mjs`); the runbook's "Rollback set" section
+    places `preserve` before the Observe startup and `detach-envelope` in the Enroll window.
 14. The release record's `db0/db1_server_manifest_sha256` still need a Flow F read of
     `<db>/server-db/MANIFEST.toml`; the serving guest could publish those digests
     (for example in the JSON info response) so the record closes without a window.
