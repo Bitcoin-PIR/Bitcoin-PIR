@@ -59,7 +59,8 @@ cashier.key` produces one and prints the public key hex.
 With no pinned key the server refuses `REQ_SESSION_GRANT_PRESENT` with an
 error and serves free queries as before. Production activation is an
 operator decision routed through
-[Production operations](PRODUCTION_OPERATIONS.md).
+[Production operations](PRODUCTION_OPERATIONS.md); the live cashier and mint
+are described in [Cashier and mint](runbooks/cashier-and-mint.md).
 
 ## Client flow
 
