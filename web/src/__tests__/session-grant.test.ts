@@ -13,6 +13,7 @@ import {
   classifySessionGrantFailure,
   decodeSessionGrantFields,
   encodeSessionGrantPresentFrame,
+  parseCashierCosts,
   parseCashierInfo,
   parseIssuedGrant,
   parseSessionGrantResponsePayload,
@@ -309,5 +310,38 @@ describe('CashierClient fetch binding', () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+});
+
+describe('cashier costs', () => {
+  it('parses costs from /v1/info and tolerates their absence', () => {
+    const base = {
+      service: 'bitcoinpir-cashier', version: 1, cashier_pubkey_hex: 'ab'.repeat(32),
+      mints: ['https://mint.example'], offers: [{ credits: 1000, amount: 210, unit: 'sat' }], grant_ttl_secs: 86400,
+    };
+    expect(parseCashierInfo(base).costs).toBeUndefined();
+    expect(parseCashierInfo({ ...base, costs: { frame: 1, harmony_hint_set: 150 } }).costs)
+      .toEqual({ frame: 1, harmonyHintSet: 150 });
+    expect(parseCashierInfo({ ...base, costs: { frame: 0, harmony_hint_set: 150 } }).costs).toBeUndefined();
+    expect(parseCashierCosts({ frame: 1, harmonyHintSet: 150 })).toEqual({ frame: 1, harmonyHintSet: 150 });
+    expect(parseCashierCosts('nope')).toBeNull();
+  });
+
+  it('keeps costs on the stored grant and survives a reload', () => {
+    const storage = new Map<string, string>();
+    const store = new SessionGrantStore({
+      getItem: (k: string) => storage.get(k) ?? null,
+      setItem: (k: string, v: string) => { storage.set(k, v); },
+      removeItem: (k: string) => { storage.delete(k); },
+    });
+    const now = 1_800_000_000;
+    store.save({
+      version: 1, grantBase64: 'AAAA', grantIdHex: '00'.repeat(16), credits: 1000,
+      issuedAt: now, expiresAt: now + 3600, cashierUrl: 'https://cashier.example',
+      costs: { frame: 1, harmonyHintSet: 150 },
+    });
+    expect(store.load(now)?.costs).toEqual({ frame: 1, harmonyHintSet: 150 });
+    storage.set('bitcoinpir.session-grant.v1', JSON.stringify({ ...JSON.parse(storage.get('bitcoinpir.session-grant.v1')!), costs: 'bad' }));
+    expect(store.load(now)?.costs).toBeUndefined();
   });
 });

@@ -34,6 +34,14 @@ export interface CashierOffer {
 }
 
 /** `GET /v1/info` — what the cashier sells and which mints it accepts. */
+/** Credits the PIR servers charge per metered unit (informational). */
+export interface CashierCosts {
+  /** One query-bearing request frame. */
+  frame: number;
+  /** One HarmonyPIR hint set (`--session-grant-hint-credits` on the servers). */
+  harmonyHintSet: number;
+}
+
 export interface CashierInfo {
   service: string;
   version: number;
@@ -41,6 +49,8 @@ export interface CashierInfo {
   mints: string[];
   offers: CashierOffer[];
   grantTtlSecs: number;
+  /** Absent when the cashier predates the `costs` field. */
+  costs?: CashierCosts;
 }
 
 /** Fields of a version-1 grant, decoded without signature verification. */
@@ -66,6 +76,8 @@ export interface IssuedGrant {
 export interface StoredSessionGrant extends IssuedGrant {
   version: 1;
   cashierUrl: string;
+  /** Prices the cashier advertised when the grant was bought. */
+  costs?: CashierCosts;
 }
 
 /** Outcome of presenting a grant on one connection. */
@@ -309,7 +321,20 @@ function readStoredGrant(value: unknown): StoredSessionGrant | null {
   ) {
     return null;
   }
-  return { version: 1, grantBase64, grantIdHex, credits, issuedAt, expiresAt, cashierUrl };
+  const costs = parseCashierCosts(value.costs);
+  return {
+    version: 1, grantBase64, grantIdHex, credits, issuedAt, expiresAt, cashierUrl,
+    ...(costs ? { costs } : {}),
+  };
+}
+
+/** `costs` from `GET /v1/info` or a stored grant; `null` when absent or malformed. */
+export function parseCashierCosts(value: unknown): CashierCosts | null {
+  if (!isRecord(value)) return null;
+  const frame = value.frame;
+  const hint = value.harmony_hint_set ?? value.harmonyHintSet;
+  if (!isPositiveInteger(frame) || !isPositiveInteger(hint)) return null;
+  return { frame, harmonyHintSet: hint };
 }
 
 // ─── Cashier HTTP client ────────────────────────────────────────────────────
@@ -419,6 +444,7 @@ export function parseCashierInfo(value: unknown): CashierInfo {
     throw new CashierError('cashier info lists no offers');
   }
   if (!isPositiveInteger(ttl)) throw new CashierError('cashier info has an invalid grant TTL');
+  const costs = parseCashierCosts(value.costs);
   return {
     service,
     version: CASHIER_API_VERSION,
@@ -426,6 +452,7 @@ export function parseCashierInfo(value: unknown): CashierInfo {
     mints: mints as string[],
     offers: offers.map(parseCashierOffer),
     grantTtlSecs: ttl,
+    ...(costs ? { costs } : {}),
   };
 }
 
