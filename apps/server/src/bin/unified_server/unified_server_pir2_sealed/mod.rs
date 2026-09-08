@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::read_regular_file_bounded_v1;
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use pir_identity::IdentityCert;
 use pir_runtime_core::snp_sealed_secrets::{
@@ -16,7 +17,6 @@ use pir_runtime_core::snp_sealed_secrets::{
     Pir2SealedReceiptClaimsV1, Pir2SealedReceiptPhaseV1, Pir2SealedReceiptV1,
     Pir2SealedSigningMaterialV1, SnpDerivedKeyProvider, VerifiedPir2SealedReleaseV1,
 };
-use super::read_regular_file_bounded_v1;
 
 const MAX_IDENTITY_CERT_LEN_V1: usize = 4096;
 const MAX_RELEASE_LEN_V1: usize = 2048;
@@ -860,7 +860,10 @@ mod tests {
             Ok(_) => panic!("bad Ready artifact unexpectedly passed preflight"),
             Err(error) => error,
         };
-        assert!(error.contains("identity certificate"), "unexpected error: {error}");
+        assert!(
+            error.contains("identity certificate"),
+            "unexpected error: {error}"
+        );
         assert_eq!(fixture.provider.report_calls.get(), 1);
         assert_eq!(fixture.provider.derive_calls.get(), 1);
         assert!(!fixture.receipt_path.exists());

@@ -39,12 +39,19 @@ Each item: what hurt, evidence, proposed cleanup.
    campaign's per-step pacing is now a courtesy, not the mechanism.
 6. `cargo fmt --all` reformats `unified_server_pir2_sealed/mod.rs` on main (file is not
    rustfmt-clean); every PR touching the server has to revert it. Fix: format it once.
+   **Fixed:** formatted once; the Rust `core` CI lane now runs `cargo fmt --all -- --check`
+   so no file can drift again.
 7. Contract test regexes match comments (`--require-session-grant` mention failed the
    test); pipelines `node --test | grep` hide failures. Fix: anchor to flag lines; run
    tests without a masking pipe (or `set -o pipefail`).
+   **Fixed:** the contract test's negative checks run on the sources with full-line
+   comments stripped (a comment may mention a retired flag; a real line still fails),
+   with a regression test for both directions.
 8. Running `node --test a.mjs | grep … && node --test b.mjs` masks the first failure and
    starves the second (observed pass 0/fail 1 that vanished when run alone). Fix: one
    `node --test scripts/*.test.mjs` invocation in `docs/TESTING.md`/CI.
+   **Fixed:** `scripts/test-scripts.sh` is the single list and single `node --test`
+   invocation; CI's supply-chain step and `docs/TESTING.md` both run it.
 9. Receipt evidence tooling lives in the session scratchpad (`observe-receipt-fields.py`,
    `fetch-receipt.sh`, `poll-receipt.sh`, `receipt-verify.sh`): promote the useful ones
    into `scripts/` (Observe field extraction + hash-checked fetch + phase poll).

@@ -131,12 +131,16 @@ mod tests {
     fn rejects_wrong_length_magic_and_codec() {
         let mut short = receipt(1);
         short.pop();
-        assert!(parse_observe_receipt(&short).unwrap_err().contains("non-canonical length"));
+        assert!(parse_observe_receipt(&short)
+            .unwrap_err()
+            .contains("non-canonical length"));
         let mut magic = receipt(1);
         magic[0] = b'X';
         assert!(parse_observe_receipt(&magic).unwrap_err().contains("magic"));
         let mut codec = receipt(1);
         codec[8] = 1;
-        assert!(parse_observe_receipt(&codec).unwrap_err().contains("codec 1"));
+        assert!(parse_observe_receipt(&codec)
+            .unwrap_err()
+            .contains("codec 1"));
     }
 }

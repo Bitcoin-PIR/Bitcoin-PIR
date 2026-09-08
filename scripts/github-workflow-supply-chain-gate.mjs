@@ -52,6 +52,7 @@ export const SUPPLY_CHAIN_GATE_PUSH_PATHS = Object.freeze([
   "scripts/pir2-sealed-campaign.sh",
   "scripts/pir2-sealed-campaign.test.mjs",
   "scripts/pir2-sealed-remote/**",
+  "scripts/test-scripts.sh",
   "scripts/vpsbg-production-status.sh",
   "scripts/testdata/**",
   "web/package.json",
@@ -215,7 +216,7 @@ export function validateSupplyChainGateValidatorCoverage(
     `${label} must retain workflow policy validation`,
   );
   for (const command of [
-    "node --test scripts/tier3-uki-policy-contract.test.mjs scripts/vpsbg-data-disk.test.mjs scripts/pir2-sealed-ceremony.test.mjs scripts/pir2-sealed-rollback-set.test.mjs scripts/generate-release-record.test.mjs scripts/pir2-sealed-recovery-receipt.test.mjs scripts/pir2-sealed-campaign.test.mjs",
+    "bash scripts/test-scripts.sh",
     "node scripts/github-workflow-supply-chain-gate.mjs",
   ]) {
     if (!policyStep.run.includes(command)) {
