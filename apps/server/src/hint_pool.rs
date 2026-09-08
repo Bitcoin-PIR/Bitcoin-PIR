@@ -401,6 +401,7 @@ impl HintPool {
         let handle = std::thread::spawn(move || {
             generation_loop(
                 gen_config,
+                bound_db_id,
                 gen_disk_binding,
                 db_params,
                 index_mmap,
@@ -819,8 +820,73 @@ fn finalize_generated_entry(
     }
 }
 
+/// How often the generator prints its aggregate timing summary.
+const GENERATION_TIMING_REPORT_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Aggregate wall-clock timing of hint-set generation, reported once per
+/// interval for capacity planning and pricing (pain point 3 of
+/// docs/history/PIR2_DEPLOYMENT_PAIN_POINTS_2026-09.md). The summary carries
+/// only a count and mean/max seconds per generated entry: no key, no group,
+/// no per-entry line, and it is emitted on the interval boundary from the
+/// generator's idle loop rather than at generation time, so its timestamp
+/// does not mark when a client took a hint set.
+struct GenerationTimingWindow {
+    db_id: u8,
+    interval: Duration,
+    window_started: Instant,
+    count: u64,
+    total: Duration,
+    max: Duration,
+}
+
+impl GenerationTimingWindow {
+    fn new(db_id: u8, interval: Duration, now: Instant) -> Self {
+        Self {
+            db_id,
+            interval,
+            window_started: now,
+            count: 0,
+            total: Duration::ZERO,
+            max: Duration::ZERO,
+        }
+    }
+
+    fn record(&mut self, generation_time: Duration) {
+        self.count += 1;
+        self.total += generation_time;
+        self.max = self.max.max(generation_time);
+    }
+
+    /// The summary line once `interval` has passed, then a fresh window.
+    fn due(&mut self, now: Instant) -> Option<String> {
+        if now.saturating_duration_since(self.window_started) < self.interval {
+            return None;
+        }
+        let mean_secs = if self.count == 0 {
+            0.0
+        } else {
+            self.total.as_secs_f64() / self.count as f64
+        };
+        let line = format!(
+            "[hint-pool db={}] last {}s: generated={} wall_mean_s={:.1} wall_max_s={:.1}",
+            self.db_id,
+            self.interval.as_secs(),
+            self.count,
+            mean_secs,
+            self.max.as_secs_f64(),
+        );
+        self.window_started = now;
+        self.count = 0;
+        self.total = Duration::ZERO;
+        self.max = Duration::ZERO;
+        Some(line)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn generation_loop(
     config: HintPoolConfig,
+    db_id: u8,
     disk_binding: Option<PoolFileBinding>,
     db_params: DbParams,
     index_mmap: Arc<memmap2::Mmap>,
@@ -830,8 +896,15 @@ fn generation_loop(
 ) {
     let index_k = db_params.index_params.k as u32;
     let chunk_k = db_params.chunk_params.k as u32;
+    let mut timing =
+        GenerationTimingWindow::new(db_id, GENERATION_TIMING_REPORT_INTERVAL, Instant::now());
 
     loop {
+        // Aggregate timing summary on the interval boundary (idle or busy),
+        // never on a generation event.
+        if let Some(line) = timing.due(Instant::now()) {
+            println!("{line}");
+        }
         if shutdown.load(Ordering::Acquire) {
             break;
         }
@@ -853,8 +926,7 @@ fn generation_loop(
         };
 
         // Generate one pool entry.
-        #[cfg(feature = "test-only-unsafe-query-logging")]
-        let t0 = Instant::now();
+        let started = Instant::now();
         match generate_pool_entry(
             &config,
             &db_params,
@@ -864,9 +936,10 @@ fn generation_loop(
             chunk_k,
         ) {
             Ok(entry) => {
+                timing.record(started.elapsed());
                 #[cfg(feature = "test-only-unsafe-query-logging")]
                 {
-                    let elapsed = t0.elapsed();
+                    let elapsed = started.elapsed();
                     unsafe_hint_pool_log!(
                         "[hint-pool] Generated entry (prp_key={}..., {} groups) in {:.2?}",
                         hex_prefix(&entry.prp_key),
@@ -3051,6 +3124,36 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         drop(lock_inode());
         lock_inode().finish(Ok(())).unwrap();
+    }
+
+    #[test]
+    fn generation_timing_window_reports_aggregates_on_the_interval_only() {
+        let start = Instant::now();
+        let mut window = GenerationTimingWindow::new(3, Duration::from_secs(60), start);
+        assert_eq!(window.due(start), None);
+        window.record(Duration::from_secs(10));
+        window.record(Duration::from_secs(14));
+        assert_eq!(
+            window.due(start + Duration::from_secs(59)),
+            None,
+            "no line before the interval"
+        );
+        let line = window
+            .due(start + Duration::from_secs(60))
+            .expect("summary on the boundary");
+        assert_eq!(
+            line,
+            "[hint-pool db=3] last 60s: generated=2 wall_mean_s=12.0 wall_max_s=14.0"
+        );
+        // The window resets: an idle interval reports zero, not the old numbers.
+        let idle = window
+            .due(start + Duration::from_secs(120))
+            .expect("summary for the idle interval");
+        assert_eq!(
+            idle,
+            "[hint-pool db=3] last 60s: generated=0 wall_mean_s=0.0 wall_max_s=0.0"
+        );
+        assert_eq!(window.due(start + Duration::from_secs(150)), None);
     }
 
     #[test]

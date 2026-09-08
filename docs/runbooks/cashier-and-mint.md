@@ -52,6 +52,12 @@ secret; `keygen` and `pubkey` print only the public key.
   key or price change is a new image (Flow E/G). An image built before the
   pin answers "session grants not enabled" and the client treats it as the
   free path.
+- Pricing input: each server prints one `[hint-pool db=N] last 3600s:
+  generated=K wall_mean_s=… wall_max_s=…` line per hour (journal of
+  `pir-primary` on pir1; the measured guest's console log on pir2) — the
+  wall seconds per generated hint set for capacity planning and the hint
+  price. It is an aggregate on the hour boundary; no per-entry timing is
+  logged in production builds.
 
 ## Read — health
 
