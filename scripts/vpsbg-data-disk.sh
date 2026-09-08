@@ -15,7 +15,10 @@ usage: scripts/vpsbg-data-disk.sh <open|put|get|ssh|close> [options]
 open detaches measured boot (kernel_image_id=null), then settles the guest
 by readback: a still-measured guest gets a stop request (HTTP 423 is retried,
 not fatal), a stock-but-off guest gets a start (at most 3), and open returns
-once boot_mode=stock and SSH answers. close switches back to the
+once boot_mode=stock and SSH answers. All SSH/SCP steps of a window share one
+connection (ControlMaster socket under VPSBG_SSH_CONTROL_DIR, default
+/tmp/bpir-vpsbg-ssh-<uid>, ControlPersist 600 s); open and close tear it
+down. close switches back to the
 caller-supplied image ID; it never remembers the previous image. put/get/ssh
 refuse to run unless the guest is already stock. There is no provisioner UKI
 path. Mutations default to a dry-run preview unless --apply is set.
@@ -130,28 +133,52 @@ ssh_opts() {
   [[ -r "$known_hosts" && -s "$known_hosts" ]] || { echo "VPSBG known_hosts is missing or empty: $known_hosts" >&2; exit 2; }
 }
 
-ssh_base() {
-  ssh_opts
-  SSH_BASE=(
-    ssh
+# One TCP connection per window. The stock rootfs rate-limits new SSH
+# connections (ufw limit: 6 per 30 s per source), so a scripted window that
+# opened one connection per put/get/ssh step locked itself out. With a
+# ControlMaster socket the first successful probe becomes the master and every
+# later step is a channel on it; the master is torn down at close (the guest
+# reboots) and before open (a stale master must not mask a dead guest).
+ssh_control_dir() {
+  local dir=${VPSBG_SSH_CONTROL_DIR:-/tmp/bpir-vpsbg-ssh-$(id -u)}
+  if [[ ! -d "$dir" ]]; then
+    mkdir -m 700 "$dir" || { echo "cannot create SSH control directory $dir" >&2; exit 2; }
+  fi
+  [[ -O "$dir" ]] || { echo "SSH control directory is not owned by this user: $dir" >&2; exit 2; }
+  chmod 700 "$dir"
+  printf '%s' "$dir"
+}
+
+ssh_common_opts() {
+  local dir; dir=$(ssh_control_dir)
+  SSH_COMMON=(
     -i "$ssh_key"
     -o IdentitiesOnly=yes
     -o UserKnownHostsFile="$known_hosts"
     -o StrictHostKeyChecking=yes
     -o ConnectTimeout=20
+    -o ControlMaster=auto
+    -o ControlPath="$dir/%C"
+    -o ControlPersist=600
   )
+}
+
+ssh_base() {
+  ssh_opts
+  ssh_common_opts
+  SSH_BASE=(ssh "${SSH_COMMON[@]}")
 }
 
 scp_base() {
   ssh_opts
-  SCP_BASE=(
-    scp
-    -i "$ssh_key"
-    -o IdentitiesOnly=yes
-    -o UserKnownHostsFile="$known_hosts"
-    -o StrictHostKeyChecking=yes
-    -o ConnectTimeout=20
-  )
+  ssh_common_opts
+  SCP_BASE=(scp "${SSH_COMMON[@]}")
+}
+
+# Best-effort teardown of a control master for the guest; silent when none.
+ssh_control_exit() {
+  ssh_base
+  "${SSH_BASE[@]}" -o BatchMode=yes -O exit "root@$VPSBG_HOST" >/dev/null 2>&1 || true
 }
 
 require_stock() {
@@ -294,6 +321,7 @@ case "$action" in
       echo "recorded close image $image_id does not match live image $live_image_id" >&2
       exit 2
     fi
+    ssh_control_exit
     if [[ "$live_boot_mode" != stock ]]; then
       echo '[stage] detach measured boot'
       api_post "/servers/$server_id/measured-boot" '{"kernel_image_id":null}' >/dev/null
@@ -314,6 +342,8 @@ case "$action" in
       echo 'NEXT_STEP=rerun with --apply to switch this exact image'
       exit 0
     fi
+    echo '[stage] close SSH control master'
+    ssh_control_exit
     echo '[stage] switch measured-boot image'
     "$root/scripts/vpsbg-measured-boot.sh" switch --server-id "$server_id" --image-id "$image_id" --apply
     echo 'PASS action=close'

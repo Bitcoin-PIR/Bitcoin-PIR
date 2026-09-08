@@ -212,7 +212,12 @@ A data/proof-only rotation does not need a new UKI (Flow H).
 
 Use [`scripts/vpsbg-data-disk.sh`](../scripts/vpsbg-data-disk.sh).
 Never build a provisioner UKI. Detach body is
-`{"kernel_image_id":null}`. SSH only when `boot_mode=stock`.
+`{"kernel_image_id":null}`. SSH only when `boot_mode=stock`. The stock
+rootfs rate-limits new SSH connections (6 per 30 s per source); the wrapper
+therefore multiplexes every `put`/`get`/`ssh` of a window over one
+ControlMaster connection (socket under `VPSBG_SSH_CONTROL_DIR`, default
+`/tmp/bpir-vpsbg-ssh-<uid>`), torn down by `open` and `close`. Do not add
+your own `ssh`/`scp` calls beside it during a window.
 
 1. Read — Flow A. The `--image-id` passed to `open` and `close` is
    the UKI to reattach, usually the current live image.
