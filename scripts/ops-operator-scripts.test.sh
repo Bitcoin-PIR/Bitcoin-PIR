@@ -83,6 +83,13 @@ grep -qx 'PASS action=status dry_run=true' <<<"$status_token_preview"
 expect_fail 'status still rejects --image-id' \
   "$script_dir/vpsbg-measured-boot.sh" status --image-id 291 --dry-run
 check_preview=$("$script_dir/pir2-post-switch-check.sh" --dry-run)
+# Without --server-id the status arguments are an empty array; bash 3.2 under
+# set -u rejects "${status_args[@]}", so the script must use the guarded form
+# (docs/history/PIR2_DEPLOYMENT_PAIN_POINTS_2026-09.md #2).
+grep -q 'status_args\[@\]+"\${status_args\[@\]}"' "$script_dir/pir2-post-switch-check.sh" \
+  || { echo 'pir2-post-switch-check.sh must expand status_args with the empty-safe form' >&2; exit 1; }
+grep -q '"\${status_args\[@\]}"' <(grep -v 'status_args\[@\]+' "$script_dir/pir2-post-switch-check.sh") \
+  && { echo 'pir2-post-switch-check.sh still has an unguarded status_args expansion' >&2; exit 1; }
 grep -qx "pin_source=$repo/web/src/attest-pin.ts" <<<"$check_preview"
 grep -qx 'PASS action=post_switch_check dry_run=true' <<<"$check_preview"
 
