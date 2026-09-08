@@ -91,7 +91,9 @@ test("build --dry-run plans the whole first window in order without touching the
   assert.doesNotMatch(r.stderr, /NETWORK TOOL INVOKED/);
   const p = plans(r).join("\n");
   const order = [
-    /git -C .* bundle create .*source-r7-test\.bundle 6a407bdb/,
+    /git -C .* update-ref refs\/heads\/bpir-campaign-r7-test 6a407bdb/,
+    /git -C .* bundle create .*source-r7-test\.bundle refs\/heads\/bpir-campaign-r7-test/,
+    /git -C .* update-ref -d refs\/heads\/bpir-campaign-r7-test/,
     /vpsbg-data-disk\.sh open --server-id 25285 --image-id 305 --apply/,
     /pir2-sealed-rollback-set\.sh preserve --label image305-test/,
     /prep-inputs\.sh/, /build-runtime\.sh/, /build-uki\.sh/,

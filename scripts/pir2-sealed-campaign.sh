@@ -154,7 +154,13 @@ build)
   ((dry_run)) || mkdir -p "$UKI_LOCAL_DIR"
   bundle=$EVIDENCE_DIR/source-$TAG.bundle
   stage "source bundle for $REV"
-  run git -C "$REPO" bundle create "$bundle" "$REV"
+  # `git bundle create` refuses a bare commit id ("empty bundle"): it records
+  # refs. A temporary branch pointing at REV makes the bundle clonable on the
+  # build host, where build-runtime.sh checks out REV by id.
+  bundle_ref=refs/heads/bpir-campaign-$TAG
+  run git -C "$REPO" update-ref "$bundle_ref" "$REV"
+  run git -C "$REPO" bundle create "$bundle" "$bundle_ref"
+  run git -C "$REPO" update-ref -d "$bundle_ref"
   open_window "$ROLLBACK_IMAGE"
   stage "preserve the rollback set $ROLLBACK_LABEL (previous image's credentials + Ready startup)"
   put "$REPO/scripts/pir2-sealed-rollback-set.sh" "$BUILD_ROOT/pir2-sealed-rollback-set.sh"
