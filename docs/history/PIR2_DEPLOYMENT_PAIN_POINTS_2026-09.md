@@ -24,6 +24,11 @@ Each item: what hurt, evidence, proposed cleanup.
 3. Hint-pool generation timing is compiled out in production
    (`test-only-unsafe-query-logging`); capacity planning needed /proc CPU sampling.
    Fix: a non-sensitive duration counter (no keys, no query data) in the info log.
+   **Fixed:** the generator keeps an aggregate window (count, mean, max wall seconds per
+   generated hint set) and prints one `[hint-pool db=N] last 3600s: …` line per hour
+   from its idle loop on the interval boundary — never on a generation event, never a
+   key or group, so the production log audit test still holds. Effective from the next
+   pir1 rebuild / pir2 image.
 4. Ready receipts are retrievable only through a later Flow F window, which costs a
    full ORAM rebuild (Ready N → window → Ready N+1). Fix: let Ready publish the two
    receipts through the bounded recovery root like Observe/Enroll/Probe do, or copy
