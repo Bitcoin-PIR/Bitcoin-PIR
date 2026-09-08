@@ -18,6 +18,9 @@ Each item: what hurt, evidence, proposed cleanup.
    offline simulation of the race in `scripts/vpsbg-data-disk.test.mjs`.
 2. `scripts/pir2-post-switch-check.sh`: `status_args[@]: unbound variable` when no
    `--server-id` is given (noted in the epoch-5 handoff, still unfixed).
+   **Fixed:** the empty array is expanded with the `${status_args[@]+"${status_args[@]}"}`
+   form (bash 3.2 under `set -u`); `scripts/ops-operator-scripts.test.sh` checks that no
+   unguarded expansion comes back.
 3. Hint-pool generation timing is compiled out in production
    (`test-only-unsafe-query-logging`); capacity planning needed /proc CPU sampling.
    Fix: a non-sensitive duration counter (no keys, no query data) in the info log.

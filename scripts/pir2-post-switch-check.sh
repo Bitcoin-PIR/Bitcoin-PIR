@@ -80,7 +80,7 @@ if ((dry_run)); then
   exit 0
 fi
 
-status_args=()
+status_args=()  # expanded as ${status_args[@]+"${status_args[@]}"}: empty is valid under set -u on bash 3.2
 [[ -z "$server_id" ]] || status_args+=(--server-id "$server_id")
 [[ -z "$status_url" ]] || status_args+=(--status-url "$status_url")
 
@@ -97,7 +97,7 @@ while :; do
     echo "hard stop: pir2 did not reach boot_mode=measured and running=true in ${HARD_STOP_SECONDS}s" >&2
     exit 1
   fi
-  snapshot=$("$root/scripts/vpsbg-production-status.sh" "${status_args[@]}")
+  snapshot=$("$root/scripts/vpsbg-production-status.sh" ${status_args[@]+"${status_args[@]}"})
   boot_mode=$(status_field boot_mode <<<"$snapshot")
   running=$(status_field control_plane_running <<<"$snapshot")
   image_id=$(status_field image_id <<<"$snapshot")
