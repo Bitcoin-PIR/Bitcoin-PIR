@@ -65,7 +65,7 @@ done < "$env_file"
 : "${OPERATOR_KEY:=$REPO/.keys/pir2-operator.key}"; : "${STABLE_SERVER_ID:=pir2-vpsbg-dpf-v1}"
 : "${VCPUS:=4}"; : "${VCPU_SIG_HEX:=00b10f10}"; : "${VMM_TYPE:=qemu}"; : "${GUEST_FEATURES_HEX:=1}"; : "${GUEST_POLICY_HEX:=30000}"
 : "${MIN_TCB_FMC:=1}"; : "${MIN_TCB_BOOTLOADER:=1}"; : "${MIN_TCB_TEE:=1}"; : "${MIN_TCB_SNP:=4}"; : "${MIN_TCB_MICROCODE:=88}"
-: "${SSH_PACE_SECONDS:=8}"; : "${READY_WAIT_SECONDS:=2400}"
+: "${SSH_PACE_SECONDS:=2}"; : "${READY_WAIT_SECONDS:=2400}"  # ssh/scp share one ControlMaster connection per window
 : "${TAG:=}"; : "${UKI_LOCAL_DIR:=$REPO/deploy/uki/$TAG}"; : "${HETZNER_ARCHIVE:=}"; : "${IMAGE:=}"; : "${ROLLBACK_LABEL:=}"
 
 need() { local k; for k in "$@"; do [[ -n "${!k:-}" ]] || { echo "env: $k is required for $action" >&2; exit 2; }; done; }

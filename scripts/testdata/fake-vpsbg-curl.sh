@@ -24,9 +24,14 @@ echo "$url ${data:+POST}" >> "$S/log"
 case "$url" in
   *status.json*) echo "curl: (22) The requested URL returned error: 502" >&2; exit 22 ;;
   */servers/25285/measured-boot)
-    # The detach changes the boot config at once (status reads stock) while
-    # the guest keeps running the old kernel until a power cycle.
-    echo stock > "$S/mode"; echo true > "$S/running"; echo 1 > "$S/detached"; reply 200 '{}' ;;
+    if [[ "$data" == *'"kernel_image_id":null'* ]]; then
+      # The detach changes the boot config at once (status reads stock) while
+      # the guest keeps running the old kernel until a power cycle.
+      echo stock > "$S/mode"; echo true > "$S/running"; echo 1 > "$S/detached"; reply 200 '{"id":25285}'
+    else
+      # A switch (close) reattaches an image and reboots the guest into it.
+      echo measured > "$S/mode"; echo true > "$S/running"; echo 0 > "$S/ssh"; reply 200 '{"id":25285}'
+    fi ;;
   */servers/25285/stop)
     code=$(rd stop_http)
     if [[ "$code" == 423-always ]]; then reply 423 '{}'; fi

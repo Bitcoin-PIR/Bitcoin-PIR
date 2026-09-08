@@ -22,7 +22,7 @@ const wrapper = resolve(repository, "scripts/vpsbg-data-disk.sh");
 //   stop_http  status code the next POST /stop answers (423 or 200)
 //   log        appended request lines for assertions
 
-function runOpen(initial) {
+function harness(initial) {
   const dir = mkdtempSync(join(tmpdir(), "vpsbg-open-"));
   const bin = join(dir, "bin"); mkdirSync(bin);
   const state = join(dir, "state"); mkdirSync(state);
@@ -33,15 +33,20 @@ function runOpen(initial) {
   const token = join(dir, "token"); writeFileSync(token, "fake-token\n");
   const key = join(dir, "key"); writeFileSync(key, "fake-key\n");
   const hosts = join(dir, "known_hosts"); writeFileSync(hosts, "fake-hosts\n");
-  const result = spawnSync("bash", [wrapper, "open", "--server-id", "25285", "--image-id", "303", "--apply",
-    "--token-file", token, "--ssh-key", key, "--known-hosts", hosts], {
-    env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_VPSBG_STATE: state,
-      VPSBG_API_TOKEN_FILE: token, VPSBG_DATA_DISK_POLL_SECONDS: "0", VPSBG_DATA_DISK_HARD_STOP_SECONDS: "20",
-      VPSBG_DATA_DISK_START_COOLDOWN_SECONDS: "0", VPSBG_DATA_DISK_STALL_SECONDS: "2" },
-    encoding: "utf8", timeout: 60_000,
-  });
-  return { ...result, log: readFileSync(join(state, "log"), "utf8") };
+  const control = join(dir, "cm"); mkdirSync(control, { mode: 0o700 });
+  const run = (action) => {
+    const result = spawnSync("bash", [wrapper, action, "--server-id", "25285", "--image-id", "303", "--apply",
+      "--token-file", token, "--ssh-key", key, "--known-hosts", hosts], {
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_VPSBG_STATE: state,
+        VPSBG_API_TOKEN_FILE: token, VPSBG_SSH_CONTROL_DIR: control, VPSBG_DATA_DISK_POLL_SECONDS: "0",
+        VPSBG_DATA_DISK_HARD_STOP_SECONDS: "20", VPSBG_DATA_DISK_START_COOLDOWN_SECONDS: "0", VPSBG_DATA_DISK_STALL_SECONDS: "2" },
+      encoding: "utf8", timeout: 60_000,
+    });
+    return { ...result, log: readFileSync(join(state, "log"), "utf8"), control };
+  };
+  return { run };
 }
+const runOpen = (initial) => harness(initial).run("open");
 
 test("open survives the detach/stop race: 423 on stop, delayed stop lands, one start, then SSH", () => {
   // Detach flips the guest to stock+running immediately; the stop answers 423;
@@ -52,6 +57,30 @@ test("open survives the detach/stop race: 423 on stop, delayed stop lands, one s
   assert.match(r.stdout, /PASS action=open/);
   assert.equal((r.log.match(/\/servers\/25285\/start POST/g) || []).length, 1, r.log);
   assert.equal((r.log.match(/\/servers\/25285\/measured-boot POST/g) || []).length, 1, r.log);
+  // One connection per window: every ssh carries the ControlMaster options, and a stale
+  // master is torn down before the detach so it can never mask a dead guest.
+  const sshLines = r.log.split("\n").filter((l) => l.startsWith("ssh "));
+  assert.ok(sshLines.length >= 2, r.log);
+  for (const l of sshLines) {
+    assert.match(l, /-o ControlMaster=auto/);
+    assert.match(l, new RegExp(`-o ControlPath=${r.control.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/%C`));
+    assert.match(l, /-o ControlPersist=600/);
+  }
+  assert.match(sshLines[0], /-O exit root@/);
+  assert.ok(r.log.indexOf("-O exit") < r.log.indexOf("/servers/25285/measured-boot POST"), "teardown precedes the detach");
+});
+
+test("close tears the control master down, then switches the recorded image", () => {
+  const h = harness({ mode: "stock", running: "true", ssh: "1", stop_http: "200", script: "" });
+  const r = h.run("close");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^\[stage\] close SSH control master$/m);
+  assert.match(r.stdout, /^PASS action=switch server_id=25285 image_id=303$/m);
+  assert.match(r.stdout, /^PASS action=close$/m);
+  const sshLines = r.log.split("\n").filter((l) => l.startsWith("ssh "));
+  assert.equal(sshLines.length, 1, r.log);
+  assert.match(sshLines[0], /-o ControlMaster=auto .*-O exit root@/);
+  assert.ok(r.log.indexOf("-O exit") < r.log.indexOf("/servers/25285/measured-boot POST"), "teardown precedes the switch");
 });
 
 test("open stops a guest that stays on the old kernel: stall → stop (423 retried) → off → start → SSH", () => {

@@ -33,6 +33,10 @@ Each item: what hurt, evidence, proposed cleanup.
 5. UFW rate-limits SSH (6 conns/30 s); scripted campaigns that open one ssh per step
    get locked out. Fix: document; batch steps per session; consider a control
    socket (`ControlMaster`) in the wrapper.
+   **Fixed:** `scripts/vpsbg-data-disk.sh` multiplexes every ssh/scp of a window over a
+   ControlMaster socket (`ControlPersist=600`, private control directory), torn down
+   by `open` and `close` (tested in `scripts/vpsbg-data-disk.test.mjs`); the r7
+   campaign's per-step pacing is now a courtesy, not the mechanism.
 6. `cargo fmt --all` reformats `unified_server_pir2_sealed/mod.rs` on main (file is not
    rustfmt-clean); every PR touching the server has to revert it. Fix: format it once.
 7. Contract test regexes match comments (`--require-session-grant` mention failed the
