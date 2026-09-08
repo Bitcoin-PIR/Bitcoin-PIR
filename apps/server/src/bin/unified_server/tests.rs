@@ -2118,3 +2118,61 @@ mod session_grant_gate {
         }
     }
 }
+
+mod cli_informational_tests {
+    //! `--help`/`--version` are answered before the parser runs, and the
+    //! usage text must name every flag the parser accepts.
+    use super::*;
+
+    fn argv(items: &[&str]) -> Vec<String> {
+        std::iter::once("unified_server")
+            .chain(items.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn usage_names_every_flag_the_parser_accepts() {
+        let source = include_str!("cli.rs");
+        let mut missing = Vec::new();
+        for (i, _) in source.match_indices("\"--") {
+            let rest = &source[i + 1..];
+            let end = rest.find('"').expect("closing quote");
+            let flag = &rest[..end];
+            let is_match_arm = rest[end + 1..].trim_start().starts_with("=>")
+                || rest[end + 1..].trim_start().starts_with('|');
+            if is_match_arm && !USAGE_V1.contains(flag) {
+                missing.push(flag.to_owned());
+            }
+        }
+        missing.sort();
+        missing.dedup();
+        assert!(
+            missing.is_empty(),
+            "flags missing from USAGE_V1: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn help_and_version_are_answered_only_as_the_sole_argument() {
+        let help = informational_argument_v1(&argv(&["--help"])).expect("--help");
+        assert!(help.contains("--serve-queries") && help.contains("--pir2-snp-sealed-release"));
+        assert_eq!(
+            informational_argument_v1(&argv(&["-h"])),
+            Some(USAGE_V1.to_owned())
+        );
+        let version = informational_argument_v1(&argv(&["--version"])).expect("--version");
+        assert!(version.starts_with("unified_server "));
+        assert!(version.contains(" git_rev=") && version.contains(" binary_sha256="));
+        assert_eq!(
+            informational_argument_v1(&argv(&["-V"])),
+            Some(version_line_v1())
+        );
+        assert_eq!(informational_argument_v1(&argv(&[])), None);
+        assert_eq!(informational_argument_v1(&argv(&["--port", "8091"])), None);
+        assert_eq!(
+            informational_argument_v1(&argv(&["--help", "--port"])),
+            None
+        );
+    }
+}

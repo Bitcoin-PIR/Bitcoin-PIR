@@ -302,6 +302,83 @@ pub(crate) fn fatal_cli(msg: impl AsRef<str>) -> ! {
     std::process::exit(2);
 }
 
+/// Flag reference printed by `--help`. Every `"--flag"` literal the parser
+/// accepts must appear here (enforced by a unit test), so the text cannot
+/// drift from the parser. Production values come from the reviewed run
+/// scripts and unit files, never from this text.
+pub(crate) const USAGE_V1: &str = "\
+unified_server - BitcoinPIR unified PIR server (DPF, OnionPIR, HarmonyPIR, Direct/Cuckoo ORAM)
+
+usage: unified_server [FLAGS]           production flags come from the reviewed run
+                                        scripts and unit files (docs/PRODUCTION_OPERATIONS.md)
+       unified_server --help | -h       print this text and exit
+       unified_server --version | -V    print crate version, git revision, binary sha256
+
+listener:      --bind-address ADDR  --port N  --role primary|secondary  --serve-hints
+               --serve-queries  --max-connections N  --connection-idle-timeout-ms MS
+               --websocket-handshake-timeout-ms MS
+databases:     --config databases.toml | --data-dir DIR  --checkpoint DIR HEIGHT
+               --delta DIR BASE TIP  --disable-onion
+attestation:   --vcek-dir DIR  --identity-key-path FILE  --identity-cert-path FILE
+               --identity-server-id ID
+admin:         --admin-pubkey-hex HEX
+session grants: --session-grant-pubkey FILE  --session-grant-hint-credits N
+               --require-session-grant
+hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
+direct oram:   --direct-oram-db ID=DIR  --direct-oram-dir DIR  --direct-oram-trusted-state-db ID=DIR
+               --direct-oram-drain-per-access N  --direct-oram-access-budget N
+               --direct-oram-cache-levels N  --direct-oram-encrypted  --direct-oram-key-hex HEX
+               --direct-oram-state-key-hex HEX  --direct-oram-auth-store  --direct-oram-no-save
+               --allow-direct-oram-trusted-state-outside-run-dev
+cuckoo oram:   --cuckoo-oram-db ID=DIR  --cuckoo-oram-dir DIR  --cuckoo-oram-drain-per-access N
+               --cuckoo-oram-cache-levels N  --cuckoo-oram-encrypted  --cuckoo-oram-key-hex HEX
+               --cuckoo-oram-state-key-hex HEX  --cuckoo-oram-auth-store  --cuckoo-oram-no-save
+               --cuckoo-oram-pack
+harmony oram:  --harmony-oram-db ID=DIR  --harmony-oram-dir DIR  --harmony-oram-drain-per-access N
+               --harmony-oram-cache-levels N  --harmony-oram-encrypted  --harmony-oram-key-hex HEX
+               --harmony-oram-state-key-hex HEX  --harmony-oram-auth-store  --harmony-oram-no-save
+               --harmony-oram-pack
+pir2 sealed:   --pir2-snp-sealed-release FILE  --pir2-snp-sealed-envelope FILE
+               --pir2-snp-sealed-receipt FILE  --pir2-snp-sealed-marker FILE
+               --pir2-snp-sealed-phase observe|enroll|probe|ready  --pir2-snp-sealed-ordinal N
+               --pir2-snp-sealed-verifier-nonce-hex HEX  --pir2-snp-sealed-current-boot-id-hex HEX
+               --pir2-snp-sealed-current-channel-pubkey-hex HEX  --pir2-snp-sealed-identity-cert FILE
+               --pir2-snp-sealed-preflight-only  --pir2-snp-sealed-require-ready
+development:   --unsafe-debug-query-logging (test-only-unsafe-query-logging builds only)
+";
+
+/// `--help`/`-h` and `--version`/`-V` as the only argument print and exit 0
+/// before anything else runs; any other argument list goes to the parser,
+/// which still rejects unknown flags. Returns the text to print.
+pub(crate) fn informational_argument_v1(args: &[String]) -> Option<String> {
+    if args.len() != 2 {
+        return None;
+    }
+    match args[1].as_str() {
+        "--help" | "-h" => Some(USAGE_V1.to_owned()),
+        "--version" | "-V" => Some(version_line_v1()),
+        _ => None,
+    }
+}
+
+/// One line: crate version, the git revision baked at build time, and the
+/// sha256 of the running executable (what the client pins), for install
+/// sanity checks.
+pub(crate) fn version_line_v1() -> String {
+    let digest = pir_runtime_core::attest::self_exe_sha256();
+    let binary = if digest == [0u8; 32] {
+        "unavailable".to_owned()
+    } else {
+        hex::encode(digest)
+    };
+    format!(
+        "unified_server {} git_rev={} binary_sha256={}\n",
+        env!("CARGO_PKG_VERSION"),
+        pir_runtime_core::attest::GIT_REV,
+        binary
+    )
+}
+
 pub(crate) fn parse_args() -> CliArgs {
     parse_args_from(std::env::args().collect())
 }

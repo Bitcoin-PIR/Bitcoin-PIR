@@ -62,6 +62,10 @@ Each item: what hurt, evidence, proposed cleanup.
    offline test of every plan; the runbook's "Campaign" section documents the env file.
 10. `unified_server` rejects `--help` (breaks install sanity checks); add `--help`/
     `--version`.
+    **Fixed:** `--help`/`-h` prints a flag reference that a unit test keeps in sync with
+    the parser; `--version`/`-V` prints crate version, git revision, and binary sha256;
+    both exit 0 as the sole argument and never start a server (integration test
+    `apps/server/tests/unified_server_cli.rs`, run by the runtime CI lane).
 11. `scripts/pir2-sealed-ceremony.sh` runs `cargo run --locked --offline -p bpir-admin`
     (debug profile) for `release`/`receipt`; after any runtime change the first call
     recompiles for >10 min in the middle of a ceremony window (observed 2026-09-07).
