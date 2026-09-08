@@ -98,6 +98,16 @@ two Probes → Ready → receipts accepted) took 34 minutes and five data-disk w
 the Ready receipts came back over `REQ_PIR2_SEALED_RECEIPT_GET` 60 s after the live
 attestation passed, so no Ready N+1 boot was needed. Two smaller items remain:
 
+## Observed in the r8 campaign (image 309, 2026-09-08)
+
+First release run entirely through `scripts/pir2-sealed-campaign.sh`
+(`plan` → `build` → `enroll` → `probe 63 --with-cert` → `probe 64` → `ready`):
+30 minutes from the first window to accepted Ready receipts, one SSH connection
+per window, rollback set preserved and checked by the script, release record
+drafted from the live attestation. One defect surfaced on first live use and was
+fixed the same hour (#317): `git bundle create` refuses a bare commit id, so the
+release commit is now bundled through a temporary branch ref.
+
 13. `remote-prep-enroll` (the rollback-preserving step before Enroll) copies whatever
     `startup.env` is current, which by then is the new image's Observe file; the
     previous image's Ready startup survives only as the `.bak` taken in the build
