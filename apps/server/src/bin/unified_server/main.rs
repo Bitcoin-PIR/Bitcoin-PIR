@@ -6,10 +6,9 @@
 //!
 //! Uses pir-core's MappedDatabase for table loading instead of legacy CuckooTablePair.
 //!
-//! Usage:
-//!   unified_server --port 8091 [--data-dir /path/to/checkpoint] [--role primary|secondary]
-//!     [--checkpoint /path/to/checkpoint <height>]...
-//!     [--delta /path/to/delta <base_height> <tip_height>]...
+//! Usage: `unified_server --help` prints the flag reference (`cli::USAGE_V1`);
+//! `unified_server --version` prints the crate version, git revision, and
+//! binary sha256. Production flags come from the reviewed run scripts.
 
 mod cli;
 mod dispatch;
@@ -59,6 +58,10 @@ use std::sync::atomic::Ordering;
 
 #[tokio::main]
 async fn main() {
+    if let Some(text) = informational_argument_v1(&std::env::args().collect::<Vec<_>>()) {
+        print!("{text}");
+        return;
+    }
     let args = parse_args();
     #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
     {

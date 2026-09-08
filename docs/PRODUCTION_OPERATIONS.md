@@ -169,6 +169,9 @@ contains a stale single-host caveat — ignore that; pir2 is VPSBG.
 2. Auth — on the host, fast-forward the reviewed commit, build the
    same command, restart `pir-primary`. Restart `cloudflared` only if
    the tunnel itself is broken. Build 2–5 min, hard stop 15 min.
+   `unified_server --version` prints the crate version, git revision,
+   and binary sha256 of an installed binary without starting a server;
+   `--help` prints the flag reference.
 3. Read — `scripts/production-status.sh` and confirm `:8091` /
    `pir-primary` are active. Do not treat `pir-secondary` as the
    public peer. This step is systemd/SSH health only; it does not
