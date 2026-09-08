@@ -22,7 +22,15 @@ const runPath = resolve(
 // payment change never forces a new measurement or sealed ceremony.
 const PAYMENT_RESIDUE = /BPIR_TIER3_SERVICE_POLICY|service-policy|service_policy|public-artifact-set|accounting-authorization|issuer-approval|class_digest|minimum_authorization_epoch/;
 
+// Negative checks run on the code only: a shell comment that merely mentions a
+// retired flag or artifact must not fail the contract, and a real line must
+// (pain point 7). Positive checks keep the full source.
+function withoutComments(source) {
+  return source.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+}
+
 function validateBuildContract(source) {
+  const code = withoutComments(source);
   // The baked cloudflared is inside MEASUREMENT: the build must pin the exact
   // official release by version and SHA-256 rather than take whatever the
   // build host has installed.
@@ -34,7 +42,7 @@ function validateBuildContract(source) {
     source,
     /error: \$input_name must be set explicitly for a production Tier 3 UKI/,
   );
-  assert.doesNotMatch(source, PAYMENT_RESIDUE);
+  assert.doesNotMatch(code, PAYMENT_RESIDUE);
   assert.match(source, /etc\/bitcoinpir\/payment\//);
   assert.match(source, /payment artifacts must not be embedded in the Tier 3 UKI/);
   assert.match(source, /TIER3_INITRD_COMPRESSION=zstd/);
@@ -57,7 +65,7 @@ function validateBuildContract(source) {
   assert.match(source, /"initrd_compression=\$TIER3_INITRD_COMPRESSION"/);
   assert.match(source, /"dracut_version=\$DRACUT_VERSION"/);
   assert.match(source, /"ukify_version=\$UKIFY_VERSION"/);
-  assert.doesNotMatch(source, /BPIR_TIER3_IDENTITY_KEY/);
+  assert.doesNotMatch(code, /BPIR_TIER3_IDENTITY_KEY/);
   assert.match(
     source,
     /private identity key must not be embedded in the Tier 3 UKI/,
@@ -65,21 +73,23 @@ function validateBuildContract(source) {
 }
 
 function validateDracutModuleContract(source) {
-  assert.doesNotMatch(source, PAYMENT_RESIDUE);
-  assert.doesNotMatch(source, /inst_dir \/etc\/bitcoinpir\/payment/);
-  assert.doesNotMatch(source, /BPIR_TIER3_IDENTITY_KEY/);
-  assert.doesNotMatch(source, /server\.key/);
+  const code = withoutComments(source);
+  assert.doesNotMatch(code, PAYMENT_RESIDUE);
+  assert.doesNotMatch(code, /inst_dir \/etc\/bitcoinpir\/payment/);
+  assert.doesNotMatch(code, /BPIR_TIER3_IDENTITY_KEY/);
+  assert.doesNotMatch(code, /server\.key/);
 }
 
 function validateMeasuredRunContract(source) {
+  const code = withoutComments(source);
   assert.match(source, /UNIFIED_SERVER=\/usr\/local\/bin\/unified_server/);
   assert.match(source, /ORAMCTL=\/usr\/local\/bin\/oramctl/);
-  assert.doesNotMatch(source, /target\/release\/unified_server/);
-  assert.doesNotMatch(source, /target\/release\/oramctl/);
-  assert.doesNotMatch(source, /--identity-key-path/);
-  assert.doesNotMatch(source, /server\.key/);
-  assert.doesNotMatch(source, /--service-|--require-service-auth-v1/);
-  assert.doesNotMatch(source, PAYMENT_RESIDUE);
+  assert.doesNotMatch(code, /target\/release\/unified_server/);
+  assert.doesNotMatch(code, /target\/release\/oramctl/);
+  assert.doesNotMatch(code, /--identity-key-path/);
+  assert.doesNotMatch(code, /server\.key/);
+  assert.doesNotMatch(code, /--service-|--require-service-auth-v1/);
+  assert.doesNotMatch(code, PAYMENT_RESIDUE);
   assert.match(source, /--pir2-snp-sealed-envelope/);
   assert.match(source, /--pir2-snp-sealed-identity-cert/);
 }
@@ -157,5 +167,16 @@ test("runtime UKI pins the cashier key and the hint-set price, never --require-s
   assert.match(source, /--session-grant-pubkey "\$PIR2_SESSION_GRANT_PUBKEY_FILE"/);
   assert.match(source, /--session-grant-hint-credits "\$PIR2_SESSION_GRANT_HINT_CREDITS"/);
   // A flag line, not a mention: the free path is closed by an operator, not by the image.
-  assert.doesNotMatch(source, /^\s*--require-session-grant\b/m);
+  assert.doesNotMatch(withoutComments(source), /^\s*--require-session-grant\b/m);
+});
+
+test("a comment mentioning a retired flag or artifact does not fail any contract, a real line does", () => {
+  const mention = "\n# historical note: --require-session-grant, server.key, BPIR_TIER3_SERVICE_POLICY, target/release/unified_server\n";
+  validateBuildContract(readFileSync(buildPath, "utf8") + mention);
+  validateDracutModuleContract(readFileSync(modulePath, "utf8") + mention);
+  validateMeasuredRunContract(readFileSync(runPath, "utf8") + mention);
+  assert.throws(() => validateMeasuredRunContract(`${readFileSync(runPath, "utf8")}\n    --identity-key-path /home/pir/data/server.key \\\n`));
+  assert.throws(() => validateMeasuredRunContract(`${readFileSync(runPath, "utf8")}\nUNIFIED_SERVER=target/release/unified_server\n`));
+  assert.throws(() => validateDracutModuleContract(`${readFileSync(modulePath, "utf8")}\ninst_simple /etc/bitcoinpir/server.key\n`));
+  assert.throws(() => validateBuildContract(`${readFileSync(buildPath, "utf8")}\nBPIR_TIER3_SERVICE_POLICY=/tmp/policy.bin\n`));
 });
