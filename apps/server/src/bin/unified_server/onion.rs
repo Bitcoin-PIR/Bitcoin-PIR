@@ -239,6 +239,11 @@ pub(crate) struct OnionPirInfo {
     /// placements with the server's seed instead of a hardcoded const.
     pub(crate) index_master_seed: u64,
     pub(crate) chunk_master_seed: u64,
+    /// Bytes of NTT-form INDEX data (`onion_index_all.bin`) and of the
+    /// shared CHUNK NTT store; what an INDEX / CHUNK query streams through,
+    /// hence what its gas is proportional to (docs/CREDITS.md).
+    pub(crate) index_ntt_bytes: u64,
+    pub(crate) chunk_ntt_bytes: u64,
 }
 
 #[allow(clippy::type_complexity)]
@@ -395,6 +400,10 @@ pub(crate) fn setup_onionpir_workers(
                 index_slot_size: im.slot_size as u8,
                 index_master_seed: im.master_seed,
                 chunk_master_seed: ch.master_seed,
+                index_ntt_bytes: std::fs::metadata(db_dir.join(ONION_INDEX_ALL_FILE))
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+                chunk_ntt_bytes: std::fs::metadata(&ntt_path).map(|m| m.len()).unwrap_or(0),
             });
 
             // Parse chunk cuckoo tables. ch.data_offset accounts for the v2

@@ -115,7 +115,9 @@ pub(crate) async fn serve_connections(
                 }
             };
             unsafe_debug_log!("[{}] Connected (id={})", peer, client_id);
-            let (mut sink, mut ws_stream) = ws.split();
+            let (sink, mut ws_stream) = ws.split();
+            // Response bytes are counted per request for the gas meter.
+            let mut sink = crate::credit_meter::CountingSink::new(sink);
 
             // Per-connection admin auth state. Lives until the connection
             // drops; disconnecting is logging out.
@@ -397,6 +399,12 @@ pub(crate) async fn serve_connections(
                     }
                 }
 
+                // Gas meter: classify the frame (decoding it once more is
+                // negligible next to its work), time the dispatch in process
+                // CPU and wall time, and attribute the response bytes.
+                let metered_op = crate::credit_meter::metered_op_for_frame(variant, payload);
+                let in_flight = server.credit_meter.begin();
+                let egress_before = sink.bytes_sent();
                 crate::dispatch::handle_variant(
                     payload,
                     &mut sink,
@@ -411,6 +419,12 @@ pub(crate) async fn serve_connections(
                     client_supports_chunks,
                 )
                 .await;
+                server.credit_meter.finish(
+                    in_flight,
+                    variant,
+                    metered_op,
+                    sink.bytes_sent().saturating_sub(egress_before),
+                );
             }
 
             unsafe_debug_log!("[{}] Disconnected (id={})", peer, client_id);

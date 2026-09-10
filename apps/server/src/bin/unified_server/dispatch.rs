@@ -113,6 +113,26 @@ pub(crate) async fn handle_variant<S>(
                         };
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
+                    REQ_CREDIT_PRESENT => {
+                        // Wire format: [1B variant=0x12][kind][len u32][payload]
+                        // (docs/CREDITS.md). Bearer material: encrypted channel only.
+                        let resp = if !request_was_encrypted {
+                            Response::Error(
+                                "REQ_CREDIT_PRESENT must be sent inside the encrypted channel".into(),
+                            )
+                        } else {
+                            match Request::decode(payload) {
+                                Ok(Request::CreditPresent { .. }) => Response::Error(
+                                    "credits not enabled on this server (no issuer configured)".into(),
+                                ),
+                                Ok(_) => Response::Error("malformed REQ_CREDIT_PRESENT".into()),
+                                Err(error) => {
+                                    Response::Error(format!("malformed REQ_CREDIT_PRESENT: {error}"))
+                                }
+                            }
+                        };
+                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
+                    }
                     REQ_ADMIN_AUTH_CHALLENGE => {
                         match server.admin_config {
                             None => {

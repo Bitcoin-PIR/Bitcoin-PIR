@@ -1682,6 +1682,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "pir-credit"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "pir-db-attest"
 version = "0.1.0"
 dependencies = [
@@ -2165,6 +2173,7 @@ dependencies = [
  "memmap2",
  "onionpir",
  "pir-core",
+ "pir-credit",
  "pir-db-attest",
  "pir-identity",
  "pir-private-files",

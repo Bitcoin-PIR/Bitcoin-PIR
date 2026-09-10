@@ -19,7 +19,11 @@ script's status subcommand for the rest.
 
 ## Technical references
 
-- Paid queries present a cashier-signed session grant on opcode `0x0b`;
+- Paid queries are moving to gas-priced credits verified at the issuer:
+  [Credits and gas](CREDITS.md) is the design, the rate card, the
+  measurements behind it, and the issuer contract; `pir-credit` holds the
+  model. Until every client presents credits, paid queries present a
+  cashier-signed session grant on opcode `0x0b`;
   the design, metering rule, and server flags are in
   [Session grants](SESSION_GRANTS.md); the cashier's HTTP contract is
   [Cashier API](CASHIER_API.md). The cashier (payment side) is

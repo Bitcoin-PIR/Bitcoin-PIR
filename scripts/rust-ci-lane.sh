@@ -23,8 +23,8 @@ runner_temp=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 case "$lane" in
   core)
     cargo fmt --all -- --check
-    cargo test --timings --locked --offline -p pir-channel -p pir-private-files -p pir-runtime-core -p pir-sdk-client -p pir-sdk-wasm -p pir-session-grant -p bpir-admin
-    cargo clippy --timings --locked --offline --all-targets --no-deps -p pir-private-files -p pir-session-grant -p bpir-admin -- -D warnings
+    cargo test --timings --locked --offline -p pir-channel -p pir-private-files -p pir-runtime-core -p pir-sdk-client -p pir-sdk-wasm -p pir-session-grant -p pir-credit -p bpir-admin
+    cargo clippy --timings --locked --offline --all-targets --no-deps -p pir-private-files -p pir-session-grant -p pir-credit -p bpir-admin -- -D warnings
     ;;
   runtime-default-security)
     cargo check --timings --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --lib hint_pool; cargo test --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --test unified_server_cli

@@ -1,0 +1,20 @@
+[package]
+name = "pir-credit"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.78"
+authors = ["Bitcoin PIR contributors"]
+description = "Credits and gas for BitcoinPIR paid queries: the gas model (reference-CPU work per request derived from public database geometry), the issuer-published parameters that turn gas into credits, the per-server hourly meter, and the issuer HTTP contract types. No cryptography, filesystem, clock, or network."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+homepage = "https://github.com/Bitcoin-PIR/Bitcoin-PIR"
+readme = "README.md"
+publish = false
+
+[dependencies]
+# The issuer contract types are JSON on the wire; serde is already in the
+# workspace (pir-runtime-core, unified_server), so no new dependency enters.
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
