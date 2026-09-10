@@ -106,8 +106,9 @@ pub const REQ_CREDIT_PRESENT: u8 = 0x12;
 /// `[gas_added u64 LE][gas_balance i64 LE]`: gas the presentation bought and
 /// the connection's balance afterwards.
 pub const RESP_CREDIT_OK: u8 = 0x12;
-/// Largest `REQ_CREDIT_PRESENT` payload a server decodes.
-pub const MAX_CREDIT_PRESENT_PAYLOAD_LEN: usize = 64 * 1024;
+/// Largest `REQ_CREDIT_PRESENT` payload a server decodes: a HarmonyPIR hint
+/// set is 150 ARC presentations of about 1.3 KiB each.
+pub const MAX_CREDIT_PRESENT_PAYLOAD_LEN: usize = 256 * 1024;
 
 // ─── Encrypted channel handshake (Slice B) ─────────────────────────────────
 //

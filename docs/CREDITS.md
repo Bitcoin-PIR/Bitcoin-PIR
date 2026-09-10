@@ -135,7 +135,7 @@ with the same nonce.
 ## Protocol
 
 `REQ_CREDIT_PRESENT` (`0x12`): `[kind u8][len u32 LE][payload]`, at most
-64 KiB, encrypted channel only (the payload is bearer material). Kinds are
+256 KiB (150 ARC presentations of about 1.3 KiB), encrypted channel only (the payload is bearer material). Kinds are
 `pir_credit::issuer::CREDIT_PRESENT_KIND_CASHU` (1, a Cashu token) and
 `CREDIT_PRESENT_KIND_ARC` (2, one or more ARC presentations). The server
 answers `RESP_CREDIT_OK` (`0x12`): `[gas_added u64 LE][gas_balance i64
