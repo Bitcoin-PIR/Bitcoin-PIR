@@ -170,12 +170,18 @@ until every client has moved.
 - Settlement: the issuer holds the money and a per-server ledger of gas
   and sat; paying a foreign server operator is outside the protocol.
 
-ARC parameters: the `Bitcoin-PIR/arc` fork (P-256, Cloudflare draft
-ciphersuite), presentation limit 100 per credential (one credential per
-1,000-sat pack, so the denomination never shows), presentation context
-fixed per epoch (`"BitcoinPIR/credits/v1" ‖ epoch`, hence one global tag
-set), `m2` = epoch, epochs of 90 days plus 30 days of grace. Cashu proofs
-convert at `gas_per_credit / credit_sat` gas per sat.
+ARC parameters (`pir_credit::arc`): the `Bitcoin-PIR/arc` fork (P-256,
+Cloudflare draft ciphersuite), presentation limit 100 per credential (one
+credential per 1,000-sat pack, so the denomination never shows), epochs of
+90 days plus 30 days of grace (`epoch = now / 90 d`; presentations of the
+previous epoch are accepted until 30 days after it ended). Both sides
+derive the contexts from the epoch: `requestContext` (`m2`) is
+`"BitcoinPIR/credits/v1/request/<epoch>"`, `presentationContext` is
+`"BitcoinPIR/credits/v1/presentation/<epoch>"`, fixed per epoch so the
+issuer keeps one global tag set per epoch. A kind-2 `REQ_CREDIT_PRESENT`
+payload is `[epoch u32][count u16]` followed by `count` length-prefixed
+presentations (at most 150, one credit each). Cashu proofs convert at
+`gas_per_credit / credit_sat` gas per sat.
 
 ## Privacy
 
