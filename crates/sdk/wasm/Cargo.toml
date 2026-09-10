@@ -52,6 +52,13 @@ pir-attest-verify = { version = "0.1.0", path = "../../trust/attest-verify" }
 # JS-facing DB proof summaries use the same build-kind labels and hash display
 # helpers as the native verifier.
 pir-db-attest = { path = "../../trust/db-attest" }
+# Credits (docs/CREDITS.md): ARC credentials in the browser. `arc` is the
+# Bitcoin-PIR fork of the draft-01 P-256 implementation (vendored);
+# pir-credit fixes the epochs, contexts, and payload bytes shared with the
+# issuer and the servers.
+arc = { git = "https://github.com/Bitcoin-PIR/arc.git", rev = "de6c1709eee0faa32985d5a452be11904ee95de4" }
+pir-credit = { version = "0.1.0", path = "../../trust/pir-credit" }
+rand_core = { version = "0.6", features = ["getrandom"] }
 # Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
 # "js" feature lets it use `crypto.getRandomValues` on wasm32; on
 # native (used only by `cargo test`) it reads /dev/urandom.

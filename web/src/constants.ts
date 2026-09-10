@@ -153,6 +153,15 @@ export const REQ_SESSION_GRANT_PRESENT = 0x0b;
 export const RESP_SESSION_GRANT_OK = 0x0b;
 /** Encoded length of a version-1 `pir_session_grant::SessionGrant`. */
 export const SESSION_GRANT_LEN = 133;
+
+// ─── Credits (docs/CREDITS.md) ────────────────────────────────────────────
+// `[kind u8][len u32 LE][payload]` presented inside the encrypted channel;
+// the server answers `[gas_added u64 LE][gas_balance i64 LE]`.
+
+export const REQ_CREDIT_PRESENT = 0x12;
+export const RESP_CREDIT_OK = 0x12;
+/** Largest `REQ_CREDIT_PRESENT` payload a server decodes (256 KiB). */
+export const MAX_CREDIT_PRESENT_PAYLOAD_LEN = 256 * 1024;
 /**
  * Client-side pin of the cashier that sells session grants
  * (`docs/SESSION_GRANTS.md`, `docs/CASHIER_API.md`). The server announces

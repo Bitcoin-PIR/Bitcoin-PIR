@@ -79,6 +79,11 @@ replace-with = "vendored-sources"
 [source.vendored-sources]
 directory = "vendor"
 
+[source."git+https://github.com/Bitcoin-PIR/arc.git?rev=de6c1709eee0faa32985d5a452be11904ee95de4"]
+git = "https://github.com/Bitcoin-PIR/arc.git"
+rev = "de6c1709eee0faa32985d5a452be11904ee95de4"
+replace-with = "vendored-sources"
+
 # ─── Reproducible-build env ────────────────────────────────────────────────
 # Sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md. SOURCE_DATE_EPOCH=0 makes
 # any timestamp-embedding build.rs scripts use 1970-01-01 instead of the

@@ -259,6 +259,17 @@ impl OramClient {
         crate::session_grant::present_session_grant(self.conn_mut()?.as_mut(), grant).await
     }
 
+    /// Present credits (`kind` and `payload` per [`crate::credits`]) on the
+    /// current connection and return the server's receipt. Bearer material:
+    /// call after the secure-channel upgrade.
+    pub async fn present_credits(
+        &mut self,
+        kind: u8,
+        payload: &[u8],
+    ) -> PirResult<crate::credits::CreditReceipt> {
+        crate::credits::present_credits(self.conn_mut()?.as_mut(), kind, payload).await
+    }
+
     /// Upgrade the existing connection to the encrypted channel.
     ///
     /// The `server_static_pub` must come from a verified attestation or
