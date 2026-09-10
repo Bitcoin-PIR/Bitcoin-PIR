@@ -13,7 +13,8 @@ Credits and gas for BitcoinPIR paid queries (design: `docs/CREDITS.md`).
   credit ↔ sat ↔ gas conversions.
 - `meter`: the hourly per-opcode aggregate a server logs (count, gas, CPU
   and wall time, egress, concurrency) — aggregates only, never per request.
-- `issuer`: the JSON types of the issuer HTTP contract (`/v1/info` v2 and
-  `/v1/redeem`) and the canonical signing preimage of a redeem request.
+- `issuer`: the JSON types of the issuer HTTP contract (`/v2/info` and
+  `/v2/redeem`) and the canonical signing preimages of a redeem request and
+  its answer.
 
 Pure bookkeeping: no cryptography, filesystem, clock, or network.

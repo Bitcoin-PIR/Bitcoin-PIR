@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The parameters the issuer publishes in `GET /v1/info` and a server
+/// The parameters the issuer publishes in `GET /v2/info` and a server
 /// meters with. Changing any of them changes prices for every client of
 /// that issuer, so they are versioned by publication, not by code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -175,7 +175,7 @@ impl SessionGrantGateV1 {
     }
 }
 
-fn load_public_key(path: &Path) -> Result<PublicKey, String> {
+pub(crate) fn load_public_key(path: &Path) -> Result<PublicKey, String> {
     let bytes =
         read_regular_file_bounded_v1(path, MAX_PUBLIC_KEY_FILE_BYTES, "session grant public key")?;
     parse_public_key_file(&bytes)

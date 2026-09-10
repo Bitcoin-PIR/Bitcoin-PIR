@@ -58,6 +58,12 @@ pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-session-grant = { path = "../../crates/trust/session-grant" }
 pir-credit = { path = "../../crates/trust/pir-credit" }
+# Issuer client: HTTPS to the credit issuer over the TLS stack
+# tokio-tungstenite already pins (no new crate enters the lockfile).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = "1"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"
 ed25519-dalek = "2"
 hex = "0.4"
 zeroize = "1"
@@ -74,6 +80,7 @@ tokio-tungstenite = "0.24"
 futures-util = "0.3"
 rand = "0.8"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 bitcoinpir-oram = { path = "../../vendor/bitcoinpir-oram", optional = true }
 
@@ -83,7 +90,5 @@ pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
 rand_chacha = "0.3"
 clap = { version = "4", features = ["derive"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 k256 = { version = "0.13", features = ["arithmetic"] }
-serde_json = "1"
 sha2 = "0.10"

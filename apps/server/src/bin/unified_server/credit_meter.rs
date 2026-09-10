@@ -228,6 +228,20 @@ impl CreditMeterV1 {
         &self.table
     }
 
+    /// Gas a metered frame must cover before dispatch (work plus base fee);
+    /// `None` for unmetered frames and backends this database does not
+    /// serve, which the gate lets through.
+    pub(crate) fn admission_gas(&self, op: Option<(MeteredOp, u8)>) -> Option<u64> {
+        let (op, db_id) = op?;
+        let work = self.table.work_gas(db_id, op)?;
+        Some(self.params.frame_gas(work))
+    }
+
+    /// Gas `response_bytes` of egress cost under the current parameters.
+    pub(crate) fn egress_gas(&self, response_bytes: u64) -> u64 {
+        self.params.egress_gas(response_bytes)
+    }
+
     /// Gas a frame is priced at: work plus base fee plus egress, or 0 for
     /// unmetered frames and backends this database does not serve.
     pub(crate) fn frame_gas(&self, op: Option<(MeteredOp, u8)>, egress_bytes: u64) -> u64 {

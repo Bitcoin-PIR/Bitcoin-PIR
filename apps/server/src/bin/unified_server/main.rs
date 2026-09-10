@@ -11,6 +11,8 @@
 //! binary sha256. Production flags come from the reviewed run scripts.
 
 mod cli;
+mod credit_gate;
+mod credit_issuer;
 mod credit_meter;
 mod dispatch;
 mod harmony_hints;
@@ -722,6 +724,12 @@ async fn main() {
     // cert / key disagree, log a warning and serve without announce
     // (REQ_ANNOUNCE returns RESP_ERROR). Existing attest / handshake
     // / query paths are unaffected.
+    // The identity key and certificate also sign credit redeem requests
+    // (docs/CREDITS.md); keep a copy before the announcement consumes them.
+    let mut credit_identity: Option<(ed25519_dalek::SigningKey, pir_identity::IdentityCert)> =
+        sealed_identity
+            .as_ref()
+            .map(|(key, cert)| (key.clone(), cert.clone()));
     let announcement_bundle: Option<Vec<u8>> = if let Some((identity_key, identity_cert)) =
         sealed_identity
     {
@@ -773,6 +781,7 @@ async fn main() {
                         .map_err(|error| error.to_string())
                 }) {
                     Ok((sk, cert)) => {
+                        credit_identity = Some((sk.clone(), cert.clone()));
                         // Manifest roots in db_id order — same as the V2
                         // attest layout, so the bundle and the SEV report
                         // commit to the same set.
@@ -932,9 +941,39 @@ async fn main() {
         println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
     }
 
+    // Credits (docs/CREDITS.md): the issuer client and, with
+    // --require-credits, the per-connection gas gate. The issuer's published
+    // parameters price this server's frames; the built-in set applies when
+    // the issuer cannot be reached at startup.
+    let credits = credit_issuer::CreditsV1::from_cli(&args, credit_identity)
+        .unwrap_or_else(|error| fatal_cli(error));
+    let gas_params = match credits.as_ref() {
+        Some(credits) => {
+            println!("  {}", credits.startup_log_line());
+            match credits.issuer.fetch_info().await {
+                Ok(info) => {
+                    println!(
+                        "  Credits: issuer parameters credit_sat={} gas_per_credit={} base_gas_per_frame={} egress_gas_per_mb={}",
+                        info.credit_sat,
+                        info.gas_per_credit,
+                        info.base_gas_per_frame,
+                        info.egress_gas_per_mb
+                    );
+                    info.gas_params()
+                }
+                Err(error) => {
+                    eprintln!(
+                        "  Credits: issuer info unavailable ({error}); pricing with the built-in 2026-09 parameters"
+                    );
+                    pir_credit::GasParams::PRODUCTION_2026_09
+                }
+            }
+        }
+        None => pir_credit::GasParams::PRODUCTION_2026_09,
+    };
+
     // Gas table for every loaded database plus the hourly meter
-    // (docs/CREDITS.md). Parameters are the published 2026-09 set until an
-    // issuer supplies them.
+    // (docs/CREDITS.md).
     let credit_meter = {
         #[cfg(feature = "cuckoo-oram")]
         let oram_slots: std::collections::BTreeMap<u8, u64> = direct_oram
@@ -943,12 +982,7 @@ async fn main() {
             .collect();
         #[cfg(not(feature = "cuckoo-oram"))]
         let oram_slots: std::collections::BTreeMap<u8, u64> = std::collections::BTreeMap::new();
-        credit_meter::CreditMeterV1::from_loaded(
-            pir_credit::GasParams::PRODUCTION_2026_09,
-            &state,
-            &onionpir_infos,
-            &oram_slots,
-        )
+        credit_meter::CreditMeterV1::from_loaded(gas_params, &state, &onionpir_infos, &oram_slots)
     };
     for line in credit_meter.startup_lines() {
         println!("  {line}");
@@ -971,6 +1005,7 @@ async fn main() {
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         session_grants,
         credit_meter,
+        credits,
         pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,

@@ -25,6 +25,7 @@ pub(crate) async fn handle_variant<S>(
     peer: std::net::SocketAddr,
     admin_state: &mut pir_runtime_core::admin::AdminConnectionState,
     session_grant: &mut Option<pir_session_grant::GrantId>,
+    gas_balance: &mut crate::credit_gate::GasBalanceV1,
     client_supports_chunks: bool,
 ) where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
@@ -122,9 +123,34 @@ pub(crate) async fn handle_variant<S>(
                             )
                         } else {
                             match Request::decode(payload) {
-                                Ok(Request::CreditPresent { .. }) => Response::Error(
-                                    "credits not enabled on this server (no issuer configured)".into(),
-                                ),
+                                Ok(Request::CreditPresent { kind, payload: presented }) => {
+                                    match server.credits.as_ref() {
+                                        None => Response::Error(
+                                            "credits not enabled on this server (no issuer configured)".into(),
+                                        ),
+                                        Some(credits) => {
+                                            match crate::credit_issuer::validate_presentation(kind, &presented) {
+                                                Err(message) => {
+                                                    gas_balance.note_presentation_failure();
+                                                    Response::Error(message)
+                                                }
+                                                Ok(()) => match credits.issuer.redeem(&[(kind, presented)]).await {
+                                                    Ok(answer) => {
+                                                        let balance = gas_balance.top_up(answer.gas_added);
+                                                        Response::CreditOk {
+                                                            gas_added: answer.gas_added,
+                                                            gas_balance: balance,
+                                                        }
+                                                    }
+                                                    Err(message) => {
+                                                        gas_balance.note_presentation_failure();
+                                                        Response::Error(message)
+                                                    }
+                                                },
+                                            }
+                                        }
+                                    }
+                                }
                                 Ok(_) => Response::Error("malformed REQ_CREDIT_PRESENT".into()),
                                 Err(error) => {
                                     Response::Error(format!("malformed REQ_CREDIT_PRESENT: {error}"))

@@ -142,6 +142,11 @@ pub(crate) async fn serve_connections(
             // Credits live in the server-wide ledger, not here.
             let mut session_grant: Option<pir_session_grant::GrantId> = None;
 
+            // Per-connection gas balance (docs/CREDITS.md): topped up by
+            // REQ_CREDIT_PRESENT, charged per metered frame when credits are
+            // required. Dies with the connection.
+            let mut gas_balance = crate::credit_gate::GasBalanceV1::new();
+
             // Per-connection transport-level chunk reassembly state. A
             // client that sends a multi-MB message (OnionPIR RegisterKeys
             // / query batches) splits it into CHUNK_MAGIC frames; we
@@ -403,6 +408,27 @@ pub(crate) async fn serve_connections(
                 // negligible next to its work), time the dispatch in process
                 // CPU and wall time, and attribute the response bytes.
                 let metered_op = crate::credit_meter::metered_op_for_frame(variant, payload);
+
+                // Credit gate (docs/CREDITS.md): with --require-credits a
+                // metered frame is charged its work plus base fee before
+                // dispatch and refused when the balance cannot cover it. A
+                // connection that attached a session grant was charged by the
+                // grant gate above instead.
+                let charge_gas = session_grant.is_none()
+                    && server
+                        .credits
+                        .as_ref()
+                        .is_some_and(|credits| credits.require);
+                if charge_gas {
+                    if let Some(cost) = server.credit_meter.admission_gas(metered_op) {
+                        if let Err(refusal) = gas_balance.admit(cost) {
+                            let resp = Response::Error(refusal.to_string());
+                            let _ =
+                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                            continue;
+                        }
+                    }
+                }
                 let in_flight = server.credit_meter.begin();
                 let egress_before = sink.bytes_sent();
                 crate::dispatch::handle_variant(
@@ -416,15 +442,23 @@ pub(crate) async fn serve_connections(
                     peer,
                     &mut admin_state,
                     &mut session_grant,
+                    &mut gas_balance,
                     client_supports_chunks,
                 )
                 .await;
-                server.credit_meter.finish(
-                    in_flight,
-                    variant,
-                    metered_op,
-                    sink.bytes_sent().saturating_sub(egress_before),
-                );
+                let egress_bytes = sink.bytes_sent().saturating_sub(egress_before);
+                server
+                    .credit_meter
+                    .finish(in_flight, variant, metered_op, egress_bytes);
+                if charge_gas && metered_op.is_some() {
+                    gas_balance.charge_egress(server.credit_meter.egress_gas(egress_bytes));
+                }
+                if gas_balance.presentation_failures()
+                    >= crate::credit_gate::MAX_PRESENTATION_FAILURES_PER_CONNECTION
+                {
+                    unsafe_debug_log!("[{}] too many rejected credit presentations", peer);
+                    break;
+                }
             }
 
             unsafe_debug_log!("[{}] Disconnected (id={})", peer, client_id);
