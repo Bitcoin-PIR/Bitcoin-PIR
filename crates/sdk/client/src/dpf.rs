@@ -2566,6 +2566,32 @@ impl DpfClient {
 
     /// Attach a cashier-signed session grant to one server connection
     /// (`server_index` 0 or 1) and return the credits remaining on that
+    /// Present credits (`kind` and `payload` per [`crate::credits`]) on one
+    /// server (`server_index` ∈ {0, 1}) and return its receipt. Bearer
+    /// material: call this after [`Self::upgrade_to_secure_channel`].
+    pub async fn present_credits(
+        &mut self,
+        server_index: u8,
+        kind: u8,
+        payload: &[u8],
+    ) -> PirResult<crate::credits::CreditReceipt> {
+        let conn = match server_index {
+            0 => self.conn0.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_credits: server0 not connected".into())
+            })?,
+            1 => self.conn1.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_credits: server1 not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_credits: server_index must be 0 or 1, got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::credits::present_credits(conn.as_mut(), kind, payload).await
+    }
+
     /// server's ledger. The grant is a bearer token: call this after
     /// [`Self::upgrade_to_secure_channel`]. See [`crate::session_grant`].
     pub async fn present_session_grant(

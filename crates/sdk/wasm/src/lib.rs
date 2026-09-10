@@ -75,6 +75,10 @@ pub use client::{
 pub mod metrics;
 pub use metrics::WasmAtomicMetrics;
 
+// Credits: ARC credentials (request, finalize, present) for the browser.
+pub mod credit;
+pub use credit::{WasmArcCredential, WasmArcCredentialRequest};
+
 /// Wire-explorer helpers for HarmonyPIR frames — exposes
 /// [`harmony_decode_counts`] so the public dev-site explorer at
 /// <https://bitcoin-pir.github.io/playground/explorer> can verify the

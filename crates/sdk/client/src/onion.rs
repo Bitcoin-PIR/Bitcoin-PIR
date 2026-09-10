@@ -848,6 +848,18 @@ impl OnionClient {
     /// Attach a cashier-signed session grant to the server connection and
     /// return the credits remaining there. See
     /// [`crate::DpfClient::present_session_grant`].
+    pub async fn present_credits(
+        &mut self,
+        kind: u8,
+        payload: &[u8],
+    ) -> PirResult<crate::credits::CreditReceipt> {
+        let conn = self
+            .conn
+            .as_mut()
+            .ok_or_else(|| PirError::Protocol("present_credits: server not connected".into()))?;
+        crate::credits::present_credits(conn.as_mut(), kind, payload).await
+    }
+
     pub async fn present_session_grant(&mut self, grant: &[u8]) -> PirResult<u32> {
         let conn = self.conn.as_mut().ok_or_else(|| {
             PirError::Protocol("present_session_grant: server not connected".into())

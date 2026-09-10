@@ -61,6 +61,7 @@ pub mod attest;
 pub mod channel;
 #[cfg(not(target_arch = "wasm32"))]
 mod connection;
+pub mod credits;
 pub mod db_proof;
 mod dpf;
 mod harmony;

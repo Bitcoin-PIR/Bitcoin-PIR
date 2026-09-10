@@ -1709,6 +1709,32 @@ impl WasmDpfClient {
             .map_err(err_to_js)
     }
 
+    /// Present credits (docs/CREDITS.md) on one server (`serverIndex` ∈
+    /// {0, 1}): `kind` 1 is a Cashu token, 2 an ARC payload from
+    /// [`crate::WasmArcCredential::present`]. Resolves to
+    /// `{ gasAdded, gasBalance }`. Bearer material: call after
+    /// [`Self::upgrade_to_secure_channel`].
+    #[wasm_bindgen(js_name = presentCredits)]
+    pub async fn present_credits(
+        &mut self,
+        server_index: u8,
+        kind: u8,
+        payload: &[u8],
+    ) -> Result<JsValue, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentCredits: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        let receipt = self
+            .inner
+            .present_credits(server_index, kind, payload)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_receipt_to_js(receipt))
+    }
+
     /// Wrap both server connections with the encrypted-channel
     /// transport.
     ///
@@ -2293,6 +2319,30 @@ impl WasmHarmonyClient {
             .map_err(err_to_js)
     }
 
+    /// Present credits (docs/CREDITS.md) on the hint (0) or query (1)
+    /// server; resolves to `{ gasAdded, gasBalance }`. See
+    /// [`WasmDpfClient::present_credits`].
+    #[wasm_bindgen(js_name = presentCredits)]
+    pub async fn present_credits(
+        &mut self,
+        server_index: u8,
+        kind: u8,
+        payload: &[u8],
+    ) -> Result<JsValue, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentCredits: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        let receipt = self
+            .inner
+            .present_credits(server_index, kind, payload)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_receipt_to_js(receipt))
+    }
+
     /// Wrap both server connections (hint + query) with the encrypted
     /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`]
     /// — same eph_seed caching + binding flow. Argument order matches
@@ -2861,6 +2911,18 @@ impl WasmOramClient {
             .present_session_grant(grant)
             .await
             .map_err(err_to_js)
+    }
+
+    /// Present credits (docs/CREDITS.md) on the connection; resolves to
+    /// `{ gasAdded, gasBalance }`. See [`WasmDpfClient::present_credits`].
+    #[wasm_bindgen(js_name = presentCredits)]
+    pub async fn present_credits(&mut self, kind: u8, payload: &[u8]) -> Result<JsValue, JsError> {
+        let receipt = self
+            .inner
+            .present_credits(kind, payload)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_receipt_to_js(receipt))
     }
 
     /// Wrap the single server connection with the encrypted-channel transport.

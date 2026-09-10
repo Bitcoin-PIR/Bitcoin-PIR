@@ -205,5 +205,6 @@ to anyone; PIR hides them regardless of payment.
 | Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done (issuer side pending, so production stays without the flags) |
 | `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | next |
 | ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | after that |
-| ARC client, purchase flow, present-per-round | `crates/sdk/wasm`, `web/`, `crates/sdk/client` | after the issuer |
+| ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
+| Metering hooks in the four clients and the web adapters (present before each metered frame, retry on refusal) | `crates/sdk/client`, `web/` | next |
 | Retire `0x0b` | protocol registry | after every client presents credits |
