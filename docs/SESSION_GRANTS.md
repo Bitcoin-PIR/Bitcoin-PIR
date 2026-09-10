@@ -1,5 +1,9 @@
 # Session grants (paid queries)
 
+> Being superseded by gas-priced credits verified at the issuer
+> ([Credits and gas](CREDITS.md)). Grants stay accepted on `0x0b` until
+> every client presents credits.
+
 Free PIR queries are open. Paid queries present a **session grant** on
 opcode `0x0b` (`REQ_SESSION_GRANT_PRESENT`) before any query-bearing
 opcode; the server answers `RESP_SESSION_GRANT_OK { remaining_credits }`

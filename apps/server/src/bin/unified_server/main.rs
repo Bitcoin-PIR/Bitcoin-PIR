@@ -11,6 +11,7 @@
 //! binary sha256. Production flags come from the reviewed run scripts.
 
 mod cli;
+mod credit_meter;
 mod dispatch;
 mod harmony_hints;
 mod io;
@@ -931,6 +932,28 @@ async fn main() {
         println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
     }
 
+    // Gas table for every loaded database plus the hourly meter
+    // (docs/CREDITS.md). Parameters are the published 2026-09 set until an
+    // issuer supplies them.
+    let credit_meter = {
+        #[cfg(feature = "cuckoo-oram")]
+        let oram_slots: std::collections::BTreeMap<u8, u64> = direct_oram
+            .iter()
+            .map(|(db_id, tables)| (*db_id, tables.access_budget as u64))
+            .collect();
+        #[cfg(not(feature = "cuckoo-oram"))]
+        let oram_slots: std::collections::BTreeMap<u8, u64> = std::collections::BTreeMap::new();
+        credit_meter::CreditMeterV1::from_loaded(
+            pir_credit::GasParams::PRODUCTION_2026_09,
+            &state,
+            &onionpir_infos,
+            &oram_slots,
+        )
+    };
+    for line in credit_meter.startup_lines() {
+        println!("  {line}");
+    }
+
     let server = Arc::new(UnifiedServerData {
         state,
         role: args.role,
@@ -947,6 +970,7 @@ async fn main() {
         direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         session_grants,
+        credit_meter,
         pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
@@ -974,6 +998,23 @@ async fn main() {
                         evicted,
                         map.len()
                     );
+                }
+            }
+        });
+    }
+
+    // Background task: the hourly gas/CPU meter report (docs/CREDITS.md),
+    // aggregates per opcode and database only.
+    {
+        let server = Arc::clone(&server);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                if let Some(lines) = server.credit_meter.due_lines(Instant::now()) {
+                    for line in lines {
+                        println!("{line}");
+                    }
                 }
             }
         });

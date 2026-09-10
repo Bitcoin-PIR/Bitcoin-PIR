@@ -57,6 +57,7 @@ pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-session-grant = { path = "../../crates/trust/session-grant" }
+pir-credit = { path = "../../crates/trust/pir-credit" }
 ed25519-dalek = "2"
 hex = "0.4"
 zeroize = "1"

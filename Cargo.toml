@@ -12,6 +12,7 @@ members = [
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
     "crates/trust/session-grant",
+    "crates/trust/pir-credit",
     "crates/sdk/core",
     "crates/protocol/runtime",
     "crates/sdk/client",

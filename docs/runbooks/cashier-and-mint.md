@@ -52,6 +52,12 @@ secret; `keygen` and `pubkey` print only the public key.
   key or price change is a new image (Flow E/G). An image built before the
   pin answers "session grants not enabled" and the client treats it as the
   free path.
+- Gas meter: each server prints one `[meter op=0x.. db=N] last 3600s: n=…
+  gas_mean=… cpu_mean_ms=… wall_mean_ms=… egress_mean_kib=… inflight_max=…`
+  line per opcode and database per hour plus a `[meter] last 3600s: …`
+  total, and its gas table at startup (`[gas db=N] …`, also under `"gas"`
+  in `GET_INFO_JSON`). Aggregates only; the calibration they check is in
+  [Credits and gas](../CREDITS.md).
 - Pricing input: each server prints one `[hint-pool db=N] last 3600s:
   generated=K wall_mean_s=… wall_max_s=…` line per hour (journal of
   `pir-primary` on pir1; the measured guest's console log on pir2) — the

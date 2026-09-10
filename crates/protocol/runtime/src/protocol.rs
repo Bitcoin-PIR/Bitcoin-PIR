@@ -97,6 +97,17 @@ pub const REQ_ATTEST: u8 = 0x05;
 
 pub const REQ_SESSION_GRANT_PRESENT: u8 = 0x0b;
 pub const RESP_SESSION_GRANT_OK: u8 = 0x0b;
+/// Present credits for the issuer to verify: a Cashu token or ARC
+/// presentations (`pir_credit::issuer::CREDIT_PRESENT_KIND_*`). Body:
+/// `[kind u8][len u32 LE][payload]`. The server forwards the payload to its
+/// issuer and, on success, adds gas to the presenting connection
+/// (docs/CREDITS.md). Sent only inside the encrypted channel.
+pub const REQ_CREDIT_PRESENT: u8 = 0x12;
+/// `[gas_added u64 LE][gas_balance i64 LE]`: gas the presentation bought and
+/// the connection's balance afterwards.
+pub const RESP_CREDIT_OK: u8 = 0x12;
+/// Largest `REQ_CREDIT_PRESENT` payload a server decodes.
+pub const MAX_CREDIT_PRESENT_PAYLOAD_LEN: usize = 64 * 1024;
 
 // ─── Encrypted channel handshake (Slice B) ─────────────────────────────────
 //
@@ -573,6 +584,12 @@ pub enum Request {
     Pir2SealedReceiptGet {
         kind: u8,
     },
+    /// Present credits (docs/CREDITS.md): `kind` names the payload's
+    /// format, `payload` is forwarded verbatim to the issuer.
+    CreditPresent {
+        kind: u8,
+        payload: Vec<u8>,
+    },
 }
 
 // ─── Response types ─────────────────────────────────────────────────────────
@@ -791,6 +808,13 @@ pub enum Response {
         boot_id: [u8; 16],
         bytes: Vec<u8>,
     },
+    /// Credits accepted: `gas_added` gas bought, `gas_balance` the
+    /// connection's balance afterwards (negative only transiently, after an
+    /// egress charge the balance did not cover).
+    CreditOk {
+        gas_added: u64,
+        gas_balance: i64,
+    },
 }
 
 // ─── Encoding ───────────────────────────────────────────────────────────────
@@ -937,6 +961,15 @@ impl Request {
             Request::Pir2SealedReceiptGet { kind } => {
                 payload.push(REQ_PIR2_SEALED_RECEIPT_GET);
                 payload.push(*kind);
+            }
+            Request::CreditPresent {
+                kind,
+                payload: body,
+            } => {
+                payload.push(REQ_CREDIT_PRESENT);
+                payload.push(*kind);
+                payload.extend_from_slice(&(body.len() as u32).to_le_bytes());
+                payload.extend_from_slice(body);
             }
         }
         let mut msg = Vec::with_capacity(4 + payload.len());
@@ -1124,6 +1157,34 @@ impl Request {
                 }
                 Ok(Request::Pir2SealedReceiptGet { kind: data[1] })
             }
+            REQ_CREDIT_PRESENT => {
+                // [opcode][kind][len:u32 LE][payload]; exact length.
+                const HEADER: usize = 1 + 1 + 4;
+                if data.len() < HEADER {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "credit present request header too short",
+                    ));
+                }
+                let kind = data[1];
+                let len = u32::from_le_bytes(data[2..6].try_into().unwrap()) as usize;
+                if len > MAX_CREDIT_PRESENT_PAYLOAD_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "credit present request: payload length above limit",
+                    ));
+                }
+                if data.len() != HEADER + len {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "credit present request: payload length disagrees with buffer",
+                    ));
+                }
+                Ok(Request::CreditPresent {
+                    kind,
+                    payload: data[HEADER..].to_vec(),
+                })
+            }
             v => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown request variant: 0x{:02x}", v),
@@ -1262,6 +1323,14 @@ impl Response {
                 payload.extend_from_slice(boot_id);
                 payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
                 payload.extend_from_slice(bytes);
+            }
+            Response::CreditOk {
+                gas_added,
+                gas_balance,
+            } => {
+                payload.push(RESP_CREDIT_OK);
+                payload.extend_from_slice(&gas_added.to_le_bytes());
+                payload.extend_from_slice(&gas_balance.to_le_bytes());
             }
         }
         let mut msg = Vec::with_capacity(4 + payload.len());
@@ -1451,6 +1520,19 @@ impl Response {
                     kind,
                     boot_id,
                     bytes: data[HEADER..].to_vec(),
+                })
+            }
+            RESP_CREDIT_OK => {
+                // [opcode][gas_added:u64 LE][gas_balance:i64 LE]; exact length.
+                if data.len() != 1 + 8 + 8 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "credit ok response must be exactly 17 bytes",
+                    ));
+                }
+                Ok(Response::CreditOk {
+                    gas_added: u64::from_le_bytes(data[1..9].try_into().unwrap()),
+                    gas_balance: i64::from_le_bytes(data[9..17].try_into().unwrap()),
                 })
             }
             RESP_ERROR => {
@@ -3558,5 +3640,84 @@ mod attest_wire_tests {
             }
             other => panic!("expected Announce, got {:?}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod credit_wire_tests {
+    use super::*;
+
+    #[test]
+    fn credit_present_round_trips_with_exact_length() {
+        let payload = vec![0xaa; 300];
+        let encoded = Request::CreditPresent {
+            kind: 2,
+            payload: payload.clone(),
+        }
+        .encode();
+        let mut expected = vec![REQ_CREDIT_PRESENT, 2];
+        expected.extend_from_slice(&300u32.to_le_bytes());
+        expected.extend_from_slice(&payload);
+        assert_eq!(&encoded[4..], &expected[..]);
+        match Request::decode(&encoded[4..]).unwrap() {
+            Request::CreditPresent { kind, payload: got } => {
+                assert_eq!(kind, 2);
+                assert_eq!(got, payload);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        // An empty payload is structurally fine; the server rejects it.
+        let empty = Request::CreditPresent {
+            kind: 1,
+            payload: Vec::new(),
+        }
+        .encode();
+        assert!(matches!(
+            Request::decode(&empty[4..]).unwrap(),
+            Request::CreditPresent { kind: 1, payload } if payload.is_empty()
+        ));
+    }
+
+    #[test]
+    fn credit_present_rejects_short_oversized_and_disagreeing_lengths() {
+        assert!(Request::decode(&[REQ_CREDIT_PRESENT, 1, 0, 0]).is_err());
+        let mut oversized = vec![REQ_CREDIT_PRESENT, 1];
+        oversized.extend_from_slice(&((MAX_CREDIT_PRESENT_PAYLOAD_LEN as u32) + 1).to_le_bytes());
+        assert!(Request::decode(&oversized).is_err());
+        let mut trailing = vec![REQ_CREDIT_PRESENT, 1];
+        trailing.extend_from_slice(&2u32.to_le_bytes());
+        trailing.extend_from_slice(&[9, 9, 9]);
+        assert!(Request::decode(&trailing).is_err());
+        let mut truncated = vec![REQ_CREDIT_PRESENT, 1];
+        truncated.extend_from_slice(&2u32.to_le_bytes());
+        truncated.push(9);
+        assert!(Request::decode(&truncated).is_err());
+    }
+
+    #[test]
+    fn credit_ok_round_trips_and_carries_negative_balances() {
+        let encoded = Response::CreditOk {
+            gas_added: 72_000,
+            gas_balance: -1_500,
+        }
+        .encode();
+        let mut expected = vec![RESP_CREDIT_OK];
+        expected.extend_from_slice(&72_000u64.to_le_bytes());
+        expected.extend_from_slice(&(-1_500i64).to_le_bytes());
+        assert_eq!(&encoded[4..], &expected[..]);
+        match Response::decode(&encoded[4..]).unwrap() {
+            Response::CreditOk {
+                gas_added,
+                gas_balance,
+            } => {
+                assert_eq!(gas_added, 72_000);
+                assert_eq!(gas_balance, -1_500);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Response::decode(&encoded[4..encoded.len() - 1]).is_err());
+        let mut longer = encoded[4..].to_vec();
+        longer.push(0);
+        assert!(Response::decode(&longer).is_err());
     }
 }

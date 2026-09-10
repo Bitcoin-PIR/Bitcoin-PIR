@@ -117,6 +117,10 @@ pub(crate) struct UnifiedServerData {
     /// Session-grant verifier and credit ledger. `None` when no cashier key
     /// is pinned (`--session-grant-pubkey`); presentations are then refused.
     pub(crate) session_grants: Option<crate::session_grant::SessionGrantGateV1>,
+    /// Gas table derived from the loaded databases plus the hourly meter
+    /// (docs/CREDITS.md). Always present; informational until an issuer is
+    /// configured.
+    pub(crate) credit_meter: crate::credit_meter::CreditMeterV1,
     /// This boot's Ready receipts and preflight marker, served read-only by
     /// REQ_PIR2_SEALED_RECEIPT_GET (sealed Ready pir2 guests only).
     pub(crate) pir2_sealed_receipts: Option<crate::pir2_sealed_receipts::Pir2SealedReadyReceiptsV1>,
@@ -476,6 +480,8 @@ impl UnifiedServerData {
             json.push(']'); // close databases array
         }
 
+        // Gas per metered request kind, all public geometry (docs/CREDITS.md).
+        json.push_str(&self.credit_meter.info_json_fragment());
         json.push('}');
         json
     }
