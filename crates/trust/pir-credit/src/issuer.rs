@@ -12,6 +12,8 @@ pub const CREDIT_PRESENT_KIND_CASHU: u8 = 1;
 pub const CREDIT_PRESENT_KIND_ARC: u8 = 2;
 /// Domain separation prefix of a redeem request's signing preimage.
 pub const REDEEM_SIGNING_DOMAIN_V1: &[u8] = b"BPIR-CREDIT-REDEEM-V1";
+/// Domain separation prefix of a redeem response's signing preimage.
+pub const REDEEM_RESPONSE_SIGNING_DOMAIN_V1: &[u8] = b"BPIR-CREDIT-REDEEM-RESPONSE-V1";
 /// Length of the per-request nonce a server draws.
 pub const REDEEM_NONCE_LEN: usize = 16;
 
@@ -72,11 +74,11 @@ impl IssuerInfoV2 {
     }
 }
 
-/// One presented item forwarded verbatim.
+/// One presented item forwarded verbatim (payload as lowercase hex).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemItemV1 {
     pub kind: u8,
-    pub payload_base64: String,
+    pub payload_hex: String,
 }
 
 /// `POST /v1/redeem`: a server asks the issuer to verify what a client
@@ -86,9 +88,9 @@ pub struct RedeemItemV1 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemRequestV1 {
     pub server_id: String,
-    /// The operator-signed identity certificate, encoded as the server
-    /// announces it.
-    pub identity_cert_base64: String,
+    /// The operator-signed identity certificate (`IdentityCert::encode`,
+    /// lowercase hex); the issuer pins the operator keys that may sign it.
+    pub identity_cert_hex: String,
     /// 16 random bytes; the issuer answers a repeated `(server_id, nonce)`
     /// with the stored response instead of verifying again.
     pub nonce_hex: String,
@@ -132,7 +134,9 @@ impl RedeemRequestV1 {
     }
 }
 
-/// `POST /v1/redeem` success body.
+/// `POST /v1/redeem` success body. Signed by the issuer's Ed25519 key (the
+/// same key the servers pin for session grants), bound to the request
+/// nonce, so a CDN or proxy between server and issuer cannot forge gas.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemResponseV1 {
     /// Gas the server credits the presenting connection.
@@ -140,6 +144,29 @@ pub struct RedeemResponseV1 {
     /// Sat value the issuer booked to the server's settlement account.
     pub sat_value: u64,
     pub items_accepted: u32,
+    /// Ed25519 signature over [`RedeemResponseV1::signing_preimage`].
+    pub issuer_signature_hex: String,
+}
+
+impl RedeemResponseV1 {
+    /// Bytes the issuer signs and the server verifies:
+    /// domain ‖ request nonce ‖ gas_added u64 ‖ sat_value u64 ‖
+    /// items_accepted u32, little-endian.
+    pub fn signing_preimage(
+        nonce: &[u8; REDEEM_NONCE_LEN],
+        gas_added: u64,
+        sat_value: u64,
+        items_accepted: u32,
+    ) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(REDEEM_RESPONSE_SIGNING_DOMAIN_V1.len() + REDEEM_NONCE_LEN + 20);
+        out.extend_from_slice(REDEEM_RESPONSE_SIGNING_DOMAIN_V1);
+        out.extend_from_slice(nonce);
+        out.extend_from_slice(&gas_added.to_le_bytes());
+        out.extend_from_slice(&sat_value.to_le_bytes());
+        out.extend_from_slice(&items_accepted.to_le_bytes());
+        out
+    }
 }
 
 /// Error body shared by every issuer endpoint.
@@ -230,12 +257,12 @@ mod tests {
     fn redeem_bodies_round_trip() {
         let request = RedeemRequestV1 {
             server_id: "pir2".into(),
-            identity_cert_base64: "AAEC".into(),
+            identity_cert_hex: "000102".into(),
             nonce_hex: "00".repeat(REDEEM_NONCE_LEN),
             unix_time: 1,
             items: vec![RedeemItemV1 {
                 kind: CREDIT_PRESENT_KIND_ARC,
-                payload_base64: "AQID".into(),
+                payload_hex: "010203".into(),
             }],
             signature_hex: "ff".repeat(64),
         };
@@ -248,11 +275,25 @@ mod tests {
             gas_added: 72_000,
             sat_value: 10,
             items_accepted: 1,
+            issuer_signature_hex: "00".repeat(64),
         };
         let json = serde_json::to_string(&response).unwrap();
         assert_eq!(
             json,
-            r#"{"gas_added":72000,"sat_value":10,"items_accepted":1}"#
+            format!(
+                r#"{{"gas_added":72000,"sat_value":10,"items_accepted":1,"issuer_signature_hex":"{}"}}"#,
+                "00".repeat(64)
+            )
+        );
+        let nonce = [3u8; REDEEM_NONCE_LEN];
+        let mut expected = REDEEM_RESPONSE_SIGNING_DOMAIN_V1.to_vec();
+        expected.extend_from_slice(&nonce);
+        expected.extend_from_slice(&72_000u64.to_le_bytes());
+        expected.extend_from_slice(&10u64.to_le_bytes());
+        expected.extend_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            RedeemResponseV1::signing_preimage(&nonce, 72_000, 10, 1),
+            expected
         );
         let error: IssuerErrorV1 =
             serde_json::from_str(r#"{"error":"double_spend","message":"tag seen"}"#).unwrap();

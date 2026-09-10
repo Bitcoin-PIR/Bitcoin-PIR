@@ -100,18 +100,37 @@ CPU-seconds per lookup and one that refreshes per level 0.8.
   last 3600s: n=… gas_mean=… cpu_mean_ms=… wall_mean_ms=… egress_mean_kib=…
   inflight_max=…` lines plus a `[meter] last 3600s: frames=… gas_total=…
   cpu_total_s=…` total are aggregates only; no per-request line exists.
-- With an issuer configured (next step), each connection keeps a gas
-  balance. A presentation is forwarded to the issuer and, on success, adds
-  gas; a metered frame is admitted only if the balance covers its work plus
-  base fee and is charged before dispatch; egress is charged after, so the
-  balance may dip below zero by one response and the next frame waits for
-  a top-up. Nothing carries across connections, so a client presents
-  exactly what the next round costs (one issuer round trip per lookup) and
-  loses nothing on disconnect.
-- With `--require-credits` (next step) metered frames are refused until the
-  connection has gas; without it they are free and still metered.
+- With an issuer configured (`--credit-issuer-url`), each connection keeps
+  a gas balance (`credit_gate`). A presentation is forwarded to the issuer
+  (`credit_issuer`) and, on success, adds `gas_added`; with
+  `--require-credits` a metered frame is admitted only if the balance
+  covers its work plus base fee and is charged before dispatch; egress is
+  charged after, so the balance may dip below zero by one response and the
+  next frame waits for a top-up. Nothing carries across connections, so a
+  client presents exactly what the next round costs (one issuer round trip
+  per lookup) and loses nothing on disconnect. Three rejected
+  presentations close the connection.
+- Without `--require-credits` metered frames stay free and are still
+  metered; presentations are still verified and credited, which is the
+  rollout state for checking the issuer path end to end.
 - Session grants (`0x0b`) keep working during the migration; a connection
-  with an attached grant is charged the grant's credit table as before.
+  with an attached grant is charged the grant's credit table instead of
+  gas.
+
+### Server flags
+
+| Flag | Effect |
+| --- | --- |
+| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v1/redeem`; `URL/v1/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--session-grant-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
+| `--credit-server-id ID` | Name the server settles under at the issuer; defaults to the identity certificate's server id. |
+| `--require-credits` | Charge metered frames to the connection balance and refuse uncovered ones. |
+
+Redeem requests are signed by the server's identity key and carry its
+operator-signed certificate; answers are signed by the issuer key over the
+request nonce, so a CDN or proxy between the two cannot grant gas. The
+transport is HTTPS with the Mozilla roots compiled in (no CA files on the
+sealed pir2 guest). One issuer call has a 15-second budget and one retry
+with the same nonce.
 
 ## Protocol
 
@@ -175,7 +194,7 @@ to anyone; PIR hides them regardless of payment.
 | --- | --- | --- |
 | Gas model, parameters, meter, issuer contract types | `crates/trust/pir-credit` | done |
 | `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`, gas table and hourly meter in `unified_server`, `GET_INFO_JSON` "gas" | this repository | done (the opcode answers "credits not enabled" until an issuer is configured) |
-| Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | next |
+| Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done (issuer side pending, so production stays without the flags) |
 | ARC issuance and verification, `/v1/redeem`, settlement ledger, `/v1/info` v2 | `Bitcoin-PIR/cashier` | next |
 | ARC client, purchase flow, present-per-round | `crates/sdk/wasm`, `web/`, `crates/sdk/client` | after the issuer |
 | Retire `0x0b` | protocol registry | after every client presents credits |

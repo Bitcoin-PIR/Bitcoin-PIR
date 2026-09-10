@@ -97,6 +97,18 @@ pub(crate) struct CliArgs {
     /// Credits one HarmonyPIR hint set costs
     /// (`--session-grant-hint-credits N`, default 150; query frames cost 1).
     pub(crate) session_grant_hint_credits: u32,
+    /// Credit issuer base URL (`--credit-issuer-url URL`, https, or http on
+    /// loopback for tests). Enables `REQ_CREDIT_PRESENT`: presentations are
+    /// forwarded to `URL/v1/redeem`, whose signed answers must verify under
+    /// a pinned `--session-grant-pubkey` key (docs/CREDITS.md).
+    pub(crate) credit_issuer_url: Option<String>,
+    /// Name this server settles under at the issuer (`--credit-server-id
+    /// ID`); defaults to the identity certificate's server id.
+    pub(crate) credit_server_id: Option<String>,
+    /// Charge every metered frame to the connection's gas balance and
+    /// refuse frames it cannot cover (`--require-credits`). Needs
+    /// `--credit-issuer-url`.
+    pub(crate) require_credits: bool,
     /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
@@ -324,6 +336,7 @@ attestation:   --vcek-dir DIR  --identity-key-path FILE  --identity-cert-path FI
 admin:         --admin-pubkey-hex HEX
 session grants: --session-grant-pubkey FILE  --session-grant-hint-credits N
                --require-session-grant
+credits:       --credit-issuer-url URL  --credit-server-id ID  --require-credits
 hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
 direct oram:   --direct-oram-db ID=DIR  --direct-oram-dir DIR  --direct-oram-trusted-state-db ID=DIR
                --direct-oram-drain-per-access N  --direct-oram-access-budget N
@@ -402,6 +415,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut session_grant_pubkeys: Vec<PathBuf> = Vec::new();
     let mut require_session_grant = false;
     let mut session_grant_hint_credits: u32 = crate::session_grant::DEFAULT_HINT_SET_CREDITS;
+    let mut credit_issuer_url: Option<String> = None;
+    let mut credit_server_id: Option<String> = None;
+    let mut require_credits = false;
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
@@ -557,6 +573,23 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     _ => fatal_cli("--session-grant-hint-credits must be an integer >= 1"),
                 };
                 i += 1;
+            }
+            "--credit-issuer-url" => {
+                let Some(url) = args.get(i + 1) else {
+                    fatal_cli("--credit-issuer-url requires a URL");
+                };
+                credit_issuer_url = Some(url.clone());
+                i += 1;
+            }
+            "--credit-server-id" => {
+                let Some(id) = args.get(i + 1) else {
+                    fatal_cli("--credit-server-id requires a name");
+                };
+                credit_server_id = Some(id.clone());
+                i += 1;
+            }
+            "--require-credits" => {
+                require_credits = true;
             }
             "--max-connections" => {
                 max_connections = args
@@ -852,6 +885,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         session_grant_pubkeys,
         require_session_grant,
         session_grant_hint_credits,
+        credit_issuer_url,
+        credit_server_id,
+        require_credits,
         pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,

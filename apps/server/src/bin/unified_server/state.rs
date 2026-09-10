@@ -121,6 +121,9 @@ pub(crate) struct UnifiedServerData {
     /// (docs/CREDITS.md). Always present; informational until an issuer is
     /// configured.
     pub(crate) credit_meter: crate::credit_meter::CreditMeterV1,
+    /// Issuer client plus the require flag (`--credit-issuer-url`,
+    /// `--require-credits`); `None` keeps `REQ_CREDIT_PRESENT` refused.
+    pub(crate) credits: Option<crate::credit_issuer::CreditsV1>,
     /// This boot's Ready receipts and preflight marker, served read-only by
     /// REQ_PIR2_SEALED_RECEIPT_GET (sealed Ready pir2 guests only).
     pub(crate) pir2_sealed_receipts: Option<crate::pir2_sealed_receipts::Pir2SealedReadyReceiptsV1>,

@@ -2186,13 +2186,16 @@ dependencies = [
  "rayon",
  "rustix",
  "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml",
+ "webpki-roots 0.26.11",
  "zeroize",
 ]
 
