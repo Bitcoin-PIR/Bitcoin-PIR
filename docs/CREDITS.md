@@ -18,7 +18,7 @@ stay accepted on opcode `0x0b` until every client presents credits.
 | Role | Holds | Does |
 | --- | --- | --- |
 | Mint (`cdk-mintd`, unchanged) | Lightning backend, ecash keys | Lightning → ecash; double-spend check on swap |
-| Issuer | ARC issuer key per epoch, a mint wallet, the global ARC tag set, the settlement ledger | sells ARC credentials for ecash; answers `POST /v1/redeem` from servers; books gas per server |
+| Issuer | ARC issuer key per epoch, a mint wallet, the global ARC tag set, the settlement ledger | sells ARC credentials for ecash; answers `POST /v2/redeem` from servers; books gas per server |
 | PIR server | the issuer URL and TLS pin, its own identity key (already certified by the operator) | derives its gas table at startup, forwards presentations, keeps a per-connection gas balance, meters every frame |
 | Client | ecash, ARC credentials | pays, presents exactly the gas a round needs before sending it |
 
@@ -187,7 +187,7 @@ issuance (blind signatures, ARC), so nothing ties a lookup to a purchase.
 What remains is timing, the client's address at the server, the size of
 the anonymity set, and the possibility of an issuer that tags a user with
 a private key: clients compare the issuer key and epoch against
-`/v1/info` and the SDK's pinned values. Query contents were never visible
+`/v2/info` and the SDK's pinned values. Query contents were never visible
 to anyone; PIR hides them regardless of payment.
 
 ## Status

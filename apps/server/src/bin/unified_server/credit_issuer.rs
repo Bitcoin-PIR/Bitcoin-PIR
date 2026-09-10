@@ -254,7 +254,7 @@ impl CreditIssuerClientV1 {
         Err(format!("issuer unreachable: {last_error}"))
     }
 
-    /// `GET /v1/info`, parsed and version-checked.
+    /// `GET /v2/info`, parsed and version-checked.
     pub(crate) async fn fetch_info(&self) -> Result<IssuerInfoV2, String> {
         let response = self.http("GET", INFO_PATH, None).await?;
         if response.status != 200 {
