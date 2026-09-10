@@ -1,5 +1,5 @@
 //! Credit issuer client (docs/CREDITS.md "Issuer API"): a signed
-//! `POST /v1/redeem` for every presentation a client makes, `GET /v1/info`
+//! `POST /v2/redeem` for every presentation a client makes, `GET /v2/info`
 //! for the gas parameters at startup, and the minimal HTTP/1.1 client over
 //! rustls with the Mozilla roots that carries both.
 //!
@@ -29,8 +29,10 @@ use crate::cli::CliArgs;
 pub(crate) const ISSUER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest issuer response body the client reads.
 const MAX_ISSUER_RESPONSE_BYTES: usize = 1024 * 1024;
-const REDEEM_PATH: &str = "/v1/redeem";
-const INFO_PATH: &str = "/v1/info";
+/// The credits contract lives under `/v2/`; `/v1/` stays the session-grant
+/// contract for clients that have not moved yet.
+const REDEEM_PATH: &str = "/v2/redeem";
+const INFO_PATH: &str = "/v2/info";
 
 /// Everything credits need on this server.
 pub(crate) struct CreditsV1 {
@@ -818,7 +820,7 @@ mod tests {
                     .parse()
                     .unwrap();
                 if raw.len() >= end + 4 + length {
-                    assert!(head.starts_with("POST /issuer/v1/redeem HTTP/1.1\r\n"));
+                    assert!(head.starts_with("POST /issuer/v2/redeem HTTP/1.1\r\n"));
                     assert!(head.contains("Host: 127.0.0.1:"));
                     let request: RedeemRequestV1 =
                         serde_json::from_slice(&raw[end + 4..end + 4 + length]).unwrap();

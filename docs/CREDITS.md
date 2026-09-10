@@ -121,7 +121,7 @@ CPU-seconds per lookup and one that refreshes per level 0.8.
 
 | Flag | Effect |
 | --- | --- |
-| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v1/redeem`; `URL/v1/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--session-grant-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
+| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--session-grant-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
 | `--credit-server-id ID` | Name the server settles under at the issuer; defaults to the identity certificate's server id. |
 | `--require-credits` | Charge metered frames to the connection balance and refuse uncovered ones. |
 
@@ -145,16 +145,18 @@ and `0x0d`–`0x10` stay retired.
 ## Issuer API (v2)
 
 All bodies are JSON; the types live in `pir_credit::issuer` so both
-repositories share them.
+repositories share them. The credits contract is served under `/v2/`;
+`/v1/` keeps the session-grant contract ([Cashier API](CASHIER_API.md))
+until every client has moved.
 
-- `GET /v1/info` → `IssuerInfoV2`: `credit_sat`, `gas_per_credit`,
+- `GET /v2/info` → `IssuerInfoV2`: `credit_sat`, `gas_per_credit`,
   `base_gas_per_frame`, `egress_gas_per_mb`, `mints`, `offers` (credits
   for sat), `arc` (epoch, presentation limit, issuer public key,
   presentation context, validity), and an informational `rate_card`.
-- `POST /v1/credentials` (client): pays with a Cashu token and a blinded
+- `POST /v2/credentials` (client): pays with a Cashu token and a blinded
   ARC credential request; returns the credential response. Idempotent per
   token, as `POST /v1/grants` is today.
-- `POST /v1/redeem` (server) → `RedeemRequestV1`: `server_id`, the
+- `POST /v2/redeem` (server) → `RedeemRequestV1`: `server_id`, the
   operator-signed identity certificate, a 16-byte nonce, `unix_time`, the
   presented items verbatim, and an Ed25519 signature by the server's
   identity key over `RedeemRequestV1::signing_preimage`. The issuer pins
@@ -195,6 +197,7 @@ to anyone; PIR hides them regardless of payment.
 | Gas model, parameters, meter, issuer contract types | `crates/trust/pir-credit` | done |
 | `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`, gas table and hourly meter in `unified_server`, `GET_INFO_JSON` "gas" | this repository | done (the opcode answers "credits not enabled" until an issuer is configured) |
 | Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done (issuer side pending, so production stays without the flags) |
-| ARC issuance and verification, `/v1/redeem`, settlement ledger, `/v1/info` v2 | `Bitcoin-PIR/cashier` | next |
+| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | next |
+| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | after that |
 | ARC client, purchase flow, present-per-round | `crates/sdk/wasm`, `web/`, `crates/sdk/client` | after the issuer |
 | Retire `0x0b` | protocol registry | after every client presents credits |

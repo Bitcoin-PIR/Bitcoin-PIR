@@ -1,10 +1,12 @@
-//! JSON types of the issuer HTTP contract (docs/CREDITS.md "Issuer API")
-//! and the canonical signing preimage of a redeem request. Shared by the
-//! PIR server (client of `/v1/redeem`) and the issuer implementation.
+//! JSON types of the issuer HTTP contract (docs/CREDITS.md "Issuer API",
+//! served under `/v2/`) and the canonical signing preimages of a redeem
+//! request and its answer. Shared by the PIR server (client of
+//! `/v2/redeem`) and the issuer implementation.
 
 use serde::{Deserialize, Serialize};
 
-/// `GET /v1/info` version that carries gas parameters.
+/// Version of the credits contract (`GET /v2/info` reports it); the
+/// session-grant contract stays version 1 under `/v1/`.
 pub const ISSUER_API_VERSION: u32 = 2;
 /// `REQ_CREDIT_PRESENT` kind byte: a Cashu token (proofs in sat).
 pub const CREDIT_PRESENT_KIND_CASHU: u8 = 1;
@@ -44,7 +46,7 @@ pub struct RateCardEntryV2 {
     pub credits: u64,
 }
 
-/// `GET /v1/info`, version 2.
+/// `GET /v2/info`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuerInfoV2 {
     pub service: String,
@@ -81,7 +83,7 @@ pub struct RedeemItemV1 {
     pub payload_hex: String,
 }
 
-/// `POST /v1/redeem`: a server asks the issuer to verify what a client
+/// `POST /v2/redeem`: a server asks the issuer to verify what a client
 /// presented and to credit the server's settlement account. Signed with
 /// the server's identity key; the issuer pins the operator keys that may
 /// certify server identities.
@@ -134,7 +136,7 @@ impl RedeemRequestV1 {
     }
 }
 
-/// `POST /v1/redeem` success body. Signed by the issuer's Ed25519 key (the
+/// `POST /v2/redeem` success body. Signed by the issuer's Ed25519 key (the
 /// same key the servers pin for session grants), bound to the request
 /// nonce, so a CDN or proxy between server and issuer cannot forge gas.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
