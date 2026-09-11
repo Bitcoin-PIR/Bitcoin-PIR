@@ -118,6 +118,31 @@ export {
 } from './cashu-purchase.js';
 
 export {
+  CREDIT_PRESENT_KIND_ARC,
+  CREDIT_PRESENT_KIND_CASHU,
+  CreditStore,
+  CreditWallet,
+  CreditedChannel,
+  ConnectionCreditMeter,
+  IssuerClient,
+  IssuerError,
+  cashuLightningRail,
+  parseIssuerInfo,
+  purchaseCredential,
+  serverGasCardFromInfo,
+  type CreditEnablement,
+  type CreditOffer,
+  type CreditProvider,
+  type IssuedCredential,
+  type IssuerInfo,
+  type LightningRail,
+  type PendingCredential,
+  type Presentation,
+  type PurchaseHooks,
+  type StoredCredential,
+} from './credits.js';
+
+export {
   computeDataHash,
   computeParentN,
   computeBinLeafHash,
@@ -273,6 +298,9 @@ export {
 // SDK WASM bridge (optional - use pir-sdk-wasm for Rust-backed implementations)
 export {
   initSdkWasm,
+  sdkArcFactories,
+  type WasmArcCredential,
+  type WasmArcCredentialRequest,
   isSdkWasmReady,
   computeSyncPlanSdk,
   sdkSplitmix64,

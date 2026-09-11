@@ -17,6 +17,14 @@ interface PirSdkWasm {
     new(): WasmDatabaseCatalog;
     fromJson(json: any): WasmDatabaseCatalog;
   };
+  /** ARC credentials for credits (`docs/CREDITS.md`); see `sdkArcFactories`. */
+  WasmArcCredentialRequest: {
+    new(epoch: number): WasmArcCredentialRequest;
+    fromBytes(epoch: number, secrets: Uint8Array, request: Uint8Array): WasmArcCredentialRequest;
+  };
+  WasmArcCredential: {
+    new(credential: Uint8Array, epoch: number, presentationLimit: number, nextNonce: number): WasmArcCredential;
+  };
   WasmSyncPlan: WasmSyncPlan;
   WasmQueryResult: {
     new(): WasmQueryResult;
@@ -885,6 +893,53 @@ export async function initSdkWasm(): Promise<boolean> {
  */
 export function isSdkWasmReady(): boolean {
   return sdkWasm !== null;
+}
+
+/** A blinded ARC credential request held in wasm (`WasmArcCredentialRequest`). */
+export interface WasmArcCredentialRequest {
+  epoch(): number;
+  requestBytes(): Uint8Array;
+  secretsBytes(): Uint8Array;
+  finalize(issuerPublicKeyHex: string, response: Uint8Array): Uint8Array;
+  free(): void;
+}
+
+/** A finished ARC credential with its presentation counter (`WasmArcCredential`). */
+export interface WasmArcCredential {
+  epoch(): number;
+  presentationLimit(): number;
+  nextNonce(): number;
+  remaining(): number;
+  present(count: number): Uint8Array;
+  free(): void;
+}
+
+/**
+ * The ARC factories `credits.ts` needs (`ArcRequestFactory` and
+ * `ArcCredentialFactory`), backed by the loaded wasm module. Throws when
+ * the module is not loaded: call `initSdkWasm()` first.
+ */
+export function sdkArcFactories(): {
+  request: {
+    create(epoch: number): WasmArcCredentialRequest;
+    restore(epoch: number, secrets: Uint8Array, request: Uint8Array): WasmArcCredentialRequest;
+  };
+  credential: {
+    open(credential: Uint8Array, epoch: number, presentationLimit: number, nextNonce: number): WasmArcCredential;
+  };
+} {
+  const mod = sdkWasm;
+  if (!mod) throw new Error('SDK WASM is not loaded; credentials need it');
+  return {
+    request: {
+      create: (epoch) => new mod.WasmArcCredentialRequest(epoch),
+      restore: (epoch, secrets, request) => mod.WasmArcCredentialRequest.fromBytes(epoch, secrets, request),
+    },
+    credential: {
+      open: (credential, epoch, presentationLimit, nextNonce) =>
+        new mod.WasmArcCredential(credential, epoch, presentationLimit, nextNonce),
+    },
+  };
 }
 
 // ─── Catalog Conversion ─────────────────────────────────────────────────────

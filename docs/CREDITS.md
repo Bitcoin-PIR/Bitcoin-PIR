@@ -236,5 +236,6 @@ to anyone; PIR hides them regardless of payment.
 | ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | after that |
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
-| Wallet UI: buy a credential, show the balance, hand `CreditWallet.present` to the adapters | `web/` | next |
+| Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
+| Rollout: issuer config (`[gas]`, `operator_pubkeys`, `[arc]`, `arc-seed`), `--credit-issuer-url` on pir1, the pir2 UKI script flags and a sealed campaign, `--require-credits` once clients carry wallets | `Bitcoin-PIR/cashier`, pir1, pir2 | next |
 | Retire `0x0b` | protocol registry | after every client presents credits |
