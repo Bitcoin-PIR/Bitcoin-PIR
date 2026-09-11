@@ -50,6 +50,7 @@ import {
   type SessionGrantPresentation,
   type SessionGrantProvider,
 } from './session-grant.js';
+import type { CreditEnablement, CreditProvider } from './credits.js';
 
 export interface OramLayoutInfo {
   backend: 'oram-direct';
@@ -133,6 +134,9 @@ export interface OramPirClientConfig {
    * for the free path. The outcome arrives via `onSessionGrant`.
    */
   sessionGrant?: SessionGrantProvider;
+  /** Credits (`docs/CREDITS.md`): see `BatchPirClientConfig.creditProvider`. */
+  creditProvider?: CreditProvider;
+  onCredits?: (status: CreditEnablement) => void;
   onSessionGrant?: (info: SessionGrantPresentation) => void;
   databaseProofPins?: DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
@@ -607,12 +611,40 @@ export class OramPirClientAdapter {
       }
 
       if (this.secureChannelEstablished) {
-        await this.presentSessionGrant();
+        const grant = await this.presentSessionGrant();
+        if (grant?.state !== 'accepted') await this.enableCredits();
       }
     } finally {
       policyReqs.free();
       att?.free();
     }
+  }
+
+  /** Turn on credits when the server requires them; see `BatchPirClient.enableCredits`. */
+  async enableCredits(): Promise<CreditEnablement | null> {
+    const provider = this.config.creditProvider;
+    if (!provider) return null;
+    const client = this.wasmClient;
+    let outcome: CreditEnablement;
+    if (!client || !client.isConnected) {
+      outcome = { state: 'error', error: 'not connected' };
+    } else if (!this.secureChannelEstablished) {
+      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+    } else {
+      try {
+        const state = await client.enableCredits(provider);
+        outcome = { state: state as CreditEnablement['state'] };
+      } catch (e) {
+        outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
+      }
+    }
+    if (outcome.state === 'required') {
+      this.log('ORAM: credits required; metered frames are funded from the wallet', 'info');
+    } else if (outcome.state === 'error') {
+      this.log(`ORAM: credits could not be enabled — ${outcome.error}`, 'error');
+    }
+    this.config.onCredits?.(outcome);
+    return outcome;
   }
 
   /**

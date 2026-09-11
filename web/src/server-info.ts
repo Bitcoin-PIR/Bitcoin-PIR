@@ -48,6 +48,9 @@ export interface ServerInfoJson {
   onionpir_merkle?: OnionPirMerkleInfoJson;
   /** Per-database info (Merkle availability). Present when server has >1 DB or any DB has bucket Merkle. */
   databases?: PerDatabaseInfoJson[];
+  /** Gas card and credits flags (docs/CREDITS.md), passed through raw for `credits.ts`. */
+  gas?: unknown;
+  credits?: { enabled: boolean; required: boolean };
 }
 
 export interface PerDatabaseInfoJson {
@@ -164,6 +167,10 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
     chunk_slot_size: raw.chunk_slot_size,
     role: raw.role,
   };
+  if (raw.gas !== undefined) info.gas = raw.gas;
+  if (raw.credits && typeof raw.credits === 'object') {
+    info.credits = { enabled: raw.credits.enabled === true, required: raw.credits.required === true };
+  }
 
   // `onionpir` is defined below but we also want it in the top-level
   // `info.onionpir` assignment. The helper is hoisted via `const` below so

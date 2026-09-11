@@ -446,6 +446,18 @@ export interface WasmDpfClient {
    *  the server's error text when grants are not enabled there, the
    *  issuer is not pinned, or the grant is expired or exhausted. */
   presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
+  /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
+   *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
+   *  `{ gasAdded, gasBalance }`. Bearer material: call after
+   *  `upgradeToSecureChannel`. */
+  presentCredits(serverIndex: number, kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
+  /** Pay one leg's metered frames from `provider` when that server requires
+   *  credits (`docs/CREDITS.md`): `provider(credits)` returns
+   *  `{ kind, payload, credits }` or `null` and is called from inside query
+   *  calls whenever the connection's balance runs short. Resolves to
+   *  `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+   *  `upgradeToSecureChannel`. */
+  enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
    *  source (call `attest` first; ideally also check the SEV-SNP report's
@@ -557,6 +569,18 @@ export interface WasmHarmonyClient {
    *  the server's error text when grants are not enabled there, the
    *  issuer is not pinned, or the grant is expired or exhausted. */
   presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
+  /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
+   *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
+   *  `{ gasAdded, gasBalance }`. Bearer material: call after
+   *  `upgradeToSecureChannel`. */
+  presentCredits(serverIndex: number, kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
+  /** Pay one leg's metered frames from `provider` when that server requires
+   *  credits (`docs/CREDITS.md`): `provider(credits)` returns
+   *  `{ kind, payload, credits }` or `null` and is called from inside query
+   *  calls whenever the connection's balance runs short. Resolves to
+   *  `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+   *  `upgradeToSecureChannel`. */
+  enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
@@ -679,6 +703,10 @@ export interface WasmOramClient {
   announce(): Promise<WasmAnnounceVerification>;
   /** Attach a cashier-signed session grant; see `WasmDpfClient.presentSessionGrant`. */
   presentSessionGrant(grant: Uint8Array): Promise<number>;
+  /** Present credits on the connection; see `WasmDpfClient.presentCredits`. */
+  presentCredits(kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
+  /** Pay the server's metered frames from `provider` when it requires credits; see `WasmDpfClient.enableCredits`. */
+  enableCredits(provider: (credits: number) => unknown): Promise<string>;
   upgradeToSecureChannel(serverStaticPub: Uint8Array): Promise<void>;
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   verifyDatabaseProof(

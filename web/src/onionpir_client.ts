@@ -70,6 +70,12 @@ import {
   type SessionGrantPresentation,
   type SessionGrantProvider,
 } from './session-grant.js';
+import {
+  CreditedChannel,
+  serverGasCardFromInfo,
+  type CreditEnablement,
+  type CreditProvider,
+} from './credits.js';
 
 // ─── Constants for OnionPIR v2 layout ─────────────────────────────────────
 
@@ -744,6 +750,14 @@ export interface OnionPirClientConfig {
    */
   sessionGrant?: SessionGrantProvider;
   onSessionGrant?: (status: SessionGrantPresentation) => void;
+  /**
+   * Credits (`docs/CREDITS.md`): called with the number of credits the next
+   * frame needs whenever the connection's balance runs short; return a
+   * presentation or `null`. Only used when the server requires credits and
+   * no session grant was accepted. Outcomes arrive via `onCredits`.
+   */
+  creditProvider?: CreditProvider;
+  onCredits?: (status: CreditEnablement) => void;
   databaseProofPins?: readonly DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, status: DatabaseProofStatus) => void;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
@@ -931,6 +945,9 @@ interface PendingOnionBatch {
 export class OnionPirWebClient {
   private ws: ManagedWebSocket | null = null;
   private secureChannel: WasmStandaloneSecureChannelV1 | null = null;
+  /** Funds metered frames on `creditedSocket` (docs/CREDITS.md). */
+  private credited: CreditedChannel | null = null;
+  private creditedSocket: ManagedWebSocket | null = null;
   private secureChannelEstablished = false;
   private config: OnionPirClientConfig;
   private connectionState: ConnectionState = 'disconnected';
@@ -1457,6 +1474,8 @@ export class OnionPirWebClient {
   disconnect(): void {
     const socket = this.ws;
     this.ws = null;
+    this.credited = null;
+    this.creditedSocket = null;
     this.sessionGeneration++;
     this.clearSessionTrust();
     this.catalog = null;
@@ -1469,7 +1488,47 @@ export class OnionPirWebClient {
 
   private sendRaw(msg: Uint8Array): Promise<Uint8Array> {
     if (!this.ws) throw new Error('Not connected');
-    return this.ws.sendRaw(msg);
+    return this.exchangeFrame(this.ws, msg);
+  }
+
+  /** One round trip on `socket`, funded first when credits are required there. */
+  private exchangeFrame(socket: ManagedWebSocket, msg: Uint8Array): Promise<Uint8Array> {
+    if (this.credited && this.creditedSocket === socket) return this.credited.roundtrip(msg);
+    return socket.sendRaw(msg);
+  }
+
+  /**
+   * Read the server's credits flags and, when it requires credits, route
+   * every metered frame through a `CreditedChannel` fed by
+   * `config.creditProvider`. Never throws; the outcome goes to `onCredits`.
+   */
+  private async enableCredits(socket: ManagedWebSocket): Promise<void> {
+    const provider = this.config.creditProvider;
+    if (!provider) return;
+    let outcome: CreditEnablement;
+    try {
+      const info = await fetchServerInfoJson(socket);
+      if (this.ws !== socket) return;
+      if (!info.credits?.enabled) {
+        outcome = { state: 'not-enabled' };
+      } else if (!info.credits.required) {
+        outcome = { state: 'not-required' };
+      } else {
+        const card = serverGasCardFromInfo(info);
+        if (!card) throw new Error('server requires credits but publishes no gas card');
+        this.credited = new CreditedChannel(card, provider, (frame) => socket.sendRaw(frame));
+        this.creditedSocket = socket;
+        outcome = { state: 'required' };
+      }
+    } catch (error) {
+      outcome = { state: 'error', error: (error as Error)?.message ?? String(error) };
+    }
+    if (outcome.state === 'required') {
+      this.log('OnionPIR: credits required here; metered frames are funded from the wallet', 'info');
+    } else if (outcome.state === 'error') {
+      this.log(`OnionPIR: credits could not be enabled — ${outcome.error}`, 'error');
+    }
+    this.config.onCredits?.(outcome);
   }
 
   private assertCurrentQuerySession(
@@ -1501,7 +1560,7 @@ export class OnionPirWebClient {
   ): Promise<Uint8Array> {
     this.assertCurrentQuerySession(generation, dbId, `${operation} start`);
     const socket = this.ws!;
-    const response = await socket.sendRaw(msg);
+    const response = await this.exchangeFrame(socket, msg);
     if (this.ws !== socket) {
       throw new Error(`stale OnionPIR ${operation} socket`);
     }
@@ -1647,7 +1706,10 @@ export class OnionPirWebClient {
       }
       this.replaceOperatorIdentity(identity);
       this.log('OnionPIR same-socket secure channel established', 'success');
-      await this.presentSessionGrant();
+      const grant = await this.presentSessionGrant();
+      if (grant?.state !== 'accepted') {
+        await this.enableCredits(socket);
+      }
     } catch (error) {
       if (this.secureChannel !== channel) channel.free();
       throw error;

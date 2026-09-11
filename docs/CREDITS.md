@@ -37,13 +37,15 @@ parameters (`GasParams::PRODUCTION_2026_09`: `credit_sat` 10,
 | --- | --- | --- | --- |
 | OnionPIR single address (pir1) | 669,870 | 10 | 100 |
 | HarmonyPIR fresh client: 8 hint sets on pir1, 13 query frames on pir2 | 274,677 | 4 + 1 | 50 |
-| HarmonyPIR later lookup, one new connection | 517 | 1 | 10 |
+| HarmonyPIR later lookup, one new connection (46 MB of query responses) | 46,300 | 1 | 10 |
 | DPF single address, both servers | 26,045 | 1 + 1 | 20 |
 | DPF batch of 75 addresses, both servers (estimate) | 37,710 | 1 + 1 | 20 |
 | Direct ORAM single address (pir2, estimate) | 2,070 | 1 | 10 |
 
-The rounding margins are thin on purpose: OnionPIR sits at 9.3 credits,
-the HarmonyPIR hint side at 3.8. Retune `gas_per_credit` inside the window
+HarmonyPIR query responses carry the T−1 cells of every group (4–15 MB
+per frame, 46 MB per lookup), so on the query server egress, not work, is
+the price. The rounding margins are thin on purpose: OnionPIR sits at 9.3
+credits, the HarmonyPIR hint side at 3.8. Retune `gas_per_credit` inside the window
 68,540–74,430 when the databases grow or BTC moves; the rate card follows.
 
 ## Gas model
@@ -116,6 +118,33 @@ CPU-seconds per lookup and one that refreshes per level 0.8.
 - Session grants (`0x0b`) keep working during the migration; a connection
   with an attached grant is charged the grant's credit table instead of
   gas.
+- `GET_INFO_JSON` carries `"credits":{"enabled","required"}` next to the
+  gas card, so a client presents only where presenting buys something.
+
+### Metering on the client
+
+Every client wraps its connection once the server says credits are
+required (`pir_sdk_client::credit_transport::enable_credits`, called by
+`enable_credits` on the four SDK clients, `enableCredits` on the wasm
+clients, and the web adapters' `creditProvider` hook; the standalone
+OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
+
+- Outgoing frames are classified like the server classifies them
+  (`credit_frames::classify_frame`, checked against the server's
+  classifier by a test in `unified_server`), priced from the gas card the
+  server published, and funded before they go out: work plus base fee plus
+  an estimate of the response bytes the server charges afterwards
+  (measured sizes with headroom, replaced by what the connection observed).
+- A shortfall is covered by asking the wallet (`CreditProvider`) for the
+  missing credits and presenting them on the same connection first; every
+  receipt resynchronises the client's balance with the server's, and a
+  refusal that names its numbers resynchronises too and is retried once on
+  the round-trip path. A connection that carries an accepted session grant
+  is not credited (the grant pays).
+- Responses are attributed to the frames that caused them (HarmonyPIR hint
+  streams count all their frames), so egress is charged as the server
+  charges it. What is left on a connection when it closes is lost by
+  design; a client therefore presents exactly what the next frame needs.
 
 ### Server flags
 
@@ -206,5 +235,6 @@ to anyone; PIR hides them regardless of payment.
 | `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | next |
 | ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | after that |
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
-| Metering hooks in the four clients and the web adapters (present before each metered frame, retry on refusal) | `crates/sdk/client`, `web/` | next |
+| Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
+| Wallet UI: buy a credential, show the balance, hand `CreditWallet.present` to the adapters | `web/` | next |
 | Retire `0x0b` | protocol registry | after every client presents credits |
