@@ -104,6 +104,12 @@ tracing = { version = "0.1", features = ["log"] }
 
 # Error handling
 thiserror = "1.0"
+# Credits (docs/CREDITS.md): gas parameters, metered-request kinds, ARC
+# payload codec shared with the servers and the issuer; the server's gas
+# card arrives as JSON.
+pir-credit = { version = "0.1.0", path = "../../trust/pir-credit" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 # Human-readable hash mismatch messages for DB proof policy failures.
 hex = "0.4"

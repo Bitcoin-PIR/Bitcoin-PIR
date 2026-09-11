@@ -600,6 +600,32 @@ impl HarmonyClient {
         crate::announce::announce(conn.as_mut()).await
     }
 
+    /// Present credits (`kind` and `payload` per [`crate::credits`]) on the
+    /// hint (0) or query (1) server and return its receipt. Bearer material:
+    /// call after the secure-channel upgrade.
+    pub async fn present_credits(
+        &mut self,
+        server_index: u8,
+        kind: u8,
+        payload: &[u8],
+    ) -> PirResult<crate::credits::CreditReceipt> {
+        let conn = match server_index {
+            0 => self.hint_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_credits: hint server not connected".into())
+            })?,
+            1 => self.query_conn.as_mut().ok_or_else(|| {
+                PirError::Protocol("present_credits: query server not connected".into())
+            })?,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_credits: server_index must be 0 (hint) or 1 (query), got {}",
+                    server_index
+                )))
+            }
+        };
+        crate::credits::present_credits(conn.as_mut(), kind, payload).await
+    }
+
     /// Attach a cashier-signed session grant to the hint (0) or query (1)
     /// server and return the credits remaining there. See
     /// [`crate::DpfClient::present_session_grant`].
