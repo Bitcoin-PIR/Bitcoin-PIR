@@ -5,12 +5,14 @@
 //! geometry, [`gas`]), the issuer publishes how much gas a **credit** buys
 //! ([`params`]), clients pay in credits (Cashu ecash or ARC presentations
 //! verified online at the issuer, [`issuer`]), and every server reports an
-//! hourly aggregate of what it actually spent ([`meter`]).
+//! hourly aggregate of what it actually spent ([`meter`]). ARC credentials
+//! (epochs, contexts, the kind-2 payload) are fixed in [`arc`].
 //!
 //! Pure bookkeeping: no cryptography, filesystem, clock, or network.
 
 #![forbid(unsafe_code)]
 
+pub mod arc;
 pub mod gas;
 pub mod issuer;
 pub mod meter;
