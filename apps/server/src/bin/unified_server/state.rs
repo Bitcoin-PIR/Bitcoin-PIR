@@ -483,8 +483,15 @@ impl UnifiedServerData {
             json.push(']'); // close databases array
         }
 
-        // Gas per metered request kind, all public geometry (docs/CREDITS.md).
+        // Gas per metered request kind, all public geometry (docs/CREDITS.md),
+        // and whether this server takes and requires credits, so a client
+        // presents only where presenting buys something.
         json.push_str(&self.credit_meter.info_json_fragment());
+        json.push_str(&format!(
+            r#","credits":{{"enabled":{},"required":{}}}"#,
+            self.credits.is_some(),
+            self.credits.as_ref().is_some_and(|credits| credits.require)
+        ));
         json.push('}');
         json
     }

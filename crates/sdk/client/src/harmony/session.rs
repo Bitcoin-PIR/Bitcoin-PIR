@@ -626,6 +626,37 @@ impl HarmonyClient {
         crate::credits::present_credits(conn.as_mut(), kind, payload).await
     }
 
+    /// Pay the hint (0) or query (1) server's metered frames from
+    /// `provider` when it requires credits; see
+    /// [`crate::DpfClient::enable_credits`]. Call after the secure-channel
+    /// upgrade (which also drops the secondary sockets, so one credited
+    /// connection per server is all there is).
+    pub async fn enable_credits(
+        &mut self,
+        server_index: u8,
+        provider: std::sync::Arc<dyn crate::credit_transport::CreditProvider>,
+    ) -> PirResult<crate::credit_transport::CreditStatus> {
+        let slot = match server_index {
+            0 => &mut self.hint_conn,
+            1 => &mut self.query_conn,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "enable_credits: server_index must be 0 (hint) or 1 (query), got {}",
+                    server_index
+                )))
+            }
+        };
+        let conn = slot.take().ok_or_else(|| {
+            PirError::Protocol(format!(
+                "enable_credits: {} server not connected",
+                if server_index == 0 { "hint" } else { "query" }
+            ))
+        })?;
+        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        *slot = Some(conn);
+        status
+    }
+
     /// Attach a cashier-signed session grant to the hint (0) or query (1)
     /// server and return the credits remaining there. See
     /// [`crate::DpfClient::present_session_grant`].

@@ -2592,6 +2592,37 @@ impl DpfClient {
         crate::credits::present_credits(conn.as_mut(), kind, payload).await
     }
 
+    /// Pay one server's metered frames from `provider` when that server
+    /// requires credits (docs/CREDITS.md): reads its info JSON over the
+    /// connection and, if credits are required there, wraps the connection
+    /// so every metered frame is funded before it goes out. Call after
+    /// [`Self::upgrade_to_secure_channel`]; servers that do not require
+    /// credits are left as they are.
+    pub async fn enable_credits(
+        &mut self,
+        server_index: u8,
+        provider: std::sync::Arc<dyn crate::credit_transport::CreditProvider>,
+    ) -> PirResult<crate::credit_transport::CreditStatus> {
+        let slot = match server_index {
+            0 => &mut self.conn0,
+            1 => &mut self.conn1,
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "enable_credits: server_index must be 0 or 1, got {}",
+                    server_index
+                )))
+            }
+        };
+        let conn = slot.take().ok_or_else(|| {
+            PirError::Protocol(format!(
+                "enable_credits: server{server_index} not connected"
+            ))
+        })?;
+        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        *slot = Some(conn);
+        status
+    }
+
     /// server's ledger. The grant is a bearer token: call this after
     /// [`Self::upgrade_to_secure_channel`]. See [`crate::session_grant`].
     pub async fn present_session_grant(

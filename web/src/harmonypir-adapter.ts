@@ -119,6 +119,7 @@ import {
   type SessionGrantPresentation,
   type SessionGrantProvider,
 } from './session-grant.js';
+import type { CreditEnablement, CreditProvider } from './credits.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -199,6 +200,9 @@ export interface HarmonyPirClientConfig {
    * return `null` for the free path. Outcomes arrive via `onSessionGrant`.
    */
   sessionGrant?: SessionGrantProvider;
+  /** Credits (`docs/CREDITS.md`): see `BatchPirClientConfig.creditProvider`; leg 0 is the hint server, 1 the query server. */
+  creditProvider?: CreditProvider;
+  onCredits?: (providerIndex: 0 | 1, status: CreditEnablement) => void;
   /** Fired per leg (0 = hint, 1 = query) after a presentation. */
   onSessionGrant?: (serverIndex: 0 | 1, info: SessionGrantPresentation) => void;
   /** Database proof pins the frontend should fetch and verify after the
@@ -904,8 +908,12 @@ export class HarmonyPirClientAdapter {
       }
 
       this.assertLegOwner(providerIndex, owner);
-      await this.presentSessionGrant(providerIndex);
+      const grant = await this.presentSessionGrant(providerIndex);
       this.assertLegOwner(providerIndex, owner);
+      if (grant?.state !== 'accepted') {
+        await this.enableCredits(providerIndex);
+        this.assertLegOwner(providerIndex, owner);
+      }
     } finally {
       attestation?.free();
     }
@@ -1117,8 +1125,10 @@ export class HarmonyPirClientAdapter {
         }
 
         if (this.secureChannelEstablished) {
-          await this.presentSessionGrant(0);
-          await this.presentSessionGrant(1);
+          const grant0 = await this.presentSessionGrant(0);
+          const grant1 = await this.presentSessionGrant(1);
+          if (grant0?.state !== 'accepted') await this.enableCredits(0);
+          if (grant1?.state !== 'accepted') await this.enableCredits(1);
         }
 
       } finally {
@@ -1142,6 +1152,33 @@ export class HarmonyPirClientAdapter {
    * `null` att (attest failed) yields `state: 'error'`. Mirrors
    * `dpf-adapter.ts::verifyOperatorIdentityOne`.
    */
+  /** Turn on credits for one leg when its server requires them; see `BatchPirClient.enableCredits`. */
+  async enableCredits(providerIndex: 0 | 1): Promise<CreditEnablement | null> {
+    const provider = this.config.creditProvider;
+    if (!provider) return null;
+    const client = this.wasmClient;
+    let outcome: CreditEnablement;
+    if (!client || !client.isProviderConnected(providerIndex)) {
+      outcome = { state: 'error', error: `provider${providerIndex} is not connected` };
+    } else if (!this.secureChannelLegs[providerIndex]) {
+      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+    } else {
+      try {
+        const state = await client.enableCredits(providerIndex, provider);
+        outcome = { state: state as CreditEnablement['state'] };
+      } catch (e) {
+        outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
+      }
+    }
+    if (outcome.state === 'required') {
+      this.log(`provider${providerIndex}: credits required; metered frames are funded from the wallet`);
+    } else if (outcome.state === 'error') {
+      this.log(`provider${providerIndex}: credits could not be enabled — ${outcome.error}`);
+    }
+    this.config.onCredits?.(providerIndex, outcome);
+    return outcome;
+  }
+
   /**
    * Present a session grant on one connected leg (0 = hint, 1 = query):
    * `grant`, or the configured provider's current grant when omitted.

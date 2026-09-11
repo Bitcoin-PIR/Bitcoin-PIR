@@ -765,6 +765,140 @@ mod tests {
         assert!(lines[1].starts_with("[meter] last 3600s: frames=1 gas_total="));
     }
 
+    /// The SDK's client-side classifier must price every frame the way this
+    /// server does: encode each request kind with the real encoders and
+    /// compare both classifiers (docs/CREDITS.md "Metering on the server").
+    #[test]
+    fn client_classifier_agrees_with_the_server_for_every_metered_request() {
+        use pir_sdk_client::credit_frames::classify_frame;
+        let key = libdpf::Dpf::with_default_key().gen(1, 8).0.to_bytes();
+        let mut frames: Vec<Vec<u8>> = vec![
+            Request::IndexBatch(BatchQuery {
+                level: 0,
+                round_id: 0,
+                db_id: 0,
+                keys: vec![vec![key.clone(), key.clone()]; 2],
+            })
+            .encode(),
+            Request::ChunkBatch(BatchQuery {
+                level: 1,
+                round_id: 7,
+                db_id: 2,
+                keys: vec![vec![key.clone(), key.clone(), key.clone()]; 3],
+            })
+            .encode(),
+            Request::BucketMerkleSibBatch(BatchQuery {
+                level: 0,
+                round_id: 101,
+                db_id: 1,
+                keys: vec![vec![key.clone()]; 4],
+            })
+            .encode(),
+            Request::HarmonyHints(HarmonyHintRequest {
+                prp_key: [3u8; 16],
+                prp_backend: 1,
+                level: 22,
+                group_ids: vec![0, 5, 9],
+                db_id: 0,
+            })
+            .encode(),
+            Request::HarmonyHintsV2(HarmonyHintRequestV2 { db_id: 1 }).encode(),
+            Request::HarmonyHintsV2Half(HarmonyHintRequestV2Half {
+                session_token: [9u8; 16],
+                side: 1,
+                db_id: 0,
+            })
+            .encode(),
+            Request::HarmonyQuery(HarmonyQuery {
+                level: 0,
+                group_id: 3,
+                round_id: 2,
+                indices: vec![1, 2, 3, 4],
+                db_id: 1,
+            })
+            .encode(),
+            Request::HarmonyBatchQuery(HarmonyBatchQuery {
+                level: 11,
+                round_id: 0,
+                sub_queries_per_group: 2,
+                items: vec![
+                    HarmonyBatchItem {
+                        group_id: 0,
+                        sub_queries: vec![vec![1, 2], vec![3]],
+                    },
+                    HarmonyBatchItem {
+                        group_id: 4,
+                        sub_queries: vec![vec![], vec![7, 8, 9]],
+                    },
+                ],
+                db_id: 0,
+            })
+            .encode(),
+            Request::OramLookup(OramLookupRequest {
+                db_id: 1,
+                script_hashes: vec![[1u8; 20], [2u8; 20]],
+                slot_present: vec![true, false],
+            })
+            .encode(),
+            RegisterKeysMsg {
+                galois_keys: vec![1, 2, 3],
+                gsw_keys: vec![4, 5],
+                db_id: 1,
+            }
+            .encode(),
+        ];
+        for variant in [
+            REQ_ONIONPIR_INDEX_QUERY,
+            REQ_ONIONPIR_CHUNK_QUERY,
+            REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+            REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+        ] {
+            frames.push(
+                OnionPirBatchQuery {
+                    round_id: 1,
+                    queries: vec![vec![8u8; 3], vec![]],
+                    db_id: 2,
+                }
+                .encode(variant),
+            );
+        }
+        // Tree-top requests carry an optional db_id byte after the variant.
+        for variant in [
+            REQ_BUCKET_MERKLE_TREE_TOPS,
+            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
+            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
+        ] {
+            frames.push(vec![1, 0, 0, 0, variant]);
+            frames.push(vec![2, 0, 0, 0, variant, 1]);
+        }
+        // Unmetered requests must be unmetered on both sides.
+        frames.push(Request::Ping.encode());
+        frames.push(Request::GetInfo.encode());
+        frames.push(Request::HarmonyGetInfo.encode());
+        frames.push(Request::Announce.encode());
+        frames.push(
+            Request::CreditPresent {
+                kind: 2,
+                payload: vec![1, 2, 3],
+            }
+            .encode(),
+        );
+        assert!(frames.len() >= 20);
+        for frame in &frames {
+            let variant = frame[4];
+            let server = metered_op_for_frame(variant, &frame[4..]);
+            let client = classify_frame(frame);
+            assert_eq!(client, server, "variant 0x{variant:02x}");
+        }
+        assert_eq!(
+            frames
+                .iter()
+                .filter(|frame| classify_frame(frame).is_some())
+                .count(),
+            20
+        );
+    }
+
     #[test]
     fn process_cpu_clock_is_monotonic() {
         let a = process_cpu_time();

@@ -845,6 +845,21 @@ impl OnionClient {
         crate::announce::announce(conn.as_mut()).await
     }
 
+    /// Pay the server's metered frames from `provider` when it requires
+    /// credits; see [`crate::DpfClient::enable_credits`].
+    pub async fn enable_credits(
+        &mut self,
+        provider: std::sync::Arc<dyn crate::credit_transport::CreditProvider>,
+    ) -> PirResult<crate::credit_transport::CreditStatus> {
+        let conn = self
+            .conn
+            .take()
+            .ok_or_else(|| PirError::Protocol("enable_credits: server not connected".into()))?;
+        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        self.conn = Some(conn);
+        status
+    }
+
     /// Attach a cashier-signed session grant to the server connection and
     /// return the credits remaining there. See
     /// [`crate::DpfClient::present_session_grant`].

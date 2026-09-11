@@ -1709,6 +1709,34 @@ impl WasmDpfClient {
             .map_err(err_to_js)
     }
 
+    /// Pay one server's metered frames from `provider` when that server
+    /// requires credits (docs/CREDITS.md). `provider(credits)` returns
+    /// `{ kind, payload, credits }` or `null`; it is called from inside
+    /// query calls whenever the connection's balance runs short. Resolves
+    /// to `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+    /// [`Self::upgrade_to_secure_channel`].
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = enableCredits)]
+    pub async fn enable_credits(
+        &mut self,
+        server_index: u8,
+        provider: js_sys::Function,
+    ) -> Result<String, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "enableCredits: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        let provider = Arc::new(crate::credit::JsCreditProvider::new(provider));
+        let status = self
+            .inner
+            .enable_credits(server_index, provider)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_status_str(status).to_owned())
+    }
+
     /// Present credits (docs/CREDITS.md) on one server (`serverIndex` ∈
     /// {0, 1}): `kind` 1 is a Cashu token, 2 an ARC payload from
     /// [`crate::WasmArcCredential::present`]. Resolves to
@@ -2319,6 +2347,34 @@ impl WasmHarmonyClient {
             .map_err(err_to_js)
     }
 
+    /// Pay the hint (0) or query (1) server's metered frames from
+    /// `provider` when it requires credits; see [`WasmDpfClient::enable_credits`]. `provider(credits)` returns
+    /// `{ kind, payload, credits }` or `null`; it is called from inside
+    /// query calls whenever the connection's balance runs short. Resolves
+    /// to `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+    /// [`Self::upgrade_to_secure_channel`].
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = enableCredits)]
+    pub async fn enable_credits(
+        &mut self,
+        server_index: u8,
+        provider: js_sys::Function,
+    ) -> Result<String, JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "enableCredits: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        let provider = Arc::new(crate::credit::JsCreditProvider::new(provider));
+        let status = self
+            .inner
+            .enable_credits(server_index, provider)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_status_str(status).to_owned())
+    }
+
     /// Present credits (docs/CREDITS.md) on the hint (0) or query (1)
     /// server; resolves to `{ gasAdded, gasBalance }`. See
     /// [`WasmDpfClient::present_credits`].
@@ -2911,6 +2967,20 @@ impl WasmOramClient {
             .present_session_grant(grant)
             .await
             .map_err(err_to_js)
+    }
+
+    /// Pay the server's metered frames from `provider` when it requires
+    /// credits; see [`WasmDpfClient::enable_credits`].
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = enableCredits)]
+    pub async fn enable_credits(&mut self, provider: js_sys::Function) -> Result<String, JsError> {
+        let provider = Arc::new(crate::credit::JsCreditProvider::new(provider));
+        let status = self
+            .inner
+            .enable_credits(provider)
+            .await
+            .map_err(err_to_js)?;
+        Ok(crate::credit::credit_status_str(status).to_owned())
     }
 
     /// Present credits (docs/CREDITS.md) on the connection; resolves to

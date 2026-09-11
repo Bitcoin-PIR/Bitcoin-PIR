@@ -75,6 +75,7 @@ import {
   type SessionGrantPresentation,
   type SessionGrantProvider,
 } from './session-grant.js';
+import type { CreditEnablement, CreditProvider } from './credits.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -354,6 +355,14 @@ export interface BatchPirClientConfig {
   /** Fired per leg after a presentation: accepted with the credits left on
    *  that server, refused with the server's reason, or not enabled there. */
   onSessionGrant?: (serverIndex: 0 | 1, info: SessionGrantPresentation) => void;
+  /**
+   * Credits (`docs/CREDITS.md`): called from inside queries with the number
+   * of credits a leg's next frame needs when its balance runs short; return
+   * a presentation or `null`. Used only where the server requires credits
+   * and no session grant was accepted. Outcomes arrive via `onCredits`.
+   */
+  creditProvider?: CreditProvider;
+  onCredits?: (serverIndex: 0 | 1, status: CreditEnablement) => void;
   /** Database proof pins the frontend should fetch and verify after the
    * catalog is loaded. Empty/default means no db-proof UI check. */
   databaseProofPins?: DatabaseProofPin[];
@@ -1699,8 +1708,12 @@ export class BatchPirClientAdapter {
       }
 
       this.assertLegOwner(serverIndex, owner);
-      await this.presentSessionGrant(serverIndex);
+      const grant = await this.presentSessionGrant(serverIndex);
       this.assertLegOwner(serverIndex, owner);
+      if (grant?.state !== 'accepted') {
+        await this.enableCredits(serverIndex);
+        this.assertLegOwner(serverIndex, owner);
+      }
     } finally {
       attestation?.free();
     }
@@ -1970,8 +1983,10 @@ export class BatchPirClientAdapter {
         }
 
         if (this.secureChannelEstablished) {
-          await this.presentSessionGrant(0);
-          await this.presentSessionGrant(1);
+          const grant0 = await this.presentSessionGrant(0);
+          const grant1 = await this.presentSessionGrant(1);
+          if (grant0?.state !== 'accepted') await this.enableCredits(0);
+          if (grant1?.state !== 'accepted') await this.enableCredits(1);
         }
 
       } finally {
@@ -1995,6 +2010,38 @@ export class BatchPirClientAdapter {
    * `serverStaticPub` the bundle's `channel_pub` is bound against, so a
    * `null` att (attest failed) yields `state: 'error'`.
    */
+  /**
+   * Turn on credits for one leg when its server requires them
+   * (`docs/CREDITS.md`): the wasm client reads the server's flags and,
+   * where required, funds every metered frame from `config.creditProvider`
+   * before sending it. Never throws; the outcome goes to `onCredits`.
+   */
+  async enableCredits(serverIndex: 0 | 1): Promise<CreditEnablement | null> {
+    const provider = this.config.creditProvider;
+    if (!provider) return null;
+    const client = this.wasmClient;
+    let outcome: CreditEnablement;
+    if (!client || !client.isServerConnected(serverIndex)) {
+      outcome = { state: 'error', error: `server${serverIndex} is not connected` };
+    } else if (!this.secureChannelLegs[serverIndex]) {
+      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+    } else {
+      try {
+        const state = await client.enableCredits(serverIndex, provider);
+        outcome = { state: state as CreditEnablement['state'] };
+      } catch (e) {
+        outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
+      }
+    }
+    if (outcome.state === 'required') {
+      this.log(`server${serverIndex}: credits required; metered frames are funded from the wallet`, 'info');
+    } else if (outcome.state === 'error') {
+      this.log(`server${serverIndex}: credits could not be enabled — ${outcome.error}`, 'error');
+    }
+    this.config.onCredits?.(serverIndex, outcome);
+    return outcome;
+  }
+
   /**
    * Present a session grant on one connected leg: `grant`, or the
    * configured provider's current grant when omitted (nothing happens on

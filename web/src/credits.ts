@@ -655,6 +655,205 @@ function isPendingCredential(value: unknown): value is PendingCredential {
   );
 }
 
+// ─── Frame classification (the OnionPIR web client) ─────────────────────────
+
+const REQ_REGISTER_KEYS = 0x50;
+const REQ_ONIONPIR_INDEX_QUERY = 0x51;
+const REQ_ONIONPIR_CHUNK_QUERY = 0x52;
+const REQ_ONIONPIR_MERKLE_INDEX_SIBLING = 0x53;
+const REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP = 0x54;
+const REQ_ONIONPIR_MERKLE_DATA_SIBLING = 0x55;
+const REQ_ONIONPIR_MERKLE_DATA_TREE_TOP = 0x56;
+
+/**
+ * The metered kind and database of an outgoing OnionPIR frame
+ * (`[len u32][variant][body]`), mirroring the server's classifier; `null`
+ * for unmetered variants and frames the server would not decode. The
+ * wasm-backed clients classify inside the SDK; only the standalone
+ * OnionPIR client sends frames from TypeScript.
+ */
+export function classifyOnionFrame(frame: Uint8Array): { op: MeteredOp; dbId: number } | null {
+  if (frame.length < 5) return null;
+  const view = new DataView(frame.buffer, frame.byteOffset, frame.byteLength);
+  if (view.getUint32(0, true) !== frame.length - 4) return null;
+  const variant = frame[4];
+  let pos = 5;
+  const trailingDbId = (): number | null => {
+    const left = frame.length - pos;
+    return left === 0 ? 0 : left === 1 ? frame[pos] : null;
+  };
+  switch (variant) {
+    case REQ_REGISTER_KEYS: {
+      for (let i = 0; i < 2; i++) {
+        if (pos + 4 > frame.length) return null;
+        const len = view.getUint32(pos, true);
+        pos += 4 + len;
+        if (pos > frame.length) return null;
+      }
+      const dbId = trailingDbId();
+      return dbId === null ? null : { op: { kind: 'onion_register_keys' }, dbId };
+    }
+    case REQ_ONIONPIR_INDEX_QUERY:
+    case REQ_ONIONPIR_CHUNK_QUERY:
+    case REQ_ONIONPIR_MERKLE_INDEX_SIBLING:
+    case REQ_ONIONPIR_MERKLE_DATA_SIBLING: {
+      if (pos + 3 > frame.length) return null;
+      pos += 2; // round_id
+      const queries = frame[pos++];
+      for (let i = 0; i < queries; i++) {
+        if (pos + 4 > frame.length) return null;
+        const len = view.getUint32(pos, true);
+        pos += 4 + len;
+        if (pos > frame.length) return null;
+      }
+      const dbId = trailingDbId();
+      if (dbId === null) return null;
+      const op: MeteredOp =
+        variant === REQ_ONIONPIR_INDEX_QUERY
+          ? { kind: 'onion_index_query' }
+          : variant === REQ_ONIONPIR_CHUNK_QUERY
+            ? { kind: 'onion_chunk_query' }
+            : { kind: 'onion_sibling_query' };
+      return { op, dbId };
+    }
+    case REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP:
+    case REQ_ONIONPIR_MERKLE_DATA_TREE_TOP: {
+      const dbId = trailingDbId();
+      return dbId === null ? null : { op: { kind: 'onion_tree_tops' }, dbId };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Response bytes pre-funded before a metered frame (see the SDK's `credit_frames`). */
+export function expectedResponseBytes(op: MeteredOp): number {
+  const KB = 1024;
+  const MB = 1024 * 1024;
+  switch (op.kind) {
+    case 'onion_register_keys':
+      return KB;
+    case 'onion_index_query':
+      return 2 * MB;
+    case 'onion_chunk_query':
+    case 'onion_sibling_query':
+      return MB;
+    case 'onion_tree_tops':
+      return 2 * MB;
+    case 'tree_tops':
+      return 12 * MB;
+    case 'harmony_pool_entry':
+      return 20 * MB;
+    case 'harmony_continuation':
+      return 16 * MB;
+    case 'harmony_hint_set':
+    case 'harmony_query': {
+      if (op.level === 0) return 5 * MB;
+      if (op.level === 1) return 16 * MB;
+      const sibling = op.level >= 20 ? op.level - 20 : op.level - 10;
+      const table = op.level >= 20 ? [12 * MB, 4 * MB, 2 * MB, 2 * MB] : [8 * MB, 3 * MB, MB, MB];
+      return table[Math.min(sibling, 3)];
+    }
+    case 'dpf_index_round':
+      return 16 * KB;
+    case 'oram_lookup':
+      return 64 * KB;
+    default:
+      return 32 * KB;
+  }
+}
+
+// ─── Credited channel (one connection's balance, round-trip flows) ──────────
+
+/** Hands over up to `credits` credits as one presentation, or `null` when empty. */
+export type CreditProvider = (credits: number) => Presentation | null;
+
+/** Sends a whole frame (`[len u32][payload]`) and returns the whole response frame. */
+export type FrameExchange = (frame: Uint8Array) => Promise<Uint8Array>;
+
+/** What enabling credits on one connection came to. */
+export interface CreditEnablement {
+  state: 'not-enabled' | 'not-required' | 'required' | 'error';
+  error?: string;
+}
+
+/**
+ * Keeps one round-trip connection funded: price a frame like the server
+ * does, present credits first when the balance would not cover it, charge
+ * egress when the response arrives, resynchronise from receipts and from a
+ * refusal's own numbers (retrying once).
+ */
+export class CreditedChannel {
+  readonly meter: ConnectionCreditMeter;
+  private readonly observed = new Map<string, number>();
+  private presented = 0;
+
+  constructor(
+    card: ServerGasCard,
+    private readonly provider: CreditProvider,
+    private readonly exchange: FrameExchange,
+  ) {
+    this.meter = new ConnectionCreditMeter(card);
+  }
+
+  get presentedCredits(): number {
+    return this.presented;
+  }
+
+  private reserve(op: MeteredOp): number {
+    const seen = this.observed.get(op.kind);
+    const bytes = seen === undefined ? expectedResponseBytes(op) : seen + Math.floor(seen / 8);
+    return egressGas(this.meter.card.params, bytes);
+  }
+
+  private async topUp(needed: number): Promise<void> {
+    for (let attempt = 0; this.meter.balance < needed; attempt++) {
+      if (attempt >= 4) throw new Error('credits: the balance did not reach the frame price after four presentations');
+      const credits = Math.max(1, this.meter.creditsToPresent(needed, 0));
+      const presentation = this.provider(credits);
+      if (!presentation) {
+        throw new Error(`credits required: this frame needs ${credits} more credit(s) and the wallet has none`);
+      }
+      const response = await this.exchange(encodeCreditPresentFrame(presentation.kind, presentation.payload));
+      const receipt = parseCreditResponsePayload(response.subarray(4));
+      this.presented += presentation.credits;
+      this.meter.recordReceipt(receipt);
+    }
+  }
+
+  /**
+   * Send `frame` through `exchange`, funding it first when it is metered
+   * and retrying once when the server still refuses it for gas.
+   */
+  async roundtrip(frame: Uint8Array): Promise<Uint8Array> {
+    const classified = classifyOnionFrame(frame);
+    const gas = classified ? this.meter.frameGas(classified.dbId, classified.op) : null;
+    if (classified === null || gas === null) return this.exchange(frame);
+    await this.topUp(gas + this.reserve(classified.op));
+    this.meter.recordFrame(gas);
+    let response = await this.exchange(frame);
+    const refusal = response[4] === 0xff ? parseInsufficientGas(errorMessage(response.subarray(4))) : null;
+    if (refusal) {
+      this.meter.recordRefusal(errorMessage(response.subarray(4)));
+      await this.topUp(refusal.needed + this.reserve(classified.op));
+      this.meter.recordFrame(refusal.needed);
+      response = await this.exchange(frame);
+    }
+    this.meter.recordResponse(response.length);
+    const seen = this.observed.get(classified.op.kind) ?? 0;
+    this.observed.set(classified.op.kind, Math.max(seen, response.length));
+    return response;
+  }
+}
+
+function errorMessage(payload: Uint8Array): string {
+  if (payload.length >= 5) {
+    const len = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(1, true);
+    if (5 + len <= payload.length) return new TextDecoder().decode(payload.subarray(5, 5 + len));
+  }
+  return new TextDecoder().decode(payload.subarray(1));
+}
+
 // ─── Wallet: credentials → presentations ────────────────────────────────────
 
 /** What the wasm SDK's `WasmArcCredential` provides. */
