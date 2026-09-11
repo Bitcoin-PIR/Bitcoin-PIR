@@ -22,6 +22,7 @@ import {
   RESP_CREDIT_OK,
 } from './constants.js';
 import type { StorageLike } from './session-grant.js';
+import { mintTokenForQuote, requestLightningQuote, waitForQuotePayment } from './cashu-purchase.js';
 
 const RESP_ERROR = 0xff;
 export const CREDITS_API_VERSION = 2;
@@ -930,6 +931,25 @@ export interface LightningRail {
   quote(mintUrl: string, amountSat: number, memo: string): Promise<{ quoteId: string; invoice: string; expiry: number | null }>;
   waitPaid(mintUrl: string, quoteId: string, signal?: AbortSignal): Promise<void>;
   mint(mintUrl: string, amountSat: number, quoteId: string): Promise<string>;
+}
+
+/**
+ * The Lightning → ecash rail of `cashu-purchase.ts` (cashu-ts loaded on
+ * demand) in the shape `purchaseCredential` takes.
+ */
+export function cashuLightningRail(): LightningRail {
+  const offer = (amountSat: number, credits = 0) => ({ credits, amount: amountSat, unit: 'sat' });
+  return {
+    quote: async (mintUrl, amountSat, memo) => {
+      const credits = Number(/(\d+) credits/.exec(memo)?.[1] ?? 0);
+      const quote = await requestLightningQuote(mintUrl, offer(amountSat, credits));
+      return { quoteId: quote.quoteId, invoice: quote.invoice, expiry: quote.expiry };
+    },
+    waitPaid: async (mintUrl, quoteId, signal) => {
+      await waitForQuotePayment(mintUrl, 'sat', quoteId, { signal });
+    },
+    mint: (mintUrl, amountSat, quoteId) => mintTokenForQuote(mintUrl, offer(amountSat), quoteId),
+  };
 }
 
 export interface PurchaseHooks {

@@ -170,6 +170,13 @@ test("runtime UKI pins the cashier key and the hint-set price, never --require-s
   assert.doesNotMatch(withoutComments(source), /^\s*--require-session-grant\b/m);
 });
 
+test("runtime UKI names the credit issuer and never --require-credits", () => {
+  const source = readFileSync(runPath, "utf8");
+  assert.match(source, /^PIR2_CREDIT_ISSUER_URL=https:\/\/[a-z0-9.-]+$/m);
+  assert.match(source, /--credit-issuer-url "\$PIR2_CREDIT_ISSUER_URL"/);
+  assert.doesNotMatch(withoutComments(source), /^\s*--require-credits\b/m);
+});
+
 test("a comment mentioning a retired flag or artifact does not fail any contract, a real line does", () => {
   const mention = "\n# historical note: --require-session-grant, server.key, BPIR_TIER3_SERVICE_POLICY, target/release/unified_server\n";
   validateBuildContract(readFileSync(buildPath, "utf8") + mention);

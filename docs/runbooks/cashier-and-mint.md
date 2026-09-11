@@ -36,6 +36,7 @@ mint.
 | `/etc/bitcoinpir/cashier/grant.key` | `bpir-cashier`, 0600 | 32-byte Ed25519 seed (`bpir-cashier keygen`) | rotate: new key, re-pin every server |
 | `/etc/bitcoinpir/cashier/wallet.seed` | `bpir-cashier`, 0600 | 64-byte Cashu wallet seed | the cashier's ecash claim on the mint is lost |
 | `/etc/bitcoinpir/cashier/grant.pub` | root, 0644 | 64 hex, the public key servers pin | regenerate with `bpir-cashier pubkey` |
+| `/etc/bitcoinpir/cashier/arc.seed` | `bpir-cashier`, 0600 | 32-byte ARC master seed (`bpir-cashier arc-seed`); every epoch's issuer keys derive from it | every issued credential becomes unspendable; buyers must be refunded out of band |
 
 `bpir-cashier keygen`, `wallet-seed`, and `mnemonic` never print the
 secret; `keygen` and `pubkey` print only the public key.
@@ -52,6 +53,16 @@ secret; `keygen` and `pubkey` print only the public key.
   key or price change is a new image (Flow E/G). An image built before the
   pin answers "session grants not enabled" and the client treats it as the
   free path.
+- Credits ([Credits and gas](../CREDITS.md)): a server that should verify
+  credits at the cashier passes `--credit-issuer-url
+  https://cashier.bitcoinpir.org` (pir1: the unit; pir2:
+  `PIR2_CREDIT_ISSUER_URL` in `unified-server-run.sh`, a new image). The
+  cashier's answers verify under the same `grant.pub` the server already
+  pins, and the server signs its redeem requests with its identity key, so
+  the cashier's `operator_pubkeys` must list the operator key that signed
+  that server's identity certificate. `--require-credits` closes the free
+  path; until then presentations are verified and booked but frames stay
+  free (the rollout state).
 - Gas meter: each server prints one `[meter op=0x.. db=N] last 3600s: n=…
   gas_mean=… cpu_mean_ms=… wall_mean_ms=… egress_mean_kib=… inflight_max=…`
   line per opcode and database per hour plus a `[meter] last 3600s: …`
@@ -104,6 +115,55 @@ Amboss Magma through its API (`liquidity.buy` with the node's
 in the graph). Keep the order id and session key with the operator's
 private records. Keep a small on-chain balance in CLN for anchor-channel
 fee bumping.
+
+## Credits (v2): configuration and settlement
+
+The same `bpir-cashier` serves the session-grant contract under `/v1/` and
+the credits contract under `/v2/` ([Credits and gas](../CREDITS.md)).
+Everything credits need is in `config.toml`; an existing file keeps working
+without these tables, which leaves `POST /v2/redeem` refusing every server
+and `/v2/credentials` unsold.
+
+```toml
+[gas]                       # docs/CREDITS.md "Rate card"; defaults shown
+credit_sat = 10
+gas_per_credit = 72000
+base_gas_per_frame = 20
+egress_gas_per_mb = 1000
+
+# Operator identity keys (64 hex) whose certified servers may redeem: the
+# `operatorPubkey` values of PIR1_PROVIDER and PIR2_PROVIDER in
+# web/src/production-providers.ts (pir1 and pir2 are certified by
+# different operator keys; list both).
+operator_pubkeys = ["<pir1 operator pubkey hex>", "<pir2 operator pubkey hex>"]
+redeem_max_skew_secs = 300
+
+[arc]                       # Human: `bpir-cashier arc-seed --out /etc/bitcoinpir/cashier/arc.seed`
+seed_path = "/etc/bitcoinpir/cashier/arc.seed"
+epoch_secs = 7776000        # 90 days
+grace_secs = 2592000        # 30 days
+presentation_limit = 100
+[[arc.credential_offers]]   # credits must equal presentation_limit
+credits = 100
+sat = 1000
+```
+
+`chown bpir-cashier:bpir-cashier /etc/bitcoinpir/cashier/arc.seed && chmod
+0600 …`, then `systemctl restart bpir-cashier`; the startup log line says
+`arc=true` and `operator_keys=2`. `GET /v2/info` must then show the `arc`
+section and the pack.
+
+- Every redemption is appended to `/var/lib/bitcoinpir-cashier/redeem.jsonl`
+  (the replay index for `(server_id, nonce)` and the per-server ledger with
+  the ARC tags each epoch consumed). `bpir-cashier settlement --config
+  /etc/bitcoinpir/cashier/config.toml` prints redemptions, gas, and sat per
+  server: what each server earned.
+- `grants.jsonl` now also records `redeemed` (a token spent through a
+  server) and `credentialed` (a token that bought a credential) states, so
+  a token can never be used twice across the three paths.
+- Back up `arc.seed` with the other secrets; rotating it is a new epoch's
+  worth of refunds, not a key rotation (issued credentials are bound to the
+  seed's per-epoch keys).
 
 ## Change offers or TTL
 
