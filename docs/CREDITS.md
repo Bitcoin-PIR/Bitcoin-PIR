@@ -225,6 +225,32 @@ a private key: clients compare the issuer key and epoch against
 `/v2/info` and the SDK's pinned values. Query contents were never visible
 to anyone; PIR hides them regardless of payment.
 
+## Rollout
+
+In this order, each step reversible on its own; nothing charges a user
+until the last one. Steps marked Human are key generation or funds and
+are never run by an agent; the others are operator campaigns routed
+through [Production operations](PRODUCTION_OPERATIONS.md).
+
+1. Cashier (pir1, [runbook](runbooks/cashier-and-mint.md) "Credits (v2)"):
+   Human runs `bpir-cashier arc-seed`; upgrade the binary to a `main`
+   revision with `/v2/`; add `[gas]`, `operator_pubkeys`, `[arc]`; restart;
+   check `GET /v2/info`.
+2. pir1 (Flow D): rebuild `unified_server` from `main`, add
+   `--credit-issuer-url https://cashier.bitcoinpir.org` to the unit, restart;
+   the startup log must show `Credits: issuer=… accepted, not charged` and
+   the issuer parameters. Web (Flow C): deploy the page with the wallet.
+3. End-to-end check on pir1 only: buy one 100-credit pack in the browser,
+   query DPF, watch `bpir-cashier settlement` book the sat to pir1 and the
+   server's hourly `[meter]` lines; nothing is charged yet (frames are free
+   without `--require-credits`).
+4. pir2: set `PIR2_CREDIT_ISSUER_URL` in `unified-server-run.sh`, run the
+   sealed campaign (`scripts/pir2-sealed-campaign.sh`; a VPSBG image slot must
+   be freed first, Human), update the pins.
+5. Switch: `--require-credits` on pir1 (unit) and pir2 (image); the pricing
+   in `/v2/info` is what users then pay. Keep `--session-grant-pubkey` until
+   every stored grant has expired (30 days at most), then retire `0x0b`.
+
 ## Status
 
 | Step | Where | State |
@@ -237,5 +263,5 @@ to anyone; PIR hides them regardless of payment.
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout: issuer config (`[gas]`, `operator_pubkeys`, `[arc]`, `arc-seed`), `--credit-issuer-url` on pir1, the pir2 UKI script flags and a sealed campaign, `--require-credits` once clients carry wallets | `Bitcoin-PIR/cashier`, pir1, pir2 | next |
+| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | next; pir2's `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL` |
 | Retire `0x0b` | protocol registry | after every client presents credits |
