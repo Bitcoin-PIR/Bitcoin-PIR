@@ -170,11 +170,12 @@ test("runtime UKI pins the cashier key and the hint-set price, never --require-s
   assert.doesNotMatch(withoutComments(source), /^\s*--require-session-grant\b/m);
 });
 
-test("runtime UKI names the credit issuer and never --require-credits", () => {
+test("runtime UKI names the credit issuer and requires credits", () => {
   const source = readFileSync(runPath, "utf8");
   assert.match(source, /^PIR2_CREDIT_ISSUER_URL=https:\/\/[a-z0-9.-]+$/m);
   assert.match(source, /--credit-issuer-url "\$PIR2_CREDIT_ISSUER_URL"/);
-  assert.doesNotMatch(withoutComments(source), /^\s*--require-credits\b/m);
+  // A flag line, not a mention: metered frames are paid on this image.
+  assert.match(withoutComments(source), /^\s*--require-credits \\$/m);
 });
 
 test("a comment mentioning a retired flag or artifact does not fail any contract, a real line does", () => {
