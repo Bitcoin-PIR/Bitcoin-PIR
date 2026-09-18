@@ -1,8 +1,10 @@
 # Session grants (paid queries)
 
-> Being superseded by gas-priced credits verified at the issuer
-> ([Credits and gas](CREDITS.md)). Grants stay accepted on `0x0b` until
-> every client presents credits.
+> Superseded by gas-priced credits verified at the issuer
+> ([Credits and gas](CREDITS.md)). Since 2026-09-18 the cashier sells no
+> grants (`offers` empty); grants already issued stay accepted on `0x0b`
+> until they expire, and the opcode is retired next
+> (CREDITS.md "Rollout" step 6).
 
 Free PIR queries are open. Paid queries present a **session grant** on
 opcode `0x0b` (`REQ_SESSION_GRANT_PRESENT`) before any query-bearing
