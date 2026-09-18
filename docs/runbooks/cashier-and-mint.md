@@ -170,7 +170,11 @@ section and the pack.
 Edit `/etc/bitcoinpir/cashier/config.toml` (`[[offers]]`,
 `grant_ttl_secs`, `mints`, `cors_origins`) and
 `systemctl restart bpir-cashier`. The browser reads offers from
-`/v1/info` on every load; grants already issued keep their credits. A
+`/v1/info` on every load; grants already issued keep their credits.
+Removing every `[[offers]]` block closes `/v1` sales (`/v1/grants`
+answers `unknown offer`) — production has been in that state since
+2026-09-18. `grant_ttl_secs` is capped at the servers' 30-day maximum
+minus the 300 s clock tolerance (2 591 700 s, the production value). A
 mint fee (`input_fee_ppk` in the mint config) is absorbed by the
 operator: the cashier validates the token's face value and records the
 amount actually credited.

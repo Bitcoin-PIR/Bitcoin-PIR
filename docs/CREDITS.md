@@ -227,29 +227,44 @@ to anyone; PIR hides them regardless of payment.
 
 ## Rollout
 
-In this order, each step reversible on its own; nothing charges a user
-until the last one. Steps marked Human are key generation or funds and
-are never run by an agent; the others are operator campaigns routed
-through [Production operations](PRODUCTION_OPERATIONS.md).
+Each step was reversible on its own. Steps marked Human are key
+generation or funds and are never run by an agent; the others are
+operator campaigns routed through
+[Production operations](PRODUCTION_OPERATIONS.md). The migration period
+(credits accepted but not required, session grants still on sale) was
+skipped on 2026-09-15 by operator decision: the only user's grant had
+expired, so nothing needed the overlap.
 
-1. Cashier (pir1, [runbook](runbooks/cashier-and-mint.md) "Credits (v2)"):
-   Human runs `bpir-cashier arc-seed`; upgrade the binary to a `main`
-   revision with `/v2/`; add `[gas]`, `operator_pubkeys`, `[arc]`; restart;
-   check `GET /v2/info`.
-2. pir1 (Flow D): rebuild `unified_server` from `main`, add
-   `--credit-issuer-url https://cashier.bitcoinpir.org` to the unit, restart;
-   the startup log must show `Credits: issuer=… accepted, not charged` and
-   the issuer parameters. Web (Flow C): deploy the page with the wallet.
-3. End-to-end check on pir1 only: buy one 100-credit pack in the browser,
-   query DPF, watch `bpir-cashier settlement` book the sat to pir1 and the
-   server's hourly `[meter]` lines; nothing is charged yet (frames are free
-   without `--require-credits`).
-4. pir2: set `PIR2_CREDIT_ISSUER_URL` in `unified-server-run.sh`, run the
-   sealed campaign (`scripts/pir2-sealed-campaign.sh`; a VPSBG image slot must
-   be freed first, Human), update the pins.
-5. Switch: `--require-credits` on pir1 (unit) and pir2 (image); the pricing
-   in `/v2/info` is what users then pay. Keep `--session-grant-pubkey` until
-   every stored grant has expired (30 days at most), then retire `0x0b`.
+1. Done 2026-09-12 — cashier (pir1, [runbook](runbooks/cashier-and-mint.md)
+   "Credits (v2)"): Human ran `bpir-cashier arc-seed`; the binary was
+   upgraded to a `main` revision with `/v2/`; `[gas]`, `operator_pubkeys`,
+   `[arc]` added; `GET /v2/info` checked.
+2. Done 2026-09-12 — pir1 (Flow D): `unified_server` rebuilt from `main`,
+   `--credit-issuer-url https://cashier.bitcoinpir.org` added to the unit;
+   the startup log showed `Credits: issuer=… accepted, not charged` and the
+   issuer parameters. Web (Flow C): the page with the wallet deployed
+   together with the new `PIR1_PIN`.
+3. Done 2026-09-15 — pir1 switched: `--require-credits` in the unit
+   (startup log `Credits: … required for metered frames`); a query without
+   credits is refused at its first metered frame. Done 2026-09-18 — the
+   cashier stopped selling session grants (`offers` empty, `/v1/grants`
+   answers `unknown offer`; grants already issued keep their credits until
+   they expire, at most 30 days).
+4. Next — pir2: `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL` and
+   `--require-credits`; run the sealed campaign
+   (`scripts/pir2-sealed-campaign.sh`; a VPSBG image slot must be freed
+   first, Human), update the pins. Until then pir2 stays free, so a DPF
+   lookup costs the pir1 half only.
+5. Next — end-to-end purchase: buy one 100-credit pack in the browser
+   (Human pays the invoice), query; the cashier log shows the credential
+   issuance, `bpir-cashier settlement` books the redeemed sat to the
+   server, and the server's hourly `[meter]` line carries the gas. A client
+   presents credits only when the server requires them, so this check
+   needs step 3.
+6. Next — retire `0x0b`: no grant is outstanding (sales closed, the last
+   issued grant expired), so the opcode, the grant gate, and the `/v1`
+   cashier API can go as soon as the code lands. `--session-grant-pubkey`
+   stays: the same key signs redeem answers.
 
 ## Status
 
@@ -257,11 +272,11 @@ through [Production operations](PRODUCTION_OPERATIONS.md).
 | --- | --- | --- |
 | Gas model, parameters, meter, issuer contract types | `crates/trust/pir-credit` | done |
 | `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`, gas table and hourly meter in `unified_server`, `GET_INFO_JSON` "gas" | this repository | done (the opcode answers "credits not enabled" until an issuer is configured) |
-| Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done (issuer side pending, so production stays without the flags) |
-| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | next |
-| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | after that |
+| Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done; both flags live on pir1 |
+| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | done, live |
+| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | done, live |
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | next; pir2's `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL` |
-| Retire `0x0b` | protocol registry | after every client presents credits |
+| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; pir2 waits for the next image campaign |
+| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | next; no grant outstanding |
