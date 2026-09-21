@@ -280,3 +280,4 @@ expired, so nothing needed the overlap.
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
 | Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; pir2 waits for the next image campaign |
 | Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | next; no grant outstanding |
+| CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | skips itself while production requires credits and CI holds no credential; follow-up: an operator-issued credential for CI (cashier), then the live steps present it |
