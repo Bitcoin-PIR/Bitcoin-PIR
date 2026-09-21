@@ -1,22 +1,13 @@
 version: 2
 
-updates:
-  - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: weekly
-      day: monday
-      time: "07:10"
-      timezone: Etc/UTC
-    open-pull-requests-limit: 5
-    groups:
-      rust-minor-and-patch:
-        patterns:
-          - "*"
-        update-types:
-          - minor
-          - patch
+# No cargo ecosystem: `.cargo/config.toml` replaces crates-io with the
+# vendored `vendor/` directory, which Dependabot's cargo updater cannot
+# resolve (every dependency reports `dependency_file_not_resolvable`, the
+# weekly job has failed since vendoring). Rust dependencies are bumped by
+# hand (`cargo update`, then `cargo vendor`); `audit.yml` keeps running
+# cargo-audit.
 
+updates:
   - package-ecosystem: npm
     directories:
       - /web

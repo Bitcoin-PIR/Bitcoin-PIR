@@ -16,7 +16,7 @@ export const APPROVED_ACTION_COMMITS = Object.freeze({
   "actions/cache": "55cc8345863c7cc4c66a329aec7e433d2d1c52a9",
   "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
   "actions/configure-pages": "45bfe0192ca1faeb007ade9deae92b16b8254a0d",
-  "actions/deploy-pages": "cd2ce8fcbc39b97be8ca5fce6e763baed58fa128",
+  "actions/deploy-pages": "368f82528645a54fb793d4d04e342629a3f51346",
   "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
   "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
   "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
@@ -24,7 +24,7 @@ export const APPROVED_ACTION_COMMITS = Object.freeze({
   "mozilla-actions/sccache-action": "fc920bf0ec8de6ee65d409111f7ec508035751ba",
   "docker/build-push-action": "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
   "docker/login-action": "dbcb813823bdd20940b903addbd779551569679f",
-  "docker/setup-buildx-action": "bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
+  "docker/setup-buildx-action": "37fe631027851001ddb9b187196cc803df7f5f0e",
 });
 
 export const EASYCRYPT_VERIFIER_IMAGE = "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier";
