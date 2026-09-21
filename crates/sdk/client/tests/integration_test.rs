@@ -200,6 +200,90 @@ fn strict_production_canary_enabled() -> bool {
     )
 }
 
+/// Scheduled/manual live steps: does any production server the suite talks
+/// to require credits? Production has required them since 2026-09-15
+/// (docs/CREDITS.md) and CI holds no credential yet, so the workflow runs
+/// this probe first and skips the paid live steps while it reports `true`.
+/// Read-only: one plain connection per distinct URL and a GET_INFO_JSON
+/// round-trip; nothing is presented. Writes `credits_required=<bool>` to
+/// `$GITHUB_OUTPUT` and a note to `$GITHUB_STEP_SUMMARY` when they are set.
+#[tokio::test]
+#[ignore = "requires running PIR servers"]
+async fn probe_live_credits_required() {
+    use pir_sdk_client::credit_transport::{CreditProvider, CreditStatus, Presentation};
+
+    struct NoCredits;
+    impl CreditProvider for NoCredits {
+        fn present(&self, _credits: u64) -> Result<Option<Presentation>, PirError> {
+            Ok(None)
+        }
+    }
+
+    let mut candidates = vec![
+        dpf_server0_url(),
+        dpf_server1_url(),
+        harmony_hint_url(),
+        harmony_query_url(),
+    ];
+    #[cfg(feature = "onion")]
+    candidates.push(onion_url());
+    let mut urls: Vec<String> = Vec::new();
+    for url in candidates {
+        if !urls.contains(&url) {
+            urls.push(url);
+        }
+    }
+
+    let mut required = false;
+    let mut lines = Vec::new();
+    for url in &urls {
+        // Any unified_server answers GET_INFO_JSON the same way whatever it
+        // serves; the DPF client is the lightest native client, so pair the
+        // URL with itself and read server 0.
+        let mut client = DpfClient::new(url, url);
+        client
+            .connect()
+            .await
+            .unwrap_or_else(|error| panic!("probe: connect to {url} failed: {error}"));
+        let status = client
+            .enable_credits(0, std::sync::Arc::new(NoCredits))
+            .await
+            .unwrap_or_else(|error| {
+                panic!("probe: reading credits flags from {url} failed: {error}")
+            });
+        client.disconnect().await.ok();
+        required |= status == CreditStatus::Required;
+        lines.push(format!("{url}: {status:?}"));
+    }
+    for line in &lines {
+        eprintln!("probe: {line}");
+    }
+    eprintln!("probe: credits_required={required}");
+
+    use std::io::Write as _;
+    if let Ok(path) = std::env::var("GITHUB_OUTPUT") {
+        let mut out = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("GITHUB_OUTPUT must be writable");
+        writeln!(out, "credits_required={required}").unwrap();
+    }
+    if required {
+        if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
+            let mut out = std::fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .expect("GITHUB_STEP_SUMMARY must be writable");
+            writeln!(
+                out,
+                "Live steps skipped: production requires credits and CI holds no credential (docs/CREDITS.md).\n\n{}",
+                lines.join("\n")
+            )
+            .unwrap();
+        }
+    }
+}
+
 fn decode_hex_array<const N: usize>(value: &str) -> [u8; N] {
     let bytes = hex::decode(value).expect("production pin must be valid hex");
     bytes
