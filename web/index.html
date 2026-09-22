@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-msrSUUsiTWxtaUsGoA5LMsaQJU3M09isucBKw4ugbEw=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-7wPBAAKkXjK4td3zmAhSUHi0sopZ9pjqxKgcq+SaveM=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -862,9 +862,12 @@
                     <div class="card-title"><span id="paidAccessTitle">Paid access</span></div>
                 </div>
                 <div class="card-body">
-                    <p id="pa-grant" style="margin: 0 0 8px;">No session grant stored — free queries only.</p>
-                    <div id="pa-balances" style="font-family: monospace; font-size: 12px; margin-bottom: 8px;"></div>
                     <p id="pa-status" style="margin: 0 0 8px; min-height: 1.2em;"></p>
+                    <!-- Session grants (v1): sales closed 2026-09-18; shown only
+                         while a grant or an unfinished grant purchase is stored. -->
+                    <div id="pa-grantBlock" hidden>
+                    <p id="pa-grant" style="margin: 0 0 8px;">No session grant stored.</p>
+                    <div id="pa-balances" style="font-family: monospace; font-size: 12px; margin-bottom: 8px;"></div>
                     <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
                         <button type="button" id="pa-loadOffersBtn" class="btn sm">Load cashier offers</button>
                         <button type="button" id="pa-resumeBtn" class="btn accent sm" hidden>Resume pending purchase</button>
@@ -888,6 +891,7 @@
                             <button type="button" id="pa-redeemBtn" class="btn sm">Redeem token</button>
                         </div>
                     </details>
+                    </div>
                     <!-- Credits (docs/CREDITS.md): ARC credentials bought for
                          ecash and spent per metered frame wherever a server
                          requires credits. -->
@@ -1742,7 +1746,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const grantEl = document.getElementById('pa-grant');
             grantEl.textContent = grant
                 ? `Session grant ${grant.grantIdHex.slice(0, 8)}…: ${grant.credits} credits bought, expires ${new Date(grant.expiresAt * 1000).toLocaleString()}.`
-                : 'No session grant stored — free queries only.';
+                : 'No session grant stored.';
+            // Grant sales are closed: the block only serves a stored grant or
+            // an unfinished purchase.
+            document.getElementById('pa-grantBlock').hidden = !grant && !pendingPurchaseStore.load();
             document.getElementById('pa-forgetBtn').disabled = !grant;
             const balances = document.getElementById('pa-balances');
             balances.replaceChildren();
@@ -1982,7 +1989,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 button.className = 'btn accent sm';
                 button.textContent = `Buy ${offer.credits} credits for ${offer.sat} sat (Lightning)`;
                 button.addEventListener('click', () => {
-                    paBuyCredential(offer).catch(e => paStatus(`credit purchase failed: ${e?.message || e}`, 'error'));
+                    paBuyCredential(offer)
+                        .catch(e => paStatus(`credit purchase failed: ${e?.message || e}`, 'error'))
+                        // A failure after payment leaves a pending token: show Resume.
+                        .finally(renderCredits);
                 });
                 offersEl.appendChild(button);
             });
