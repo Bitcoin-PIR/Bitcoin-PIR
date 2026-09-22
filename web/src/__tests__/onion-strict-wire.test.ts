@@ -7,6 +7,7 @@ import {
   reassembleCompleteOnionChunks,
   responsePayloadFromFrame,
 } from '../onionpir_client.js';
+import { REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP } from '../constants.js';
 
 function frame(payload: number[]): Uint8Array {
   const out = new Uint8Array(4 + payload.length);
@@ -178,6 +179,46 @@ describe('strict OnionPIR session lifecycle', () => {
 
     await expect(preflight).rejects.toThrow('stale OnionPIR tree-top response');
     expect((client as any).verifiedTreeTops.size).toBe(0);
+  });
+
+  it('funds the tree-top preflight through the credited channel when credits are required', async () => {
+    // Regression (2026-09-23): the preflight wrote straight to the socket, so
+    // a server requiring credits refused it ("insufficient gas") and the
+    // OnionPIR connection failed before any query.
+    const socket = {
+      isOpen: () => true,
+      sendRaw: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    const client = new OnionPirWebClient({
+      serverUrl: 'wss://example.invalid',
+      strictVerification: true,
+    });
+    const internal = client as any;
+    internal.sessionGeneration = 7;
+    internal.ws = socket;
+    internal.installedOnionRoots.set(0, {
+      dbId: 0,
+      onionSuperRootHex: 'ab'.repeat(32),
+      generation: 7,
+    });
+    internal.serverInfo = {
+      onionpir_merkle: {
+        arity: 2,
+        super_root: 'ab'.repeat(32),
+        index: { k: 1, num_pt: 1 },
+        data: { k: 1, num_pt: 1 },
+      },
+    };
+    const roundtrip = vi.fn(async (_frame: Uint8Array) => new Uint8Array());
+    internal.credited = { roundtrip };
+    internal.creditedSocket = socket;
+
+    await expect(client.preflightDatabase(0)).rejects.toThrow();
+    expect(roundtrip).toHaveBeenCalledOnce();
+    expect(Array.from(roundtrip.mock.calls[0][0]))
+      .toEqual([1, 0, 0, 0, REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP]);
+    expect(socket.sendRaw).not.toHaveBeenCalled();
   });
 
   it('rejects a query before any network traffic when no root is installed', async () => {

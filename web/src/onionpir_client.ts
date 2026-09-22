@@ -1937,7 +1937,8 @@ export class OnionPirWebClient {
     new DataView(request.buffer).setUint32(0, payloadLen, true);
     request[4] = REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP;
     if (dbId !== 0) request[5] = dbId;
-    const response = await socket.sendRaw(request);
+    // Tree-tops are metered: fund them like every other metered frame.
+    const response = await this.exchangeFrame(socket, request);
     if (
       this.ws !== socket
       || this.sessionGeneration !== generation
