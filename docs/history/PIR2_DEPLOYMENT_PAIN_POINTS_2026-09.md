@@ -126,3 +126,15 @@ release commit is now bundled through a temporary branch ref.
     both digests from a verified attest run (tested by
     `scripts/generate-release-record.test.mjs`). Image 307's record is regenerated
     from its live attestation; 303/305 keep TODO (their guests are retired).
+
+## Observed in the r9 campaign (image 321, 2026-09-23)
+
+Second run through `scripts/pir2-sealed-campaign.sh` (source `9c70bb6e`:
+credits, the access policy, session grants retired), ordinals 66–70 with
+fresh nonces: no defect. 20 minutes from opening the build window to the
+accepted Probe 69 receipt (runtime build on the stock rootfs 3 minutes),
+then 27 minutes for the Ready boot to serve — the Direct ORAM rebuild of db0
+and db1 took the first 6 — and 1 minute for the post-switch check, the
+channel test, and the two Ready receipts over the WebSocket. The r8 campaign
+env file was not kept with its evidence; r9 keeps `campaign.env` in the
+evidence directory so the next campaign can start from it.

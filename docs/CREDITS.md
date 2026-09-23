@@ -318,10 +318,12 @@ expired, so nothing needed the overlap.
    cashier stopped selling session grants (`offers` empty, `/v1/grants`
    answers `unknown offer`; grants already issued keep their credits until
    they expire, at most 30 days).
-4. Next — pir2: `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL`,
-   `--require-credits` and the access policy; run the sealed campaign
-   (`scripts/pir2-sealed-campaign.sh`) and update the pins. Until then pir2
-   takes no credits and serves everything free.
+4. Done 2026-09-23 — pir2: the r9 sealed campaign
+   (`scripts/pir2-sealed-campaign.sh`, source `9c70bb6e`) put image 321 live
+   with `--credit-issuer-url`, `--credit-issuer-pubkey`, `--require-credits`
+   and the access policy (DPF and Direct ORAM best-effort, HarmonyPIR
+   paid); pins in #347, release record
+   `docs/data-retention/production-release-image-321.env`.
 5. Done 2026-09-23 — end-to-end purchase on production: one 100-credit
    pack bought in the browser over Lightning (Human paid the invoice), then
    DPF, HarmonyPIR and OnionPIR queries against pir1, all verified. The
@@ -335,13 +337,12 @@ expired, so nothing needed the overlap.
    OnionPIR web client sent its tree-top preflight around the credited
    channel (#337). A client presents credits only when the server
    requires them, so this check needed step 3.
-6. Done in code 2026-09-23 — `0x0b` retired (no grant was outstanding:
-   sales closed, the last issued grant expired): the opcode, the grant gate
-   and its flags, the clients' grant presentation, and the web grant UI are
-   gone, and the cashier drops `/v1`. The issuer key the servers pin stays,
-   renamed `--credit-issuer-pubkey`: it verifies redeem answers. Live on
-   pir1 and the cashier from their next deploy, on pir2 from its next
-   image.
+6. Done 2026-09-23 — `0x0b` retired (no grant was outstanding: sales
+   closed, the last issued grant expired): the opcode, the grant gate and
+   its flags, the clients' grant presentation, and the web grant UI are
+   gone (#345), and the cashier dropped `/v1` (cashier #6). The issuer key
+   the servers pin stays, renamed `--credit-issuer-pubkey`: it verifies
+   redeem answers. Live on pir1 (#346), the cashier, and pir2 image 321.
 
 ## Status
 
@@ -355,7 +356,7 @@ expired, so nothing needed the overlap.
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; end-to-end purchase verified on all three pir1 backends (2026-09-23); pir2 waits for the next image campaign |
-| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done; live on pir1 since 2026-09-23 (DPF best-effort); pir2 with its next image |
-| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | done in code; pir1 and cashier from their next deploy, pir2 from its next image |
+| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier, pir1 and pir2 (image 321) live; end-to-end purchase verified on all three pir1 backends (2026-09-23) |
+| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done; live on pir1 (DPF best-effort) and pir2 image 321 (DPF and Direct ORAM best-effort) since 2026-09-23 |
+| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | done; live on pir1, the cashier and pir2 image 321 (2026-09-23) |
 | CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | per backend: runs the live steps and leakage invariants of every backend production serves free or best-effort (DPF today) and skips the metered steps of paid ones, since CI holds no credential; connect / catalog / announce tests always run |
