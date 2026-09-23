@@ -64,13 +64,6 @@ import { fetchDatabaseCatalog } from './server-info.js';
 
 import type { LeakageRecorder, RoundProfile } from './leakage.js';
 import {
-  classifySessionGrantFailure,
-  encodeSessionGrantPresentFrame,
-  parseSessionGrantResponsePayload,
-  type SessionGrantPresentation,
-  type SessionGrantProvider,
-} from './session-grant.js';
-import {
   CreditedChannel,
   resolveAccess,
   serverGasCardFromInfo,
@@ -745,17 +738,10 @@ export interface OnionPirClientConfig {
   onAttestation?: (status: ServerAttestation) => void;
   onOperatorIdentity?: (status: OperatorIdentity) => void;
   /**
-   * Cashier-signed session grant to present once the same-socket secure
-   * channel is up (`docs/SESSION_GRANTS.md`). Evaluated per connection;
-   * return `null` for the free path. The outcome arrives via `onSessionGrant`.
-   */
-  sessionGrant?: SessionGrantProvider;
-  onSessionGrant?: (status: SessionGrantPresentation) => void;
-  /**
    * Credits (`docs/CREDITS.md`): called with the number of credits the next
    * frame needs whenever the connection's balance runs short; return a
-   * presentation or `null`. Only used when the server requires credits and
-   * no session grant was accepted. Outcomes arrive via `onCredits`.
+   * presentation or `null`. Only used where the server charges for
+   * OnionPIR. Outcomes arrive via `onCredits`.
    */
   creditProvider?: CreditProvider;
   onCredits?: (status: CreditEnablement) => void;
@@ -1714,10 +1700,7 @@ export class OnionPirWebClient {
       }
       this.replaceOperatorIdentity(identity);
       this.log('OnionPIR same-socket secure channel established', 'success');
-      const grant = await this.presentSessionGrant();
-      if (grant?.state !== 'accepted') {
-        await this.enableCredits(socket);
-      }
+      await this.enableCredits(socket);
     } catch (error) {
       if (this.secureChannel !== channel) channel.free();
       throw error;
@@ -1752,42 +1735,6 @@ export class OnionPirWebClient {
     return requireSdkWasm().verifyAnnounceResponse(
       responsePayloadFromFrame(resp),
     );
-  }
-
-  /**
-   * Present a session grant on this connection: `grant`, or the configured
-   * provider's current grant when omitted. Never throws; the outcome is
-   * logged and reported via `onSessionGrant`. Runs only over the
-   * established secure channel, because the grant is a bearer token.
-   */
-  async presentSessionGrant(grant?: Uint8Array): Promise<SessionGrantPresentation | null> {
-    const bytes = grant ?? this.config.sessionGrant?.() ?? null;
-    if (!bytes) return null;
-    let outcome: SessionGrantPresentation;
-    if (!this.ws?.isOpen()) {
-      outcome = { state: 'refused', error: 'not connected' };
-    } else if (!this.secureChannelEstablished) {
-      outcome = { state: 'refused', error: 'session grant withheld: channel is cleartext' };
-    } else {
-      try {
-        const response = await this.sendRaw(encodeSessionGrantPresentFrame(bytes));
-        outcome = {
-          state: 'accepted',
-          remaining: parseSessionGrantResponsePayload(responsePayloadFromFrame(response)),
-        };
-      } catch (error) {
-        outcome = classifySessionGrantFailure((error as Error)?.message ?? String(error));
-      }
-    }
-    if (outcome.state === 'accepted') {
-      this.log(`OnionPIR: session grant accepted (${outcome.remaining} credits remaining)`, 'success');
-    } else if (outcome.state === 'not-enabled') {
-      this.log('OnionPIR: session grants not enabled (free path)', 'info');
-    } else {
-      this.log(`OnionPIR: session grant refused — ${outcome.error}`, 'error');
-    }
-    this.config.onSessionGrant?.(outcome);
-    return outcome;
   }
 
   /** Fetch and verify one v2 DB proof. Strict OnionPIR never falls back to v1. */

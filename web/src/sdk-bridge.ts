@@ -448,12 +448,6 @@ export interface WasmDpfClient {
    *  without `--identity-*` flags. See `WasmAnnounceVerification` for the
    *  verification methods to run on the result. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
-  /** Attach a cashier-signed session grant (133 bytes) to one connected
-   *  server and return the credits remaining on that server. Call after
-   *  `upgradeToSecureChannel` — the grant is a bearer token. Rejects with
-   *  the server's error text when grants are not enabled there, the
-   *  issuer is not pinned, or the grant is expired or exhausted. */
-  presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
   /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
    *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
    *  `{ gasAdded, gasBalance }`. Bearer material: call after
@@ -572,12 +566,6 @@ export interface WasmHarmonyClient {
    *  1 = query server. Rejects with "announce not configured" when the
    *  server was started without `--identity-*` flags. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
-  /** Attach a cashier-signed session grant (133 bytes) to one connected
-   *  server and return the credits remaining on that server. Call after
-   *  `upgradeToSecureChannel` — the grant is a bearer token. Rejects with
-   *  the server's error text when grants are not enabled there, the
-   *  issuer is not pinned, or the grant is expired or exhausted. */
-  presentSessionGrant(serverIndex: number, grant: Uint8Array): Promise<number>;
   /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
    *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
    *  `{ gasAdded, gasBalance }`. Bearer material: call after
@@ -711,8 +699,6 @@ export interface WasmOramClient {
   disconnect(): Promise<void>;
   attest(): Promise<WasmAttestVerification>;
   announce(): Promise<WasmAnnounceVerification>;
-  /** Attach a cashier-signed session grant; see `WasmDpfClient.presentSessionGrant`. */
-  presentSessionGrant(grant: Uint8Array): Promise<number>;
   /** Present credits on the connection; see `WasmDpfClient.presentCredits`. */
   presentCredits(kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
   /** Pay the server's metered frames from `provider` when it requires credits; see `WasmDpfClient.enableCredits`. */
