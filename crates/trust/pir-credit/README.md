@@ -18,5 +18,8 @@ Credits and gas for BitcoinPIR paid queries (design: `docs/CREDITS.md`).
 - `issuer`: the JSON types of the issuer HTTP contract (`/v2/info` and
   `/v2/redeem`) and the canonical signing preimages of a redeem request and
   its answer.
+- `access`: the per-backend access policy a server publishes (`free`,
+  `paid`, `best-effort` with its free-lane capacity), how metered request
+  kinds map to backends, and how clients read a server that predates it.
 
 Pure bookkeeping: no cryptography, filesystem, clock, or network.

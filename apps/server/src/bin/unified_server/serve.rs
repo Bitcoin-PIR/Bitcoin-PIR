@@ -409,26 +409,35 @@ pub(crate) async fn serve_connections(
                 // CPU and wall time, and attribute the response bytes.
                 let metered_op = crate::credit_meter::metered_op_for_frame(variant, payload);
 
-                // Credit gate (docs/CREDITS.md): with --require-credits a
-                // metered frame is charged its work plus base fee before
-                // dispatch and refused when the balance cannot cover it. A
+                // Access gate (docs/CREDITS.md "Access policy"): by the
+                // frame's backend it is served free, charged its work plus
+                // base fee before dispatch, or — best-effort — charged when
+                // the balance covers it and otherwise queued for a free,
+                // low-priority slot; refused when none of that applies. A
                 // connection that attached a session grant was charged by the
                 // grant gate above instead.
-                let charge_gas = session_grant.is_none()
-                    && server
-                        .credits
-                        .as_ref()
-                        .is_some_and(|credits| credits.require);
-                if charge_gas {
-                    if let Some(cost) = server.credit_meter.admission_gas(metered_op) {
-                        if let Err(refusal) = gas_balance.admit(cost) {
-                            let resp = Response::Error(refusal.to_string());
-                            let _ =
-                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                            continue;
-                        }
+                let admission = if session_grant.is_none() {
+                    server
+                        .access
+                        .admit(
+                            metered_op,
+                            server.credit_meter.admission_gas(metered_op),
+                            &mut gas_balance,
+                        )
+                        .await
+                } else {
+                    crate::access_gate::Admission::Free
+                };
+                let (charged, free_lane) = match admission {
+                    crate::access_gate::Admission::Refused(message) => {
+                        let resp = Response::Error(message);
+                        let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                        continue;
                     }
-                }
+                    crate::access_gate::Admission::Charged => (true, None),
+                    crate::access_gate::Admission::FreeLane(ticket) => (false, Some(ticket)),
+                    crate::access_gate::Admission::Free => (false, None),
+                };
                 let in_flight = server.credit_meter.begin();
                 let egress_before = sink.bytes_sent();
                 crate::dispatch::handle_variant(
@@ -444,14 +453,18 @@ pub(crate) async fn serve_connections(
                     &mut session_grant,
                     &mut gas_balance,
                     client_supports_chunks,
+                    free_lane.as_ref().map(|ticket| ticket.pool()),
                 )
                 .await;
                 let egress_bytes = sink.bytes_sent().saturating_sub(egress_before);
                 server
                     .credit_meter
                     .finish(in_flight, variant, metered_op, egress_bytes);
-                if charge_gas && metered_op.is_some() {
+                if charged && metered_op.is_some() {
                     gas_balance.charge_egress(server.credit_meter.egress_gas(egress_bytes));
+                }
+                if let Some(ticket) = free_lane {
+                    ticket.finish(server.credit_meter.egress_gas(egress_bytes));
                 }
                 if gas_balance.presentation_failures()
                     >= crate::credit_gate::MAX_PRESENTATION_FAILURES_PER_CONNECTION

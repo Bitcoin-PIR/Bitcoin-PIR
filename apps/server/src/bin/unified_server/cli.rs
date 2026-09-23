@@ -107,8 +107,18 @@ pub(crate) struct CliArgs {
     pub(crate) credit_server_id: Option<String>,
     /// Charge every metered frame to the connection's gas balance and
     /// refuse frames it cannot cover (`--require-credits`). Needs
-    /// `--credit-issuer-url`.
+    /// `--credit-issuer-url`. This is the default of the access policy;
+    /// `--access` overrides it per backend.
     pub(crate) require_credits: bool,
+    /// Per-backend access (`--access BACKEND=free|paid|best-effort[:N[:GAS_PER_HOUR]]`,
+    /// repeatable; docs/CREDITS.md "Access policy").
+    pub(crate) access: Vec<(pir_credit::Backend, pir_credit::Access)>,
+    /// Threads of the low-priority pool best-effort free frames run on
+    /// (`--free-threads N`).
+    pub(crate) free_threads: usize,
+    /// How long a free frame may wait for a best-effort slot
+    /// (`--free-queue-wait-ms MS`).
+    pub(crate) free_queue_wait_ms: u64,
     /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
@@ -293,6 +303,38 @@ pub(crate) fn parse_direct_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), Stri
     Ok((db_id, PathBuf::from(dir_raw)))
 }
 
+/// `BACKEND=MODE` for `--access`: `dpf=best-effort:2`, `onion=paid`, ...
+pub(crate) fn parse_access_arg(
+    spec: &str,
+) -> Result<(pir_credit::Backend, pir_credit::Access), String> {
+    let (backend, mode) = spec
+        .split_once('=')
+        .ok_or_else(|| format!("--access expects BACKEND=MODE, got `{spec}`"))?;
+    let backend = pir_credit::Backend::parse(backend).ok_or_else(|| {
+        format!("--access: unknown backend `{backend}` (dpf, harmony, onion, oram)")
+    })?;
+    let access = pir_credit::Access::parse(mode).map_err(|e| format!("--access {spec}: {e}"))?;
+    Ok((backend, access))
+}
+
+/// The access policy: every backend paid with `--require-credits`, free
+/// otherwise, then the `--access` overrides (each backend at most once).
+pub(crate) fn access_policy(args: &CliArgs) -> Result<pir_credit::AccessPolicy, String> {
+    let mut policy = pir_credit::AccessPolicy::uniform(if args.require_credits {
+        pir_credit::Access::Paid
+    } else {
+        pir_credit::Access::Free
+    });
+    let mut seen = std::collections::BTreeSet::new();
+    for (backend, access) in &args.access {
+        if !seen.insert(*backend) {
+            return Err(format!("--access {backend} given more than once"));
+        }
+        policy.set(*backend, *access);
+    }
+    Ok(policy)
+}
+
 pub(crate) fn parse_direct_oram_trusted_state_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
     let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
         return Err("--direct-oram-trusted-state-db expects <db_id>=<dir>".into());
@@ -337,6 +379,8 @@ admin:         --admin-pubkey-hex HEX
 session grants: --session-grant-pubkey FILE  --session-grant-hint-credits N
                --require-session-grant
 credits:       --credit-issuer-url URL  --credit-server-id ID  --require-credits
+access:        --access BACKEND=free|paid|best-effort[:N[:GAS_PER_HOUR]]  (BACKEND: dpf harmony
+               onion oram; repeatable)  --free-threads N  --free-queue-wait-ms MS
 hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
 direct oram:   --direct-oram-db ID=DIR  --direct-oram-dir DIR  --direct-oram-trusted-state-db ID=DIR
                --direct-oram-drain-per-access N  --direct-oram-access-budget N
@@ -418,6 +462,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut credit_issuer_url: Option<String> = None;
     let mut credit_server_id: Option<String> = None;
     let mut require_credits = false;
+    let mut access: Vec<(pir_credit::Backend, pir_credit::Access)> = Vec::new();
+    let mut free_threads = crate::access_gate::DEFAULT_FREE_THREADS;
+    let mut free_queue_wait_ms = crate::access_gate::DEFAULT_FREE_QUEUE_WAIT.as_millis() as u64;
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
@@ -590,6 +637,30 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--require-credits" => {
                 require_credits = true;
+            }
+            "--access" => {
+                let Some(spec) = args.get(i + 1) else {
+                    fatal_cli("--access requires BACKEND=MODE");
+                };
+                access.push(parse_access_arg(spec).unwrap_or_else(|error| fatal_cli(error)));
+                i += 1;
+            }
+            "--free-threads" => {
+                free_threads = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .filter(|n: &usize| *n >= 1)
+                    .unwrap_or_else(|| {
+                        fatal_cli("--free-threads requires an integer of at least 1")
+                    });
+                i += 1;
+            }
+            "--free-queue-wait-ms" => {
+                free_queue_wait_ms = args
+                    .get(i + 1)
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or_else(|| fatal_cli("--free-queue-wait-ms requires an integer"));
+                i += 1;
             }
             "--max-connections" => {
                 max_connections = args
@@ -888,6 +959,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         credit_issuer_url,
         credit_server_id,
         require_credits,
+        access,
+        free_threads,
+        free_queue_wait_ms,
         pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,

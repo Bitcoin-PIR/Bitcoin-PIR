@@ -152,7 +152,10 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 | --- | --- |
 | `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--session-grant-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
 | `--credit-server-id ID` | Name the server settles under at the issuer; defaults to the identity certificate's server id. |
-| `--require-credits` | Charge metered frames to the connection balance and refuse uncovered ones. |
+| `--require-credits` | Default every backend to `paid`: charge metered frames to the connection balance and refuse uncovered ones. Without it every backend defaults to `free`. |
+| `--access BACKEND=MODE` | Per-backend override, repeatable (see [Access policy](#access-policy)): `free`, `paid`, or `best-effort[:N[:GAS_PER_HOUR]]`. `paid` needs `--credit-issuer-url`. |
+| `--free-threads N` | Threads of the low-priority pool best-effort free frames run on (default 1). |
+| `--free-queue-wait-ms MS` | How long a free frame waits for a best-effort slot before it is refused as busy (default 10000). |
 
 Redeem requests are signed by the server's identity key and carry its
 operator-signed certificate; answers are signed by the issuer key over the
@@ -160,6 +163,75 @@ request nonce, so a CDN or proxy between the two cannot grant gas. The
 transport is HTTPS with the Mozilla roots compiled in (no CA files on the
 sealed pir2 guest). One issuer call has a 15-second budget and one retry
 with the same nonce.
+
+## Access policy
+
+Every server decides, per backend, what its metered frames cost, and
+publishes that decision in `GET_INFO_JSON`. Clients follow each server's
+own policy, so one client works against free, paid and mixed servers, and
+an operator — including a hobby operator — picks what to give away.
+
+| Mode | Server | Client |
+| --- | --- | --- |
+| `free` | Never charges. | Never presents. |
+| `paid` | Charges the connection's credits; refuses an uncovered frame with `insufficient gas: …`. | Funds the frame before sending it. |
+| `best-effort` | Charges the frame when the connection's credits cover it and serves it at once. Otherwise serves it free on the backend's lane: at most N free frames at once, the next ones queued first come first served for up to `--free-queue-wait-ms`, and with `GAS_PER_HOUR` set, no more free work than that per hour. Free frames run on a shared pool of `--free-threads` threads at nice 10, so paid frames keep every other core and win the scheduler. Anything beyond that is refused with `free capacity busy: …`. | Sends the frame unpaid. On `free capacity busy` it pays and sends the frame again when the wallet can, and reports busy otherwise. |
+
+Backends: `dpf` (DPF rounds and sibling passes), `harmony` (hint sets,
+pool entries, queries), `onion` (keys, queries, OnionPIR tree tops),
+`oram` (lookups). Bucket-Merkle tree tops serve DPF and HarmonyPIR alike
+and follow the more open of the two, so a server never charges the
+verification data of a backend it runs free.
+
+Examples:
+
+- Reference deployment: DPF and Direct ORAM free when idle, HarmonyPIR and
+  OnionPIR paid. pir1: `--require-credits --access dpf=best-effort:2
+  --free-threads 2`; pir2: `--require-credits --access dpf=best-effort:2
+  --access oram=best-effort:2 --free-threads 2`.
+- A hobby server giving one core of DPF away, no issuer, nobody can pay:
+  `--access dpf=best-effort:1`.
+- Paid only: `--require-credits`. Free only: no flag.
+
+Published form (the `credits` object of `GET_INFO_JSON`):
+
+```json
+"credits": {
+  "enabled": true,
+  "required": true,
+  "access": {
+    "dpf": {"mode": "best-effort", "free_concurrency": 2},
+    "harmony": {"mode": "paid"},
+    "onion": {"mode": "paid"},
+    "oram": {"mode": "best-effort", "free_concurrency": 2}
+  },
+  "free_queue_wait_ms": 10000
+}
+```
+
+`enabled` says whether the server takes presentations at all; `required`
+(some backend is `paid`) is the flag clients read before `access`
+existed. Such a client pays for every metered frame, or stops at the first
+one without credits, and never uses a free lane; a client reading a server
+without `access` assumes `paid` when
+`required` is set and `free` otherwise (`PublishedAccess::resolve`,
+`resolveAccess`).
+
+Whether a frame is served free, queued or refused depends only on load
+and on the connection's balance, never on the query. A refusal in the
+middle of a lookup ends that lookup unless the client pays; the servers
+then see an aborted lookup, as they do when a wallet runs out. Free work
+is metered like paid work in the hourly `[meter]` lines, and each lane
+adds `[access BACKEND] last 3600s: free_served=… free_gas=… busy=…`.
+
+Limits: OnionPIR's heavy work runs on its own worker threads, so a
+best-effort OnionPIR lane caps concurrency but does not lower priority.
+Direct ORAM lookups run one at a time under the ORAM transaction lock, so
+a free lookup already running holds up a paid one for at most that lookup.
+The SDK pays for priority when the busy frame was the only one in flight
+on its connection (every request/response exchange, DPF rounds and hint
+requests included); a frame refused behind another pipelined frame ends
+its request.
 
 ## Protocol
 
@@ -286,5 +358,6 @@ expired, so nothing needed the overlap.
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
 | Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; end-to-end purchase verified on all three pir1 backends (2026-09-23); pir2 waits for the next image campaign |
+| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done in code; reference deployment configured per the example above as each server is next restarted (pir1: unit; pir2: next image) |
 | Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | next; no grant outstanding |
 | CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | skips itself while production requires credits and CI holds no credential; follow-up: an operator-issued credential for CI (cashier), then the live steps present it |

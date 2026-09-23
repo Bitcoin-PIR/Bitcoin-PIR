@@ -58,6 +58,12 @@ impl GasBalanceV1 {
         self.gas
     }
 
+    /// Whether the balance covers `frame_gas` right now (a best-effort
+    /// backend then charges the frame and serves it first).
+    pub(crate) fn covers(&self, frame_gas: u64) -> bool {
+        i64::try_from(frame_gas).is_ok_and(|needed| self.gas >= needed)
+    }
+
     /// Charges a metered frame's work plus base fee, or refuses it (nothing
     /// charged) when the balance does not cover it. A negative balance left
     /// by an earlier egress charge must be covered too.

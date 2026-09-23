@@ -10,6 +10,7 @@
 //! `unified_server --version` prints the crate version, git revision, and
 //! binary sha256. Production flags come from the reviewed run scripts.
 
+mod access_gate;
 mod cli;
 mod credit_gate;
 mod credit_issuer;
@@ -972,6 +973,22 @@ async fn main() {
         None => pir_credit::GasParams::PRODUCTION_2026_09,
     };
 
+    // Access policy (docs/CREDITS.md "Access policy"): per backend free,
+    // paid, or free on a best-effort lane that paid frames overtake.
+    let access = cli::access_policy(&args)
+        .and_then(|policy| {
+            access_gate::AccessGateV1::new(
+                policy,
+                credits.is_some(),
+                args.free_threads,
+                Duration::from_millis(args.free_queue_wait_ms),
+            )
+        })
+        .unwrap_or_else(|error| fatal_cli(error));
+    for line in access.startup_lines() {
+        println!("  {line}");
+    }
+
     // Gas table for every loaded database plus the hourly meter
     // (docs/CREDITS.md).
     let credit_meter = {
@@ -1006,6 +1023,7 @@ async fn main() {
         session_grants,
         credit_meter,
         credits,
+        access,
         pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
@@ -1047,6 +1065,14 @@ async fn main() {
             loop {
                 interval.tick().await;
                 if let Some(lines) = server.credit_meter.due_lines(Instant::now()) {
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
+                if let Some(lines) = server
+                    .access
+                    .due_lines(Instant::now(), credit_meter::METER_REPORT_INTERVAL)
+                {
                     for line in lines {
                         println!("{line}");
                     }

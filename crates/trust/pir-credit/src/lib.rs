@@ -6,18 +6,24 @@
 //! ([`params`]), clients pay in credits (Cashu ecash or ARC presentations
 //! verified online at the issuer, [`issuer`]), and every server reports an
 //! hourly aggregate of what it actually spent ([`meter`]). ARC credentials
-//! (epochs, contexts, the kind-2 payload) are fixed in [`arc`].
+//! (epochs, contexts, the kind-2 payload) are fixed in [`arc`]. Each server
+//! decides per backend whether it charges, serves free, or serves free on a
+//! best-effort lane, and publishes that policy ([`access`]).
 //!
 //! Pure bookkeeping: no cryptography, filesystem, clock, or network.
 
 #![forbid(unsafe_code)]
 
+pub mod access;
 pub mod arc;
 pub mod gas;
 pub mod issuer;
 pub mod meter;
 pub mod params;
 
+pub use access::{
+    is_free_lane_busy, Access, AccessPolicy, Backend, PublishedAccess, FREE_LANE_BUSY_PREFIX,
+};
 pub use gas::{
     Calibration, CuckooGeometry, DatabaseGeometry, GasTable, MeteredOp, OnionGeometry,
     OramGeometry, SubTableGeometry, TableKind, GAS_UNIT,
