@@ -11,6 +11,7 @@ import {
   resolveOramBatchPlan,
   splitOramScriptHashBatches,
 } from '../oram-adapter.js';
+import { PRODUCTION_ORAM_BATCH_PLANNER } from '../production-providers.js';
 
 describe('ORAM adapter', () => {
   it('advertises direct non-PBC layout', () => {
@@ -58,6 +59,22 @@ describe('ORAM adapter', () => {
 
   it('allows measured direct ORAM deployments to raise the per-request batch size', () => {
     expect(splitOramScriptHashBatches([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+
+  it('pins the production ORAM request shape that pages and SDK consumers share', () => {
+    expect(PRODUCTION_ORAM_BATCH_PLANNER).toEqual({
+      accessBudget: 75,
+      indexReadsPerScriptHash: 2,
+      expectedChunkReadsPerScriptHash: 1,
+      paddedSlotCount: 25,
+      maxScriptHashesPerRequest: 25,
+    });
+    expect(Object.isFrozen(PRODUCTION_ORAM_BATCH_PLANNER)).toBe(true);
+    expect(resolveOramBatchPlan(PRODUCTION_ORAM_BATCH_PLANNER)).toMatchObject({
+      accessBudget: 75,
+      paddedSlotCount: 25,
+      maxScriptHashesPerRequest: 25,
+    });
   });
 
   it('plans fixed-budget direct ORAM batches from access counts', () => {
