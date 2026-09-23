@@ -22,9 +22,9 @@ export const APPROVED_ACTION_COMMITS = Object.freeze({
   "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
   "actions/upload-pages-artifact": "fc324d3547104276b827a68afc52ff2a11cc49c9",
   "mozilla-actions/sccache-action": "fc920bf0ec8de6ee65d409111f7ec508035751ba",
-  "docker/build-push-action": "53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+  "docker/build-push-action": "c3c9e263c25d99ce0380d002d59b67737d91b0dc",
   "docker/login-action": "dbcb813823bdd20940b903addbd779551569679f",
-  "docker/setup-buildx-action": "37fe631027851001ddb9b187196cc803df7f5f0e",
+  "docker/setup-buildx-action": "f87e5991a6d7451dcb8d9637bfbc97413f497069",
 });
 
 export const EASYCRYPT_VERIFIER_IMAGE = "ghcr.io/bitcoin-pir/bitcoinpir-easycrypt-verifier";
