@@ -72,6 +72,7 @@ import {
 } from './session-grant.js';
 import {
   CreditedChannel,
+  resolveAccess,
   serverGasCardFromInfo,
   type CreditEnablement,
   type CreditProvider,
@@ -1509,22 +1510,29 @@ export class OnionPirWebClient {
     try {
       const info = await fetchServerInfoJson(socket);
       if (this.ws !== socket) return;
-      if (!info.credits?.enabled) {
-        outcome = { state: 'not-enabled' };
-      } else if (!info.credits.required) {
-        outcome = { state: 'not-required' };
+      const access = resolveAccess(info.credits, 'onion');
+      if (access.mode === 'free') {
+        outcome = { state: info.credits?.enabled ? 'not-required' : 'not-enabled' };
       } else {
         const card = serverGasCardFromInfo(info);
-        if (!card) throw new Error('server requires credits but publishes no gas card');
-        this.credited = new CreditedChannel(card, provider, (frame) => socket.sendRaw(frame));
+        if (!card) throw new Error('server meters frames but publishes no gas card');
+        this.credited = new CreditedChannel(
+          card,
+          provider,
+          (frame) => socket.sendRaw(frame),
+          access,
+          info.credits?.enabled === true,
+        );
         this.creditedSocket = socket;
-        outcome = { state: 'required' };
+        outcome = { state: access.mode === 'paid' ? 'required' : 'best-effort' };
       }
     } catch (error) {
       outcome = { state: 'error', error: (error as Error)?.message ?? String(error) };
     }
     if (outcome.state === 'required') {
       this.log('OnionPIR: credits required here; metered frames are funded from the wallet', 'info');
+    } else if (outcome.state === 'best-effort') {
+      this.log('OnionPIR: free while the server has room; paid from the wallet only when it is busy', 'info');
     } else if (outcome.state === 'error') {
       this.log(`OnionPIR: credits could not be enabled — ${outcome.error}`, 'error');
     }

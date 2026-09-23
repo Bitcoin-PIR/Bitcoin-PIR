@@ -380,7 +380,8 @@ impl pir_sdk_client::credit_transport::CreditProvider for JsCreditProvider {
     }
 }
 
-/// `"not-enabled" | "not-required" | "required"` for `enableCredits`.
+/// `"not-enabled" | "not-required" | "required" | "best-effort"` for
+/// `enableCredits`.
 pub(crate) fn credit_status_str(
     status: pir_sdk_client::credit_transport::CreditStatus,
 ) -> &'static str {
@@ -389,6 +390,7 @@ pub(crate) fn credit_status_str(
         CreditStatus::NotEnabled => "not-enabled",
         CreditStatus::NotRequired => "not-required",
         CreditStatus::Required => "required",
+        CreditStatus::BestEffort => "best-effort",
     }
 }
 

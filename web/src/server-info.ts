@@ -50,7 +50,13 @@ export interface ServerInfoJson {
   databases?: PerDatabaseInfoJson[];
   /** Gas card and credits flags (docs/CREDITS.md), passed through raw for `credits.ts`. */
   gas?: unknown;
-  credits?: { enabled: boolean; required: boolean };
+  credits?: {
+    enabled: boolean;
+    required: boolean;
+    /** Per-backend access policy (docs/CREDITS.md "Access policy"), raw. */
+    access?: unknown;
+    free_queue_wait_ms?: number;
+  };
 }
 
 export interface PerDatabaseInfoJson {
@@ -170,6 +176,10 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
   if (raw.gas !== undefined) info.gas = raw.gas;
   if (raw.credits && typeof raw.credits === 'object') {
     info.credits = { enabled: raw.credits.enabled === true, required: raw.credits.required === true };
+    if (raw.credits.access !== undefined) info.credits.access = raw.credits.access;
+    if (typeof raw.credits.free_queue_wait_ms === 'number') {
+      info.credits.free_queue_wait_ms = raw.credits.free_queue_wait_ms;
+    }
   }
 
   // `onionpir` is defined below but we also want it in the top-level

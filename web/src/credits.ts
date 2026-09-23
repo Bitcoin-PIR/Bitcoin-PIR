@@ -774,8 +774,59 @@ export type FrameExchange = (frame: Uint8Array) => Promise<Uint8Array>;
 
 /** What enabling credits on one connection came to. */
 export interface CreditEnablement {
-  state: 'not-enabled' | 'not-required' | 'required' | 'error';
+  /**
+   * `best-effort`: the server serves this backend free while it has room and
+   * the connection pays only when told the free lane is busy.
+   */
+  state: 'not-enabled' | 'not-required' | 'required' | 'best-effort' | 'error';
   error?: string;
+}
+
+// ─── Access policy (docs/CREDITS.md "Access policy") ───────────────────────
+
+export type AccessBackend = 'dpf' | 'harmony' | 'onion' | 'oram';
+
+/** One backend's setting on one server. */
+export type AccessMode =
+  | { mode: 'free' }
+  | { mode: 'paid' }
+  | { mode: 'best-effort'; free_concurrency: number; free_gas_per_hour?: number };
+
+/** Prefix of a server's refusal when a best-effort free lane is busy. */
+export const FREE_LANE_BUSY_PREFIX = 'free capacity busy';
+
+export function isFreeLaneBusy(message: string): boolean {
+  return message.startsWith(FREE_LANE_BUSY_PREFIX);
+}
+
+function parseAccessMode(value: unknown): AccessMode | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (v.mode === 'free') return { mode: 'free' };
+  if (v.mode === 'paid') return { mode: 'paid' };
+  if (v.mode === 'best-effort' && Number.isInteger(v.free_concurrency) && (v.free_concurrency as number) >= 1) {
+    const out: AccessMode = { mode: 'best-effort', free_concurrency: v.free_concurrency as number };
+    if (Number.isInteger(v.free_gas_per_hour)) out.free_gas_per_hour = v.free_gas_per_hour as number;
+    return out;
+  }
+  return null;
+}
+
+/**
+ * The access a client should assume for `backend` on a server: the entry
+ * the server published, else paid when it says credits are required, free
+ * otherwise (servers that predate the access policy).
+ */
+export function resolveAccess(
+  credits: { enabled?: boolean; required?: boolean; access?: unknown } | undefined,
+  backend: AccessBackend,
+): AccessMode {
+  const published =
+    credits?.access && typeof credits.access === 'object'
+      ? parseAccessMode((credits.access as Record<string, unknown>)[backend])
+      : null;
+  if (published) return published;
+  return credits?.enabled === true && credits.required === true ? { mode: 'paid' } : { mode: 'free' };
 }
 
 /**
@@ -789,10 +840,17 @@ export class CreditedChannel {
   private readonly observed = new Map<string, number>();
   private presented = 0;
 
+  /**
+   * `access` is the server's setting for the backend this channel carries
+   * (docs/CREDITS.md "Access policy"); `canPay` is whether the server takes
+   * presentations at all.
+   */
   constructor(
     card: ServerGasCard,
     private readonly provider: CreditProvider,
     private readonly exchange: FrameExchange,
+    private readonly access: AccessMode = { mode: 'paid' },
+    private readonly canPay = true,
   ) {
     this.meter = new ConnectionCreditMeter(card);
   }
@@ -808,29 +866,60 @@ export class CreditedChannel {
   }
 
   private async topUp(needed: number): Promise<void> {
+    if (await this.topUpIfPossible(needed)) return;
+    const credits = Math.max(1, this.meter.creditsToPresent(needed, 0));
+    throw new Error(`credits required: this frame needs ${credits} more credit(s) and the wallet has none`);
+  }
+
+  /** Present credits until the balance covers `needed`; false when the wallet runs out. */
+  private async topUpIfPossible(needed: number): Promise<boolean> {
     for (let attempt = 0; this.meter.balance < needed; attempt++) {
       if (attempt >= 4) throw new Error('credits: the balance did not reach the frame price after four presentations');
       const credits = Math.max(1, this.meter.creditsToPresent(needed, 0));
       const presentation = this.provider(credits);
-      if (!presentation) {
-        throw new Error(`credits required: this frame needs ${credits} more credit(s) and the wallet has none`);
-      }
+      if (!presentation) return false;
       const response = await this.exchange(encodeCreditPresentFrame(presentation.kind, presentation.payload));
       const receipt = parseCreditResponsePayload(response.subarray(4));
       this.presented += presentation.credits;
       this.meter.recordReceipt(receipt);
     }
+    return true;
   }
 
   /**
-   * Send `frame` through `exchange`, funding it first when it is metered
-   * and retrying once when the server still refuses it for gas.
+   * Send `frame` through `exchange` as the server's access policy says: a
+   * free backend's frames go as they are; a paid frame is funded first and
+   * retried once when the server still refuses it for gas; a best-effort
+   * frame the balance does not cover goes out unpaid, and only if the
+   * server answers that its free lane is busy is it paid for and sent again
+   * — when the wallet can; otherwise the busy refusal is returned.
    */
   async roundtrip(frame: Uint8Array): Promise<Uint8Array> {
     const classified = classifyOnionFrame(frame);
     const gas = classified ? this.meter.frameGas(classified.dbId, classified.op) : null;
-    if (classified === null || gas === null) return this.exchange(frame);
-    await this.topUp(gas + this.reserve(classified.op));
+    if (classified === null || gas === null || this.access.mode === 'free') return this.exchange(frame);
+    if (this.access.mode === 'best-effort') {
+      // Covered by the balance, the server charges the frame and serves it
+      // first; otherwise it goes out unpaid for the free lane.
+      const covered = this.meter.balance >= gas;
+      if (covered) this.meter.recordFrame(gas);
+      const response = await this.exchange(frame);
+      if (!(response[4] === 0xff && isFreeLaneBusy(errorMessage(response.subarray(4))))) {
+        if (covered) this.recordPaidResponse(classified.op, response);
+        return response;
+      }
+      // The lane refused the frame and charged nothing: the server's balance
+      // did not cover it, whatever this mirror expected (it counts egress a
+      // little behind the server). Pay for priority if the wallet can —
+      // presenting at least once when the mirror was wrong, so the receipt
+      // resynchronises it — otherwise the refusal stands.
+      if (covered) this.meter.recordFrame(-gas);
+      if (!this.canPay) return response;
+      const needed = Math.max(gas + this.reserve(classified.op), covered ? this.meter.balance + 1 : 0);
+      if (!(await this.topUpIfPossible(needed))) return response;
+    } else {
+      await this.topUp(gas + this.reserve(classified.op));
+    }
     this.meter.recordFrame(gas);
     let response = await this.exchange(frame);
     const refusal = response[4] === 0xff ? parseInsufficientGas(errorMessage(response.subarray(4))) : null;
@@ -840,10 +929,14 @@ export class CreditedChannel {
       this.meter.recordFrame(refusal.needed);
       response = await this.exchange(frame);
     }
-    this.meter.recordResponse(response.length);
-    const seen = this.observed.get(classified.op.kind) ?? 0;
-    this.observed.set(classified.op.kind, Math.max(seen, response.length));
+    this.recordPaidResponse(classified.op, response);
     return response;
+  }
+
+  private recordPaidResponse(op: MeteredOp, response: Uint8Array): void {
+    this.meter.recordResponse(response.length);
+    const seen = this.observed.get(op.kind) ?? 0;
+    this.observed.set(op.kind, Math.max(seen, response.length));
   }
 }
 

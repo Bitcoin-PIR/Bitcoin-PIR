@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-Qyl15AUH1p8VPl1EzcvKKbD+mwVp2Bjuy73b6dCLXo8=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-1sTBYPFj1tIjqlC7hASbcbxczuvLkr8VinA3Q4EIstI=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1967,11 +1967,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const line = document.createElement('div');
                 line.textContent = status.state === 'required'
                     ? `${key}: credits required — funded from the wallet per frame`
-                    : status.state === 'not-required'
-                        ? `${key}: credits accepted, not required yet`
-                        : status.state === 'not-enabled'
-                            ? `${key}: free path (credits not enabled)`
-                            : `${key}: credits could not be enabled — ${status.error}`;
+                    : status.state === 'best-effort'
+                        ? `${key}: free while the server has room — paid from the wallet only when it is busy`
+                        : status.state === 'not-required'
+                            ? `${key}: free (credits accepted, not required)`
+                            : status.state === 'not-enabled'
+                                ? `${key}: free (credits not enabled)`
+                                : `${key}: credits could not be enabled — ${status.error}`;
                 legs.appendChild(line);
             }
             const queryButton = document.getElementById('queryBtn');

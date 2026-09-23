@@ -463,7 +463,8 @@ export interface WasmDpfClient {
    *  credits (`docs/CREDITS.md`): `provider(credits)` returns
    *  `{ kind, payload, credits }` or `null` and is called from inside query
    *  calls whenever the connection's balance runs short. Resolves to
-   *  `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+   *  `"not-enabled"`, `"not-required"`, `"required"`, or
+   *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
   /** Wrap both server connections with the encrypted-channel transport.
@@ -586,7 +587,8 @@ export interface WasmHarmonyClient {
    *  credits (`docs/CREDITS.md`): `provider(credits)` returns
    *  `{ kind, payload, credits }` or `null` and is called from inside query
    *  calls whenever the connection's balance runs short. Resolves to
-   *  `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+   *  `"not-enabled"`, `"not-required"`, `"required"`, or
+   *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order

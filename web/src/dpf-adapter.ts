@@ -2035,6 +2035,8 @@ export class BatchPirClientAdapter {
     }
     if (outcome.state === 'required') {
       this.log(`server${serverIndex}: credits required; metered frames are funded from the wallet`, 'info');
+    } else if (outcome.state === 'best-effort') {
+      this.log(`server${serverIndex}: free while the server has room; paid from the wallet only when it is busy`, 'info');
     } else if (outcome.state === 'error') {
       this.log(`server${serverIndex}: credits could not be enabled — ${outcome.error}`, 'error');
     }
