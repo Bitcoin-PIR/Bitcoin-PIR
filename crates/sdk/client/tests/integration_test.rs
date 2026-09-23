@@ -200,13 +200,15 @@ fn strict_production_canary_enabled() -> bool {
     )
 }
 
-/// Scheduled/manual live steps: does any production server the suite talks
-/// to require credits? Production has required them since 2026-09-15
-/// (docs/CREDITS.md) and CI holds no credential yet, so the workflow runs
-/// this probe first and skips the paid live steps while it reports `true`.
-/// Read-only: one plain connection per distinct URL and a GET_INFO_JSON
-/// round-trip; nothing is presented. Writes `credits_required=<bool>` to
-/// `$GITHUB_OUTPUT` and a note to `$GITHUB_STEP_SUMMARY` when they are set.
+/// Scheduled/manual live steps: which backends do the production servers
+/// the suite talks to charge for? Production has charged for some since
+/// 2026-09-15 (docs/CREDITS.md "Access policy") and CI holds no credential,
+/// so the workflow runs this probe first and skips a backend's metered live
+/// steps while it reports that backend paid; free and best-effort backends
+/// run unpaid. Read-only: one plain connection per (URL, backend) and a
+/// GET_INFO_JSON round-trip; nothing is presented. Writes
+/// `<backend>_paid=<bool>` for every probed backend to `$GITHUB_OUTPUT` and a
+/// note to `$GITHUB_STEP_SUMMARY` when they are set.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn probe_live_credits_required() {
@@ -221,9 +223,8 @@ async fn probe_live_credits_required() {
         }
     }
 
-    // Each server publishes an access policy per backend (docs/CREDITS.md
-    // "Access policy"), so probe the backend the suite runs on each URL: a
-    // free or best-effort backend runs unpaid, a paid one skips the suite.
+    // Each server publishes an access policy per backend, so probe the
+    // backend the suite runs on each URL.
     let mut targets = vec![
         (dpf_server0_url(), Backend::Dpf),
         (dpf_server1_url(), Backend::Dpf),
@@ -233,7 +234,7 @@ async fn probe_live_credits_required() {
     #[cfg(feature = "onion")]
     targets.push((onion_url(), Backend::Onion));
 
-    let mut required = false;
+    let mut paid: Vec<Backend> = Vec::new();
     let mut lines = Vec::new();
     for (url, backend) in &targets {
         let conn = WsConnection::connect(url)
@@ -245,13 +246,20 @@ async fn probe_live_credits_required() {
             panic!("probe: reading credits flags from {url} failed: {error}")
         });
         conn.close().await.ok();
-        required |= status == CreditStatus::Required;
+        if status == CreditStatus::Required && !paid.contains(backend) {
+            paid.push(*backend);
+        }
         lines.push(format!("{url} ({backend}): {status:?}"));
     }
-    for line in &lines {
+    let mut probed: Vec<Backend> = targets.iter().map(|(_, backend)| *backend).collect();
+    probed.dedup();
+    let outputs: Vec<String> = probed
+        .iter()
+        .map(|backend| format!("{backend}_paid={}", paid.contains(backend)))
+        .collect();
+    for line in lines.iter().chain(&outputs) {
         eprintln!("probe: {line}");
     }
-    eprintln!("probe: credits_required={required}");
 
     use std::io::Write as _;
     if let Ok(path) = std::env::var("GITHUB_OUTPUT") {
@@ -259,17 +267,21 @@ async fn probe_live_credits_required() {
             .append(true)
             .open(path)
             .expect("GITHUB_OUTPUT must be writable");
-        writeln!(out, "credits_required={required}").unwrap();
+        for output in &outputs {
+            writeln!(out, "{output}").unwrap();
+        }
     }
-    if required {
+    if !paid.is_empty() {
         if let Ok(path) = std::env::var("GITHUB_STEP_SUMMARY") {
             let mut out = std::fs::OpenOptions::new()
                 .append(true)
                 .open(path)
                 .expect("GITHUB_STEP_SUMMARY must be writable");
+            let names: Vec<String> = paid.iter().map(|backend| backend.to_string()).collect();
             writeln!(
                 out,
-                "Live steps skipped: a backend the suite runs is paid on production and CI holds no credential (docs/CREDITS.md).\n\n{}",
+                "Metered live steps skipped for {}: paid on production and CI holds no credential (docs/CREDITS.md \"Access policy\").\n\n{}",
+                names.join(", "),
                 lines.join("\n")
             )
             .unwrap();
