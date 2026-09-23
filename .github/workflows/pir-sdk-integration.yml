@@ -62,8 +62,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
-      # Set by the credits probe on scheduled/manual runs; gates the leakage canary.
-      credits_required: ${{ steps.probe.outputs.credits_required }}
+      # Set by the credits probe on scheduled/manual runs; gate the leakage
+      # canary per backend.
+      dpf_paid: ${{ steps.probe.outputs.dpf_paid }}
+      harmony_paid: ${{ steps.probe.outputs.harmony_paid }}
     env:
       CARGO_TERM_COLOR: always
       # Pin the default URLs explicitly so the CI log shows what we
@@ -115,28 +117,41 @@ jobs:
       - name: Run unit tests
         run: cargo test -p pir-sdk-client
 
-      # Production charges credits since 2026-09-15 (docs/CREDITS.md) and CI
-      # holds no credential yet. Probe first (read-only) and skip the live
-      # steps, visibly, while any backend the suite runs is paid on the
-      # server it runs on (free and best-effort backends run unpaid); the
-      # probe writes the reason to the step summary.
-      - name: Probe whether the live servers require credits (scheduled/manual only)
+      # Production charges for some backends since 2026-09-15 (docs/CREDITS.md
+      # "Access policy") and CI holds no credential. Probe first (read-only):
+      # it reports <backend>_paid per backend. A paid backend's metered live
+      # steps are skipped, visibly (step summary); free and best-effort
+      # backends run unpaid, and connect / catalog / announce frames are
+      # never metered, so those tests always run.
+      - name: Probe which backends the live servers charge for (scheduled/manual only)
         id: probe
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: cargo test -p pir-sdk-client --test integration_test probe_live_credits_required -- --ignored --nocapture
       - name: Run ignored integration tests against live PIR servers (scheduled/manual only)
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.credits_required != 'true' }}
-        run: cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        env:
+          DPF_PAID: ${{ steps.probe.outputs.dpf_paid }}
+        # The strict canaries have their own steps below; the DPF query tests
+        # wait while a server charges for DPF.
+        run: |
+          skip=(--skip probe_live_credits_required --skip strict_production_canary)
+          if [ "$DPF_PAID" = true ]; then skip+=(--skip test_dpf_client_); fi
+          cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture "${skip[@]}"
 
       # Strict scheduled signal for the currently supported product boundary:
-      # verify and preflight both pinned roots, then complete Payment-V1
-      # admission and a real db0 query. DPF/Harmony db1 backend queries are not
+      # verify and preflight both pinned roots, open the secure channels, then
+      # run a real db0 query. DPF/Harmony db1 backend queries are not
       # attempted because the signed production policies expose no db1 scope.
-      - name: Run native database-root canary (DPF + HarmonyPIR)
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.credits_required != 'true' }}
+      - name: Run native database-root canary (DPF)
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.dpf_paid != 'true' }}
         env:
           PIR_STRICT_PRODUCTION_CANARY: "1"
-        run: cargo test -p pir-sdk-client --features fastprp --test integration_test strict_production_canary -- --ignored --test-threads=1 --nocapture
+        run: cargo test -p pir-sdk-client --features fastprp --test integration_test test_dpf_strict_production_canary -- --ignored --test-threads=1 --nocapture
+      - name: Run native database-root canary (HarmonyPIR)
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.harmony_paid != 'true' }}
+        env:
+          PIR_STRICT_PRODUCTION_CANARY: "1"
+        run: cargo test -p pir-sdk-client --features fastprp --test integration_test test_harmony_strict_production_canary -- --ignored --test-threads=1 --nocapture
 
   integration-onion:
     # OnionPIR tests live in their own job because the `onion` feature
@@ -162,6 +177,10 @@ jobs:
     # ONIONPIR_DISABLE_HEXL env var (tracked separately).
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    outputs:
+      # Set by the credits probe on scheduled/manual runs; gates the OnionPIR
+      # leakage invariants.
+      onion_paid: ${{ steps.probe.outputs.onion_paid }}
     env:
       CARGO_TERM_COLOR: always
       PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
@@ -239,7 +258,7 @@ jobs:
 
       # Same credits probe as the `integration` job (built with the onion
       # feature so the test binary is reused).
-      - name: Probe whether the live servers require credits (scheduled/manual only)
+      - name: Probe which backends the live servers charge for (scheduled/manual only)
         id: probe
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         run: cargo test -p pir-sdk-client --features onion --test integration_test probe_live_credits_required -- --ignored --nocapture
@@ -248,15 +267,17 @@ jobs:
         # (see the header comment): PRs and main run only deterministic
         # tests; live-production coverage belongs to the scheduled/manual
         # canary so production availability changes cannot fail a PR.
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.credits_required != 'true' }}
+        # Connect and catalog frames are never metered, so these run even
+        # while OnionPIR is paid; the strict canary has its own step.
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         # The `onion_tests` filter scopes this to the OnionPIR module
         # introduced in integration_test.rs — the DPF / Harmony tests
         # already ran in the `integration` job without the feature.
         # (Quoted to keep YAML from parsing `::` as a mapping.)
-        run: "cargo test -p pir-sdk-client --features onion --test integration_test -- --ignored --test-threads=1 --nocapture onion_tests::"
+        run: "cargo test -p pir-sdk-client --features onion --test integration_test -- --ignored --test-threads=1 --nocapture onion_tests:: --skip strict_production_canary"
 
       - name: Run native database-root canary (OnionPIR)
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.credits_required != 'true' }}
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.onion_paid != 'true' }}
         # Same supported boundary as the DPF/Harmony canary: both roots are
         # verified/preflighted, while admission and the real query use db0.
         env:
@@ -267,9 +288,10 @@ jobs:
     # The leakage suite opens many live WebSocket connections. Run it only
     # after both ordinary integration jobs succeed on scheduled/manual runs,
     # with every selected invariant serialized in this one job.
-    # Skipped, like the live steps, while production requires credits and
-    # CI holds no credential (the `integration` job's probe decides).
-    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.integration.outputs.credits_required != 'true' }}
+    # Each backend's invariants are skipped, like its live steps, while
+    # production charges for it and CI holds no credential (the probes in
+    # the jobs above decide).
+    if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && (needs.integration.outputs.dpf_paid != 'true' || needs.integration.outputs.harmony_paid != 'true' || needs.integration-onion.outputs.onion_paid != 'true') }}
     needs: [integration, integration-onion]
     name: privacy leakage canary (DPF, HarmonyPIR, OnionPIR)
     runs-on: ubuntu-22.04
@@ -325,6 +347,7 @@ jobs:
             ${{ runner.os }}-cargo-sdk-onion-
 
       - name: Run DPF leakage invariants
+        if: ${{ needs.integration.outputs.dpf_paid != 'true' }}
         run: |
           for test_name in \
             dpf_per_message_invariants_not_found \
@@ -340,6 +363,7 @@ jobs:
         # Advisory privacy-regression signal. It is deliberately not a release
         # gate because it opens several production sessions and is broader than
         # the user-facing db0 health canary above.
+        if: ${{ needs.integration.outputs.harmony_paid != 'true' }}
         continue-on-error: true
         run: |
           run_harmony_invariants() {
@@ -358,6 +382,7 @@ jobs:
       - name: Run OnionPIR leakage invariants
         # Advisory for the same reason as Harmony: useful privacy drift signal,
         # not an additional production release gate.
+        if: ${{ needs.integration-onion.outputs.onion_paid != 'true' }}
         continue-on-error: true
         run: |
           for test_name in \
