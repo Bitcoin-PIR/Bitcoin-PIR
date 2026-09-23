@@ -114,9 +114,6 @@ pub(crate) struct UnifiedServerData {
     /// any moment), so lock contention is negligible vs the network
     /// IO it gates.
     pub(crate) v2_half_pending: Arc<tokio::sync::Mutex<HashMap<[u8; 16], V2HalfPending>>>,
-    /// Session-grant verifier and credit ledger. `None` when no cashier key
-    /// is pinned (`--session-grant-pubkey`); presentations are then refused.
-    pub(crate) session_grants: Option<crate::session_grant::SessionGrantGateV1>,
     /// Gas table derived from the loaded databases plus the hourly meter
     /// (docs/CREDITS.md). Always present; informational until an issuer is
     /// configured.

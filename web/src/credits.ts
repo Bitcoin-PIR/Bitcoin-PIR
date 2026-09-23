@@ -21,7 +21,6 @@ import {
   REQ_CREDIT_PRESENT,
   RESP_CREDIT_OK,
 } from './constants.js';
-import type { StorageLike } from './session-grant.js';
 import { mintTokenForQuote, requestLightningQuote, waitForQuotePayment } from './cashu-purchase.js';
 
 const RESP_ERROR = 0xff;
@@ -528,6 +527,13 @@ export interface PendingCredential {
   quoteExpiry: number | null;
   token: string | null;
   createdAt: number;
+}
+
+/** The part of `localStorage` the stores use. */
+export interface StorageLike {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 function defaultStorage(): StorageLike | null {

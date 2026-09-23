@@ -1,11 +1,11 @@
 # Operate the cashier and the mint
 
 Paid queries are sold outside the PIR hosts' measured images: a Cashu
-**mint** turns Lightning payments into ecash, and the **cashier** turns
-that ecash into cashier-signed [session grants](../SESSION_GRANTS.md)
-that the PIR servers meter. Both run on pir1. This page is the operator
-record; the HTTP contract is [Cashier API](../CASHIER_API.md) and the
-cashier's source is
+**mint** turns Lightning payments into ecash, and the **cashier** — the
+credit issuer — sells ARC credentials for that ecash and verifies every
+presentation a PIR server forwards ([Credits and gas](../CREDITS.md)).
+Both run on pir1. This page is the operator record; the HTTP contract is
+[Credits and gas](../CREDITS.md) "Issuer API" and the cashier's source is
 [Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier).
 
 Live state is always queried, never inferred from this page.
@@ -33,9 +33,9 @@ mint.
 | File | Owner, mode | Contents | If lost |
 | --- | --- | --- | --- |
 | `/etc/bitcoinpir/mint/seed` | `bitcoinpir-mint`, 0400 | BIP39 phrase (`bpir-cashier mnemonic`) | every issued ecash becomes unredeemable |
-| `/etc/bitcoinpir/cashier/grant.key` | `bpir-cashier`, 0600 | 32-byte Ed25519 seed (`bpir-cashier keygen`) | rotate: new key, re-pin every server |
+| `/etc/bitcoinpir/cashier/grant.key` | `bpir-cashier`, 0600 | 32-byte Ed25519 issuer seed (`bpir-cashier keygen`; the file name predates credits); signs `/v2/redeem` answers | rotate: new key, re-pin every server |
 | `/etc/bitcoinpir/cashier/wallet.seed` | `bpir-cashier`, 0600 | 64-byte Cashu wallet seed | the cashier's ecash claim on the mint is lost |
-| `/etc/bitcoinpir/cashier/grant.pub` | root, 0644 | 64 hex, the public key servers pin | regenerate with `bpir-cashier pubkey` |
+| `/etc/bitcoinpir/cashier/grant.pub` | root, 0644 | 64 hex, the issuer public key servers pin (`--credit-issuer-pubkey`) | regenerate with `bpir-cashier pubkey` |
 | `/etc/bitcoinpir/cashier/arc.seed` | `bpir-cashier`, 0600 | 32-byte ARC master seed (`bpir-cashier arc-seed`); every epoch's issuer keys derive from it | every issued credential becomes unspendable; buyers must be refunded out of band |
 
 `bpir-cashier keygen`, `wallet-seed`, and `mnemonic` never print the
@@ -43,26 +43,18 @@ secret; `keygen` and `pubkey` print only the public key.
 
 ## Server pins
 
-- pir1: `pir-primary.service` passes
-  `--session-grant-pubkey /etc/bitcoinpir/cashier/grant.pub` (and
-  `--session-grant-hint-credits 150` for the HarmonyPIR hint price). The
-  free path stays open until `--require-session-grant` is added, which is
-  an operator decision.
-- pir2: the flags live in `unified-server-run.sh` inside the measured UKI
-  (`PIR2_SESSION_GRANT_PUBKEY_HEX`, `PIR2_SESSION_GRANT_HINT_CREDITS`), so a
-  key or price change is a new image (Flow E/G). An image built before the
-  pin answers "session grants not enabled" and the client treats it as the
-  free path.
-- Credits ([Credits and gas](../CREDITS.md)): a server that should verify
-  credits at the cashier passes `--credit-issuer-url
-  https://cashier.bitcoinpir.org` (pir1: the unit; pir2:
-  `PIR2_CREDIT_ISSUER_URL` in `unified-server-run.sh`, a new image). The
-  cashier's answers verify under the same `grant.pub` the server already
-  pins, and the server signs its redeem requests with its identity key, so
-  the cashier's `operator_pubkeys` must list the operator key that signed
-  that server's identity certificate. `--require-credits` closes the free
-  path; until then presentations are verified and booked but frames stay
-  free (the rollout state).
+- pir1: `pir-primary.service` passes `--credit-issuer-url
+  https://cashier.bitcoinpir.org` and `--credit-issuer-pubkey
+  /etc/bitcoinpir/cashier/grant.pub`.
+- pir2: the same two values live in `unified-server-run.sh` inside the
+  measured UKI (`PIR2_CREDIT_ISSUER_URL`, `PIR2_CREDIT_ISSUER_PUBKEY_HEX`),
+  so a URL or key change is a new image (Flow E/G).
+- Credits ([Credits and gas](../CREDITS.md)): the cashier's redeem answers
+  verify under `grant.pub`, and each server signs its redeem requests with
+  its identity key, so the cashier's `operator_pubkeys` must list the
+  operator key that signed that server's identity certificate. What each
+  backend charges is the server's access policy (`--require-credits`,
+  `--access`; CREDITS.md "Access policy").
 - Gas meter: each server prints one `[meter op=0x.. db=N] last 3600s: n=…
   gas_mean=… cpu_mean_ms=… wall_mean_ms=… egress_mean_kib=… inflight_max=…`
   line per opcode and database per hour plus a `[meter] last 3600s: …`
@@ -80,7 +72,7 @@ secret; `keygen` and `pubkey` print only the public key.
 
 ```sh
 ssh root@65.21.91.217 'systemctl is-active bitcoinpir-mint bpir-cashier bitcoinpir-mainnet-lightning'
-curl -sS https://cashier.bitcoinpir.org/v1/info      # pubkey, mints, offers, ttl
+curl -sS https://cashier.bitcoinpir.org/v2/info      # gas parameters, mints, packs, ARC epoch
 curl -sS https://mint.bitcoinpir.org/v1/info         # mint name, nuts
 curl -sS https://mint.bitcoinpir.org/v1/keysets      # one active sat keyset
 ```
@@ -89,14 +81,14 @@ On pir1, money and ledger:
 
 ```sh
 sudo -u bpir-cashier /opt/bitcoinpir/cashier/current/bpir-cashier balance --config /etc/bitcoinpir/cashier/config.toml
-tail -n 20 /var/lib/bitcoinpir-cashier/grants.jsonl     # pending / issued / failed per token
+tail -n 20 /var/lib/bitcoinpir-cashier/grants.jsonl     # pending / credentialed / redeemed / failed per token
 CLI=$(ls /opt/bitcoinpir/core-lightning/*/bin/lightning-cli | head -1)
 sudo -u bitcoinpir-mainnet-lightning "$CLI" --lightning-dir=/srv/lightning --network=bitcoin listpeerchannels
 sudo -u bitcoinpir-mainnet-lightning "$CLI" --lightning-dir=/srv/lightning --network=bitcoin listinvoices
 ```
 
-A `pending` line without a later `issued` or `failed` line for the same
-token key means the process died or timed out mid-swap; the cashier
+A `pending` line without a later `credentialed`, `redeemed` or `failed`
+line for the same token key means the process died or timed out mid-swap; the cashier
 reports such tokens honestly (402 with a message) and logs at error
 level. Reconcile against the wallet balance before refunding anyone.
 
@@ -118,8 +110,9 @@ fee bumping.
 
 ## Credits (v2): configuration and settlement
 
-The same `bpir-cashier` serves the session-grant contract under `/v1/` and
-the credits contract under `/v2/` ([Credits and gas](../CREDITS.md)).
+`bpir-cashier` serves the credits contract under `/v2/`
+([Credits and gas](../CREDITS.md)); the session-grant contract under `/v1/`
+is retired.
 Everything credits need is in `config.toml`; an existing file keeps working
 without these tables, which leaves `POST /v2/redeem` refusing every server
 and `/v2/credentials` unsold.
@@ -158,26 +151,22 @@ section and the pack.
   the ARC tags each epoch consumed). `bpir-cashier settlement --config
   /etc/bitcoinpir/cashier/config.toml` prints redemptions, gas, and sat per
   server: what each server earned.
-- `grants.jsonl` now also records `redeemed` (a token spent through a
-  server) and `credentialed` (a token that bought a credential) states, so
-  a token can never be used twice across the three paths.
+- `grants.jsonl` records `redeemed` (a token spent through a server) and
+  `credentialed` (a token that bought a credential) states, so a token can
+  never be used twice; `issued` lines are v1 session grants from before
+  the retirement and replay only as spent tokens.
 - Back up `arc.seed` with the other secrets; rotating it is a new epoch's
   worth of refunds, not a key rotation (issued credentials are bound to the
   seed's per-epoch keys).
 
-## Change offers or TTL
+## Change packs or mints
 
-Edit `/etc/bitcoinpir/cashier/config.toml` (`[[offers]]`,
-`grant_ttl_secs`, `mints`, `cors_origins`) and
-`systemctl restart bpir-cashier`. The browser reads offers from
-`/v1/info` on every load; grants already issued keep their credits.
-Removing every `[[offers]]` block closes `/v1` sales (`/v1/grants`
-answers `unknown offer`) — production has been in that state since
-2026-09-18. `grant_ttl_secs` is capped at the servers' 30-day maximum
-minus the 300 s clock tolerance (2 591 700 s, the production value). A
-mint fee (`input_fee_ppk` in the mint config) is absorbed by the
-operator: the cashier validates the token's face value and records the
-amount actually credited.
+Edit `/etc/bitcoinpir/cashier/config.toml` (`[[arc.credential_offers]]`,
+`mints`, `cors_origins`) and `systemctl restart bpir-cashier`. The browser
+reads the packs from `/v2/info` on every load; credentials already issued
+keep their presentations. A mint fee (`input_fee_ppk` in the mint config)
+is absorbed by the operator: the cashier validates the token's face value
+and records the amount actually credited.
 
 ## Upgrade the cashier
 
@@ -188,20 +177,20 @@ install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/cashier/$SHA/bpir-cash
 ln -sfn /opt/bitcoinpir/cashier/$SHA /opt/bitcoinpir/cashier/current && systemctl restart bpir-cashier
 ```
 
-The grant format comes from `pir-session-grant` pinned by git revision in
-the cashier's `Cargo.toml`; bump it together with any server-side change
-to the crate.
+The issuer contract types come from `pir-credit`, pinned by git revision
+in the cashier's `Cargo.toml`; bump it together with any change to
+`pir_credit::issuer`.
 
-## Rotate the grant key
+## Rotate the issuer key
 
 1. `bpir-cashier keygen --out /etc/bitcoinpir/cashier/grant.key.new`
    (Human), then `bpir-cashier pubkey` into a new `grant.pub`.
 2. Pin the new public key on every server **before** switching the
-   cashier (`--session-grant-pubkey` is repeatable, so both keys can be
-   accepted during the overlap; pir2 needs a new image with the new
-   `PIR2_SESSION_GRANT_PUBKEY_HEX`).
-3. Move the new key into place, restart the cashier; unexpired grants
-   under the old key stay valid on servers that still pin it.
+   cashier (`--credit-issuer-pubkey` is repeatable, so both keys verify
+   during the overlap; pir2 needs a new image with the new
+   `PIR2_CREDIT_ISSUER_PUBKEY_HEX`).
+3. Move the new key into place and restart the cashier; a server that pins
+   only the old key refuses its redeem answers until it is re-pinned.
 
 ## Known limits
 

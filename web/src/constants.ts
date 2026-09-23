@@ -146,15 +146,9 @@ export const RESP_BUCKET_MERKLE_SIB_BATCH = 0x33;
 export const REQ_BUCKET_MERKLE_TREE_TOPS = 0x34;
 export const RESP_BUCKET_MERKLE_TREE_TOPS = 0x34;
 
-// ─── Session grant presentation ───────────────────────────────────────────
-// 0x08 (ARC) and 0x09 (Cashu blind auth) are retired; never reassign.
-
-export const REQ_SESSION_GRANT_PRESENT = 0x0b;
-export const RESP_SESSION_GRANT_OK = 0x0b;
-/** Encoded length of a version-1 `pir_session_grant::SessionGrant`. */
-export const SESSION_GRANT_LEN = 133;
-
 // ─── Credits (docs/CREDITS.md) ────────────────────────────────────────────
+// 0x08 (ARC), 0x09 (Cashu blind auth) and 0x0b (session grants) are retired;
+// never reassign.
 // `[kind u8][len u32 LE][payload]` presented inside the encrypted channel;
 // the server answers `[gas_added u64 LE][gas_balance i64 LE]`.
 
@@ -163,10 +157,10 @@ export const RESP_CREDIT_OK = 0x12;
 /** Largest `REQ_CREDIT_PRESENT` payload a server decodes (256 KiB). */
 export const MAX_CREDIT_PRESENT_PAYLOAD_LEN = 256 * 1024;
 /**
- * Client-side pin of the cashier that sells session grants
- * (`docs/SESSION_GRANTS.md`, `docs/CASHIER_API.md`). The server announces
- * no payment endpoint, so this is the only place the browser learns where
- * to pay. Operator-owned; change it here, not at runtime.
+ * Client-side pin of the credit issuer (`docs/CREDITS.md`). The server
+ * announces no payment endpoint, so this is the only place the browser
+ * learns where to buy credits. Operator-owned; change it here, not at
+ * runtime.
  */
 export const PRODUCTION_CASHIER_URL = 'https://cashier.bitcoinpir.org';
 

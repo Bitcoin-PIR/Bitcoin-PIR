@@ -75,7 +75,6 @@ mod onion_merkle;
 mod oram;
 mod platform_time;
 mod protocol;
-pub mod session_grant;
 mod transport;
 mod verified_query;
 mod verified_roots;

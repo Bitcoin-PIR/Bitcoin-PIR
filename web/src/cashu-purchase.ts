@@ -1,41 +1,26 @@
 /**
- * Lightning → Cashu ecash → session grant.
+ * Lightning → Cashu ecash: the rail `purchaseCredential` (credits.ts) buys
+ * credentials with.
  *
  * `@cashu/cashu-ts` is imported on demand, so the free path never loads it.
- * A purchase is persisted step by step (`PendingPurchaseStore`): a reload
- * after paying the invoice, or a cashier outage after minting, loses nothing
- * — the page resumes from the stored quote or token.
  *
- * Flow (all against a mint the cashier lists in `GET /v1/info`):
- *   1. `requestLightningQuote` — bolt11 invoice for `offer.amount` `unit`.
+ * Flow (against a mint the issuer lists in `GET /v2/info`):
+ *   1. `requestLightningQuote` — bolt11 invoice for `purchase.amount` `unit`.
  *   2. The user pays the invoice with any Lightning wallet.
  *   3. `waitForQuotePayment` — polls the mint until the quote is PAID.
  *   4. `mintTokenForQuote` — mints proofs and encodes a `cashuB…` token.
- *   5. `CashierClient.redeem(offer, token)` — the cashier swaps the token
- *      at the mint and issues the grant.
  */
 
 import type { Wallet } from '@cashu/cashu-ts';
-import type { CashierOffer, StorageLike } from './session-grant.js';
 
-export const PENDING_PURCHASE_STORAGE_KEY = 'bitcoinpir.session-grant.pending-purchase.v1';
+/** What a mint quote pays for: `amount` of `unit`, which buys `credits`. */
+export interface MintPurchase {
+  credits: number;
+  amount: number;
+  unit: string;
+}
 
 export type MintQuoteStatus = 'UNPAID' | 'PAID' | 'ISSUED';
-
-/** One in-flight purchase, persisted until the grant is stored. */
-export interface PendingPurchase {
-  version: 1;
-  cashierUrl: string;
-  mintUrl: string;
-  offer: CashierOffer;
-  quoteId: string;
-  invoice: string;
-  /** Mint-side invoice expiry (Unix seconds) or `null` when unknown. */
-  quoteExpiry: number | null;
-  /** Set once proofs were minted; the token is then the only thing to redeem. */
-  token: string | null;
-  createdAt: number;
-}
 
 export interface LightningQuote {
   quoteId: string;
@@ -81,12 +66,12 @@ export function openWallet(mintUrl: string, unit: string): Promise<Wallet> {
 
 export async function requestLightningQuote(
   mintUrl: string,
-  offer: CashierOffer,
+  purchase: MintPurchase,
 ): Promise<LightningQuote> {
-  const wallet = await openWallet(mintUrl, offer.unit);
+  const wallet = await openWallet(mintUrl, purchase.unit);
   const quote = await wallet.createMintQuoteBolt11(
-    offer.amount,
-    `Bitcoin PIR: ${offer.credits} query credits`,
+    purchase.amount,
+    `Bitcoin PIR: ${purchase.credits} query credits`,
   );
   if (!quote.quote || !quote.request) throw new Error('mint returned an incomplete quote');
   return { quoteId: quote.quote, invoice: quote.request, expiry: quote.expiry ?? null };
@@ -124,13 +109,13 @@ export async function waitForQuotePayment(
 /** Mint the paid quote into proofs and encode them as one Cashu token. */
 export async function mintTokenForQuote(
   mintUrl: string,
-  offer: CashierOffer,
+  purchase: MintPurchase,
   quoteId: string,
 ): Promise<string> {
-  const wallet = await openWallet(mintUrl, offer.unit);
-  const proofs = await wallet.mintProofsBolt11(offer.amount, quoteId);
+  const wallet = await openWallet(mintUrl, purchase.unit);
+  const proofs = await wallet.mintProofsBolt11(purchase.amount, quoteId);
   const { getEncodedToken } = await loadCashu();
-  return getEncodedToken({ mint: mintUrl, proofs, unit: offer.unit });
+  return getEncodedToken({ mint: mintUrl, proofs, unit: purchase.unit });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -145,93 +130,4 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }
     signal?.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-// ─── Pending purchase persistence ───────────────────────────────────────────
-
-function defaultStorage(): StorageLike | null {
-  try {
-    return (globalThis as { localStorage?: StorageLike }).localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export class PendingPurchaseStore {
-  private readonly storage: StorageLike | null;
-  private readonly key: string;
-
-  constructor(storage: StorageLike | null = defaultStorage(), key = PENDING_PURCHASE_STORAGE_KEY) {
-    this.storage = storage;
-    this.key = key;
-  }
-
-  load(): PendingPurchase | null {
-    if (!this.storage) return null;
-    let raw: string | null;
-    try {
-      raw = this.storage.getItem(this.key);
-    } catch {
-      return null;
-    }
-    if (!raw) return null;
-    try {
-      const pending = readPendingPurchase(JSON.parse(raw));
-      if (!pending) this.clear();
-      return pending;
-    } catch {
-      this.clear();
-      return null;
-    }
-  }
-
-  save(pending: PendingPurchase): void {
-    if (!this.storage) return;
-    try {
-      this.storage.setItem(this.key, JSON.stringify(pending));
-    } catch {
-      // Storage unavailable: the purchase still completes in memory.
-    }
-  }
-
-  clear(): void {
-    if (!this.storage) return;
-    try {
-      this.storage.removeItem(this.key);
-    } catch {
-      // ignore
-    }
-  }
-}
-
-function readPendingPurchase(value: unknown): PendingPurchase | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (record.version !== 1) return null;
-  const offer = record.offer;
-  if (
-    typeof record.cashierUrl !== 'string'
-    || typeof record.mintUrl !== 'string'
-    || typeof record.quoteId !== 'string'
-    || typeof record.invoice !== 'string'
-    || typeof offer !== 'object' || offer === null
-    || (record.quoteExpiry !== null && typeof record.quoteExpiry !== 'number')
-    || (record.token !== null && typeof record.token !== 'string')
-    || typeof record.createdAt !== 'number'
-  ) {
-    return null;
-  }
-  const { credits, amount, unit } = offer as Record<string, unknown>;
-  if (typeof credits !== 'number' || typeof amount !== 'number' || typeof unit !== 'string') return null;
-  return {
-    version: 1,
-    cashierUrl: record.cashierUrl,
-    mintUrl: record.mintUrl,
-    offer: { credits, amount, unit },
-    quoteId: record.quoteId,
-    invoice: record.invoice,
-    quoteExpiry: record.quoteExpiry as number | null,
-    token: record.token as string | null,
-    createdAt: record.createdAt,
-  };
 }

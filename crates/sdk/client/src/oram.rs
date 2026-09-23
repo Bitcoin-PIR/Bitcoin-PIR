@@ -268,13 +268,6 @@ impl OramClient {
         status
     }
 
-    /// Attach a cashier-signed session grant to the current connection and
-    /// return the credits remaining there. See
-    /// [`crate::DpfClient::present_session_grant`].
-    pub async fn present_session_grant(&mut self, grant: &[u8]) -> PirResult<u32> {
-        crate::session_grant::present_session_grant(self.conn_mut()?.as_mut(), grant).await
-    }
-
     /// Present credits (`kind` and `payload` per [`crate::credits`]) on the
     /// current connection and return the server's receipt. Bearer material:
     /// call after the secure-channel upgrade.

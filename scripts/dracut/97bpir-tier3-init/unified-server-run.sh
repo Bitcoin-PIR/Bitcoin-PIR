@@ -50,19 +50,15 @@ PIR2_SEALED_RECEIPT_DIR="$PIR2_SEALED_ROOT/receipts"
 PIR2_SEALED_MARKER_DIR="$PIR2_SEALED_ROOT/markers"
 PIR2_SEALED_ATTEMPT_DIR=${BPIR_PIR2_SNP_SEALED_ATTEMPT_ROOT:-/run/bitcoinpir-pir2-sealed}
 PIR2_SEALED_IDENTITY_CERT_PATH="$PIR2_SEALED_ROOT/identity.cert"
-# Paid queries (docs/SESSION_GRANTS.md): the cashier public key this image
-# pins for session grants, and the price of one HarmonyPIR hint set. Both
-# are part of the measured image, like --admin-pubkey-hex below; changing
-# either is a new UKI. The flag takes a file, so the key is materialized
-# under /run right before the final exec. Requiring a grant for every query
-# (closing the free path) is an operator decision and is deliberately not
-# enabled here.
-PIR2_SESSION_GRANT_PUBKEY_HEX=59392a0738106c4954c317f9bfae2e4918fe809fa0c49fdf23493ce709b9c6e0
-PIR2_SESSION_GRANT_PUBKEY_FILE=/run/bitcoinpir-session-grant.pub
-PIR2_SESSION_GRANT_HINT_CREDITS=150
 # Credits (docs/CREDITS.md): the issuer this guest forwards presentations
-# to. Its answers verify under the session-grant key above; the guest signs
-# redeem requests with its sealed identity. Access policy (docs/CREDITS.md
+# to and the issuer key its signed answers must verify under. Both are part
+# of the measured image, like --admin-pubkey-hex below; changing either is a
+# new UKI. The flag takes a file, so the key is materialized under /run
+# right before the final exec. The guest signs redeem requests with its
+# sealed identity.
+PIR2_CREDIT_ISSUER_PUBKEY_HEX=59392a0738106c4954c317f9bfae2e4918fe809fa0c49fdf23493ce709b9c6e0
+PIR2_CREDIT_ISSUER_PUBKEY_FILE=/run/bitcoinpir-credit-issuer.pub
+# Access policy (docs/CREDITS.md
 # "Access policy"): HarmonyPIR queries are paid (--require-credits); DPF
 # server 1 and Direct ORAM are free while this guest has room — two free
 # frames each at a time on two low-priority threads, paid frames first.
@@ -1240,8 +1236,8 @@ remove_direct_oram_status_api_root || fatal "failed to remove Direct ORAM status
 trap - EXIT
 trap - HUP INT TERM
 start_unified_server_runtime_log
-(umask 022; printf '%s\n' "$PIR2_SESSION_GRANT_PUBKEY_HEX" > "$PIR2_SESSION_GRANT_PUBKEY_FILE") \
-    || fatal "failed to materialize the session grant public key"
+(umask 022; printf '%s\n' "$PIR2_CREDIT_ISSUER_PUBKEY_HEX" > "$PIR2_CREDIT_ISSUER_PUBKEY_FILE") \
+    || fatal "failed to materialize the credit issuer public key"
 
 # Ready reopens the sealed identity in the final exec. Deleted Payment V1
 # service flags must not be passed (unknown CLI flags are fatal).
@@ -1272,8 +1268,7 @@ exec "$UNIFIED_SERVER" \
     --pir2-snp-sealed-verifier-nonce-hex "$PIR2_SEALED_VERIFIER_NONCE_HEX" \
     --pir2-snp-sealed-current-boot-id-hex "$PIR2_BOOT_ID_HEX" \
     --pir2-snp-sealed-identity-cert "$PIR2_SEALED_IDENTITY_CERT_PATH" \
-    --session-grant-pubkey "$PIR2_SESSION_GRANT_PUBKEY_FILE" \
-    --session-grant-hint-credits "$PIR2_SESSION_GRANT_HINT_CREDITS" \
+    --credit-issuer-pubkey "$PIR2_CREDIT_ISSUER_PUBKEY_FILE" \
     --credit-issuer-url "$PIR2_CREDIT_ISSUER_URL" \
     --require-credits \
     --access dpf=best-effort:2 \

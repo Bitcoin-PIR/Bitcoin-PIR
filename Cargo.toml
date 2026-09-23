@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-# One PIR service. Paid access is a cashier-signed session grant that the
-# server verifies offline (crates/trust/session-grant); the cashier itself
-# lives in a separate repository. The Payment V1 crates, the ARC/Cashu
-# verifiers, and the payment-issuer app were deleted in 2026-09.
+# One PIR service. Paid access is credits (crates/trust/pir-credit), verified
+# at the issuer; the cashier itself lives in a separate repository. The
+# Payment V1 crates, the ARC/Cashu verifiers, the payment-issuer app, and the
+# v1 session grants were deleted in 2026-09.
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
@@ -11,7 +11,6 @@ members = [
     "crates/trust/identity",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",
-    "crates/trust/session-grant",
     "crates/trust/pir-credit",
     "crates/sdk/core",
     "crates/protocol/runtime",

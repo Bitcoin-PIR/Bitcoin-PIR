@@ -19,14 +19,11 @@ script's status subcommand for the rest.
 
 ## Technical references
 
-- Paid queries are moving to gas-priced credits verified at the issuer:
+- Paid queries are gas-priced credits verified at the issuer:
   [Credits and gas](CREDITS.md) is the design, the rate card, the
-  measurements behind it, and the issuer contract; `pir-credit` holds the
-  model. Until every client presents credits, paid queries present a
-  cashier-signed session grant on opcode `0x0b`;
-  the design, metering rule, and server flags are in
-  [Session grants](SESSION_GRANTS.md); the cashier's HTTP contract is
-  [Cashier API](CASHIER_API.md). The cashier (payment side) is
+  measurements behind it, the access policy each server publishes, and the
+  issuer contract; `pir-credit` holds the model. The v1 session grants
+  (opcode `0x0b`) are retired. The cashier (payment side) is
   [Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier); running it
   and the mint on pir1 is [Cashier and mint](runbooks/cashier-and-mint.md).
   The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live

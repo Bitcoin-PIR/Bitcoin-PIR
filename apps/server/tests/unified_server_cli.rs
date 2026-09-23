@@ -30,7 +30,7 @@ fn help_prints_the_flag_reference_and_exits_zero() {
     let out = run(&["--help"]);
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("--serve-queries") && text.contains("--session-grant-pubkey"));
+    assert!(text.contains("--serve-queries") && text.contains("--credit-issuer-pubkey"));
 }
 
 #[test]

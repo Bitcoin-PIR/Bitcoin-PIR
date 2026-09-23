@@ -390,9 +390,9 @@ do not leave a mixed fleet.
 | Preserve, verify, or restore a pir2 rollback set (guest side, via `vpsbg-data-disk.sh ssh`) | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-rollback-set.sh` | `PASS action=preserve\|verify\|detach-envelope\|restore` |
 | Fetch an Observe/Enroll/Probe receipt from the recovery root | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-recovery-receipt.sh` | `PASS pir2_sealed_recovery_receipt` |
 | Run one pir2 release as five windows (Flows E, F, G) | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-campaign.sh plan\|build\|enroll\|probe\|ready` | `PASS pir2_sealed_campaign action=...` |
-| Check the cashier and mint on pir1 | [Cashier and mint](runbooks/cashier-and-mint.md) | `curl https://cashier.bitcoinpir.org/v1/info`; `bpir-cashier balance` | both units active, `/v1/info` lists offers |
+| Check the cashier and mint on pir1 | [Cashier and mint](runbooks/cashier-and-mint.md) | `curl https://cashier.bitcoinpir.org/v2/info`; `bpir-cashier balance` | both units active, `/v2/info` lists the credit pack |
 
-Paid access (cashier-signed session grants, outside the measured image) is
-described in [`SESSION_GRANTS.md`](SESSION_GRANTS.md) and operated per
+Paid access (credits verified at the issuer, outside the measured image) is
+described in [`CREDITS.md`](CREDITS.md) and operated per
 [Cashier and mint](runbooks/cashier-and-mint.md); the retired Payment V1
 material lives only in git history.

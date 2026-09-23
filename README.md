@@ -56,9 +56,10 @@ The server hosts the complete Bitcoin UTXO set (~815K active script types at tim
 
 ### Open and self-hostable
 Anyone can run PIR servers from a public Bitcoin Core snapshot. Free queries
-are open; a provider can gate paid queries behind cashier-signed session
-grants ([`docs/SESSION_GRANTS.md`](docs/SESSION_GRANTS.md)) without giving
-the PIR host any payment secret. No payment gate is enabled by merely
+are open; a provider chooses per backend what is free, paid, or free while
+the server has room, and paid queries present credits verified at an issuer
+([`docs/CREDITS.md`](docs/CREDITS.md)) without giving the PIR host any
+payment secret. No payment gate is enabled by merely
 building this repository.
 
 ## Project Layout

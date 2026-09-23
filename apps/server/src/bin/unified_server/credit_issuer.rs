@@ -4,12 +4,12 @@
 //! rustls with the Mozilla roots that carries both.
 //!
 //! Trust: the transport authenticates the issuer's host name; the redeem
-//! answer is additionally signed by the issuer's Ed25519 key — the same key
-//! the server already pins for session grants — and bound to the request
-//! nonce, so nothing between server and issuer (a CDN, a proxy) can grant
-//! gas. Requests are signed by the server's identity key and carry its
+//! answer is additionally signed by the issuer's Ed25519 key, which the
+//! server pins (`--credit-issuer-pubkey`), and bound to the request nonce,
+//! so nothing between server and issuer (a CDN, a proxy) can grant gas. Requests are signed by the server's identity key and carry its
 //! operator-signed certificate, so the issuer can settle per server.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,13 +24,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::cli::CliArgs;
+use crate::read_regular_file_bounded_v1;
 
 /// Whole-request budget (connect, TLS, write, read) for one issuer call.
 pub(crate) const ISSUER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Largest issuer response body the client reads.
 const MAX_ISSUER_RESPONSE_BYTES: usize = 1024 * 1024;
-/// The credits contract lives under `/v2/`; `/v1/` stays the session-grant
-/// contract for clients that have not moved yet.
+/// The credits contract lives under `/v2/`.
 const REDEEM_PATH: &str = "/v2/redeem";
 const INFO_PATH: &str = "/v2/info";
 
@@ -39,9 +39,35 @@ pub(crate) struct CreditsV1 {
     pub(crate) issuer: CreditIssuerClientV1,
 }
 
+/// A public-key file is 32 raw bytes or 64 hex characters plus whitespace.
+const MAX_PUBLIC_KEY_FILE_BYTES: usize = 128;
+
+/// The issuer's Ed25519 key from `path`: 32 raw bytes, or 64 hex characters
+/// with surrounding whitespace.
+pub(crate) fn load_issuer_public_key(path: &Path) -> Result<VerifyingKey, String> {
+    let bytes =
+        read_regular_file_bounded_v1(path, MAX_PUBLIC_KEY_FILE_BYTES, "credit issuer public key")?;
+    let invalid = |why: &str| format!("credit issuer public key {}: {why}", path.display());
+    let key: [u8; 32] = if bytes.len() == 32 {
+        bytes.as_slice().try_into().expect("32 bytes")
+    } else {
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| invalid("expected 32 raw bytes or 64 hex characters"))?
+            .trim();
+        if text.len() != 64 {
+            return Err(invalid("expected 32 raw bytes or 64 hex characters"));
+        }
+        hex::decode(text)
+            .map_err(|_| invalid("not hexadecimal"))?
+            .try_into()
+            .expect("64 hex characters are 32 bytes")
+    };
+    VerifyingKey::from_bytes(&key).map_err(|_| invalid("not an Ed25519 public key"))
+}
+
 impl CreditsV1 {
     /// `None` without `--credit-issuer-url`. With it, the issuer's answers
-    /// need at least one pinned `--session-grant-pubkey` key and the redeem
+    /// need at least one pinned `--credit-issuer-pubkey` key and the redeem
     /// requests need the server identity to sign with.
     pub(crate) fn from_cli(
         args: &CliArgs,
@@ -54,19 +80,15 @@ impl CreditsV1 {
             return Ok(None);
         };
         let url = IssuerUrl::parse(url)?;
-        if args.session_grant_pubkeys.is_empty() {
+        if args.credit_issuer_pubkeys.is_empty() {
             return Err(
-                "--credit-issuer-url needs at least one --session-grant-pubkey FILE: the issuer's redeem answers are verified under that key"
+                "--credit-issuer-url needs at least one --credit-issuer-pubkey FILE: the issuer's redeem answers are verified under that key"
                     .to_owned(),
             );
         }
-        let mut issuer_keys = Vec::with_capacity(args.session_grant_pubkeys.len());
-        for path in &args.session_grant_pubkeys {
-            let key = crate::session_grant::load_public_key(path)?;
-            issuer_keys.push(
-                VerifyingKey::from_bytes(&key)
-                    .map_err(|_| format!("{}: not an Ed25519 public key", path.display()))?,
-            );
+        let mut issuer_keys = Vec::with_capacity(args.credit_issuer_pubkeys.len());
+        for path in &args.credit_issuer_pubkeys {
+            issuer_keys.push(load_issuer_public_key(path)?);
         }
         let Some((identity_key, cert)) = identity else {
             return Err(
@@ -567,6 +589,24 @@ mod tests {
     }
 
     #[test]
+    fn issuer_keys_load_from_hex_or_raw_files_and_bad_ones_are_named() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = issuer_key().verifying_key();
+        let hex_path = dir.path().join("issuer.hex");
+        std::fs::write(&hex_path, format!("{}\n", hex::encode(key.to_bytes()))).unwrap();
+        let raw_path = dir.path().join("issuer.raw");
+        std::fs::write(&raw_path, key.to_bytes()).unwrap();
+        assert_eq!(load_issuer_public_key(&hex_path).unwrap(), key);
+        assert_eq!(load_issuer_public_key(&raw_path).unwrap(), key);
+
+        let bad_path = dir.path().join("bad.txt");
+        std::fs::write(&bad_path, b"not a key").unwrap();
+        let error = load_issuer_public_key(&bad_path).unwrap_err();
+        assert!(error.starts_with("credit issuer public key"), "{error}");
+        assert!(load_issuer_public_key(&dir.path().join("missing.pub")).is_err());
+    }
+
+    #[test]
     fn issuer_url_accepts_https_and_loopback_http_only() {
         let url = IssuerUrl::parse("https://cashier.example/").unwrap();
         assert_eq!(url.port, 443);
@@ -623,7 +663,7 @@ mod tests {
             &args(&[
                 "--credit-issuer-url",
                 "https://cashier.example",
-                "--session-grant-pubkey",
+                "--credit-issuer-pubkey",
                 &key_arg
             ]),
             None
@@ -633,7 +673,7 @@ mod tests {
             &args(&[
                 "--credit-issuer-url",
                 "https://cashier.example",
-                "--session-grant-pubkey",
+                "--credit-issuer-pubkey",
                 &key_arg,
                 "--require-credits",
             ]),
@@ -653,7 +693,7 @@ mod tests {
             &args(&[
                 "--credit-issuer-url",
                 "https://cashier.example",
-                "--session-grant-pubkey",
+                "--credit-issuer-pubkey",
                 &key_arg,
                 "--credit-server-id",
                 "pir9",

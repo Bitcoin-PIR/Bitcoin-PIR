@@ -2,14 +2,14 @@
 
 Paid queries are priced in **gas**, paid in **credits**, and verified
 **online at the issuer**. This page is the design and the contract every
-side codes against; it supersedes [Session grants](SESSION_GRANTS.md), which
-stay accepted on opcode `0x0b` until every client presents credits.
+side codes against. It superseded the v1 session grants (opcode `0x0b`,
+retired 2026-09; their design is in git history).
 
 | Concept | Meaning |
 | --- | --- |
 | gas | Work. One gas is one CPU-millisecond on the reference machine (pir1, Intel i7-8700, CPU time summed over all threads). Every metered request kind has a formula in public database geometry (`pir_credit::gas`), so a database of any size prices itself and a provider on other hardware changes only its price per gas. |
 | credit | Money. One credit is `credit_sat` satoshis (10). The issuer publishes `gas_per_credit` (72,000): the one knob that anchors prices to a fiat target. |
-| issuer | The operator-run service that sells credits, verifies every presentation a server forwards, keeps the global double-spend state, and settles with each server in gas. It is the cashier of [Cashier API](CASHIER_API.md), extended (`Bitcoin-PIR/cashier`). |
+| issuer | The operator-run service that sells credits, verifies every presentation a server forwards, keeps the global double-spend state, and settles with each server in gas. It is the cashier (`Bitcoin-PIR/cashier`), which sold the retired session grants before. |
 | presentation | What a client sends on `REQ_CREDIT_PRESENT`: a Cashu token (proofs in sat) or ARC presentations (one credit each). |
 | meter | The per-server hourly aggregate of gas, CPU, wall time, and egress per opcode (`pir_credit::meter`), the observability that keeps the calibration honest. |
 
@@ -115,9 +115,6 @@ CPU-seconds per lookup and one that refreshes per level 0.8.
 - Without `--require-credits` metered frames stay free and are still
   metered; presentations are still verified and credited, which is the
   rollout state for checking the issuer path end to end.
-- Session grants (`0x0b`) keep working during the migration; a connection
-  with an attached grant is charged the grant's credit table instead of
-  gas.
 - `GET_INFO_JSON` carries `"credits":{"enabled","required"}` next to the
   gas card, so a client presents only where presenting buys something.
 
@@ -139,8 +136,7 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
   missing credits and presenting them on the same connection first; every
   receipt resynchronises the client's balance with the server's, and a
   refusal that names its numbers resynchronises too and is retried once on
-  the round-trip path. A connection that carries an accepted session grant
-  is not credited (the grant pays).
+  the round-trip path.
 - Responses are attributed to the frames that caused them (HarmonyPIR hint
   streams count all their frames), so egress is charged as the server
   charges it. What is left on a connection when it closes is lost by
@@ -150,7 +146,8 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 
 | Flag | Effect |
 | --- | --- |
-| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--session-grant-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
+| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--credit-issuer-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
+| `--credit-issuer-pubkey FILE` | The issuer's Ed25519 public key (32 raw bytes or 64 hex characters), repeatable; redeem answers must verify under one of them. |
 | `--credit-server-id ID` | Name the server settles under at the issuer; defaults to the identity certificate's server id. |
 | `--require-credits` | Default every backend to `paid`: charge metered frames to the connection balance and refuse uncovered ones. Without it every backend defaults to `free`. |
 | `--access BACKEND=MODE` | Per-backend override, repeatable (see [Access policy](#access-policy)): `free`, `paid`, or `best-effort[:N[:GAS_PER_HOUR]]`. `paid` needs `--credit-issuer-url`. |
@@ -246,9 +243,8 @@ and `0x0d`–`0x10` stay retired.
 ## Issuer API (v2)
 
 All bodies are JSON; the types live in `pir_credit::issuer` so both
-repositories share them. The credits contract is served under `/v2/`;
-`/v1/` keeps the session-grant contract ([Cashier API](CASHIER_API.md))
-until every client has moved.
+repositories share them. The credits contract is served under `/v2/`
+(`/v1/`, the session-grant contract, is retired).
 
 - `GET /v2/info` → `IssuerInfoV2`: `credit_sat`, `gas_per_credit`,
   `base_gas_per_frame`, `egress_gas_per_mb`, `mints`, `offers` (credits
@@ -256,7 +252,7 @@ until every client has moved.
   presentation context, validity), and an informational `rate_card`.
 - `POST /v2/credentials` (client): pays with a Cashu token and a blinded
   ARC credential request; returns the credential response. Idempotent per
-  token, as `POST /v1/grants` is today.
+  token.
 - `POST /v2/redeem` (server) → `RedeemRequestV1`: `server_id`, the
   operator-signed identity certificate, a 16-byte nonce, `unix_time`, the
   presented items verbatim, and an Ed25519 signature by the server's
@@ -322,11 +318,10 @@ expired, so nothing needed the overlap.
    cashier stopped selling session grants (`offers` empty, `/v1/grants`
    answers `unknown offer`; grants already issued keep their credits until
    they expire, at most 30 days).
-4. Next — pir2: `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL` and
-   `--require-credits`; run the sealed campaign
-   (`scripts/pir2-sealed-campaign.sh`; a VPSBG image slot must be freed
-   first, Human), update the pins. Until then pir2 stays free, so a DPF
-   lookup costs the pir1 half only.
+4. Next — pir2: `unified-server-run.sh` carries `PIR2_CREDIT_ISSUER_URL`,
+   `--require-credits` and the access policy; run the sealed campaign
+   (`scripts/pir2-sealed-campaign.sh`) and update the pins. Until then pir2
+   takes no credits and serves everything free.
 5. Done 2026-09-23 — end-to-end purchase on production: one 100-credit
    pack bought in the browser over Lightning (Human paid the invoice), then
    DPF, HarmonyPIR and OnionPIR queries against pir1, all verified. The
@@ -340,10 +335,13 @@ expired, so nothing needed the overlap.
    OnionPIR web client sent its tree-top preflight around the credited
    channel (#337). A client presents credits only when the server
    requires them, so this check needed step 3.
-6. Next — retire `0x0b`: no grant is outstanding (sales closed, the last
-   issued grant expired), so the opcode, the grant gate, and the `/v1`
-   cashier API can go as soon as the code lands. `--session-grant-pubkey`
-   stays: the same key signs redeem answers.
+6. Done in code 2026-09-23 — `0x0b` retired (no grant was outstanding:
+   sales closed, the last issued grant expired): the opcode, the grant gate
+   and its flags, the clients' grant presentation, and the web grant UI are
+   gone, and the cashier drops `/v1`. The issuer key the servers pin stays,
+   renamed `--credit-issuer-pubkey`: it verifies redeem answers. Live on
+   pir1 and the cashier from their next deploy, on pir2 from its next
+   image.
 
 ## Status
 
@@ -358,6 +356,6 @@ expired, so nothing needed the overlap.
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
 | Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; end-to-end purchase verified on all three pir1 backends (2026-09-23); pir2 waits for the next image campaign |
-| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done in code; reference deployment configured per the example above as each server is next restarted (pir1: unit; pir2: next image) |
-| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | next; no grant outstanding |
+| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done; live on pir1 since 2026-09-23 (DPF best-effort); pir2 with its next image |
+| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | done in code; pir1 and cashier from their next deploy, pir2 from its next image |
 | CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | per backend: runs the live steps and leakage invariants of every backend production serves free or best-effort (DPF today) and skips the metered steps of paid ones, since CI holds no credential; connect / catalog / announce tests always run |

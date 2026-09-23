@@ -615,10 +615,6 @@ mod tests {
             None
         );
         assert_eq!(metered_op_for_frame(REQ_PING, &[REQ_PING]), None);
-        assert_eq!(
-            metered_op_for_frame(REQ_SESSION_GRANT_PRESENT, &[REQ_SESSION_GRANT_PRESENT]),
-            None
-        );
     }
 
     #[test]

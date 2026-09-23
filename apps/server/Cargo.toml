@@ -56,7 +56,6 @@ pir-runtime-core = { path = "../../crates/protocol/runtime" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-identity = { path = "../../crates/trust/identity" }
-pir-session-grant = { path = "../../crates/trust/session-grant" }
 pir-credit = { path = "../../crates/trust/pir-credit" }
 # Issuer client: HTTPS to the credit issuer over the TLS stack
 # tokio-tungstenite already pins (no new crate enters the lockfile).

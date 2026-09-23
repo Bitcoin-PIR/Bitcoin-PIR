@@ -23,7 +23,6 @@ mod onion;
 mod oram;
 mod pir2_sealed_receipts;
 mod serve;
-mod session_grant;
 mod state;
 mod unified_server_pir2_sealed;
 
@@ -42,7 +41,6 @@ use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
 use runtime::hint_pool;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase, ServerState};
-use session_grant::SessionGrantGateV1;
 use unified_server_pir2_sealed::{
     dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
     validate_pir2_sealed_cli_v1, Pir2SealedStartupV1, PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1,
@@ -883,16 +881,6 @@ async fn main() {
     };
     println!("  Data root: {}", data_root.display());
 
-    // ── Session-grant admission (cashier keys pinned by flag) ────────────
-    let session_grants =
-        SessionGrantGateV1::from_cli(&args).unwrap_or_else(|error| fatal_cli(error));
-    match session_grants.as_ref() {
-        Some(gate) => println!("  {}", gate.startup_log_line()),
-        None => {
-            println!("  Session grants: disabled (pin a cashier key with --session-grant-pubkey)")
-        }
-    }
-
     // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
     let mut hint_pools = BTreeMap::new();
     for binding in &args.harmony_pool_bindings {
@@ -1020,7 +1008,6 @@ async fn main() {
         #[cfg(feature = "cuckoo-oram")]
         direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-        session_grants,
         credit_meter,
         credits,
         access,
