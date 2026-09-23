@@ -255,12 +255,19 @@ expired, so nothing needed the overlap.
    (`scripts/pir2-sealed-campaign.sh`; a VPSBG image slot must be freed
    first, Human), update the pins. Until then pir2 stays free, so a DPF
    lookup costs the pir1 half only.
-5. Next — end-to-end purchase: buy one 100-credit pack in the browser
-   (Human pays the invoice), query; the cashier log shows the credential
-   issuance, `bpir-cashier settlement` books the redeemed sat to the
-   server, and the server's hourly `[meter]` line carries the gas. A client
-   presents credits only when the server requires them, so this check
-   needs step 3.
+5. Done 2026-09-23 — end-to-end purchase on production: one 100-credit
+   pack bought in the browser over Lightning (Human paid the invoice), then
+   DPF, HarmonyPIR and OnionPIR queries against pir1, all verified. The
+   cashier logged the credential issuance and one `redeemed` line per
+   presentation; `bpir-cashier settlement` booked 14 credits (DPF 1,
+   HarmonyPIR hint set 3, OnionPIR 10) to pir1, matching the page's
+   balance. It found two bugs, both fixed and deployed the same day: the
+   cashier opened Cashu wallets only for `/v1` offer units, so with grant
+   sales closed `/v2/credentials` refused a paid token (cashier #5; the
+   refused token was never swapped and the purchase resumed), and the
+   OnionPIR web client sent its tree-top preflight around the credited
+   channel (#337). A client presents credits only when the server
+   requires them, so this check needed step 3.
 6. Next — retire `0x0b`: no grant is outstanding (sales closed, the last
    issued grant expired), so the opcode, the grant gate, and the `/v1`
    cashier API can go as soon as the code lands. `--session-grant-pubkey`
@@ -278,6 +285,6 @@ expired, so nothing needed the overlap.
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; pir2 waits for the next image campaign |
+| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier and pir1 live and required; session-grant sales closed; end-to-end purchase verified on all three pir1 backends (2026-09-23); pir2 waits for the next image campaign |
 | Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | next; no grant outstanding |
 | CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | skips itself while production requires credits and CI holds no credential; follow-up: an operator-issued credential for CI (cashier), then the live steps present it |
