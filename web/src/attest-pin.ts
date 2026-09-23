@@ -126,22 +126,24 @@ export interface ServerAttestPin {
 }
 
 /**
- * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-09-08
- * after the r8 rollout (Observe/Enroll/Probe/Ready on image 309, source
- * `a77e4d52`, run by scripts/pir2-sealed-campaign.sh). Image 309 serves DPF,
- * Harmony-query and TEE ORAM, meters session grants (hint set = 150 credits),
- * serves its own Ready receipts read-only, answers --help/--version, logs an
- * hourly hint-pool timing summary, and bakes cloudflared 2026.8.3.
+ * weikeng2.bitcoinpir.org — VPSBG Tier 3 SNP-sealed UKI, pinned 2026-09-24
+ * after the r9 rollout (Observe/Enroll/Probe/Ready on image 321, source
+ * `9c70bb6e`, run by scripts/pir2-sealed-campaign.sh). Image 321 serves DPF,
+ * Harmony-query and TEE ORAM with credits verified at the issuer and the
+ * access policy (HarmonyPIR paid; DPF and Direct ORAM free while the guest
+ * has room), no session grants, its own Ready receipts read-only,
+ * --help/--version, an hourly hint-pool timing summary, and bakes
+ * cloudflared 2026.8.3.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // Captured from live image 309 after AMD chain + REPORT_DATA verification
+  // Captured from live image 321 after AMD chain + REPORT_DATA verification
   // in scripts/pir2-post-switch-check.sh. binary_sha256 and MEASUREMENT
-  // mismatched the previous image-307 pin, as expected for this UKI.
+  // mismatched the previous image-309 pin, as expected for this UKI.
   measurementHex:
-    'db2a43c3f2601a5f649c9b7ead7ad093d94f3d1a0e991035c86da92ccff1582ee6b390b4c16b33123ab5481cff696156',
+    '55673231882debdf730aec01ed6750adf73deb301c7f94a6d672cc7e09732f6dd5c012ed5f01b071019f52e48f4b30f7',
   binarySha256Hex:
-    '71796e85906c758cd00d2714bc570ce9af01401f6b4802f01fbe6a7151681813',
-  description: 'weikeng2.bitcoinpir.org (VPSBG image 309, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, session grants metered, Ready receipts over WS)',
+    'e39c554f9a3883f03cde14741376a25f7ac5a7876998b1e36f3d71a96eb835f5',
+  description: 'weikeng2.bitcoinpir.org (VPSBG image 321, SEV-SNP, sealed Tier 3 DPF + Harmony + Direct ORAM, credits with DPF/ORAM best-effort free and HarmonyPIR paid, Ready receipts over WS)',
 };
 
 /**
