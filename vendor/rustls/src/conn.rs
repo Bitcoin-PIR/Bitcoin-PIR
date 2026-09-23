@@ -262,7 +262,7 @@ mod connection {
         /// You may learn the number of bytes available at any time by inspecting
         /// the return of [`Connection::process_new_packets`].
         #[cfg(read_buf)]
-        fn read_buf(&mut self, mut cursor: core::io::BorrowedCursor<'_>) -> io::Result<()> {
+        fn read_buf(&mut self, mut cursor: core::io::BorrowedCursor<'_, u8>) -> io::Result<()> {
             let before = cursor.written();
             self.received_plaintext
                 .read_buf(cursor.reborrow())?;
@@ -962,13 +962,16 @@ impl<Data> ConnectionCore<Data> {
         buffer: &'b mut [u8],
         buffer_progress: &mut BufferProgress,
     ) -> Option<InboundPlainMessage<'b>> {
-        self.hs_deframer
+        let message = self
+            .hs_deframer
             .iter(buffer)
             .next()
             .map(|(message, discard)| {
                 buffer_progress.add_discard(discard);
                 message
-            })
+            });
+        self.common_state.aligned_handshake = self.hs_deframer.is_aligned();
+        message
     }
 
     fn process_more_input<'b>(
