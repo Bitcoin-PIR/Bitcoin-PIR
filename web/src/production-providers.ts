@@ -3,10 +3,11 @@
  *
  * The node set is fixed: pir1 (Hetzner — DPF server0 / Harmony hint /
  * OnionPIR) and pir2 (VPSBG AMD SEV — DPF server1 / Harmony query /
- * Direct ORAM). Free queries are open: the page connects to the pinned
- * providers, runs the strict attestation + database-proof preflight, and
- * queries directly. There is no bootstrap JSON, no directory, no signed
- * policy, and no capability acquisition.
+ * Direct ORAM). The page connects to the pinned providers, runs the strict
+ * attestation + database-proof preflight, and queries directly; a provider
+ * that requires credits (docs/CREDITS.md) is paid per metered frame from the
+ * wallet. There is no bootstrap JSON, no directory, no signed policy, and no
+ * capability acquisition.
  *
  * Server binary/SEV and database proof pins live in `attest-pin.ts` and are
  * re-exported here only by reference; the two per-provider operator
@@ -21,6 +22,7 @@ import {
     type ServerAttestPin,
 } from './attest-pin.js';
 import { hexToBytes } from './hash.js';
+import type { OramBatchPlannerConfig } from './oram-adapter.js';
 
 export interface ProductionProviderPin {
     /** Canonical WebSocket endpoint of the provider. */
@@ -56,3 +58,17 @@ export const PIR2_PROVIDER: ProductionProviderPin = {
     ),
     expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
 };
+
+/**
+ * Direct ORAM request shape used in production. Every lookup is one
+ * fixed-budget request with the same padded slot count, so the server sees
+ * the same access pattern whatever the batch holds. SDK consumers pass this
+ * as `OramPirClientConfig.batchPlanner` rather than choosing their own.
+ */
+export const PRODUCTION_ORAM_BATCH_PLANNER: Readonly<OramBatchPlannerConfig> = Object.freeze({
+    accessBudget: 75,
+    indexReadsPerScriptHash: 2,
+    expectedChunkReadsPerScriptHash: 1,
+    paddedSlotCount: 25,
+    maxScriptHashesPerRequest: 25,
+});

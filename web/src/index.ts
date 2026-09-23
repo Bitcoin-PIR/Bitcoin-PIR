@@ -326,3 +326,10 @@ export {
   installStaleChunkReload,
   type StaleChunkReloadEnv,
 } from './stale-chunk-reload.js';
+
+export {
+  PIR1_PROVIDER,
+  PIR2_PROVIDER,
+  PRODUCTION_ORAM_BATCH_PLANNER,
+  type ProductionProviderPin,
+} from './production-providers.js';
