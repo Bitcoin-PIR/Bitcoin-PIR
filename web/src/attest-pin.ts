@@ -156,14 +156,14 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Live hashed unified_server from the Flow D rebuild of 679fa90e
-  // (v1 session grants retired: no opcode 0x0b, issuer key pinned with
-  // --credit-issuer-pubkey; access policy --require-credits --access
-  // dpf=best-effort:2, so DPF is free while pir1 has room and HarmonyPIR
-  // hints and OnionPIR are paid).
+  // Live hashed unified_server from the Flow D rebuild of e68cca23
+  // (rustls 0.23.45 for RUSTSEC-2026-0285; otherwise as 679fa90e: session
+  // grants retired, issuer key pinned with --credit-issuer-pubkey, access
+  // policy --require-credits --access dpf=best-effort:2, so DPF is free
+  // while pir1 has room and HarmonyPIR hints and OnionPIR are paid).
   binarySha256Hex:
-    '600b6bbac314ae68bf3c1bcd429f06f9fe28946d90897933a97083a2c69e92e2',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server with the access policy: DPF best-effort free, HarmonyPIR hints and OnionPIR paid; session grants retired)',
+    'e80334a9ce736a807d44081d25d1ecadbd4c57146c96d55321fb635b19864139',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server with the access policy: DPF best-effort free, HarmonyPIR hints and OnionPIR paid; rustls 0.23.45)',
 };
 
 /**
