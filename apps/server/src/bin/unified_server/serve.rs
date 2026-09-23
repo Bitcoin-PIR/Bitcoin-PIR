@@ -1,6 +1,5 @@
 use crate::cli::{CliArgs, ServerRole};
 use crate::io::*;
-use crate::session_grant::is_query_bearing_variant;
 use crate::state::UnifiedServerData;
 use crate::unsafe_debug_log;
 use futures_util::{SinkExt, StreamExt};
@@ -13,6 +12,35 @@ use tokio::sync::Semaphore;
 use tokio_tungstenite::accept_async_with_config;
 use tokio_tungstenite::tungstenite::Message;
 use zeroize::Zeroizing;
+
+/// Request variants that carry a query, refused on a host started without
+/// `--serve-queries`. Everything else (info, ping, attest, handshake,
+/// announce, catalog, DB proofs, HarmonyPIR hints, credits, admin) is served
+/// by every role.
+pub(crate) fn is_query_bearing_variant(variant: u8) -> bool {
+    use runtime::onionpir::{
+        REQ_ONIONPIR_CHUNK_QUERY, REQ_ONIONPIR_INDEX_QUERY, REQ_ONIONPIR_MERKLE_DATA_SIBLING,
+        REQ_ONIONPIR_MERKLE_DATA_TREE_TOP, REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
+        REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, REQ_REGISTER_KEYS,
+    };
+    matches!(
+        variant,
+        REQ_INDEX_BATCH
+            | REQ_CHUNK_BATCH
+            | REQ_BUCKET_MERKLE_SIB_BATCH
+            | REQ_BUCKET_MERKLE_TREE_TOPS
+            | REQ_HARMONY_QUERY
+            | REQ_HARMONY_BATCH_QUERY
+            | REQ_ORAM_LOOKUP
+            | REQ_REGISTER_KEYS
+            | REQ_ONIONPIR_INDEX_QUERY
+            | REQ_ONIONPIR_CHUNK_QUERY
+            | REQ_ONIONPIR_MERKLE_INDEX_SIBLING
+            | REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP
+            | REQ_ONIONPIR_MERKLE_DATA_SIBLING
+            | REQ_ONIONPIR_MERKLE_DATA_TREE_TOP
+    )
+}
 
 pub(crate) async fn serve_connections(
     args: &CliArgs,
@@ -136,11 +164,6 @@ pub(crate) async fn serve_connections(
             // Privacy-conscious clients (the browser SDK) wrap every
             // application frame; legacy clients keep working.
             let mut channel_session: Option<pir_runtime_core::channel::Session> = None;
-
-            // Per-connection session grant: the id of the last grant this
-            // client presented successfully (REQ_SESSION_GRANT_PRESENT).
-            // Credits live in the server-wide ledger, not here.
-            let mut session_grant: Option<pir_session_grant::GrantId> = None;
 
             // Per-connection gas balance (docs/CREDITS.md): topped up by
             // REQ_CREDIT_PRESENT, charged per metered frame when credits are
@@ -376,34 +399,6 @@ pub(crate) async fn serve_connections(
                     continue;
                 }
 
-                // Session-grant gate: metered variants spend their credit cost
-                // (one per query-bearing frame, the hint-set price for a
-                // HarmonyPIR hint request) from the presented grant, or are
-                // refused when grants are required and none was presented.
-                // Runs after the mode gates so a frame this host does not
-                // serve never costs a credit.
-                if let Some(gate) = server.session_grants.as_ref() {
-                    let cost = gate.credit_cost(variant);
-                    if cost > 0 {
-                        let refusal = match session_grant {
-                            Some(grant_id) => current_unix_seconds_v1()
-                                .and_then(|now| gate.consume_n(&grant_id, cost, now))
-                                .err(),
-                            None if gate.require() => Some(
-                                "session grant required — send REQ_SESSION_GRANT_PRESENT first"
-                                    .to_owned(),
-                            ),
-                            None => None,
-                        };
-                        if let Some(message) = refusal {
-                            let resp = Response::Error(message);
-                            let _ =
-                                send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
-                            continue;
-                        }
-                    }
-                }
-
                 // Gas meter: classify the frame (decoding it once more is
                 // negligible next to its work), time the dispatch in process
                 // CPU and wall time, and attribute the response bytes.
@@ -413,21 +408,17 @@ pub(crate) async fn serve_connections(
                 // frame's backend it is served free, charged its work plus
                 // base fee before dispatch, or — best-effort — charged when
                 // the balance covers it and otherwise queued for a free,
-                // low-priority slot; refused when none of that applies. A
-                // connection that attached a session grant was charged by the
-                // grant gate above instead.
-                let admission = if session_grant.is_none() {
-                    server
-                        .access
-                        .admit(
-                            metered_op,
-                            server.credit_meter.admission_gas(metered_op),
-                            &mut gas_balance,
-                        )
-                        .await
-                } else {
-                    crate::access_gate::Admission::Free
-                };
+                // low-priority slot; refused when none of that applies.
+                // Runs after the mode gates so a frame this host does not
+                // serve never costs anything.
+                let admission = server
+                    .access
+                    .admit(
+                        metered_op,
+                        server.credit_meter.admission_gas(metered_op),
+                        &mut gas_balance,
+                    )
+                    .await;
                 let (charged, free_lane) = match admission {
                     crate::access_gate::Admission::Refused(message) => {
                         let resp = Response::Error(message);
@@ -450,7 +441,6 @@ pub(crate) async fn serve_connections(
                     client_id,
                     peer,
                     &mut admin_state,
-                    &mut session_grant,
                     &mut gas_balance,
                     client_supports_chunks,
                     free_lane.as_ref().map(|ticket| ticket.pool()),

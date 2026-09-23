@@ -88,19 +88,13 @@ pub(crate) struct CliArgs {
     /// Legacy `--pool-db-id`/`--pool-dir` normalizes to one entry; repeated
     /// `--harmony-pool-db <db_id>=<dir>` entries enable explicit multi-pool.
     pub(crate) harmony_pool_bindings: Vec<HarmonyPoolBinding>,
-    /// Cashier public keys (`--session-grant-pubkey FILE`, repeatable) that
-    /// sign session grants. Empty means no grant is accepted.
-    pub(crate) session_grant_pubkeys: Vec<PathBuf>,
-    /// Reject query-bearing opcodes until a valid session grant is presented
-    /// (`--require-session-grant`). Needs at least one pinned key.
-    pub(crate) require_session_grant: bool,
-    /// Credits one HarmonyPIR hint set costs
-    /// (`--session-grant-hint-credits N`, default 150; query frames cost 1).
-    pub(crate) session_grant_hint_credits: u32,
+    /// The credit issuer's Ed25519 public keys (`--credit-issuer-pubkey
+    /// FILE`, repeatable); its `/v2/redeem` answers must verify under one.
+    pub(crate) credit_issuer_pubkeys: Vec<PathBuf>,
     /// Credit issuer base URL (`--credit-issuer-url URL`, https, or http on
     /// loopback for tests). Enables `REQ_CREDIT_PRESENT`: presentations are
-    /// forwarded to `URL/v1/redeem`, whose signed answers must verify under
-    /// a pinned `--session-grant-pubkey` key (docs/CREDITS.md).
+    /// forwarded to `URL/v2/redeem`, whose signed answers must verify under
+    /// a pinned `--credit-issuer-pubkey` key (docs/CREDITS.md).
     pub(crate) credit_issuer_url: Option<String>,
     /// Name this server settles under at the issuer (`--credit-server-id
     /// ID`); defaults to the identity certificate's server id.
@@ -376,9 +370,8 @@ databases:     --config databases.toml | --data-dir DIR  --checkpoint DIR HEIGHT
 attestation:   --vcek-dir DIR  --identity-key-path FILE  --identity-cert-path FILE
                --identity-server-id ID
 admin:         --admin-pubkey-hex HEX
-session grants: --session-grant-pubkey FILE  --session-grant-hint-credits N
-               --require-session-grant
-credits:       --credit-issuer-url URL  --credit-server-id ID  --require-credits
+credits:       --credit-issuer-url URL  --credit-issuer-pubkey FILE  --credit-server-id ID
+               --require-credits
 access:        --access BACKEND=free|paid|best-effort[:N[:GAS_PER_HOUR]]  (BACKEND: dpf harmony
                onion oram; repeatable)  --free-threads N  --free-queue-wait-ms MS
 hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
@@ -456,9 +449,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut pool_db_id_explicit = false;
     let mut pool_dir: Option<PathBuf> = None;
     let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
-    let mut session_grant_pubkeys: Vec<PathBuf> = Vec::new();
-    let mut require_session_grant = false;
-    let mut session_grant_hint_credits: u32 = crate::session_grant::DEFAULT_HINT_SET_CREDITS;
+    let mut credit_issuer_pubkeys: Vec<PathBuf> = Vec::new();
     let mut credit_issuer_url: Option<String> = None;
     let mut credit_server_id: Option<String> = None;
     let mut require_credits = false;
@@ -601,24 +592,11 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     .push(parse_harmony_pool_db_arg(spec).unwrap_or_else(|error| fatal_cli(error)));
                 i += 1;
             }
-            "--session-grant-pubkey" => {
+            "--credit-issuer-pubkey" => {
                 let Some(p) = args.get(i + 1) else {
-                    fatal_cli("--session-grant-pubkey requires a file path");
+                    fatal_cli("--credit-issuer-pubkey requires a file path");
                 };
-                session_grant_pubkeys.push(PathBuf::from(p));
-                i += 1;
-            }
-            "--require-session-grant" => {
-                require_session_grant = true;
-            }
-            "--session-grant-hint-credits" => {
-                let Some(v) = args.get(i + 1) else {
-                    fatal_cli("--session-grant-hint-credits requires a positive integer");
-                };
-                session_grant_hint_credits = match v.parse::<u32>() {
-                    Ok(n) if n >= 1 => n,
-                    _ => fatal_cli("--session-grant-hint-credits must be an integer >= 1"),
-                };
+                credit_issuer_pubkeys.push(PathBuf::from(p));
                 i += 1;
             }
             "--credit-issuer-url" => {
@@ -953,9 +931,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         vcek_dir,
         pool_size,
         harmony_pool_bindings,
-        session_grant_pubkeys,
-        require_session_grant,
-        session_grant_hint_credits,
+        credit_issuer_pubkeys,
         credit_issuer_url,
         credit_server_id,
         require_credits,

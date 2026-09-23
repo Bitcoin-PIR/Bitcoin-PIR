@@ -36,7 +36,8 @@ fn request_opcode_registry_has_no_collisions() {
         ("RETIRED_ARC_PRESENT", 0x08),
         ("RETIRED_CASHU_BAT_PRESENT", 0x09),
         ("GET_DB_PROOF", REQ_GET_DB_PROOF),
-        ("SESSION_GRANT_PRESENT", REQ_SESSION_GRANT_PRESENT),
+        // Retired with the v1 session grants (2026-09). Never reassign.
+        ("RETIRED_SESSION_GRANT_PRESENT", 0x0b),
         ("GET_DB_PROOF_V2", REQ_GET_DB_PROOF_V2),
         // Retired with the signed service-policy admission world (R3):
         // SERVICE_POLICY_V1, AUTH_BEGIN_V1, POW_CHALLENGE_V1,
@@ -90,7 +91,7 @@ fn response_opcode_registry_has_no_collisions() {
         ("RETIRED_ARC_OK", 0x08),
         ("RETIRED_CASHU_BAT_OK", 0x09),
         ("DB_PROOF", RESP_DB_PROOF),
-        ("SESSION_GRANT_OK", RESP_SESSION_GRANT_OK),
+        ("RETIRED_SESSION_GRANT_OK", 0x0b),
         ("DB_PROOF_V2", RESP_DB_PROOF_V2),
         ("RETIRED_SERVICE_POLICY_V1", 0x0d),
         ("RETIRED_AUTH_RESULT_V1", 0x0e),

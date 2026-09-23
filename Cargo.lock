@@ -1867,14 +1867,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-session-grant"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "hex",
-]
-
-[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2221,7 +2213,6 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "pir-session-grant",
  "rand",
  "rand_chacha",
  "rayon",

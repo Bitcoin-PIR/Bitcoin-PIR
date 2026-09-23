@@ -82,21 +82,13 @@ pub const REQ_GET_DB_PROOF_V2: u8 = 0x0c;
 
 pub const REQ_ATTEST: u8 = 0x05;
 
-// ─── Session grant presentation ────────────────────────────────────────────
+// ─── Credits ───────────────────────────────────────────────────────────────
 //
 // 0x08 (ARC credential) and 0x09 (Cashu blind auth token) are RETIRED with
-// the issuer-key-holding verifiers (2026-09). Never reassign.
-//
-//   client → server:  REQ_SESSION_GRANT_PRESENT { grant: [u8; 133] }
-//   server → client:  RESP_SESSION_GRANT_OK { remaining_credits: u32 LE }
-//
-// The grant is a cashier-signed `pir_session_grant::SessionGrant`. The
-// server verifies it offline against its pinned cashier keys and then
-// spends one credit per query-bearing request frame on the connection.
-// Verification lives in the unified_server binary, not in this crate.
+// the issuer-key-holding verifiers (2026-09), and 0x0b (session grant
+// presentation) with the v1 session grants (2026-09, superseded by
+// REQ_CREDIT_PRESENT). Never reassign.
 
-pub const REQ_SESSION_GRANT_PRESENT: u8 = 0x0b;
-pub const RESP_SESSION_GRANT_OK: u8 = 0x0b;
 /// Present credits for the issuer to verify: a Cashu token or ARC
 /// presentations (`pir_credit::issuer::CREDIT_PRESENT_KIND_*`). Body:
 /// `[kind u8][len u32 LE][payload]`. The server forwards the payload to its
@@ -798,11 +790,6 @@ pub enum Response {
     HarmonyQueryResult(HarmonyQueryResult),
     HarmonyBatchResult(HarmonyBatchResult),
     OramLookupResult(OramLookupResult),
-    /// Session grant accepted; the connection may spend `remaining_credits`
-    /// more query-bearing frames before the grant is exhausted.
-    SessionGrantOk {
-        remaining_credits: u32,
-    },
     /// One Ready artifact of the sealed pir2 guest's current boot, verbatim.
     Pir2SealedReceipt {
         kind: u8,
@@ -1310,10 +1297,6 @@ impl Response {
                 payload.push(RESP_ORAM_LOOKUP);
                 encode_oram_lookup_result(&mut payload, r);
             }
-            Response::SessionGrantOk { remaining_credits } => {
-                payload.push(RESP_SESSION_GRANT_OK);
-                payload.extend_from_slice(&remaining_credits.to_le_bytes());
-            }
             Response::Pir2SealedReceipt {
                 kind,
                 boot_id,
@@ -1481,16 +1464,6 @@ impl Response {
             RESP_BUCKET_MERKLE_SIB_BATCH => {
                 let r = decode_batch_result(&data[1..])?;
                 Ok(Response::BucketMerkleSibBatch(r))
-            }
-            RESP_SESSION_GRANT_OK => {
-                if data.len() < 5 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "session grant response too short",
-                    ));
-                }
-                let remaining_credits = u32::from_le_bytes(data[1..5].try_into().unwrap());
-                Ok(Response::SessionGrantOk { remaining_credits })
             }
             RESP_PIR2_SEALED_RECEIPT => {
                 // [opcode][kind][boot_id:16][len:u32 LE][bytes]; exact length.
@@ -3350,25 +3323,6 @@ mod attest_wire_tests {
             Response::Announce(bytes) => assert_eq!(bytes, bundle_bytes),
             other => panic!("wrong variant: {:?}", other),
         }
-    }
-
-    #[test]
-    fn session_grant_ok_response_round_trips() {
-        let encoded = Response::SessionGrantOk {
-            remaining_credits: 0x0102_0304,
-        }
-        .encode();
-        assert_eq!(
-            &encoded[4..],
-            &[RESP_SESSION_GRANT_OK, 0x04, 0x03, 0x02, 0x01]
-        );
-        match Response::decode(&encoded[4..]).unwrap() {
-            Response::SessionGrantOk { remaining_credits } => {
-                assert_eq!(remaining_credits, 0x0102_0304)
-            }
-            other => panic!("wrong variant: {:?}", other),
-        }
-        assert!(Response::decode(&[RESP_SESSION_GRANT_OK, 0x00]).is_err());
     }
 
     #[test]

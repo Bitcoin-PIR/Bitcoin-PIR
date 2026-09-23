@@ -43,7 +43,6 @@ pub(crate) async fn handle_variant<S>(
     client_id: u64,
     peer: std::net::SocketAddr,
     admin_state: &mut pir_runtime_core::admin::AdminConnectionState,
-    session_grant: &mut Option<pir_session_grant::GrantId>,
     gas_balance: &mut crate::credit_gate::GasBalanceV1,
     client_supports_chunks: bool,
     free_pool: Option<Arc<rayon::ThreadPool>>,
@@ -110,27 +109,6 @@ pub(crate) async fn handle_variant<S>(
                                 "db proof v2 not configured for db_id {}",
                                 db_id
                             )),
-                        };
-                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                    }
-                    REQ_SESSION_GRANT_PRESENT => {
-                        // Wire format: [1B variant=0x0b][133B session grant]
-                        let resp = match server.session_grants.as_ref() {
-                            None => Response::Error(
-                                "session grants not enabled on this server".into(),
-                            ),
-                            Some(gate) => match current_unix_seconds_v1()
-                                .and_then(|now| gate.present(body, now))
-                            {
-                                Ok((grant_id, remaining_credits)) => {
-                                    *session_grant = Some(grant_id);
-                                    Response::SessionGrantOk { remaining_credits }
-                                }
-                                Err(message) => {
-                                    *session_grant = None;
-                                    Response::Error(message)
-                                }
-                            },
                         };
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }

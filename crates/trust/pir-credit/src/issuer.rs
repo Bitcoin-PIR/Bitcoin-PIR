@@ -5,8 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Version of the credits contract (`GET /v2/info` reports it); the
-/// session-grant contract stays version 1 under `/v1/`.
+/// Version of the credits contract (`GET /v2/info` reports it); version 1
+/// was the retired session-grant contract under `/v1/`.
 pub const ISSUER_API_VERSION: u32 = 2;
 /// `REQ_CREDIT_PRESENT` kind byte: a Cashu token (proofs in sat).
 pub const CREDIT_PRESENT_KIND_CASHU: u8 = 1;
@@ -137,7 +137,7 @@ impl RedeemRequestV1 {
 }
 
 /// `POST /v2/redeem` success body. Signed by the issuer's Ed25519 key (the
-/// same key the servers pin for session grants), bound to the request
+/// key the servers pin with `--credit-issuer-pubkey`), bound to the request
 /// nonce, so a CDN or proxy between server and issuer cannot forge gas.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RedeemResponseV1 {
