@@ -62,9 +62,10 @@ PIR2_SESSION_GRANT_PUBKEY_FILE=/run/bitcoinpir-session-grant.pub
 PIR2_SESSION_GRANT_HINT_CREDITS=150
 # Credits (docs/CREDITS.md): the issuer this guest forwards presentations
 # to. Its answers verify under the session-grant key above; the guest signs
-# redeem requests with its sealed identity. Metered frames must be covered
-# (--require-credits below): credits are the paid path, the migration
-# period was skipped by the operator (2026-09-15).
+# redeem requests with its sealed identity. Access policy (docs/CREDITS.md
+# "Access policy"): HarmonyPIR queries are paid (--require-credits); DPF
+# server 1 and Direct ORAM are free while this guest has room — two free
+# frames each at a time on two low-priority threads, paid frames first.
 PIR2_CREDIT_ISSUER_URL=https://cashier.bitcoinpir.org
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
 # Inert Observe/Enroll/Probe runs leave no listener behind.  VPSBG currently
@@ -1275,5 +1276,8 @@ exec "$UNIFIED_SERVER" \
     --session-grant-hint-credits "$PIR2_SESSION_GRANT_HINT_CREDITS" \
     --credit-issuer-url "$PIR2_CREDIT_ISSUER_URL" \
     --require-credits \
+    --access dpf=best-effort:2 \
+    --access oram=best-effort:2 \
+    --free-threads 2 \
     --connection-idle-timeout-ms 300000 \
     2>&1
