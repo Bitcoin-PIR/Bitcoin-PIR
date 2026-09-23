@@ -862,9 +862,9 @@ impl OnionClient {
         status
     }
 
-    /// Attach a cashier-signed session grant to the server connection and
-    /// return the credits remaining there. See
-    /// [`crate::DpfClient::present_session_grant`].
+    /// Present credits (`kind` and `payload` per [`crate::credits`]) on the
+    /// server and return its receipt. Bearer material: call this after the
+    /// secure-channel upgrade.
     pub async fn present_credits(
         &mut self,
         kind: u8,
@@ -875,13 +875,6 @@ impl OnionClient {
             .as_mut()
             .ok_or_else(|| PirError::Protocol("present_credits: server not connected".into()))?;
         crate::credits::present_credits(conn.as_mut(), kind, payload).await
-    }
-
-    pub async fn present_session_grant(&mut self, grant: &[u8]) -> PirResult<u32> {
-        let conn = self.conn.as_mut().ok_or_else(|| {
-            PirError::Protocol("present_session_grant: server not connected".into())
-        })?;
-        crate::session_grant::present_session_grant(conn.as_mut(), grant).await
     }
 
     /// Replace the server connection with a secure-channel-wrapped

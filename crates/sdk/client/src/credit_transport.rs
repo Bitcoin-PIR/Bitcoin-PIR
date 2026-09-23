@@ -11,10 +11,9 @@
 //! and a refusal that names its numbers resynchronises too and is retried
 //! once on the round-trip path.
 //!
-//! Frames the server does not meter, servers that do not require credits,
-//! and connections carrying a session grant never touch a provider:
-//! [`enable_credits`] reads the server's info JSON and wraps only where the
-//! server says it charges.
+//! Frames the server does not meter and servers that do not charge never
+//! touch a provider: [`enable_credits`] reads the server's info JSON and
+//! wraps only where the server says it charges.
 //!
 //! Each server publishes an access policy per backend (docs/CREDITS.md
 //! "Access policy"): free, paid, or best-effort. A best-effort frame goes
