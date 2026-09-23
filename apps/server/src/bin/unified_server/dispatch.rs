@@ -13,6 +13,25 @@ use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio_tungstenite::tungstenite::Message;
 
+/// Run a metered frame's heavy work off the async workers. A frame served
+/// on a best-effort free lane (docs/CREDITS.md "Access policy") runs it on
+/// that lane's small low-priority pool, so its rayon work cannot crowd out
+/// paid frames; every other frame runs as before.
+fn spawn_heavy<F, R>(
+    free_pool: &Option<Arc<rayon::ThreadPool>>,
+    work: F,
+) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let pool = free_pool.clone();
+    tokio::task::spawn_blocking(move || match pool {
+        Some(pool) => pool.install(work),
+        None => work(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_variant<S>(
     payload: &[u8],
@@ -27,6 +46,7 @@ pub(crate) async fn handle_variant<S>(
     session_grant: &mut Option<pir_session_grant::GrantId>,
     gas_balance: &mut crate::credit_gate::GasBalanceV1,
     client_supports_chunks: bool,
+    free_pool: Option<Arc<rayon::ThreadPool>>,
 ) where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
@@ -374,7 +394,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_INDEX_BATCH => {
                         if let Ok(Request::IndexBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
-                            let resp = tokio::task::spawn_blocking(move || {
+                            let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) => db,
                                     None => return Response::Error(format!("unknown db_id {}", q.db_id)),
@@ -392,7 +412,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_CHUNK_BATCH => {
                         if let Ok(Request::ChunkBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
-                            let resp = tokio::task::spawn_blocking(move || {
+                            let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) => db,
                                     None => return Response::Error(format!("unknown db_id {}", q.db_id)),
@@ -417,7 +437,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_BUCKET_MERKLE_SIB_BATCH => {
                         if let Ok(Request::BucketMerkleSibBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
-                            let resp = tokio::task::spawn_blocking(move || {
+                            let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) if db.has_bucket_merkle() => db,
                                     _ => return Response::Error(format!("db {} has no bucket merkle", q.db_id)),
@@ -548,7 +568,7 @@ pub(crate) async fn handle_variant<S>(
                             let s = Arc::clone(&server);
 
                             let (tx, mut rx) = tokio::sync::mpsc::channel::<(u8, u32, u32, u32, Vec<u8>)>(4);
-                            tokio::task::spawn_blocking(move || {
+                            spawn_heavy(&free_pool, move || {
                                 let db = s.state.get_db(db_id).expect("db_id checked before spawn");
                                 group_ids.par_iter().for_each_with(tx, |tx, &bid| {
                                     // Validated above; an Err here would only
@@ -958,7 +978,7 @@ pub(crate) async fn handle_variant<S>(
                                 return;
                             }
                             let s = Arc::clone(&server);
-                            let resp = tokio::task::spawn_blocking(move || s.handle_harmony_query(&q)).await.unwrap();
+                            let resp = spawn_heavy(&free_pool, move || s.handle_harmony_query(&q)).await.unwrap();
                             let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                         }
                     }
@@ -975,7 +995,7 @@ pub(crate) async fn handle_variant<S>(
                             let level = q.level;
                             let db_id = q.db_id;
                             let s = Arc::clone(&server);
-                            let resp = tokio::task::spawn_blocking(move || s.handle_harmony_batch_query(&q)).await.unwrap();
+                            let resp = spawn_heavy(&free_pool, move || s.handle_harmony_batch_query(&q)).await.unwrap();
                             unsafe_debug_log!("[harmony-batch] db={} L{} {} groups in {:.2?}", db_id, level, n, t.elapsed());
                             // Harmony batch responses scale as K × (T−1) ×
                             // entry_size (~4 MiB per level against the live
@@ -1015,7 +1035,7 @@ pub(crate) async fn handle_variant<S>(
                         match Request::decode(payload) {
                             Ok(Request::OramLookup(q)) => {
                                 let s = Arc::clone(&server);
-                                let resp = tokio::task::spawn_blocking(move || {
+                                let resp = spawn_heavy(&free_pool, move || {
                                     s.handle_oram_lookup(&q)
                                 })
                                 .await

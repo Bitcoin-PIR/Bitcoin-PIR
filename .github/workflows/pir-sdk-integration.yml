@@ -115,10 +115,11 @@ jobs:
       - name: Run unit tests
         run: cargo test -p pir-sdk-client
 
-      # Production requires credits since 2026-09-15 (docs/CREDITS.md) and CI
-      # holds no credential yet. Probe first (read-only) and skip the paid
-      # live steps, visibly, while any server the suite talks to requires
-      # credits; the probe writes the reason to the step summary.
+      # Production charges credits since 2026-09-15 (docs/CREDITS.md) and CI
+      # holds no credential yet. Probe first (read-only) and skip the live
+      # steps, visibly, while any backend the suite runs is paid on the
+      # server it runs on (free and best-effort backends run unpaid); the
+      # probe writes the reason to the step summary.
       - name: Probe whether the live servers require credits (scheduled/manual only)
         id: probe
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}

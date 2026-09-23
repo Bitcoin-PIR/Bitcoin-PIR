@@ -37,8 +37,6 @@ const INFO_PATH: &str = "/v2/info";
 /// Everything credits need on this server.
 pub(crate) struct CreditsV1 {
     pub(crate) issuer: CreditIssuerClientV1,
-    /// `--require-credits`: charge metered frames and refuse uncovered ones.
-    pub(crate) require: bool,
 }
 
 impl CreditsV1 {
@@ -82,20 +80,14 @@ impl CreditsV1 {
             .unwrap_or_else(|| cert.server_id.clone());
         Ok(Some(Self {
             issuer: CreditIssuerClientV1::new(url, server_id, identity_key, &cert, issuer_keys),
-            require: args.require_credits,
         }))
     }
 
     pub(crate) fn startup_log_line(&self) -> String {
         format!(
-            "Credits: issuer={} server_id={} {} ({} issuer key(s) pinned)",
+            "Credits: issuer={} server_id={} ({} issuer key(s) pinned); what each backend charges is the access policy below",
             self.issuer.url.display(),
             self.issuer.server_id,
-            if self.require {
-                "required for metered frames"
-            } else {
-                "accepted, not charged"
-            },
             self.issuer.issuer_keys.len()
         )
     }
@@ -649,14 +641,13 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(credits.require);
         assert_eq!(
             credits.issuer.server_id, "pir-test",
             "defaults to the certificate's server id"
         );
         assert_eq!(
             credits.startup_log_line(),
-            "Credits: issuer=https://cashier.example server_id=pir-test required for metered frames (1 issuer key(s) pinned)"
+            "Credits: issuer=https://cashier.example server_id=pir-test (1 issuer key(s) pinned); what each backend charges is the access policy below"
         );
         let credits = CreditsV1::from_cli(
             &args(&[
@@ -671,7 +662,6 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(!credits.require);
         assert_eq!(credits.issuer.server_id, "pir9");
     }
 

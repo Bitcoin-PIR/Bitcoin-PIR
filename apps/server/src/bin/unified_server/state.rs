@@ -121,9 +121,12 @@ pub(crate) struct UnifiedServerData {
     /// (docs/CREDITS.md). Always present; informational until an issuer is
     /// configured.
     pub(crate) credit_meter: crate::credit_meter::CreditMeterV1,
-    /// Issuer client plus the require flag (`--credit-issuer-url`,
-    /// `--require-credits`); `None` keeps `REQ_CREDIT_PRESENT` refused.
+    /// Issuer client (`--credit-issuer-url`); `None` keeps
+    /// `REQ_CREDIT_PRESENT` refused. What each backend charges is `access`.
     pub(crate) credits: Option<crate::credit_issuer::CreditsV1>,
+    /// What each backend charges, and the best-effort free lanes
+    /// (docs/CREDITS.md "Access policy").
+    pub(crate) access: crate::access_gate::AccessGateV1,
     /// This boot's Ready receipts and preflight marker, served read-only by
     /// REQ_PIR2_SEALED_RECEIPT_GET (sealed Ready pir2 guests only).
     pub(crate) pir2_sealed_receipts: Option<crate::pir2_sealed_receipts::Pir2SealedReadyReceiptsV1>,
@@ -484,13 +487,18 @@ impl UnifiedServerData {
         }
 
         // Gas per metered request kind, all public geometry (docs/CREDITS.md),
-        // and whether this server takes and requires credits, so a client
-        // presents only where presenting buys something.
+        // whether this server takes credits, and what each backend charges
+        // (the access policy), so a client presents only where presenting
+        // buys something. `required` is the legacy flag older clients read:
+        // some backend always requires payment.
         json.push_str(&self.credit_meter.info_json_fragment());
         json.push_str(&format!(
-            r#","credits":{{"enabled":{},"required":{}}}"#,
+            r#","credits":{{"enabled":{},"required":{},"access":{},"free_queue_wait_ms":{}}}"#,
             self.credits.is_some(),
-            self.credits.as_ref().is_some_and(|credits| credits.require)
+            self.access.policy().any_paid(),
+            serde_json::to_string(&self.access.policy().published())
+                .expect("the access policy serializes"),
+            self.access.queue_wait().as_millis()
         ));
         json.push('}');
         json

@@ -210,7 +210,9 @@ fn strict_production_canary_enabled() -> bool {
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn probe_live_credits_required() {
-    use pir_sdk_client::credit_transport::{CreditProvider, CreditStatus, Presentation};
+    use pir_sdk_client::credit_transport::{
+        enable_credits, Backend, CreditProvider, CreditStatus, Presentation,
+    };
 
     struct NoCredits;
     impl CreditProvider for NoCredits {
@@ -219,41 +221,32 @@ async fn probe_live_credits_required() {
         }
     }
 
-    let mut candidates = vec![
-        dpf_server0_url(),
-        dpf_server1_url(),
-        harmony_hint_url(),
-        harmony_query_url(),
+    // Each server publishes an access policy per backend (docs/CREDITS.md
+    // "Access policy"), so probe the backend the suite runs on each URL: a
+    // free or best-effort backend runs unpaid, a paid one skips the suite.
+    let mut targets = vec![
+        (dpf_server0_url(), Backend::Dpf),
+        (dpf_server1_url(), Backend::Dpf),
+        (harmony_hint_url(), Backend::Harmony),
+        (harmony_query_url(), Backend::Harmony),
     ];
     #[cfg(feature = "onion")]
-    candidates.push(onion_url());
-    let mut urls: Vec<String> = Vec::new();
-    for url in candidates {
-        if !urls.contains(&url) {
-            urls.push(url);
-        }
-    }
+    targets.push((onion_url(), Backend::Onion));
 
     let mut required = false;
     let mut lines = Vec::new();
-    for url in &urls {
-        // Any unified_server answers GET_INFO_JSON the same way whatever it
-        // serves; the DPF client is the lightest native client, so pair the
-        // URL with itself and read server 0.
-        let mut client = DpfClient::new(url, url);
-        client
-            .connect()
+    for (url, backend) in &targets {
+        let conn = WsConnection::connect(url)
             .await
             .unwrap_or_else(|error| panic!("probe: connect to {url} failed: {error}"));
-        let status = client
-            .enable_credits(0, std::sync::Arc::new(NoCredits))
-            .await
-            .unwrap_or_else(|error| {
-                panic!("probe: reading credits flags from {url} failed: {error}")
-            });
-        client.disconnect().await.ok();
+        let (mut conn, status) =
+            enable_credits(Box::new(conn), std::sync::Arc::new(NoCredits), *backend).await;
+        let status = status.unwrap_or_else(|error| {
+            panic!("probe: reading credits flags from {url} failed: {error}")
+        });
+        conn.close().await.ok();
         required |= status == CreditStatus::Required;
-        lines.push(format!("{url}: {status:?}"));
+        lines.push(format!("{url} ({backend}): {status:?}"));
     }
     for line in &lines {
         eprintln!("probe: {line}");
@@ -276,7 +269,7 @@ async fn probe_live_credits_required() {
                 .expect("GITHUB_STEP_SUMMARY must be writable");
             writeln!(
                 out,
-                "Live steps skipped: production requires credits and CI holds no credential (docs/CREDITS.md).\n\n{}",
+                "Live steps skipped: a backend the suite runs is paid on production and CI holds no credential (docs/CREDITS.md).\n\n{}",
                 lines.join("\n")
             )
             .unwrap();

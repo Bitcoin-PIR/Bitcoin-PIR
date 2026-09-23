@@ -652,7 +652,9 @@ impl HarmonyClient {
                 if server_index == 0 { "hint" } else { "query" }
             ))
         })?;
-        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        let (conn, status) =
+            crate::credit_transport::enable_credits(conn, provider, pir_credit::Backend::Harmony)
+                .await;
         *slot = Some(conn);
         status
     }

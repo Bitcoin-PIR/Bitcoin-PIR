@@ -1172,6 +1172,8 @@ export class HarmonyPirClientAdapter {
     }
     if (outcome.state === 'required') {
       this.log(`provider${providerIndex}: credits required; metered frames are funded from the wallet`);
+    } else if (outcome.state === 'best-effort') {
+      this.log(`provider${providerIndex}: free while the server has room; paid from the wallet only when it is busy`);
     } else if (outcome.state === 'error') {
       this.log(`provider${providerIndex}: credits could not be enabled — ${outcome.error}`);
     }

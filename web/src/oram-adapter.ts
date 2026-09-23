@@ -640,6 +640,8 @@ export class OramPirClientAdapter {
     }
     if (outcome.state === 'required') {
       this.log('ORAM: credits required; metered frames are funded from the wallet', 'info');
+    } else if (outcome.state === 'best-effort') {
+      this.log('ORAM: free while the server has room; paid from the wallet only when it is busy', 'info');
     } else if (outcome.state === 'error') {
       this.log(`ORAM: credits could not be enabled — ${outcome.error}`, 'error');
     }

@@ -22,6 +22,9 @@ import {
   classifyOnionFrame,
   expectedResponseBytes,
   CreditedChannel,
+  FREE_LANE_BUSY_PREFIX,
+  isFreeLaneBusy,
+  resolveAccess,
   type ArcCredentialLike,
   type ArcRequestLike,
   type LightningRail,
@@ -392,7 +395,13 @@ describe('OnionPIR frame classification', () => {
 
 /** A fake OnionPIR server: charges frames like the real gate, answers presentations with receipts. */
 function fakeOnionServer(card: ReturnType<typeof serverGasCardFromInfo>) {
-  const state = { balance: 0, sent: [] as number[], responseBytes: 100 };
+  const state = {
+    balance: 0,
+    sent: [] as number[],
+    responseBytes: 100,
+    /** `true`/`false`: best-effort — an uncovered frame is refused as busy / served free. */
+    bestEffortBusy: undefined as boolean | undefined,
+  };
   const exchange = async (frame: Uint8Array): Promise<Uint8Array> => {
     const variant = frame[4];
     state.sent.push(variant);
@@ -416,6 +425,19 @@ function fakeOnionServer(card: ReturnType<typeof serverGasCardFromInfo>) {
     const gas = classified && card ? workGas(card.databases[String(classified.dbId)] ?? { dpfIndexSiblingPass: [], dpfChunkSiblingPass: [], harmonyIndexSiblingSet: [], harmonyChunkSiblingSet: [] }, classified.op) : null;
     if (classified && gas !== null && card) {
       const needed = gas + card.params.baseGasPerFrame;
+      if (state.balance < needed && state.bestEffortBusy === false) {
+        return framed(new Uint8Array(state.responseBytes).fill(variant));
+      }
+      if (state.balance < needed && state.bestEffortBusy === true) {
+        const message = new TextEncoder().encode(
+          'free capacity busy: onion serves 1 free frame(s) at a time and none was free within 10s; present credits for priority or retry later',
+        );
+        const error = new Uint8Array(5 + message.length);
+        error[0] = 0xff;
+        new DataView(error.buffer).setUint32(1, message.length, true);
+        error.set(message, 5);
+        return framed(error);
+      }
       if (state.balance < needed) {
         const message = new TextEncoder().encode(
           `insufficient gas: this frame needs ${needed} and the connection has ${state.balance}; present credits with REQ_CREDIT_PRESENT`,
@@ -511,5 +533,123 @@ describe('credited channel', () => {
     server.state.balance = 0;
     channel.meter.recordRefusal('insufficient gas: this frame needs 403280 and the connection has 0; x');
     await expect(channel.roundtrip(onionFrame(0x52, [0, 0, 1, 1, 0, 0, 0, 9]))).rejects.toThrow(/credits required/);
+  });
+});
+
+describe('access policy', () => {
+  it('resolves a published entry, else falls back to the legacy flag', () => {
+    const credits = {
+      enabled: true,
+      required: true,
+      access: {
+        dpf: { mode: 'best-effort', free_concurrency: 2 },
+        onion: { mode: 'paid' },
+        oram: { mode: 'best-effort', free_concurrency: 1, free_gas_per_hour: 7200 },
+      },
+    };
+    expect(resolveAccess(credits, 'dpf')).toEqual({ mode: 'best-effort', free_concurrency: 2 });
+    expect(resolveAccess(credits, 'oram')).toEqual({ mode: 'best-effort', free_concurrency: 1, free_gas_per_hour: 7200 });
+    expect(resolveAccess(credits, 'onion')).toEqual({ mode: 'paid' });
+    // Not published: paid because the server says credits are required.
+    expect(resolveAccess(credits, 'harmony')).toEqual({ mode: 'paid' });
+    expect(resolveAccess({ enabled: true, required: false }, 'dpf')).toEqual({ mode: 'free' });
+    expect(resolveAccess(undefined, 'onion')).toEqual({ mode: 'free' });
+    // A malformed entry is ignored, not trusted.
+    expect(resolveAccess({ enabled: true, required: true, access: { dpf: { mode: 'best-effort', free_concurrency: 0 } } }, 'dpf')).toEqual({ mode: 'paid' });
+  });
+
+  it('recognises busy refusals by their prefix', () => {
+    expect(isFreeLaneBusy(`${FREE_LANE_BUSY_PREFIX}: dpf serves 2 free frame(s) at a time`)).toBe(true);
+    expect(isFreeLaneBusy('insufficient gas: this frame needs 25')).toBe(false);
+  });
+});
+
+describe('credited channel with a best-effort server', () => {
+  const info = {
+    role: 'primary',
+    gas: {
+      unit: 'cpu_ms_pir1',
+      params: { credit_sat: 10, gas_per_credit: 72_000, base_gas_per_frame: 20, egress_gas_per_mb: 1_000 },
+      databases: { '0': { onion_register_keys: 200, onion_index_query: 197_506, onion_chunk_query: 403_260, onion_sibling_query: 21_000, tree_tops: 5 } },
+    },
+  };
+  const bestEffort = { mode: 'best-effort', free_concurrency: 1 } as const;
+  const keys = onionFrame(0x50, [1, 0, 0, 0, 7, 1, 0, 0, 0, 8]);
+
+  function wallet(credits: number) {
+    const calls: number[] = [];
+    let left = credits;
+    const provider = (asked: number) => {
+      calls.push(asked);
+      const give = Math.min(asked, left, 255);
+      if (give === 0) return null;
+      left -= give;
+      return { kind: CREDIT_PRESENT_KIND_ARC, payload: new Uint8Array([give]), credits: give, epoch: 1 };
+    };
+    return { calls, provider };
+  }
+
+  it('sends an uncovered frame unpaid and takes the free answer', async () => {
+    const card = serverGasCardFromInfo(info)!;
+    const server = fakeOnionServer(card);
+    server.state.bestEffortBusy = false;
+    const w = wallet(10);
+    const channel = new CreditedChannel(card, w.provider, server.exchange, bestEffort, true);
+    expect((await channel.roundtrip(keys))[4]).toBe(0x50);
+    expect(w.calls).toEqual([]);
+    expect(server.state.sent).toEqual([0x50]);
+  });
+
+  it('pays for priority when the free lane is busy and the wallet can', async () => {
+    const card = serverGasCardFromInfo(info)!;
+    const server = fakeOnionServer(card);
+    server.state.bestEffortBusy = true;
+    const w = wallet(10);
+    const channel = new CreditedChannel(card, w.provider, server.exchange, bestEffort, true);
+    expect((await channel.roundtrip(keys))[4]).toBe(0x50);
+    expect(w.calls).toEqual([1]);
+    expect(server.state.sent).toEqual([0x50, 0x12, 0x50]);
+    expect(channel.meter.balance).toBe(server.state.balance);
+  });
+
+  it('pays for a frame the mirror thought covered when the server lanes it and the lane is busy', async () => {
+    const card = serverGasCardFromInfo(info)!;
+    const server = fakeOnionServer(card);
+    server.state.bestEffortBusy = true;
+    const w = wallet(10);
+    const channel = new CreditedChannel(card, w.provider, server.exchange, bestEffort, true);
+    await channel.roundtrip(keys);
+    // The mirror counts egress a little behind the server: the server's
+    // balance has fallen just below the next frame's price (220 gas) while
+    // the mirror still sees tens of thousands. Present once, pay, resend.
+    server.state.balance = 219;
+    expect((await channel.roundtrip(keys))[4]).toBe(0x50);
+    expect(w.calls).toEqual([1, 1]);
+    expect(server.state.sent).toEqual([0x50, 0x12, 0x50, 0x50, 0x12, 0x50]);
+    expect(channel.meter.balance).toBe(server.state.balance);
+  });
+
+  it('hands the busy refusal back when the wallet is empty or nobody can pay', async () => {
+    const card = serverGasCardFromInfo(info)!;
+    for (const [credits, canPay] of [[0, true], [10, false]] as const) {
+      const server = fakeOnionServer(card);
+      server.state.bestEffortBusy = true;
+      const w = wallet(credits);
+      const channel = new CreditedChannel(card, w.provider, server.exchange, bestEffort, canPay);
+      const response = await channel.roundtrip(keys);
+      expect(response[4]).toBe(0xff);
+      expect(server.state.sent).toEqual([0x50]);
+      expect(w.calls.length).toBe(canPay ? 1 : 0);
+    }
+  });
+
+  it('never funds a backend the server serves free', async () => {
+    const card = serverGasCardFromInfo(info)!;
+    const server = fakeOnionServer(card);
+    server.state.bestEffortBusy = false;
+    const w = wallet(10);
+    const channel = new CreditedChannel(card, w.provider, server.exchange, { mode: 'free' }, true);
+    expect((await channel.roundtrip(keys))[4]).toBe(0x50);
+    expect(w.calls).toEqual([]);
   });
 });

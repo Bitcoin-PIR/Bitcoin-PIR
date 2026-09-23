@@ -855,7 +855,9 @@ impl OnionClient {
             .conn
             .take()
             .ok_or_else(|| PirError::Protocol("enable_credits: server not connected".into()))?;
-        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        let (conn, status) =
+            crate::credit_transport::enable_credits(conn, provider, pir_credit::Backend::Onion)
+                .await;
         self.conn = Some(conn);
         status
     }

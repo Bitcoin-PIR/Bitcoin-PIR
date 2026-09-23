@@ -2618,7 +2618,8 @@ impl DpfClient {
                 "enable_credits: server{server_index} not connected"
             ))
         })?;
-        let (conn, status) = crate::credit_transport::enable_credits(conn, provider).await;
+        let (conn, status) =
+            crate::credit_transport::enable_credits(conn, provider, pir_credit::Backend::Dpf).await;
         *slot = Some(conn);
         status
     }

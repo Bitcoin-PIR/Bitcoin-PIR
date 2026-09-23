@@ -1713,7 +1713,8 @@ impl WasmDpfClient {
     /// requires credits (docs/CREDITS.md). `provider(credits)` returns
     /// `{ kind, payload, credits }` or `null`; it is called from inside
     /// query calls whenever the connection's balance runs short. Resolves
-    /// to `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+    /// to `"not-enabled"`, `"not-required"`, `"required"`, or `"best-effort"`
+    /// (free while the server has room, paid only when busy). Call after
     /// [`Self::upgrade_to_secure_channel`].
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = enableCredits)]
@@ -2351,7 +2352,8 @@ impl WasmHarmonyClient {
     /// `provider` when it requires credits; see [`WasmDpfClient::enable_credits`]. `provider(credits)` returns
     /// `{ kind, payload, credits }` or `null`; it is called from inside
     /// query calls whenever the connection's balance runs short. Resolves
-    /// to `"not-enabled"`, `"not-required"`, or `"required"`. Call after
+    /// to `"not-enabled"`, `"not-required"`, `"required"`, or `"best-effort"`
+    /// (free while the server has room, paid only when busy). Call after
     /// [`Self::upgrade_to_secure_channel`].
     #[cfg(target_arch = "wasm32")]
     #[wasm_bindgen(js_name = enableCredits)]
