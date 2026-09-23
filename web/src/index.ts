@@ -318,3 +318,11 @@ export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export { type HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
 
 export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';
+
+export {
+  STALE_CHUNK_RELOAD_KEY,
+  STALE_CHUNK_RELOAD_WINDOW_MS,
+  claimStaleChunkReload,
+  installStaleChunkReload,
+  type StaleChunkReloadEnv,
+} from './stale-chunk-reload.js';
