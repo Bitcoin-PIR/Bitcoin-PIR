@@ -51,9 +51,8 @@ understand the system by reading this page.
 |------|-----------|
 | **gas** | Work unit of paid queries: one CPU-millisecond on the reference machine (pir1). Derived per request from public database geometry (`pir_credit::gas`); a provider prices gas, never re-measures it. See `docs/CREDITS.md`. |
 | **credit** | Payment unit of paid queries: `credit_sat` (10) satoshis, worth `gas_per_credit` gas as published by the issuer; one ARC presentation is one credit. |
-| **issuer** | The cashier extended for credits: sells ARC credentials for ecash, verifies every presentation a server forwards (`POST /v2/redeem`), keeps the global double-spend state, settles with servers in gas. |
-| **session grant** | Retired (2026-09): the v1 cashier-signed credit voucher presented on opcode `0x0b`, superseded by credits. |
-| **cashier** | Operator-run service outside the PIR hosts that takes payment (Cashu ecash, Lightning) and runs the credit issuer. Lives in a separate repository; the PIR server pins only its public key (`--credit-issuer-pubkey`). |
+| **issuer** | Operator-run service outside the PIR hosts (repository `Bitcoin-PIR/issuer`, named *cashier* until 2026-09): sells ARC credentials for Cashu ecash, verifies every presentation a server forwards (`POST /v2/redeem`), keeps the global double-spend state, settles with servers in gas. It never talks to Lightning; the mint turns sats into ecash and the CLN node holds the funds. The PIR server pins only its public key (`--credit-issuer-pubkey`). |
+| **session grant** | Retired (2026-09): the v1 credit voucher signed by the issuer (then called the cashier) and presented on opcode `0x0b`, superseded by credits. |
 
 ## OnionPIR note
 

@@ -23,9 +23,9 @@ script's status subcommand for the rest.
   [Credits and gas](CREDITS.md) is the design, the rate card, the
   measurements behind it, the access policy each server publishes, and the
   issuer contract; `pir-credit` holds the model. The v1 session grants
-  (opcode `0x0b`) are retired. The cashier (payment side) is
-  [Bitcoin-PIR/cashier](https://github.com/Bitcoin-PIR/cashier); running it
-  and the mint on pir1 is [Cashier and mint](runbooks/cashier-and-mint.md).
+  (opcode `0x0b`) are retired. The issuer (payment side) is
+  [Bitcoin-PIR/issuer](https://github.com/Bitcoin-PIR/issuer); running it
+  and the mint on pir1 is [Issuer and mint](runbooks/issuer-and-mint.md).
   The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live
   only in git history.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the

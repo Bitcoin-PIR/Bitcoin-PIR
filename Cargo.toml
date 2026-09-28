@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 # One PIR service. Paid access is credits (crates/trust/pir-credit), verified
-# at the issuer; the cashier itself lives in a separate repository. The
+# at the issuer; the issuer itself lives in a separate repository. The
 # Payment V1 crates, the ARC/Cashu verifiers, the payment-issuer app, and the
 # v1 session grants were deleted in 2026-09.
 members = [
