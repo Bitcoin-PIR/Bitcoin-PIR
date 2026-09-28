@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-TbcaTIfsZkNPDQJ8ctye9d9gXpFCsWaPKHpot/6+Kik=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-xE4BwzhdHiCHZAn5WmxMzzGpEOKIq2yIJUi573JNEbs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -870,12 +870,18 @@
                         <div id="pa-creditLegs" style="font-family: monospace; font-size: 12px; margin-bottom: 8px;"></div>
                         <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
                             <button type="button" id="pa-loadCreditOffersBtn" class="btn sm">Load credit packs</button>
+                            <label for="pa-credRail" style="font-size: 12px;">Pay via
+                                <select id="pa-credRail" style="font-size: 12px;">
+                                    <option value="cashu" selected>ecash mint (Cashu)</option>
+                                    <option value="x402">Lightning direct (x402)</option>
+                                </select>
+                            </label>
                             <button type="button" id="pa-resumeCredentialBtn" class="btn accent sm" hidden>Resume pending credit purchase</button>
                             <button type="button" id="pa-forgetCredentialsBtn" class="btn ghost sm" disabled>Forget credits</button>
                         </div>
                         <div id="pa-creditOffers" style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px;"></div>
                         <div id="pa-credInvoiceBox" hidden style="margin-top: 8px;">
-                            <div>Pay this Lightning invoice with any wallet. The page then mints the ecash, has the issuer sign a blinded credential, and stores it. Credits are spent per query frame; nothing links a query to this purchase.</div>
+                            <div>Pay this Lightning invoice with any wallet (a WebLN browser wallet pays it in place). The page then has the issuer sign a blinded credential and stores it. Credits are spent per query frame; nothing links a query to this purchase.</div>
                             <textarea id="pa-credInvoice" readonly rows="3" style="width: 100%; font-family: monospace; font-size: 11px; margin-top: 4px;"></textarea>
                             <div style="display: flex; gap: 8px; margin-top: 4px;">
                                 <button type="button" id="pa-copyCredInvoiceBtn" class="btn sm">Copy invoice</button>
@@ -1605,7 +1611,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         import { PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
-        import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, cashuLightningRail, sdkArcFactories } from './src/index.ts';
+        import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, purchaseCredentialX402, cashuLightningRail, sdkArcFactories } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
         // A page from before the latest deploy reloads once when a lazy chunk it names is gone.
         installStaleChunkReload(window);
@@ -1774,7 +1780,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = 'btn accent sm';
-                button.textContent = `Buy ${offer.credits} credits for ${offer.sat} sat (Lightning)`;
+                button.textContent = `Buy ${offer.credits} credits for ${offer.sat} sat`;
                 button.addEventListener('click', () => {
                     paBuyCredential(offer)
                         .catch(e => paStatus(`credit purchase failed: ${e?.message || e}`, 'error'))
@@ -1811,10 +1817,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!(isSdkWasmReady() || await initSdkWasm())) throw new Error('SDK WASM failed to load; credentials need it');
             credentialAbort?.abort();
             credentialAbort = new AbortController();
-            const stored = await purchaseCredential(
-                issuer, creditStore, sdkArcFactories().request, cashuLightningRail(),
-                offer, issuerInfo.mints[0], credentialHooks(), nowUnix,
-            );
+            const rail = document.getElementById('pa-credRail').value;
+            const stored = rail === 'x402'
+                ? await purchaseCredentialX402(
+                    issuer, creditStore, sdkArcFactories().request, offer, credentialHooks(), nowUnix,
+                )
+                : await purchaseCredential(
+                    issuer, creditStore, sdkArcFactories().request, cashuLightningRail(),
+                    offer, issuerInfo.mints[0], credentialHooks(), nowUnix,
+                );
             document.getElementById('pa-credInvoiceBox').hidden = true;
             renderCredits();
             paStatus(`credential stored: ${stored.presentationLimit} credits, epoch ${stored.epoch}, spendable until ${new Date(stored.validUntil * 1000).toLocaleDateString()}`, 'success');
@@ -1830,10 +1841,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 document.getElementById('pa-credInvoice').value = pending.invoice;
                 document.getElementById('pa-credInvoiceBox').hidden = false;
             }
-            const stored = await purchaseCredential(
-                issuer, creditStore, sdkArcFactories().request, cashuLightningRail(),
-                pending.offer, pending.mintUrl, credentialHooks(), nowUnix,
-            );
+            const stored = pending.x402
+                ? await purchaseCredentialX402(
+                    issuer, creditStore, sdkArcFactories().request, pending.offer, credentialHooks(), nowUnix,
+                )
+                : await purchaseCredential(
+                    issuer, creditStore, sdkArcFactories().request, cashuLightningRail(),
+                    pending.offer, pending.mintUrl, credentialHooks(), nowUnix,
+                );
             document.getElementById('pa-credInvoiceBox').hidden = true;
             renderCredits();
             paStatus(`credential stored: ${stored.presentationLimit} credits`, 'success');
@@ -1848,7 +1863,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         paHandle('pa-cancelCredentialBtn', async () => {
             credentialAbort?.abort();
             const pending = creditStore.pending();
-            if (pending?.token) throw new Error('a minted token is pending — resume to finish the credential; it is not lost');
+            if (pending?.token || pending?.x402?.preimage) throw new Error('this purchase is already paid — resume to finish the credential; it is not lost');
             creditStore.setPending(null);
             document.getElementById('pa-credInvoiceBox').hidden = true;
             renderCredits();

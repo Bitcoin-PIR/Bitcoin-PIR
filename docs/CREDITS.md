@@ -290,7 +290,13 @@ repositories share them. The credits contract is served under `/v2/`
   the spec's `errorReason`. `GET /v2/x402/invoices/{payment_hash}` reports
   `unpaid` / `paid` / `expired` and, once paid, the preimage, so a browser
   whose user paid the QR code from a phone finishes the same retry. Only the
-  canonical issuer host works for x402 (the binding names it).
+  canonical issuer host works for x402 (the binding names it). The web
+  client offers this rail next to the Cashu one ("Pay via Lightning direct
+  (x402)", `web/src/x402.ts`): it recomputes the binding, decodes and checks
+  the invoice (`web/src/bolt11.ts`: amount, expiry, description hash, payee
+  recovered from the signature), pays through WebLN when a browser wallet
+  is present, otherwise shows the invoice and polls the status endpoint,
+  then repeats the byte-identical request with the preimage.
 
 ARC parameters (`pir_credit::arc`): the `Bitcoin-PIR/arc` fork (P-256,
 Cloudflare draft ciphersuite), presentation limit 100 per credential (one

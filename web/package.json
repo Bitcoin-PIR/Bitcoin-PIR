@@ -23,6 +23,8 @@
   "license": "MIT",
   "dependencies": {
     "@cashu/cashu-ts": "4.10.2",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "buffer": "^6.0.3",
     "hash.js": "^1.1.7",
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"
