@@ -314,3 +314,14 @@ export {
   PRODUCTION_ORAM_BATCH_PLANNER,
   type ProductionProviderPin,
 } from './production-providers.js';
+
+export {
+  purchaseCredentialX402,
+  requestChallenge as x402RequestChallenge,
+  validateChallenge as x402ValidateChallenge,
+  waitForPayment as x402WaitForPayment,
+  settle as x402Settle,
+  http1Binding as x402Http1Binding,
+  X402_NETWORK_MAINNET,
+} from './x402.js';
+export type { PaymentRequired, PaymentRequirements, ValidatedChallenge, WebLnLike } from './x402.js';

@@ -205,6 +205,33 @@ export class IssuerClient {
     );
   }
 
+  /** Raw POST with a caller-controlled body string and headers (x402 needs the exact bytes and the response headers). */
+  async postRaw(path: string, body: string, extraHeaders: Record<string, string> = {}): Promise<Response> {
+    return this.raw(path, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json', ...extraHeaders },
+      body,
+    });
+  }
+
+  /** Raw GET returning the response (status and headers included). */
+  async getRaw(path: string): Promise<Response> {
+    return this.raw(path, { method: 'GET', headers: { accept: 'application/json' } });
+  }
+
+  private async raw(path: string, init: { method: string; headers: Record<string, string>; body?: string }): Promise<Response> {
+    try {
+      return await this.fetchImpl(this.baseUrl + path, {
+        ...init,
+        credentials: 'omit',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer',
+      });
+    } catch (error) {
+      throw new IssuerError(`issuer unreachable: ${(error as Error)?.message ?? error}`);
+    }
+  }
+
   private async request(method: 'GET' | 'POST', path: string, json?: unknown): Promise<unknown> {
     const headers: Record<string, string> = { accept: 'application/json' };
     if (json !== undefined) headers['content-type'] = 'application/json';
@@ -512,10 +539,23 @@ export interface StoredCredential {
   boughtAt: number;
 }
 
+/** The x402 leg of a pending purchase (`x402.ts`); absent for the Cashu rail. */
+export interface X402Pending {
+  /** The exact request body bytes, repeated on the paid retry (request binding). */
+  body: string;
+  resource: unknown;
+  accepted: unknown;
+  paymentHash: string | null;
+  invoice: string | null;
+  expiresAt: number | null;
+  preimage: string | null;
+}
+
 /** A purchase in flight, persisted step by step. */
 export interface PendingCredential {
   version: 1;
   issuerUrl: string;
+  /** Empty for an x402 purchase (no mint involved). */
   mintUrl: string;
   offer: CreditOffer;
   epoch: number;
@@ -527,6 +567,7 @@ export interface PendingCredential {
   quoteExpiry: number | null;
   token: string | null;
   createdAt: number;
+  x402?: X402Pending;
 }
 
 /** The part of `localStorage` the stores use. */
