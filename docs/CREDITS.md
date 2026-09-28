@@ -266,6 +266,31 @@ repositories share them. The credits contract is served under `/v2/`
   forward client addresses.
 - Settlement: the issuer holds the money and a per-server ledger of gas
   and sat; paying a foreign server operator is outside the protocol.
+- `POST /v2/credentials` over **x402** (`exact` on `lnbtc`, x402-foundation
+  `specs/schemes/exact/scheme_exact_lnbtc.md`, merged 2026-09-23; HTTP
+  transport headers `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` /
+  `PAYMENT-RESPONSE`): the same body without `token` and without
+  `PAYMENT-SIGNATURE` is answered `402` with a `PaymentRequired` whose one
+  requirement is scheme `exact`, network
+  `lnbtc:000000000019d6689c085ae165831e93`, `amount` = `sat × 1000`
+  (millisatoshi), `asset` `BTC`, `payTo` = the issuer's Lightning node key,
+  `maxTimeoutSeconds` = the invoice expiry, and `extra` = `paymentFlow`
+  `upfront`, `requestBindingProfile` `http:1`, `requestBindingParams`
+  `{ "headers": ["content-type"] }`, `requestHash`, and a fresh BOLT11
+  `invoice` whose description hash is that request hash (JCS of `domain`,
+  `method` `POST`, `url` = the issuer's public URL + `/v2/credentials`,
+  `bodyHash`, bound headers). The client pays, then repeats the
+  byte-identical request with `PAYMENT-SIGNATURE` = base64
+  `PaymentPayload { accepted, payload: { preimage } }`. The issuer recomputes
+  the binding from the actual request, runs the scheme's facilitator checks,
+  issues the credential, and answers `200` with `PAYMENT-RESPONSE`
+  (`transaction` = payment hash, no `payer`). One payment buys one
+  credential: the identical retry replays the answer, another request with
+  the same payment is `duplicate_settlement`; a refused proof is `402` with
+  the spec's `errorReason`. `GET /v2/x402/invoices/{payment_hash}` reports
+  `unpaid` / `paid` / `expired` and, once paid, the preimage, so a browser
+  whose user paid the QR code from a phone finishes the same retry. Only the
+  canonical issuer host works for x402 (the binding names it).
 
 ARC parameters (`pir_credit::arc`): the `Bitcoin-PIR/arc` fork (P-256,
 Cloudflare draft ciphersuite), presentation limit 100 per credential (one
@@ -285,7 +310,9 @@ presentations (at most 150, one credit each). Cashu proofs convert at
 The mint sees the invoice and the buyer's address; the issuer sees the
 ecash, the blinded ARC request, and the buyer's address at purchase, and
 later `(server_id, time, presentation)` for every redemption; a server sees
-the connection and the presentation. Presentations are unlinkable to
+the connection and the presentation. Over x402 the issuer's own node sees
+the Lightning payment instead of the mint, and the invoice binds to the
+blinded request only, never to a lookup. Presentations are unlinkable to
 issuance (blind signatures, ARC), so nothing ties a lookup to a purchase.
 What remains is timing, the client's address at the server, the size of
 the anonymity set, and the possibility of an issuer that tags a user with

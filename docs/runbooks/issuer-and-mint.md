@@ -181,6 +181,46 @@ The issuer contract types come from `pir-credit`, pinned by git revision
 in the issuer's `Cargo.toml`; bump it together with any change to
 `pir_credit::issuer`.
 
+## x402 (Lightning) purchases: guard and issuer configuration
+
+The issuer never opens the node socket. It reaches Core Lightning through
+`bpir-cln-rpc-guard` (issuer repository, `cln-rpc-guard/`), which runs in
+the socket's group and forwards only `invoice`, `listinvoices`, and
+`waitinvoice` with bounded parameters. Both binaries build from the issuer
+checkout (`cargo build --locked --release` produces `bpir-issuer` and
+`bpir-cln-rpc-guard`); install the guard next to the issuer under the same
+content-addressed directory.
+
+1. Account and unit (once): `useradd --system --no-create-home --shell
+   /usr/sbin/nologin bitcoinpir-mainnet-cln-rpc-guard`, then install
+   `deploy/bpir-cln-rpc-guard.service` from the issuer repository
+   (`User=` that account, `SupplementaryGroups=bitcoinpir-mainnet-cln-guard`
+   to open `/srv/lightning/bitcoin/lightning-rpc`, `Group=bpir-issuer` and
+   `UMask=0007` so `/run/bpir-cln-rpc-guard/rpc.sock` is `0660` for the
+   issuer). `systemctl enable --now bpir-cln-rpc-guard`; the startup line
+   lists the allowlist and bounds. This is Phase D of the CLN operator log.
+2. Node key: the `payTo` every invoice must be signed by. Read it from the
+   node (`getinfo` → `id`) as the lightning account, or from the recorded
+   `hsmtool getnodeid` output; 66 lowercase hex.
+3. Issuer config: add the `[x402]` table (`config.example.toml`):
+   `guard_socket = "/run/bpir-cln-rpc-guard/rpc.sock"`, `node_pubkey_hex`,
+   `public_url = "https://issuer.bitcoinpir.org"` (the request binding
+   names this host; the `cashier.bitcoinpir.org` alias cannot serve x402),
+   `max_timeout_secs = 900`, `label_prefix = "bpir-x402-"` (equal to the
+   guard's `--label-prefix`). Restart the issuer; the startup log shows
+   `x402 exact/lnbtc enabled`.
+4. Check: `curl -si -X POST https://issuer.bitcoinpir.org/v2/credentials -H
+   'content-type: application/json' -d '{"credits":100,"sat":1000,"request_hex":"00"}'`
+   must answer `400` (bad request bytes) rather than `402`, and with a real
+   blinded request the answer is `402` with a `PAYMENT-REQUIRED` header whose
+   invoice decodes to the node key. Pay one invoice from any wallet and
+   confirm `GET /v2/x402/invoices/<payment_hash>` turns `paid`.
+
+Money paid over x402 lands in the node's channel balance, not in the Cashu
+wallet; `bpir-issuer settlement` and `balance` do not include it. Invoice
+creation is limited per client address and globally (`[x402]`), and the
+guard limits it again.
+
 ## Rename cutover (cashier → issuer, 2026-09)
 
 The service was named *cashier* until 2026-09-28; pir1 still runs
