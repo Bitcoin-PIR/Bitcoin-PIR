@@ -87,7 +87,7 @@ export {
   REQ_BUCKET_MERKLE_TREE_TOPS, RESP_BUCKET_MERKLE_TREE_TOPS,
 } from './constants.js';
 
-export { PRODUCTION_CASHIER_URL } from './constants.js';
+export { PRODUCTION_ISSUER_URL } from './constants.js';
 
 export {
   checkQuoteStatus,

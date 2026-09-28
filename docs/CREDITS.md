@@ -9,7 +9,7 @@ retired 2026-09; their design is in git history).
 | --- | --- |
 | gas | Work. One gas is one CPU-millisecond on the reference machine (pir1, Intel i7-8700, CPU time summed over all threads). Every metered request kind has a formula in public database geometry (`pir_credit::gas`), so a database of any size prices itself and a provider on other hardware changes only its price per gas. |
 | credit | Money. One credit is `credit_sat` satoshis (10). The issuer publishes `gas_per_credit` (72,000): the one knob that anchors prices to a fiat target. |
-| issuer | The operator-run service that sells credits, verifies every presentation a server forwards, keeps the global double-spend state, and settles with each server in gas. It is the cashier (`Bitcoin-PIR/cashier`), which sold the retired session grants before. |
+| issuer | The operator-run service that sells credits, verifies every presentation a server forwards, keeps the global double-spend state, and settles with each server in gas. It is the issuer (`Bitcoin-PIR/issuer`), which sold the retired session grants before. |
 | presentation | What a client sends on `REQ_CREDIT_PRESENT`: a Cashu token (proofs in sat) or ARC presentations (one credit each). |
 | meter | The per-server hourly aggregate of gas, CPU, wall time, and egress per opcode (`pir_credit::meter`), the observability that keeps the calibration honest. |
 
@@ -303,19 +303,19 @@ operator campaigns routed through
 skipped on 2026-09-15 by operator decision: the only user's grant had
 expired, so nothing needed the overlap.
 
-1. Done 2026-09-12 — cashier (pir1, [runbook](runbooks/cashier-and-mint.md)
-   "Credits (v2)"): Human ran `bpir-cashier arc-seed`; the binary was
+1. Done 2026-09-12 — issuer (pir1, [runbook](runbooks/issuer-and-mint.md)
+   "Credits (v2)"): Human ran `bpir-issuer arc-seed`; the binary was
    upgraded to a `main` revision with `/v2/`; `[gas]`, `operator_pubkeys`,
    `[arc]` added; `GET /v2/info` checked.
 2. Done 2026-09-12 — pir1 (Flow D): `unified_server` rebuilt from `main`,
-   `--credit-issuer-url https://cashier.bitcoinpir.org` added to the unit;
+   `--credit-issuer-url https://issuer.bitcoinpir.org` added to the unit;
    the startup log showed `Credits: issuer=… accepted, not charged` and the
    issuer parameters. Web (Flow C): the page with the wallet deployed
    together with the new `PIR1_PIN`.
 3. Done 2026-09-15 — pir1 switched: `--require-credits` in the unit
    (startup log `Credits: … required for metered frames`); a query without
    credits is refused at its first metered frame. Done 2026-09-18 — the
-   cashier stopped selling session grants (`offers` empty, `/v1/grants`
+   issuer stopped selling session grants (`offers` empty, `/v1/grants`
    answers `unknown offer`; grants already issued keep their credits until
    they expire, at most 30 days).
 4. Done 2026-09-23 — pir2: the r9 sealed campaign
@@ -327,12 +327,12 @@ expired, so nothing needed the overlap.
 5. Done 2026-09-23 — end-to-end purchase on production: one 100-credit
    pack bought in the browser over Lightning (Human paid the invoice), then
    DPF, HarmonyPIR and OnionPIR queries against pir1, all verified. The
-   cashier logged the credential issuance and one `redeemed` line per
-   presentation; `bpir-cashier settlement` booked 14 credits (DPF 1,
+   issuer logged the credential issuance and one `redeemed` line per
+   presentation; `bpir-issuer settlement` booked 14 credits (DPF 1,
    HarmonyPIR hint set 3, OnionPIR 10) to pir1, matching the page's
    balance. It found two bugs, both fixed and deployed the same day: the
-   cashier opened Cashu wallets only for `/v1` offer units, so with grant
-   sales closed `/v2/credentials` refused a paid token (cashier #5; the
+   issuer opened Cashu wallets only for `/v1` offer units, so with grant
+   sales closed `/v2/credentials` refused a paid token (issuer #5; the
    refused token was never swapped and the purchase resumed), and the
    OnionPIR web client sent its tree-top preflight around the credited
    channel (#337). A client presents credits only when the server
@@ -340,9 +340,9 @@ expired, so nothing needed the overlap.
 6. Done 2026-09-23 — `0x0b` retired (no grant was outstanding: sales
    closed, the last issued grant expired): the opcode, the grant gate and
    its flags, the clients' grant presentation, and the web grant UI are
-   gone (#345), and the cashier dropped `/v1` (cashier #6). The issuer key
+   gone (#345), and the issuer dropped `/v1` (issuer #6). The issuer key
    the servers pin stays, renamed `--credit-issuer-pubkey`: it verifies
-   redeem answers. Live on pir1 (#346), the cashier, and pir2 image 321.
+   redeem answers. Live on pir1 (#346), the issuer, and pir2 image 321.
 
 ## Status
 
@@ -351,12 +351,12 @@ expired, so nothing needed the overlap.
 | Gas model, parameters, meter, issuer contract types | `crates/trust/pir-credit` | done |
 | `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`, gas table and hourly meter in `unified_server`, `GET_INFO_JSON` "gas" | this repository | done (the opcode answers "credits not enabled" until an issuer is configured) |
 | Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done; both flags live on pir1 |
-| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/cashier` | done, live |
-| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/cashier` | done, live |
+| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/issuer` | done, live |
+| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/issuer` | done, live |
 | ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
 | Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
 | Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout (see above) | `Bitcoin-PIR/cashier`, pir1, pir2 | cashier, pir1 and pir2 (image 321) live; end-to-end purchase verified on all three pir1 backends (2026-09-23) |
+| Rollout (see above) | `Bitcoin-PIR/issuer`, pir1, pir2 | issuer, pir1 and pir2 (image 321) live; end-to-end purchase verified on all three pir1 backends (2026-09-23) |
 | Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done; live on pir1 (DPF best-effort) and pir2 image 321 (DPF and Direct ORAM best-effort) since 2026-09-23 |
-| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/cashier` `/v1` | done; live on pir1, the cashier and pir2 image 321 (2026-09-23) |
+| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/issuer` `/v1` | done; live on pir1, the issuer and pir2 image 321 (2026-09-23) |
 | CI live canary (`pir-sdk-integration.yml` scheduled/manual steps, leakage canary) | `crates/sdk/client/tests/integration_test.rs` `probe_live_credits_required` | per backend: runs the live steps and leakage invariants of every backend production serves free or best-effort (DPF today) and skips the metered steps of paid ones, since CI holds no credential; connect / catalog / announce tests always run |

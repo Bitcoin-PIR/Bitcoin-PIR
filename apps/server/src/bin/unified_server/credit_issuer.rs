@@ -608,22 +608,22 @@ mod tests {
 
     #[test]
     fn issuer_url_accepts_https_and_loopback_http_only() {
-        let url = IssuerUrl::parse("https://cashier.example/").unwrap();
+        let url = IssuerUrl::parse("https://issuer.example/").unwrap();
         assert_eq!(url.port, 443);
         assert_eq!(url.prefix, "");
-        assert_eq!(url.display(), "https://cashier.example");
-        assert_eq!(url.host_header(), "cashier.example");
-        let url = IssuerUrl::parse("https://cashier.example:8443/issuer/").unwrap();
+        assert_eq!(url.display(), "https://issuer.example");
+        assert_eq!(url.host_header(), "issuer.example");
+        let url = IssuerUrl::parse("https://issuer.example:8443/issuer/").unwrap();
         assert_eq!(url.port, 8443);
         assert_eq!(url.prefix, "/issuer");
-        assert_eq!(url.display(), "https://cashier.example:8443/issuer");
-        assert_eq!(url.host_header(), "cashier.example:8443");
+        assert_eq!(url.display(), "https://issuer.example:8443/issuer");
+        assert_eq!(url.host_header(), "issuer.example:8443");
         assert!(IssuerUrl::parse("http://127.0.0.1:8085").is_ok());
-        assert!(IssuerUrl::parse("http://cashier.example").is_err());
-        assert!(IssuerUrl::parse("ws://cashier.example").is_err());
+        assert!(IssuerUrl::parse("http://issuer.example").is_err());
+        assert!(IssuerUrl::parse("ws://issuer.example").is_err());
         assert!(IssuerUrl::parse("https://").is_err());
-        assert!(IssuerUrl::parse("https://cashier.example:x").is_err());
-        assert!(IssuerUrl::parse("https://cashier.example/v1?x=1").is_err());
+        assert!(IssuerUrl::parse("https://issuer.example:x").is_err());
+        assert!(IssuerUrl::parse("https://issuer.example/v1?x=1").is_err());
     }
 
     #[test]
@@ -655,14 +655,14 @@ mod tests {
             .is_none());
         assert!(CreditsV1::from_cli(&args(&["--require-credits"]), Some(identity())).is_err());
         assert!(CreditsV1::from_cli(
-            &args(&["--credit-issuer-url", "https://cashier.example"]),
+            &args(&["--credit-issuer-url", "https://issuer.example"]),
             Some(identity())
         )
         .is_err());
         assert!(CreditsV1::from_cli(
             &args(&[
                 "--credit-issuer-url",
-                "https://cashier.example",
+                "https://issuer.example",
                 "--credit-issuer-pubkey",
                 &key_arg
             ]),
@@ -672,7 +672,7 @@ mod tests {
         let credits = CreditsV1::from_cli(
             &args(&[
                 "--credit-issuer-url",
-                "https://cashier.example",
+                "https://issuer.example",
                 "--credit-issuer-pubkey",
                 &key_arg,
                 "--require-credits",
@@ -687,12 +687,12 @@ mod tests {
         );
         assert_eq!(
             credits.startup_log_line(),
-            "Credits: issuer=https://cashier.example server_id=pir-test (1 issuer key(s) pinned); what each backend charges is the access policy below"
+            "Credits: issuer=https://issuer.example server_id=pir-test (1 issuer key(s) pinned); what each backend charges is the access policy below"
         );
         let credits = CreditsV1::from_cli(
             &args(&[
                 "--credit-issuer-url",
-                "https://cashier.example",
+                "https://issuer.example",
                 "--credit-issuer-pubkey",
                 &key_arg,
                 "--credit-server-id",
@@ -707,7 +707,7 @@ mod tests {
 
     #[test]
     fn redeem_requests_are_signed_by_the_identity_key() {
-        let c = client("https://cashier.example");
+        let c = client("https://issuer.example");
         let nonce = [4u8; REDEEM_NONCE_LEN];
         let request = c.build_redeem_request(&nonce, 1_800_000_000, &[(2, vec![0xaa, 0xbb])]);
         assert_eq!(request.server_id, "pir-test");
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn redeem_answers_must_carry_a_pinned_signature_over_this_nonce() {
-        let c = client("https://cashier.example");
+        let c = client("https://issuer.example");
         let nonce = [5u8; REDEEM_NONCE_LEN];
         let ok = HttpResponse {
             status: 200,

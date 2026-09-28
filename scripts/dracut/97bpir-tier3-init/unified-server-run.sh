@@ -62,7 +62,7 @@ PIR2_CREDIT_ISSUER_PUBKEY_FILE=/run/bitcoinpir-credit-issuer.pub
 # "Access policy"): HarmonyPIR queries are paid (--require-credits); DPF
 # server 1 and Direct ORAM are free while this guest has room — two free
 # frames each at a time on two low-priority threads, paid frames first.
-PIR2_CREDIT_ISSUER_URL=https://cashier.bitcoinpir.org
+PIR2_CREDIT_ISSUER_URL=https://issuer.bitcoinpir.org
 PIR2_SEALED_INERT_SUCCESS_EXIT_CODE=42
 # Inert Observe/Enroll/Probe runs leave no listener behind.  VPSBG currently
 # has no console or file-extraction API, so expose only the canonical receipt

@@ -414,7 +414,7 @@ pub(crate) fn credit_receipt_to_js(receipt: pir_sdk_client::credits::CreditRecei
 mod tests {
     use super::*;
 
-    /// A tiny issuer for the round trip (the real one is the cashier).
+    /// A tiny issuer for the round trip (the real one is the issuer).
     fn issuer() -> (arc::ServerPrivateKey, ServerPublicKey) {
         arc::setup_server(&mut rand_core::OsRng)
     }

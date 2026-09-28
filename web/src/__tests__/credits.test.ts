@@ -44,7 +44,7 @@ function memoryStorage() {
 }
 
 const INFO_V2 = {
-  service: 'bitcoinpir-cashier',
+  service: 'bitcoinpir-issuer',
   version: 2,
   credit_sat: 10,
   gas_per_credit: 72_000,
@@ -200,10 +200,10 @@ describe('issuer client', () => {
       }
       return new Response(JSON.stringify({ error: 'token_rejected', message: 'already spent' }), { status: 402 });
     }) as unknown as typeof fetch;
-    const client = new IssuerClient('https://cashier.example/', fetchImpl);
+    const client = new IssuerClient('https://issuer.example/', fetchImpl);
     const issued = await client.buyCredential({ credits: 100, sat: 1000 }, 'cashuB', new Uint8Array([1, 2]));
     expect(issued.responseHex).toBe('cd'.repeat(454));
-    expect(calls[0].url).toBe('https://cashier.example/v2/credentials');
+    expect(calls[0].url).toBe('https://issuer.example/v2/credentials');
     expect(calls[0].body).toEqual({ credits: 100, sat: 1000, token: 'cashuB', request_hex: '0102' });
     await expect(client.info()).rejects.toMatchObject({ status: 402, code: 'token_rejected' } satisfies Partial<IssuerError>);
     expect(() => new IssuerClient('ws://x')).toThrow(/https/);
@@ -227,7 +227,7 @@ function fakeCredential(limit: number, nextNonce: number): ArcCredentialLike {
 function stored(credentialHex: string, limit: number, nextNonce: number, validUntil = NOW + 1000): StoredCredential {
   return {
     version: 1,
-    issuerUrl: 'https://cashier.example',
+    issuerUrl: 'https://issuer.example',
     epoch: 231,
     presentationLimit: limit,
     credentialHex,
@@ -309,7 +309,7 @@ describe('credit store and wallet', () => {
         { status: 200 },
       );
     }) as unknown as typeof fetch;
-    const issuer = new IssuerClient('https://cashier.example', fetchImpl);
+    const issuer = new IssuerClient('https://issuer.example', fetchImpl);
     const finalize = vi.fn(() => new Uint8Array(131).fill(7));
     const request: ArcRequestLike = {
       requestBytes: () => new Uint8Array([1, 2]),

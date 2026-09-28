@@ -162,7 +162,7 @@ export const MAX_CREDIT_PRESENT_PAYLOAD_LEN = 256 * 1024;
  * learns where to buy credits. Operator-owned; change it here, not at
  * runtime.
  */
-export const PRODUCTION_CASHIER_URL = 'https://cashier.bitcoinpir.org';
+export const PRODUCTION_ISSUER_URL = 'https://issuer.bitcoinpir.org';
 
 /** Branching factor for per-bucket bin Merkle */
 export const BUCKET_MERKLE_ARITY = 8;

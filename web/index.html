@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-AWojLylor5ABU8aWZwIFCdDIIf2VYyxGP4GjR5Re/lg=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-TbcaTIfsZkNPDQJ8ctye9d9gXpFCsWaPKHpot/6+Kik=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -1604,7 +1604,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         import { PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
-        import { PRODUCTION_CASHIER_URL } from './src/index.ts';
+        import { PRODUCTION_ISSUER_URL } from './src/index.ts';
         import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, cashuLightningRail, sdkArcFactories } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
         // A page from before the latest deploy reloads once when a lazy chunk it names is gone.
@@ -1700,7 +1700,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ARC credentials bought from the issuer for ecash, spent one credit
         // per presentation on whichever server requires credits. The wallet
         // lives in localStorage; the wasm SDK does the cryptography.
-        const issuer = new IssuerClient(PRODUCTION_CASHIER_URL);
+        const issuer = new IssuerClient(PRODUCTION_ISSUER_URL);
         const creditStore = new CreditStore();
         const creditLegs = new Map();
         let creditWallet = null;
