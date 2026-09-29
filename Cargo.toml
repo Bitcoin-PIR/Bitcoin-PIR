@@ -48,10 +48,11 @@ debug-assertions = false
 # split-debuginfo), and at opt-level 3 the incremental cache is about as big
 # as the build itself. `cargo test` inherits this profile; there is no
 # [profile.test], because its thin LTO made every rlib carry LLVM bitcode
-# and every test binary run its own LTO link. To debug:
-# CARGO_PROFILE_DEV_DEBUG=true cargo test -p <crate> ...
+# and every test binary run its own LTO link. panic = 'abort' is
+# release-only: tests always unwind, so an aborting dev profile compiled
+# every dependency twice (once for `cargo build`, once for `cargo test`).
+# To debug: CARGO_PROFILE_DEV_DEBUG=true cargo test -p <crate> ...
 [profile.dev]
 opt-level = 3
-panic = 'abort'
 debug = false
 incremental = false

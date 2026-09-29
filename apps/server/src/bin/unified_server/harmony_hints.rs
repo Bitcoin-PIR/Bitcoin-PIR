@@ -33,7 +33,7 @@ pub(crate) fn xor_into_hint(dst: &mut [u8], src: &[u8]) {
 ///
 /// The level byte arrives off the wire, so resolution must be total —
 /// an unknown level is a `None` (mapped to `Response::Error` at the
-/// call sites), never a panic: with the workspace-wide
+/// call sites), never a panic: with the release profile's
 /// `panic = 'abort'`, a panic here kills the whole server (S4).
 pub(crate) fn harmony_level_table(
     db: &MappedDatabase,
