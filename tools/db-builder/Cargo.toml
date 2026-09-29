@@ -8,136 +8,88 @@ autobins = false
 # Not a library — not published to crates.io.
 publish = false
 
+# The bins have no #[test]s; `test = false` keeps `cargo test` from linking
+# an empty test harness for each one.
+
 # ─── Essential pipeline (required for server/client) ─────────────────────────
 # Run in order: gen_0 → gen_1 → gen_2 → gen_3
 
 [[bin]]
 name = "gen_0_extract_utxo_set"
 path = "src/gen_0_utxo_set.rs"
+test = false
 
 [[bin]]
 name = "gen_1_build_utxo_chunks"
 path = "src/build_utxo_chunks.rs"
+test = false
 
 [[bin]]
 name = "gen_2_build_chunk_cuckoo"
 path = "src/build_chunk_cuckoo.rs"
+test = false
 
 [[bin]]
 name = "gen_3_build_index_cuckoo"
 path = "src/main.rs"
-
-# ─── Test/diagnostic tools (not required for operation) ──────────────────────
-# test_0*: stats tools (no dependencies beyond gen_1 output)
-# test_1-2: verification (run after gen_2/gen_3 respectively)
-# test_3 → test_4 → test_5 → test_6 → test_7: end-to-end PIR test chain
-# test_8: diagnostic (depends on test_5 output)
-
-[[bin]]
-name = "test_0a_utxo_stats"
-path = "src/utxo_stats.rs"
-
-[[bin]]
-name = "test_0b_index_stats"
-path = "src/index_stats.rs"
-
-[[bin]]
-name = "test_1_verify_chunk_cuckoo"
-path = "src/verify_chunk_cuckoo.rs"
-
-[[bin]]
-name = "test_2_verify_index_cuckoo"
-path = "src/verify.rs"
-
-[[bin]]
-name = "test_3_extract_test_queries"
-path = "src/extract_test_queries.rs"
-
-[[bin]]
-name = "test_4_assign_queries"
-path = "src/assign_queries.rs"
-
-[[bin]]
-name = "test_5_test_index_pir"
-path = "src/test_batch_pir.rs"
-
-[[bin]]
-name = "test_6_plan_chunk_rounds"
-path = "src/plan_chunk_rounds.rs"
-
-[[bin]]
-name = "test_7_test_chunk_pir"
-path = "src/test_chunk_pir_batched.rs"
-
-[[bin]]
-name = "test_8_assign_chunk_queries"
-path = "src/assign_chunk_queries.rs"
+test = false
 
 [[bin]]
 name = "append_whale_sentinels"
 path = "src/append_whale_sentinels.rs"
-
-[[bin]]
-name = "chunk_size_analysis"
-path = "src/chunk_size_analysis.rs"
+test = false
 
 [[bin]]
 name = "find_whale_spks"
 path = "src/find_whale_spks.rs"
-
-[[bin]]
-name = "cuckoo4_experiment"
-path = "src/cuckoo4_experiment.rs"
-
-[[bin]]
-name = "test_onion_cuckoo"
-path = "src/test_onion_cuckoo.rs"
+test = false
 
 [[bin]]
 name = "gen_1_onion"
 path = "src/gen_1_onion.rs"
+test = false
 
 [[bin]]
 name = "gen_2_onion"
 path = "src/gen_2_onion.rs"
+test = false
 
 [[bin]]
 name = "gen_3_onion"
 path = "src/gen_3_onion.rs"
+test = false
 
 # ─── Delta database pipeline ────────────────────────────────────────────────
 
 [[bin]]
 name = "delta_gen_0"
 path = "src/delta_gen_0_compute_delta.rs"
+test = false
 
 [[bin]]
 name = "delta_gen_1"
 path = "src/delta_gen_1_build_chunks.rs"
+test = false
 
 [[bin]]
 name = "delta_gen_1_onion"
 path = "src/delta_gen_1_onion.rs"
+test = false
 
 [[bin]]
 name = "build_cuckoo_generic"
 path = "src/build_cuckoo_generic.rs"
+test = false
 
 [[bin]]
 name = "gen_4_build_merkle_onion"
 path = "src/gen_4_build_merkle_onion.rs"
+test = false
 
 [[bin]]
 name = "gen_4_build_merkle_bucket"
 path = "src/gen_4_build_merkle_bucket.rs"
-
-[[bin]]
-name = "test_pir_core_crosscheck"
-path = "src/test_pir_core_crosscheck.rs"
-
-[[bin]]
-name = "experiment_onion_sibling_pir"
-path = "src/experiment_onion_sibling_pir.rs"
+test = false
 
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }

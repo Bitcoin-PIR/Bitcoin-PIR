@@ -18,7 +18,7 @@
 //! level-1) is served by a tiny per-group OnionPIR FHE-PIR database whose
 //! plaintexts are the level-1 parent rows (99 INDEX / 364 DATA — sized
 //! exactly, no padding, since onionpir ≥ `aa7710d`; see the §3.2
-//! experiment `experiment_onion_sibling_pir`).
+//! experiment, `experiment_onion_sibling_pir` in git history).
 //!
 //! Output files (the contract for the 3b server + 3d client):
 //!   merkle_onion_sib_index.bin / merkle_onion_sib_data.bin
