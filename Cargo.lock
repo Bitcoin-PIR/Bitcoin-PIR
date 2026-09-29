@@ -293,16 +293,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "block_reader"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "brk_reader",
- "brk_rpc",
- "pir-core",
-]
-
-[[package]]
 name = "bpir-admin"
 version = "0.1.0"
 dependencies = [

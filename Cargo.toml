@@ -19,7 +19,6 @@ members = [
     "apps/admin",
     "tools/db-builder",
     "apps/server",
-    "tools/block-reader",
 ]
 exclude = ["vendor/bitcoinpir-oram"]
 

@@ -74,8 +74,7 @@ BitcoinPIR/
 │   ├── server/        Production server and diagnostic binaries
 │   └── admin/         Operator CLI
 ├── tools/
-│   ├── db-builder/    Database generation pipeline
-│   └── block-reader/  Bitcoin Core block/UTXO inspection utilities
+│   └── db-builder/    Database generation pipeline
 ├── web/               Production browser query application
 ├── deploy/            Reproducible build and deployment integration
 ├── docs/              Design, verification, and operating documentation

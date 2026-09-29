@@ -35,16 +35,6 @@ path = "src/main.rs"
 test = false
 
 [[bin]]
-name = "append_whale_sentinels"
-path = "src/append_whale_sentinels.rs"
-test = false
-
-[[bin]]
-name = "find_whale_spks"
-path = "src/find_whale_spks.rs"
-test = false
-
-[[bin]]
 name = "gen_1_onion"
 path = "src/gen_1_onion.rs"
 test = false
