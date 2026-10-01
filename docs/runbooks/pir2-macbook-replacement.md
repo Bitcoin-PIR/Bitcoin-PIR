@@ -3,7 +3,7 @@
 pir2 (VPSBG SEV-SNP, `wss://weikeng2.bitcoinpir.org`) is deactivated on
 2026-10-02 around 05:32 UTC. A MacBook takes over its two serving roles,
 **DPF server 1** and the **HarmonyPIR query server**, without a TEE, at
-`wss://weikeng3.bitcoinpir.org`. Direct ORAM pauses (it needs a TEE).
+`wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`. Direct ORAM pauses (it needs a TEE).
 OnionPIR runs on pir1 and is not affected.
 
 ## Who does what
@@ -258,8 +258,9 @@ brew install cloudflared
 sudo cloudflared service install <TOKEN>   # token stays on this machine
 ```
 
-Public hostname: subdomain `weikeng3`, domain `bitcoinpir.org`, service
-type `HTTP`, URL `localhost:8091`.
+Public hostname: `bitcoin-pir-weikeng-laptop.chenweikeng.com` (the
+operator's own zone; no code binds the domain), service type `HTTP`, URL
+`localhost:8091`.
 
 Do **not** add a connector to the existing weikeng2 tunnel: pir2 is still
 attached until it expires, and Cloudflare would split traffic between
@@ -271,11 +272,11 @@ the two machines.
 A="$REPO/target/release/bpir-admin"
 $A attest ws://127.0.0.1:8091 --expect-binary "$SHA"       # noSevHost, binary hash matches
 $A channel-test ws://127.0.0.1:8091
-$A attest wss://weikeng3.bitcoinpir.org --expect-binary "$SHA"
-$A channel-test wss://weikeng3.bitcoinpir.org
+$A attest wss://bitcoin-pir-weikeng-laptop.chenweikeng.com --expect-binary "$SHA"
+$A channel-test wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
 SPK=$(python3 -c "import json;print(json.load(open('$REPO/web/src/example_spks.json'))['main'][0])")
 "$REPO/target/release/examples/simple_query" \
-  --server0 wss://weikeng1.bitcoinpir.org --server1 wss://weikeng3.bitcoinpir.org "$SPK"
+  --server0 wss://weikeng1.bitcoinpir.org --server1 wss://bitcoin-pir-weikeng-laptop.chenweikeng.com "$SPK"
 ```
 
 DPF is free on a best-effort basis on both servers, so the DPF query
