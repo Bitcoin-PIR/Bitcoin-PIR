@@ -147,6 +147,24 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
 };
 
 /**
+ * bitcoin-pir-weikeng-laptop.chenweikeng.com — the pir2 replacement after VPSBG pir2
+ * (PIR2_TIER3_PIN above) was retired on 2026-10-02: a MacBook (macOS arm64),
+ * NO TEE. It serves DPF server 1 and the HarmonyPIR query role; Direct ORAM is
+ * paused. As with PIR1_PIN there is no MEASUREMENT; the binary pin is not
+ * hardware-backed but detects drift from the operator-published build, and
+ * strict mode additionally requires the operator-signed identity
+ * (server id pir2-macbook-v1, pir2 operator key).
+ */
+export const PIR2_MACBOOK_PIN: ServerAttestPin = {
+  // No measurementHex — no SEV on this host.
+  // unified_server built from ops/pir2-macbook-replacement (cb52047f, with the
+  // macOS self-hash fix), `--locked --release`, macOS arm64.
+  binarySha256Hex:
+    '42d9a9aad8a762782c68ea8039a24701b4a0758a679df0fa0f8302ceb5e775e7',
+  description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, credits with DPF best-effort free and HarmonyPIR paid; Direct ORAM paused)',
+};
+
+/**
  * weikeng1.bitcoinpir.org — Hetzner Intel host, NO SEV-SNP. The public
  * endpoint is independently keyed and pinned below. No MEASUREMENT to
  * pin (no SEV report). binary_sha256 IS pinnable — the value isn't

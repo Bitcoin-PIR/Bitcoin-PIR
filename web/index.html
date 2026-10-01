@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-xE4BwzhdHiCHZAn5WmxMzzGpEOKIq2yIJUi573JNEbs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-M/1dhNC0InsMe/sFYI/otaqNT2qdFMpD2yyqfmcBpqo=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -850,7 +850,7 @@
                         <span class="name">OnionPIR</span>
                     </button>
                     <button type="button" class="scheme tab-btn" data-tab="oram" role="tab" aria-selected="false" aria-controls="tab-oram">
-                        <span class="name">ORAM TEE</span>
+                        <span class="name">ORAM TEE (paused)</span>
                     </button>
                 </div>
             </section>
@@ -1036,7 +1036,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                                 <div class="status-row">
                                     <label for="server1Url">Server 1</label>
-                                    <input type="text" id="server1Url" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                    <input type="text" id="server1Url" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
                                 <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
@@ -1406,7 +1406,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                                 <div class="status-row">
                                     <label for="hp-queryServerUrl">Query server</label>
-                                    <input type="text" id="hp-queryServerUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                    <input type="text" id="hp-queryServerUrl" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
@@ -1470,6 +1470,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div id="oram-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
+                        <div id="oram-pausedNotice" class="status disconnected" role="status">Direct ORAM is paused: it needs a TEE host, and none serves it since pir2 was retired on 2026-10-02. DPF-PIR, HarmonyPIR and OnionPIR are available.</div>
                         <div class="step">
                             <label for="oram-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
                             <textarea id="oram-scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
@@ -1540,7 +1541,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             <div id="oramVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
                                     <label for="oram-serverUrl">ORAM server</label>
-                                    <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                    <input type="text" id="oram-serverUrl" class="input" value="" spellcheck="false">
                                 </div>
                                 <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
@@ -1609,7 +1610,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
-        import { PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
+        import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
         import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, purchaseCredentialX402, cashuLightningRail, sdkArcFactories } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
@@ -1959,7 +1960,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function ensureOramConnection() {
-            await oramConnect(PIR2_PROVIDER);
+            if (!ORAM_PROVIDER) throw new Error(ORAM_PAUSED_MESSAGE);
+            await oramConnect(ORAM_PROVIDER);
             oramAdmissionDbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
         }
 
