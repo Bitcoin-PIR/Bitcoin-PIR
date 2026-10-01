@@ -111,7 +111,7 @@ fn process_group_generic(
     // index `bits[i]` past the fixed array below. Decode + handler
     // validation make these unreachable from the wire; programmatic
     // callers get zero-filled accumulators instead of a panic
-    // (panic = 'abort' workspace-wide would kill the whole server).
+    // (the release profile's panic = 'abort' would kill the whole server).
     if num_keys == 0 || num_keys > MAX_KEYS_PER_GROUP {
         let accs = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
         return (

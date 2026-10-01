@@ -57,7 +57,7 @@ mod harmony_dos_guard_tests {
     //! S4/S5 guards for this binary's own inline Harmony handlers —
     //! the duplicates of `pir-runtime-core`'s `RequestHandler` paths
     //! (whose twins live in that crate's `dos_guard_tests`), plus the
-    //! binary-only `REQ_HARMONY_HINTS` path. With the workspace-wide
+    //! binary-only `REQ_HARMONY_HINTS` path. With the release profile's
     //! `panic = 'abort'`, each unguarded path was a single-frame
     //! unauthenticated full-process kill.
     //!

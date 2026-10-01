@@ -786,7 +786,7 @@ pub(crate) fn setup_onionpir_workers(
                                     .flat_map_iter(|(g, server)| {
                                         let q0 = &queries_ref[2 * g];
                                         let q1 = &queries_ref[2 * g + 1];
-                                        // The workspace uses panic=abort, so an OnionPIR panic
+                                        // Release builds use panic=abort, so an OnionPIR panic
                                         // terminates the process; there is no in-process isolation.
                                         // A process boundary is required if that policy changes.
                                         let r0 = server.answer_query(client_id, q0);
