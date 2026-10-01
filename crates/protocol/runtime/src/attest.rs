@@ -138,16 +138,24 @@ pub fn fetch_report(user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
     ))
 }
 
-/// SHA-256 of the running binary (read from `/proc/self/exe`),
-/// computed once and cached for the process lifetime.
+/// SHA-256 of the running binary, computed once and cached for the
+/// process lifetime.
 ///
-/// On non-Linux hosts or when the read fails (sandboxed test env, etc.)
-/// returns the all-zero hash — verifiers must treat all-zero as
-/// "self-hash unavailable", not as a valid attestation.
+/// Linux reads `/proc/self/exe`, which names the executing inode even if
+/// the path is replaced after start. Other hosts (macOS community nodes)
+/// read `std::env::current_exe()` at first use. When the read fails
+/// (sandboxed test env, etc.) this returns the all-zero hash — verifiers
+/// must treat all-zero as "self-hash unavailable", not as a valid
+/// attestation.
 pub fn self_exe_sha256() -> Hash256 {
     static CACHED: OnceLock<Hash256> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        std::fs::read("/proc/self/exe")
+        let path = if cfg!(target_os = "linux") {
+            Ok(std::path::PathBuf::from("/proc/self/exe"))
+        } else {
+            std::env::current_exe()
+        };
+        path.and_then(std::fs::read)
             .map(|bytes| sha256(&bytes))
             .unwrap_or([0u8; 32])
     })
@@ -185,6 +193,14 @@ mod tests {
         let h1 = self_exe_sha256();
         let h2 = self_exe_sha256();
         assert_eq!(h1, h2, "self-exe hash must be cached and stable");
+    }
+
+    #[test]
+    fn self_exe_sha256_is_available_on_this_host() {
+        // Linux reads /proc/self/exe; macOS community nodes read
+        // current_exe(). Either way the hash must not be the all-zero
+        // "unavailable" sentinel, or strict clients reject the node.
+        assert_ne!(self_exe_sha256(), [0u8; 32]);
     }
 
     #[test]
