@@ -126,6 +126,8 @@ export interface OramPirClientConfig {
   /** Credits (`docs/CREDITS.md`): see `BatchPirClientConfig.creditProvider`. */
   creditProvider?: CreditProvider;
   onCredits?: (status: CreditEnablement) => void;
+  /** Operator-issued API key; see `BatchPirClientConfig.apiKey`. */
+  apiKey?: string;
   databaseProofPins?: DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
   /**
@@ -609,28 +611,36 @@ export class OramPirClientAdapter {
 
   /** Turn on credits when the server requires them; see `BatchPirClient.enableCredits`. */
   async enableCredits(): Promise<CreditEnablement | null> {
+    const apiKey = this.config.apiKey?.trim();
     const provider = this.config.creditProvider;
-    if (!provider) return null;
+    if (!apiKey && !provider) return null;
     const client = this.wasmClient;
     let outcome: CreditEnablement;
     if (!client || !client.isConnected) {
       outcome = { state: 'error', error: 'not connected' };
     } else if (!this.secureChannelEstablished) {
-      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+      outcome = { state: 'error', error: `${apiKey ? 'API key' : 'credits'} withheld: channel is cleartext` };
     } else {
       try {
-        const state = await client.enableCredits(provider);
-        outcome = { state: state as CreditEnablement['state'] };
+        if (apiKey) {
+          await client.presentApiKey(apiKey);
+          outcome = { state: 'api-key' };
+        } else {
+          const state = await client.enableCredits(provider!);
+          outcome = { state: state as CreditEnablement['state'] };
+        }
       } catch (e) {
         outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
       }
     }
-    if (outcome.state === 'required') {
+    if (outcome.state === 'api-key') {
+      this.log('ORAM: API key accepted; this connection is unmetered', 'info');
+    } else if (outcome.state === 'required') {
       this.log('ORAM: credits required; metered frames are funded from the wallet', 'info');
     } else if (outcome.state === 'best-effort') {
       this.log('ORAM: free while the server has room; paid from the wallet only when it is busy', 'info');
     } else if (outcome.state === 'error') {
-      this.log(`ORAM: credits could not be enabled — ${outcome.error}`, 'error');
+      this.log(`ORAM: ${apiKey ? 'API key refused' : 'credits could not be enabled'} — ${outcome.error}`, 'error');
     }
     this.config.onCredits?.(outcome);
     return outcome;

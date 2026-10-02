@@ -461,6 +461,10 @@ export interface WasmDpfClient {
    *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key on one leg (`docs/CREDITS.md`
+   *  "API keys"); that connection is then unmetered. Bearer material: call
+   *  after `upgradeToSecureChannel`. */
+  presentApiKey(serverIndex: number, key: string): Promise<void>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
    *  source (call `attest` first; ideally also check the SEV-SNP report's
@@ -579,6 +583,10 @@ export interface WasmHarmonyClient {
    *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key on one leg (`docs/CREDITS.md`
+   *  "API keys"); that connection is then unmetered. Bearer material: call
+   *  after `upgradeToSecureChannel`. */
+  presentApiKey(serverIndex: number, key: string): Promise<void>;
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
@@ -703,6 +711,8 @@ export interface WasmOramClient {
   presentCredits(kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
   /** Pay the server's metered frames from `provider` when it requires credits; see `WasmDpfClient.enableCredits`. */
   enableCredits(provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key; see `WasmDpfClient.presentApiKey`. */
+  presentApiKey(key: string): Promise<void>;
   upgradeToSecureChannel(serverStaticPub: Uint8Array): Promise<void>;
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   verifyDatabaseProof(

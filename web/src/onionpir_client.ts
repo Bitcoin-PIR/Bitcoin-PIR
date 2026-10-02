@@ -65,6 +65,8 @@ import { fetchDatabaseCatalog } from './server-info.js';
 import type { LeakageRecorder, RoundProfile } from './leakage.js';
 import {
   CreditedChannel,
+  encodeApiKeyFrame,
+  parseApiKeyResponsePayload,
   resolveAccess,
   serverGasCardFromInfo,
   type CreditEnablement,
@@ -745,6 +747,13 @@ export interface OnionPirClientConfig {
    */
   creditProvider?: CreditProvider;
   onCredits?: (status: CreditEnablement) => void;
+  /**
+   * Operator-issued API key (docs/CREDITS.md "API keys"), presented once the
+   * secure channel is open. When the server accepts it the connection is
+   * unmetered and credits are not enabled; the outcome arrives via
+   * `onCredits` as `api-key` or `error`.
+   */
+  apiKey?: string;
   databaseProofPins?: readonly DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, status: DatabaseProofStatus) => void;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
@@ -1490,6 +1499,20 @@ export class OnionPirWebClient {
    * `config.creditProvider`. Never throws; the outcome goes to `onCredits`.
    */
   private async enableCredits(socket: ManagedWebSocket): Promise<void> {
+    const apiKey = this.config.apiKey?.trim();
+    if (apiKey) {
+      let outcome: CreditEnablement;
+      try {
+        parseApiKeyResponsePayload((await socket.sendRaw(encodeApiKeyFrame(apiKey))).subarray(4));
+        outcome = { state: 'api-key' };
+        this.log('OnionPIR: API key accepted; this connection is unmetered', 'info');
+      } catch (error) {
+        outcome = { state: 'error', error: (error as Error)?.message ?? String(error) };
+        this.log(`OnionPIR: API key refused — ${outcome.error}`, 'error');
+      }
+      if (this.ws === socket) this.config.onCredits?.(outcome);
+      return;
+    }
     const provider = this.config.creditProvider;
     if (!provider) return;
     let outcome: CreditEnablement;
