@@ -63,6 +63,7 @@ expect_fail 'open without image id' \
 status_preview=$("$script_dir/production-status.sh" --dry-run)
 grep -qx 'PASS production_status dry_run=true' <<<"$status_preview"
 grep -qx 'pir1_host=65.21.91.217' <<<"$status_preview"
+grep -Eq '^(oram_url=wss://.+|oram=paused)$' <<<"$status_preview"
 
 # Empty-array regressions: a bare quoted-at expansion crashes under `set -u`
 # on bash < 4.4 (macOS /bin/bash 3.2), so every status_args expansion must be

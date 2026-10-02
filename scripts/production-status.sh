@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
-# Read-only pir1 SSH health plus a public attest of the pir2 MacBook node.
+# Read-only pir1 SSH health, a public attest of the pir2 MacBook node, and the
+# Direct ORAM TEE host's VPSBG status plus its pinned SEV-SNP attest.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: scripts/production-status.sh [--dry-run]
+usage: scripts/production-status.sh [--server-id ID] [--dry-run]
 
 Prints pir1 systemd/port/disk health over SSH, then attests the pir2
-MacBook node over its public endpoint against PIR2_MACBOOK_PIN. The
-endpoint and pin are read from web/src. The VPSBG pir2 host was retired
-on 2026-10-02; scripts/vpsbg-production-status.sh covers a future VPSBG
-host only. This command never restarts a service and does not inspect
-Signet or functional-beta units.
+MacBook node over its public endpoint against PIR2_MACBOOK_PIN. Then it
+shows the Direct ORAM TEE host's VPSBG control-plane status
+(scripts/vpsbg-production-status.sh, default server 26939) and attests the
+host against PIR2_TIER3_PIN (MEASUREMENT + binary) under the AMD ARK that
+ORAM_PROVIDER names. Endpoints and pins are read from web/src; while
+ORAM_PROVIDER is null the ORAM host is reported paused and skipped. This
+command never restarts a service and does not inspect Signet or
+functional-beta units.
 
 BPIR_ADMIN=/absolute/path/to/bpir-admin runs a prebuilt binary; otherwise
-the attest runs through `cargo run --release -p bpir-admin`.
+the attests run through `cargo run --release -p bpir-admin`. The VPSBG
+status reads VPSBG_API_TOKEN_FILE or <repo>/.secrets/vpsbg-api-token.
 EOF
 }
 
@@ -23,15 +28,18 @@ readonly HETZNER_HOST=65.21.91.217
 readonly HETZNER_KNOWN_HOSTS="$root/deploy/known_hosts"
 readonly PIN_FILE="$root/web/src/attest-pin.ts"
 readonly PROVIDERS_FILE="$root/web/src/production-providers.ts"
+readonly DEFAULT_ORAM_SERVER_ID=26939
 
-dry_run=0
+server_id=$DEFAULT_ORAM_SERVER_ID dry_run=0
 while (($#)); do
   case "$1" in
+    --server-id) server_id=${2:?missing server ID}; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+[[ "$server_id" =~ ^[0-9]+$ ]] || { echo 'server ID must be numeric' >&2; exit 2; }
 [[ -r "$HETZNER_KNOWN_HOSTS" && -s "$HETZNER_KNOWN_HOSTS" ]] || {
   echo "Hetzner known_hosts is missing or empty: $HETZNER_KNOWN_HOSTS" >&2
   exit 2
@@ -54,9 +62,37 @@ if not endpoint or not binary:
 print(endpoint.group(1))
 print(binary.group(1).lower())
 print(transition.group(1).lower() if transition else "-")
+
+# The Direct ORAM host: ORAM_PROVIDER names its pin and its ARK constant;
+# the ARK hex sits next to that constant as <NAME>_HEX.
+oram = re.search(r"export const ORAM_PROVIDER\b[^=]*=\s*(null;|\{.*?\n\};)", providers, re.S)
+if not oram:
+    sys.stderr.write("ORAM_PROVIDER is missing\n")
+    sys.exit(2)
+if oram.group(1) == "null;":
+    print("-\n-\n-\n-")
+    sys.exit(0)
+block = oram.group(1)
+oram_endpoint = re.search(r"endpoint:\s*'(wss://[^']+)'", block)
+pin_name = re.search(r"serverPin:\s*([A-Z0-9_]+)", block)
+ark_name = re.search(r"expectedArkFingerprint:\s*([A-Z0-9_]+)", block)
+oram_pin = pin_name and re.search(rf"export const {pin_name.group(1)}\b.*?\n\}};", pins, re.S)
+measurement = oram_pin and re.search(r"\bmeasurementHex:\s*'([0-9a-fA-F]{96})'", oram_pin.group(0))
+oram_binary = oram_pin and re.search(r"\bbinarySha256Hex:\s*'([0-9a-fA-F]{64})'", oram_pin.group(0))
+ark = ark_name and re.search(rf"export const {ark_name.group(1)}_HEX\s*=\s*'([0-9a-fA-F]{{64}})'", pins)
+if not (oram_endpoint and measurement and oram_binary and ark):
+    sys.stderr.write("ORAM_PROVIDER endpoint, its pin's MEASUREMENT/binary, or its ARK hex is missing\n")
+    sys.exit(2)
+print(oram_endpoint.group(1))
+print(measurement.group(1).lower())
+print(oram_binary.group(1).lower())
+print(ark.group(1).lower())
 PY
 )
-{ read -r pir2_url; read -r pir2_binary; read -r pir2_transition; } <<<"$pir2"
+{
+  read -r pir2_url; read -r pir2_binary; read -r pir2_transition
+  read -r oram_url; read -r oram_measurement; read -r oram_binary; read -r oram_ark
+} <<<"$pir2"
 
 if ((dry_run)); then
   echo '[stage] production status preview'
@@ -65,8 +101,15 @@ if ((dry_run)); then
   echo "pir2_url=$pir2_url"
   echo "pir2_pin_source=$PIN_FILE"
   echo "pir2_transition_pin=$([[ "$pir2_transition" == - ]] && echo none || echo set)"
+  if [[ "$oram_url" == - ]]; then
+    echo 'oram=paused'
+  else
+    echo "oram_url=$oram_url"
+    echo "oram_server_id=$server_id"
+    echo "oram_pin_source=$PIN_FILE"
+  fi
   echo 'PASS production_status dry_run=true'
-  echo 'NEXT_STEP=run without --dry-run for the live pir1 SSH and pir2 attest snapshot'
+  echo 'NEXT_STEP=run without --dry-run for the live pir1 SSH, pir2 attest and ORAM host snapshot'
   exit 0
 fi
 
@@ -124,5 +167,23 @@ else
   exit 1
 fi
 echo 'PASS host=pir2'
+
+echo '[stage] Direct ORAM TEE host'
+if [[ "$oram_url" == - ]]; then
+  echo 'oram=paused (ORAM_PROVIDER is null)'
+else
+  echo "oram_url=$oram_url"
+  "$root/scripts/vpsbg-production-status.sh" --server-id "$server_id"
+  oram_out=$("${admin[@]}" attest "$oram_url" \
+    --expect-measurement "$oram_measurement" \
+    --expect-binary "$oram_binary" \
+    --expect-ark-fingerprint "$oram_ark" 2>&1) || {
+    printf '%s\n' "$oram_out"
+    echo 'ORAM host attest failed: MEASUREMENT, binary, or AMD chain differs from the pins' >&2
+    exit 1
+  }
+  printf '%s\n' "$oram_out"
+  echo 'PASS host=oram'
+fi
 echo 'PASS production_status'
-echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md after this run is authorized'
+echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md, and the ORAM host only through Flows E-G, after this run is authorized'

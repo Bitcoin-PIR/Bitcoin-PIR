@@ -13,9 +13,11 @@ Live status:
 scripts/production-status.sh
 ```
 
-That prints pir1 SSH health and a public attest of the pir2 MacBook node
-against `PIR2_MACBOOK_PIN`. Each mutation script also has `--help` and,
-where it can change a host, `--dry-run`.
+That prints pir1 SSH health, a public attest of the pir2 MacBook node
+against `PIR2_MACBOOK_PIN`, and the Direct ORAM TEE host's VPSBG status
+plus an attest against `PIR2_TIER3_PIN` (MEASUREMENT, binary, AMD chain).
+Each mutation script also has `--help` and, where it can change a host,
+`--dry-run`.
 
 The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
 and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
@@ -103,8 +105,8 @@ only in git history.
 ## A. Diagnose — Read
 
 1. Read — `scripts/production-status.sh` (`--dry-run` lists paths only).
-2. Read — if only pir2 matters:
-   `scripts/vpsbg-measured-boot.sh status --server-id ID`.
+2. Read — if only the Direct ORAM host matters:
+   `scripts/vpsbg-measured-boot.sh status --server-id 26939`.
 3. Read — before a UKI upload:
    `scripts/vpsbg-measured-boot.sh images`.
 4. Stop. `image_id=unavailable` is a valid observation, not a selection.
@@ -419,7 +421,7 @@ the same way as an upgrade, through a new transition.
 
 | Operation | Runbook | Command | Successful handoff |
 | --- | --- | --- | --- |
-| Read pir1 and pir2 status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
+| Read pir1, pir2 and ORAM host status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
 | Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, transition pin, switch, then drop the transition | Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` |
 | Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
 | Build the **producer** UKI | [Attested-builder UKI](ATTESTED_BUILDER_TIER3_UKI.md) | `scripts/build_uki_attested_builder_tier3.sh` | archived `.efi` + `.meta` |
