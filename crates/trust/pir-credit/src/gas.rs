@@ -140,7 +140,10 @@ pub enum MeteredOp {
     HarmonyHintSet { level: u8 },
     /// `REQ_HARMONY_HINTS_V2`: one hint-pool entry (INDEX + CHUNK).
     HarmonyPoolEntry,
-    /// `REQ_HARMONY_HINTS_V2_HALF`: the second half of a paid entry.
+    /// `REQ_HARMONY_HINTS_V2_HALF`: one half (INDEX or CHUNK) of a
+    /// hint-pool entry, priced at half the entry. The first half with a
+    /// fresh token takes a whole entry from the pool, so the two halves
+    /// of one entry together cost what `REQ_HARMONY_HINTS_V2` costs.
     HarmonyContinuation,
     /// `REQ_HARMONY_QUERY` / `REQ_HARMONY_BATCH_QUERY` at a wire level,
     /// `sub_queries` per group (1 for the single-query opcode).
@@ -265,8 +268,7 @@ impl GasTable {
                     / 1e3
             }
             MeteredOp::HarmonyContinuation => {
-                db.cuckoo.as_ref()?;
-                0.0
+                return Some(self.work_gas(db_id, MeteredOp::HarmonyPoolEntry)? / 2);
             }
             MeteredOp::HarmonyQuery { level, sub_queries } => {
                 let cuckoo = db.cuckoo.as_ref()?;
@@ -447,7 +449,10 @@ mod tests {
             .map(|level| t.work_gas(0, MeteredOp::HarmonyHintSet { level }).unwrap())
             .sum();
         within(sibling_sets, 13_000, 0.02);
-        assert_eq!(t.work_gas(0, MeteredOp::HarmonyContinuation), Some(0));
+        assert_eq!(
+            t.work_gas(0, MeteredOp::HarmonyContinuation),
+            Some(t.work_gas(0, MeteredOp::HarmonyPoolEntry).unwrap() / 2)
+        );
         // INDEX: 75 groups × (round(sqrt(2·567558)) − 1) = 79,800 reads × 100 ns.
         assert_eq!(harmony_segment(567_558), 1_065);
         assert_eq!(

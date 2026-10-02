@@ -165,7 +165,7 @@ impl DatabaseGasCard {
             MeteredOp::OnionSiblingQuery { .. } => self.onion_sibling_query,
             MeteredOp::OnionTreeTops => self.tree_tops.or(Some(5)),
             MeteredOp::HarmonyPoolEntry => self.harmony_pool_entry,
-            MeteredOp::HarmonyContinuation => Some(0),
+            MeteredOp::HarmonyContinuation => self.harmony_pool_entry.map(|g| g / 2),
             MeteredOp::HarmonyHintSet { level } => match pir_credit::gas::harmony_level(level)? {
                 (TableKind::Index, None) => self.harmony_pool_entry.map(|g| g / 3),
                 (TableKind::Chunk, None) => self.harmony_pool_entry.map(|g| g - g / 3),
@@ -378,7 +378,10 @@ mod tests {
             ),
             Some(56)
         );
-        assert_eq!(card.frame_gas(0, MeteredOp::HarmonyContinuation), Some(20));
+        assert_eq!(
+            card.frame_gas(0, MeteredOp::HarmonyContinuation),
+            Some(20 + 129_970 / 2)
+        );
         assert_eq!(card.frame_gas(0, MeteredOp::OramLookup), None);
         assert_eq!(card.frame_gas(1, MeteredOp::OramLookup), Some(532));
         assert_eq!(card.frame_gas(2, MeteredOp::OramLookup), None);

@@ -450,7 +450,7 @@ export function workGas(card: DatabaseGasCard, op: MeteredOp): number | null {
     case 'harmony_pool_entry':
       return pick(card.harmonyPoolEntry);
     case 'harmony_continuation':
-      return card.harmonyPoolEntry === undefined ? null : 0;
+      return card.harmonyPoolEntry === undefined ? null : Math.floor(card.harmonyPoolEntry / 2);
     case 'harmony_hint_set': {
       if (op.level === 0) return card.harmonyPoolEntry === undefined ? null : Math.floor(card.harmonyPoolEntry / 3);
       if (op.level === 1) return card.harmonyPoolEntry === undefined ? null : card.harmonyPoolEntry - Math.floor(card.harmonyPoolEntry / 3);
