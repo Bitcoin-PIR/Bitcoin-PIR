@@ -115,6 +115,26 @@ pub fn combine_manifest_roots(roots: &[Hash256]) -> Hash256 {
     sha256(&concat)
 }
 
+/// Domain-separation tag for the per-database root a server started with
+/// `--oram-only` attests (see [`oram_only_manifest_root`]).
+pub const ORAM_ONLY_ROOT_DOMAIN_TAG: &[u8] = b"BPIR-ORAM-ONLY-ROOT-V1";
+
+/// The per-database root an ORAM-only server attests in place of the
+/// manifest root: `sha256(BPIR-ORAM-ONLY-ROOT-V1 || manifest_root)`.
+///
+/// Such a server holds none of the PIR table files the manifest lists. It
+/// checks the manifest's exact bytes against the attested build evidence and
+/// serves only Direct ORAM built from the manifest's `[direct_oram]` inputs.
+/// Attesting the bare manifest root would claim the listed files, so it
+/// attests this derived value: an ORAM client recomputes it from the proof's
+/// manifest root, while a DPF or HarmonyPIR client never matches it.
+pub fn oram_only_manifest_root(manifest_root: &Hash256) -> Hash256 {
+    let mut preimage = Vec::with_capacity(ORAM_ONLY_ROOT_DOMAIN_TAG.len() + manifest_root.len());
+    preimage.extend_from_slice(ORAM_ONLY_ROOT_DOMAIN_TAG);
+    preimage.extend_from_slice(manifest_root);
+    sha256(&preimage)
+}
+
 /// Build the 64-byte REPORT_DATA payload that gets passed into
 /// `/dev/sev-guest`'s SNP_GET_REPORT ioctl.
 ///
@@ -323,5 +343,21 @@ mod tests {
         assert_eq!(extracted.len(), 64);
         assert_eq!(extracted[0], 1);
         assert_eq!(extracted[63], 64);
+    }
+
+    #[test]
+    fn oram_only_root_is_domain_separated_from_the_manifest_root() {
+        let manifest_root = [0x11u8; 32];
+        let root = oram_only_manifest_root(&manifest_root);
+        assert_ne!(root, manifest_root);
+        // Fixed vector, shared with the TypeScript ORAM client's test.
+        assert_eq!(
+            root,
+            [
+                0xa0, 0xdf, 0x7f, 0x2f, 0x77, 0xa5, 0xfe, 0x1e, 0xc7, 0xe5, 0x76, 0x9b, 0x02, 0xd6,
+                0x97, 0x74, 0xd6, 0xc5, 0x60, 0x88, 0xb2, 0x4d, 0xf0, 0x91, 0x14, 0x17, 0x26, 0x2f,
+                0xa2, 0xce, 0x29, 0xab
+            ]
+        );
     }
 }

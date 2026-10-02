@@ -24,6 +24,7 @@ import {
   type ServerAttestation,
 } from './dpf-adapter.js';
 import { hexToBytes } from './hash.js';
+import { attestedRootBindsManifest } from './oram-source-proof.js';
 import {
   databaseCatalogFromWasmJson,
   type DatabaseCatalog,
@@ -494,7 +495,9 @@ export class OramPirClientAdapter {
     if (!/^[0-9a-f]{64}$/.test(attested ?? '') || /^0{64}$/.test(attested ?? '')) {
       throw new Error(`strict ORAM attestation has no manifest root for db ${dbId}`);
     }
-    if (attested !== proven) {
+    // A server holding the table files attests the manifest root; an
+    // ORAM-only server attests its ORAM-only form (oram-source-proof.ts).
+    if (!attestedRootBindsManifest(attested ?? '', proven)) {
       throw new Error(`strict ORAM attested manifest root mismatch for db ${dbId}`);
     }
   }

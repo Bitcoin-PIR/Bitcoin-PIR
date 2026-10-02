@@ -1898,3 +1898,155 @@ mod cli_informational_tests {
         );
     }
 }
+
+mod oram_only_tests {
+    use super::*;
+    use pir_core::cuckoo::HeaderAnchor;
+    use pir_core::seeds::{DeltaSeeds, SnapshotSeeds};
+    use runtime::table::DatabaseType;
+    use std::path::Path;
+
+    /// Lay a committed V2 proof out the way `load_database_proof_bundle`
+    /// reads it (the web copy flattens `server-db/MANIFEST.toml`).
+    fn proof_dir(name: &str) -> tempfile::TempDir {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/public/proofs/oram-source")
+            .join(name);
+        let dir = tempfile::tempdir().unwrap();
+        for file in [
+            "build-evidence.bin",
+            "root-bundle-payload.bin",
+            "build-evidence.sev-snp-report.bin",
+            "database.manifest.sha256",
+            "all-artifacts.manifest.sha256",
+        ] {
+            std::fs::copy(source.join(file), dir.path().join(file)).unwrap();
+        }
+        std::fs::create_dir(dir.path().join("server-db")).unwrap();
+        std::fs::copy(
+            source.join("server-db-MANIFEST.toml"),
+            dir.path().join("server-db/MANIFEST.toml"),
+        )
+        .unwrap();
+        dir
+    }
+
+    fn descriptor(db_type: DatabaseType, base_height: u32, height: u32) -> DatabaseDescriptor {
+        DatabaseDescriptor {
+            name: "test".into(),
+            db_type,
+            base_height,
+            height,
+            index_params: INDEX_PARAMS,
+            chunk_params: CHUNK_PARAMS,
+        }
+    }
+
+    #[test]
+    fn oram_only_databases_take_geometry_anchor_and_manifest_from_the_v2_evidence() {
+        let snapshot = proof_dir("mainnet-948454-v2");
+        let db = io::load_oram_only_database_v1(
+            0,
+            snapshot.path(),
+            descriptor(DatabaseType::Full, 0, 948_454),
+        )
+        .unwrap();
+        assert_eq!(
+            hex::encode(db.manifest_root.unwrap()),
+            "91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6"
+        );
+        assert!(db.manifest.as_ref().unwrap().direct_oram.is_some());
+        assert_eq!(
+            (db.index.bins_per_table, db.chunk.bins_per_table),
+            (567_558, 1_066_928)
+        );
+        let Some(HeaderAnchor::Snapshot(anchor)) = db.index.anchor else {
+            panic!("snapshot anchor expected");
+        };
+        assert_eq!(anchor.block_height, 948_454);
+        let seeds = SnapshotSeeds::derive(&anchor);
+        assert_eq!(
+            (
+                db.index.master_seed,
+                db.index.tag_seed,
+                db.chunk.master_seed
+            ),
+            (seeds.index_master, seeds.index_tag, seeds.chunk_master)
+        );
+        assert!(db.db_proof_v2.is_some());
+        assert!(db.index.try_group_bytes(0).is_none());
+
+        let delta = proof_dir("delta-940611-948454-v2");
+        let db = io::load_oram_only_database_v1(
+            1,
+            delta.path(),
+            descriptor(DatabaseType::Delta, 940_611, 948_454),
+        )
+        .unwrap();
+        assert_eq!(
+            hex::encode(db.manifest_root.unwrap()),
+            "047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c"
+        );
+        assert_eq!(
+            (db.index.bins_per_table, db.chunk.bins_per_table),
+            (53_282, 112_332)
+        );
+        let Some(HeaderAnchor::Delta(anchor)) = db.chunk.anchor else {
+            panic!("delta anchor expected");
+        };
+        assert_eq!(
+            (anchor.from.block_height, anchor.to.block_height),
+            (940_611, 948_454)
+        );
+        let seeds = DeltaSeeds::derive(&anchor);
+        assert_eq!(db.chunk.master_seed, seeds.chunk_master);
+    }
+
+    #[test]
+    fn oram_only_refuses_a_configuration_the_evidence_does_not_describe() {
+        let snapshot = proof_dir("mainnet-948454-v2");
+        for wrong in [
+            descriptor(DatabaseType::Full, 0, 948_453),
+            descriptor(DatabaseType::Delta, 940_611, 948_454),
+        ] {
+            let Err(error) = io::load_oram_only_database_v1(0, snapshot.path(), wrong) else {
+                panic!("a configuration the evidence does not describe was accepted");
+            };
+            assert!(error.contains("does not match"), "{error}");
+        }
+        let tampered = proof_dir("mainnet-948454-v2");
+        let manifest = tampered.path().join("server-db/MANIFEST.toml");
+        let mut bytes = std::fs::read(&manifest).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(&manifest, bytes).unwrap();
+        let Err(error) = io::load_oram_only_database_v1(
+            0,
+            tampered.path(),
+            descriptor(DatabaseType::Full, 0, 948_454),
+        ) else {
+            panic!("a manifest the evidence does not bind was accepted");
+        };
+        assert!(error.contains("the build evidence binds"), "{error}");
+    }
+
+    #[test]
+    fn oram_only_servers_attest_the_tagged_root_of_each_manifest() {
+        let snapshot = proof_dir("mainnet-948454-v2");
+        let db = io::load_oram_only_database_v1(
+            0,
+            snapshot.path(),
+            descriptor(DatabaseType::Full, 0, 948_454),
+        )
+        .unwrap();
+        let root = db.manifest_root.unwrap();
+        let databases = [db];
+        assert_eq!(
+            state::attested_manifest_roots(&databases, false),
+            vec![root]
+        );
+        assert_eq!(
+            state::attested_manifest_roots(&databases, true),
+            vec![pir_core::attest::oram_only_manifest_root(&root)]
+        );
+    }
+}

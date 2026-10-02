@@ -275,12 +275,21 @@ impl DbManifest {
             path: manifest_path.display().to_string(),
             err,
         })?;
-        let text = std::str::from_utf8(&raw).map_err(|_| ManifestError::InvalidUtf8 {
-            path: manifest_path.display().to_string(),
+        let (manifest, root) = Self::parse(&raw, &manifest_path.display().to_string())?;
+        manifest.verify_dir_contents(base_dir)?;
+        Ok(Some((manifest, root)))
+    }
+
+    /// Parse and validate a manifest from its exact bytes, without checking
+    /// any directory against it. Returns the manifest and its root
+    /// (`SHA-256` of `raw`). `label` names the source in errors.
+    pub fn parse(raw: &[u8], label: &str) -> Result<(DbManifest, Hash256), ManifestError> {
+        let text = std::str::from_utf8(raw).map_err(|_| ManifestError::InvalidUtf8 {
+            path: label.to_owned(),
         })?;
         let manifest: DbManifest =
             toml::from_str(text).map_err(|err| ManifestError::InvalidToml {
-                path: manifest_path.display().to_string(),
+                path: label.to_owned(),
                 err,
             })?;
         if manifest.manifest.version != SUPPORTED_VERSION {
@@ -289,8 +298,7 @@ impl DbManifest {
         if let Some(direct_oram) = manifest.direct_oram.as_ref() {
             direct_oram.validate()?;
         }
-        manifest.verify_dir_contents(base_dir)?;
-        Ok(Some((manifest, sha256(&raw))))
+        Ok((manifest, sha256(raw)))
     }
 
     /// Verify every listed file matches its expected SHA-256, and that no

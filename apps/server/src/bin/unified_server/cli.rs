@@ -144,6 +144,13 @@ pub(crate) struct CliArgs {
     /// `--serve-queries`. See `serve_hints` for the deployment
     /// topology rationale.
     pub(crate) serve_queries: bool,
+    /// Serve Direct ORAM only (`--oram-only`). Each configured database is
+    /// built from its V2 proof (geometry, chain anchor, exact `server-db`
+    /// manifest) instead of its table files, which the host does not hold.
+    /// Of the query requests only ORAM lookups are answered, and the
+    /// attestation carries `pir_core::attest::oram_only_manifest_root` for
+    /// each database instead of its manifest root.
+    pub(crate) oram_only: bool,
     /// Path to the server's long-lived Ed25519 identity key (raw 32-byte
     /// seed). Combined with `--identity-cert-path` to build the
     /// REQ_ANNOUNCE bundle. If either is missing or fails to load,
@@ -237,6 +244,32 @@ pub(crate) fn parse_harmony_pool_db_arg(spec: &str) -> Result<(u8, PathBuf), Str
         return Err("--harmony-pool-db requires a non-empty directory".into());
     }
     Ok((db_id, PathBuf::from(dir_raw)))
+}
+
+/// `--oram-only` answers Direct ORAM and nothing else that would read table
+/// files the host does not hold.
+pub(crate) fn validate_oram_only_cli_v1(args: &CliArgs) -> Result<(), String> {
+    if !cfg!(feature = "cuckoo-oram") {
+        return Err("--oram-only needs a build with --features cuckoo-oram".into());
+    }
+    if args.config_path.is_none() {
+        return Err(
+            "--oram-only needs --config: each database's proof_v2_dir supplies its geometry".into(),
+        );
+    }
+    if !args.serve_queries || args.serve_hints {
+        return Err("--oram-only needs --serve-queries and no --serve-hints".into());
+    }
+    if args.pool_size != 0 || !args.harmony_pool_bindings.is_empty() {
+        return Err("--oram-only serves no HarmonyPIR hint pool".into());
+    }
+    if args.cuckoo_oram_dir.is_some() || !args.cuckoo_oram_dbs.is_empty() {
+        return Err("--oram-only serves Direct ORAM only, not the cuckoo-table ORAM".into());
+    }
+    if args.role != ServerRole::Secondary {
+        return Err("--oram-only needs --role secondary, which never loads OnionPIR".into());
+    }
+    Ok(())
 }
 
 pub(crate) fn normalize_harmony_pool_bindings(
@@ -369,7 +402,7 @@ listener:      --bind-address ADDR  --port N  --role primary|secondary  --serve-
                --serve-queries  --max-connections N  --connection-idle-timeout-ms MS
                --websocket-handshake-timeout-ms MS
 databases:     --config databases.toml | --data-dir DIR  --checkpoint DIR HEIGHT
-               --delta DIR BASE TIP  --disable-onion
+               --delta DIR BASE TIP  --disable-onion  --oram-only
 attestation:   --vcek-dir DIR  --identity-key-path FILE  --identity-cert-path FILE
                --identity-server-id ID
 admin:         --admin-pubkey-hex HEX
@@ -469,6 +502,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut unsafe_debug_query_logging = false;
     let mut serve_hints = false;
     let mut serve_queries = false;
+    let mut oram_only = false;
     let mut identity_key_path: Option<PathBuf> = None;
     let mut identity_cert_path: Option<PathBuf> = None;
     let mut identity_server_id: Option<String> = None;
@@ -686,6 +720,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
             }
             "--serve-queries" => {
                 serve_queries = true;
+            }
+            "--oram-only" => {
+                oram_only = true;
             }
             "--pir2-snp-sealed-preflight-only" => {
                 pir2_sealed.preflight_only = true;
@@ -959,6 +996,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         unsafe_debug_query_logging,
         serve_hints,
         serve_queries,
+        oram_only,
         identity_key_path,
         identity_cert_path,
         identity_server_id,

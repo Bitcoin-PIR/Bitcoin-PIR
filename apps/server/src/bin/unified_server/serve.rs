@@ -394,6 +394,17 @@ pub(crate) async fn serve_connections(
                     let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     continue;
                 }
+                // An ORAM-only server holds no table files: of the query
+                // requests it answers Direct ORAM lookups only.
+                if server.oram_only
+                    && is_query_bearing_variant(variant)
+                    && variant != REQ_ORAM_LOOKUP
+                {
+                    let resp =
+                        Response::Error("this server serves Direct ORAM only (--oram-only)".into());
+                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                    continue;
+                }
 
                 // Gas meter: classify the frame (decoding it once more is
                 // negligible next to its work), time the dispatch in process

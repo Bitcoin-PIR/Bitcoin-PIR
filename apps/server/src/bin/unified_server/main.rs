@@ -100,6 +100,10 @@ async fn main() {
         std::process::exit(2);
     }
 
+    if args.oram_only {
+        cli::validate_oram_only_cli_v1(&args).unwrap_or_else(|error| fatal_cli(error));
+    }
+
     validate_pir2_sealed_cli_v1(
         &args.pir2_sealed,
         args.identity_key_path.is_some()
@@ -219,19 +223,32 @@ async fn main() {
                 _ => DatabaseType::Full,
             };
             let db_path = config.db_path(i);
-            let mut db = load_runtime_database_v1(
-                i as u8,
-                &db_path,
-                DatabaseDescriptor {
-                    name: db_cfg.name.clone(),
-                    db_type,
-                    base_height: db_cfg.base_height,
-                    height: db_cfg.height,
-                    index_params: INDEX_PARAMS,
-                    chunk_params: CHUNK_PARAMS,
-                },
-                &direct_oram_db_ids,
-            );
+            let descriptor = DatabaseDescriptor {
+                name: db_cfg.name.clone(),
+                db_type,
+                base_height: db_cfg.base_height,
+                height: db_cfg.height,
+                index_params: INDEX_PARAMS,
+                chunk_params: CHUNK_PARAMS,
+            };
+            let mut db = if args.oram_only {
+                if !direct_oram_db_ids.contains(&(i as u8)) {
+                    fatal_cli(format!(
+                        "--oram-only: database {} ({}) has no --direct-oram-db",
+                        i, db_cfg.name
+                    ));
+                }
+                let proof_v2_dir = db_cfg.proof_v2_dir.as_ref().unwrap_or_else(|| {
+                    fatal_cli(format!(
+                        "--oram-only: database {} ({}) has no proof_v2_dir",
+                        i, db_cfg.name
+                    ))
+                });
+                io::load_oram_only_database_v1(i as u8, proof_v2_dir, descriptor)
+                    .unwrap_or_else(|error| fatal_cli(error))
+            } else {
+                load_runtime_database_v1(i as u8, &db_path, descriptor, &direct_oram_db_ids)
+            };
             if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
                 db.db_proof = Some(
                     load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
@@ -250,7 +267,7 @@ async fn main() {
                     proof_dir.display()
                 );
             }
-            if let Some(proof_dir) = db_cfg.proof_v2_dir.as_ref() {
+            if let Some(proof_dir) = db_cfg.proof_v2_dir.as_ref().filter(|_| !args.oram_only) {
                 db.db_proof_v2 = Some(
                     load_database_proof_bundle(i as u8, proof_dir).unwrap_or_else(|e| {
                         panic!(
@@ -734,10 +751,7 @@ async fn main() {
         sealed_identity
     {
         let server_id = identity_cert.server_id.clone();
-        let manifest_roots: Vec<[u8; 32]> = all_databases
-            .iter()
-            .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
-            .collect();
+        let manifest_roots = state::attested_manifest_roots(&all_databases, args.oram_only);
         let issued_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -999,7 +1013,13 @@ async fn main() {
             .collect();
         #[cfg(not(feature = "cuckoo-oram"))]
         let oram_slots: std::collections::BTreeMap<u8, u64> = std::collections::BTreeMap::new();
-        credit_meter::CreditMeterV1::from_loaded(gas_params, &state, &onionpir_infos, &oram_slots)
+        credit_meter::CreditMeterV1::from_loaded(
+            gas_params,
+            &state,
+            &onionpir_infos,
+            &oram_slots,
+            args.oram_only,
+        )
     };
     for line in credit_meter.startup_lines() {
         println!("  {line}");
@@ -1027,6 +1047,7 @@ async fn main() {
         pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
+        oram_only: args.oram_only,
     });
     // Background task: garbage-collect V2-half pending entries whose
     // matching second half never arrived. Runs every 10 s; entries

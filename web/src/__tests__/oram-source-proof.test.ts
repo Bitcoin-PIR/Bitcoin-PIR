@@ -10,8 +10,10 @@ import { PRODUCTION_ORAM_DB_PROOF_V2_PINS } from '../attest-pin.js';
 import type { VerifiedDatabaseProof } from '../db-proof.js';
 import { bytesToHex, sha256 } from '../hash.js';
 import {
+  attestedRootBindsManifest,
   DB1_ORAM_SOURCE_PROOF_MANIFEST_PATH,
   DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH,
+  oramOnlyManifestRootHex,
   oramSourceProofManifestPathForDbId,
   paramsHashV2ForAttestedBuildEvidence,
   parseAttestedBuildEvidence,
@@ -78,6 +80,24 @@ async function readBase64Fixture(name: string): Promise<Uint8Array> {
   const encoded = await readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
   return new Uint8Array(Buffer.from(encoded.trim(), 'base64'));
 }
+
+describe('ORAM-only manifest root', () => {
+  it('matches pir_core::attest::oram_only_manifest_root', () => {
+    // Same fixed vector as the Rust test in crates/protocol/core/src/attest.rs.
+    expect(oramOnlyManifestRootHex('11'.repeat(32))).toBe(
+      'a0df7f2f77a5fe1ec7e5769b02d69774d6c56088b24df0911417262fa2ce29ab',
+    );
+  });
+
+  it('binds a manifest through the root itself or its ORAM-only form only', () => {
+    const root = '22'.repeat(32);
+    expect(attestedRootBindsManifest(root, root)).toBe(true);
+    expect(attestedRootBindsManifest(oramOnlyManifestRootHex(root).toUpperCase(), root)).toBe(true);
+    expect(attestedRootBindsManifest(oramOnlyManifestRootHex('33'.repeat(32)), root)).toBe(false);
+    expect(attestedRootBindsManifest('0'.repeat(64), root)).toBe(false);
+    expect(attestedRootBindsManifest('', '')).toBe(false);
+  });
+});
 
 describe('ORAM source input binding', () => {
   beforeAll(async () => {
