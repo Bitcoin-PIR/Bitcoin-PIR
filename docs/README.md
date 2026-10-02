@@ -2,9 +2,9 @@
 
 Start production work at [Production operations](PRODUCTION_OPERATIONS.md).
 Live production state is queried, never inferred from documents:
-`scripts/production-status.sh` for pir1 and the pir2 MacBook node, and
-each operation script's status subcommand for the rest. The VPSBG pir2 host
-was retired on 2026-10-02.
+`scripts/production-status.sh` for pir1, the pir2 MacBook node and the
+Direct ORAM TEE host (VPSBG server 26939), and each operation script's
+status subcommand for the rest.
 
 ## Runbooks
 

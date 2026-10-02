@@ -404,12 +404,13 @@
                             The two-server PIR security model needs two
                             <em>non-colluding</em> servers to keep query content
                             private. <code>weikeng1.bitcoinpir.org</code> and
-                            <code>weikeng2.bitcoinpir.org</code> run on different
-                            physical machines, but they share one operator.
+                            <code>bitcoin-pir-weikeng-laptop.chenweikeng.com</code> run on
+                            different physical machines, but they share one operator.
                         </p>
                         <p>
                             SEV-SNP attestation is the deployment's answer to that
-                            operator-trust gap. The two hosts play asymmetric roles:
+                            operator-trust gap for Direct ORAM, which runs on a third
+                            host. The hosts play asymmetric roles:
                         </p>
                         <ul>
                             <li>
@@ -419,9 +420,15 @@
                                 hardware-backed proof that the running code matches.
                             </li>
                             <li>
-                                <strong>pir2 (VPSBG, SEV-SNP, Tier 3 UKI)</strong>
-                                serves the HarmonyPIR query phase, DPF server-1,
-                                and the direct ORAM lookup path.
+                                <strong>pir2 (MacBook, no TEE)</strong> serves the
+                                HarmonyPIR query phase and DPF server-1. Like pir1, it
+                                is checked by a pinned binary hash plus its
+                                operator-signed identity, without hardware-backed proof.
+                            </li>
+                            <li>
+                                <strong>The Direct ORAM host (<code>weikeng2.bitcoinpir.org</code>,
+                                VPSBG, AMD Milan SEV-SNP, Tier 3 UKI)</strong> serves the
+                                direct ORAM lookup path only.
                                 AMD's PSP signs a <code>MEASUREMENT</code> over the
                                 loaded image and the client's pre-negotiated channel
                                 pubkey via REPORT_DATA binding.
@@ -470,7 +477,8 @@
                         <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-10-02</span></h2>
                         <p>
                             These are the values the browser bundle expects for
-                            pir2. They are not a live-status feed. If the app shows
+                            the Direct ORAM host (<code>PIR2_TIER3_PIN</code>). They
+                            are not a live-status feed. If the app shows
                             a measurement mismatch, first confirm which VPSBG UKI or
                             boot slice is actually running; only rotate these pins
                             after intentionally deploying and verifying a new UKI.
@@ -952,9 +960,9 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                     <section>
                         <h2>pir1 verification (Hetzner, no SEV)</h2>
                         <p>
-                            <code>weikeng1.bitcoinpir.org</code> runs the db-proof
+                            <code>weikeng1.bitcoinpir.org</code> runs the
                             <code>unified_server</code> binary on a Hetzner i7-8700.
-                            It is intentionally pinned independently from pir2's ORAM
+                            It is pinned independently from the Direct ORAM host's
                             Tier 3 UKI. Without a hardware root of trust, the client
                             verifies pir1's self-reported
                             <code>binary_sha256</code> against a pinned value.
@@ -963,7 +971,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <table class="pin-table">
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e</td>
+                                    <td>f472cff57077201a7e95e3375f1f7e9c7ad291946d44e9a6fdd1df1ded393f91</td>
                                 </tr>
                             </table>
                         </div>
@@ -973,11 +981,12 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <h2>Verify pir1</h2>
 	<pre><code>cargo build --release --bin bpir-admin -p bpir-admin
 	./target/release/bpir-admin attest wss://weikeng1.bitcoinpir.org \
-	    --expect-binary cc4ec24b9ecf54c962d20843a374a8235d9b71954adf05bdb4d6bb3155e16b1e</code></pre>
+	    --expect-binary f472cff57077201a7e95e3375f1f7e9c7ad291946d44e9a6fdd1df1ded393f91</code></pre>
                         <p>
                             You can also check
-                            <code>sha256sum /home/pir/BitcoinPIR/target/release/unified_server</code>
-                            directly on the Hetzner host.
+                            <code>sha256sum /opt/bitcoinpir/unified-server/*/unified_server</code>
+                            directly on the Hetzner host (each build lives in a
+                            directory named by its SHA-256).
                         </p>
                     </section>
                 </section>
@@ -986,9 +995,9 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                     <section>
                         <h2>What this proves</h2>
                         <ul>
-                            <li>pir1 and pir2 have independent binary pins; pir2 is additionally bound to the ORAM Tier 3 UKI MEASUREMENT.</li>
-                            <li>For pir2, AMD signs the loaded confidential-VM runtime and channel binding.</li>
-                            <li>For pir1, binary-hash pinning detects drift but does not provide a hardware root of trust.</li>
+                            <li>pir1, pir2 and the Direct ORAM host have independent binary pins; the ORAM host is additionally bound to its Tier 3 UKI MEASUREMENT.</li>
+                            <li>For the Direct ORAM host, AMD signs the loaded confidential-VM runtime and channel binding.</li>
+                            <li>For pir1 and pir2 (no TEE), binary-hash pinning plus the operator-signed identity detects drift but does not provide a hardware root of trust.</li>
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
                             <li>The ORAM source-binding proof binds the measured regenerate-on-boot path to exact Direct ORAM inputs in AMD-attested BuildEvidence V2 for block <code>948454</code>.</li>
                             <li>The Bitcoin anchor proof binds both delta endpoint block hashes and the latest MuHash to one blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
