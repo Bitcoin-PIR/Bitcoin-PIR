@@ -99,8 +99,6 @@ test('OnionPIR releases a strictly verified result and closes its transport', as
 });
 
 test('ORAM TEE releases a strictly verified result and closes its transport', async ({ page }) => {
-  // Direct ORAM is paused since pir2 (the only TEE host) was retired on 2026-10-02.
-  test.skip(true, 'Direct ORAM is paused: no TEE host serves it');
   await openBackend(page, 'ORAM TEE');
   await queryOnce(page, '#oram-scriptPubkeys', '#oram-queryBtn', '#oram-resultsContainer');
 

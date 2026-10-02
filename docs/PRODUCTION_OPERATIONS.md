@@ -19,8 +19,9 @@ where it can change a host, `--dry-run`.
 
 The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
 and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
-Direct ORAM is paused while its new VPSBG TEE host is brought up: server
-26939 (212.73.134.61, AMD EPYC 7713P Milan). It serves Direct ORAM only
+Direct ORAM runs on a separate VPSBG TEE host since 2026-10-03: server
+26939 (212.73.134.61, AMD EPYC 7713P Milan, `wss://weikeng2.bitcoinpir.org`,
+sealed as `pir2-oram-v1`). It serves Direct ORAM only
 (`unified_server --oram-only`), so its data disk needs each database's
 `MANIFEST.toml`, proof sidecars and `oram-direct-inputs/`, not the DPF or
 OnionPIR table files. Flows E–G and the VPSBG scripts target this host.
