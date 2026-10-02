@@ -1154,6 +1154,17 @@ mod onion_tests {
                 });
         }
 
+        common::admit_onion_live(
+            &mut client,
+            0,
+            &common::production_db0_onion_v2_proof_policy(),
+        )
+        .await
+        .expect("strict OnionPIR live admission failed");
+
+        // OnionPIR tree tops are metered, and production charges for
+        // OnionPIR: preflight inside the secure channel, where a presented
+        // API key (`PIR_API_KEY`) or credits can pay for them.
         for pin in PRODUCTION_DATABASE_PINS {
             client
                 .preflight_verified_database(pin.db_id)
@@ -1165,14 +1176,6 @@ mod onion_tests {
                     )
                 });
         }
-
-        common::admit_onion_live(
-            &mut client,
-            0,
-            &common::production_db0_onion_v2_proof_policy(),
-        )
-        .await
-        .expect("strict OnionPIR live admission failed");
 
         let fresh_sync = client
             .sync(&probes, None)

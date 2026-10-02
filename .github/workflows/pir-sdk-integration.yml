@@ -68,6 +68,11 @@ jobs:
       harmony_paid: ${{ steps.probe.outputs.harmony_paid }}
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       # Pin the default URLs explicitly so the CI log shows what we
       # tested against. Override via repository variables or a fork's
       # env block to hit a different deployment.
@@ -183,6 +188,11 @@ jobs:
       onion_paid: ${{ steps.probe.outputs.onion_paid }}
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
       # The SEAL submodule is declared with an SSH URL
       # (git@github.com:…) in the `OnionPIRv2-fork` repo. Cargo's
@@ -298,6 +308,11 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       PIR_DPF_SERVER0_URL: wss://weikeng1.bitcoinpir.org
       PIR_DPF_SERVER1_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
       PIR_HARMONY_HINT_URL: wss://weikeng1.bitcoinpir.org

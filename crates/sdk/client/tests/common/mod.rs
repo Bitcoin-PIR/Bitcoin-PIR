@@ -79,6 +79,7 @@ fn fresh_32() -> PirResult<[u8; 32]> {
 pub fn api_key() -> Option<String> {
     std::env::var("PIR_API_KEY")
         .ok()
+        .map(|key| key.trim().to_owned())
         .filter(|key| !key.is_empty())
 }
 
