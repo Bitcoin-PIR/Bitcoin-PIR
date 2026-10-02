@@ -73,6 +73,15 @@ fn fresh_32() -> PirResult<[u8; 32]> {
     Ok(bytes)
 }
 
+/// Operator-issued API key from `PIR_API_KEY` (docs/CREDITS.md "API keys").
+/// When set, every leg presents it once its secure channel is open, so
+/// backends that production charges for serve the suite unmetered.
+pub fn api_key() -> Option<String> {
+    std::env::var("PIR_API_KEY")
+        .ok()
+        .filter(|key| !key.is_empty())
+}
+
 /// Open one DPF server leg's secure channel: attest → X25519 handshake.
 async fn open_dpf_server_channel(client: &mut DpfClient, server_index: u8) -> PirResult<()> {
     let nonce = fresh_32()?;
@@ -97,6 +106,9 @@ async fn open_dpf_server_channel(client: &mut DpfClient, server_index: u8) -> Pi
             hs_nonce,
         )
         .await?;
+    if let Some(key) = api_key() {
+        client.present_api_key(server_index, &key).await?;
+    }
     Ok(())
 }
 
@@ -140,7 +152,11 @@ async fn open_harmony_leg_channel(client: &mut HarmonyClient, provider_index: u8
             eph_seed,
             hs_nonce,
         )
-        .await
+        .await?;
+    if let Some(key) = api_key() {
+        client.present_api_key(provider_index, &key).await?;
+    }
+    Ok(())
 }
 
 /// `HintProgress` sink for test-side pre-fetch calls.
@@ -217,5 +233,8 @@ pub async fn admit_onion_live(
             hs_nonce,
         )
         .await?;
+    if let Some(key) = api_key() {
+        client.present_api_key(&key).await?;
+    }
     Ok(())
 }

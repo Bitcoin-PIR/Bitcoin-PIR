@@ -102,6 +102,16 @@ pub const RESP_CREDIT_OK: u8 = 0x12;
 /// set is 150 ARC presentations of about 1.3 KiB each.
 pub const MAX_CREDIT_PRESENT_PAYLOAD_LEN: usize = 256 * 1024;
 
+/// Present an operator-issued API key (docs/CREDITS.md "API keys"). Body:
+/// the key's bytes. A server started with `--api-key-file` serves the rest
+/// of the connection unmetered when the key's SHA-256 is listed there. Sent
+/// only inside the encrypted channel.
+pub const REQ_API_KEY: u8 = 0x13;
+/// Empty body: the key was accepted for this connection.
+pub const RESP_API_KEY_OK: u8 = 0x13;
+/// Longest API key a server decodes.
+pub const MAX_API_KEY_LEN: usize = 128;
+
 // ─── Encrypted channel handshake (Slice B) ─────────────────────────────────
 //
 // One-round X25519 handshake before any traffic-bearing requests on a
@@ -583,6 +593,10 @@ pub enum Request {
         kind: u8,
         payload: Vec<u8>,
     },
+    /// Present an operator-issued API key (docs/CREDITS.md "API keys").
+    ApiKey {
+        key: Vec<u8>,
+    },
 }
 
 // ─── Response types ─────────────────────────────────────────────────────────
@@ -803,6 +817,8 @@ pub enum Response {
         gas_added: u64,
         gas_balance: i64,
     },
+    /// The API key was accepted: the connection is served unmetered.
+    ApiKeyOk,
 }
 
 // ─── Encoding ───────────────────────────────────────────────────────────────
@@ -958,6 +974,10 @@ impl Request {
                 payload.push(*kind);
                 payload.extend_from_slice(&(body.len() as u32).to_le_bytes());
                 payload.extend_from_slice(body);
+            }
+            Request::ApiKey { key } => {
+                payload.push(REQ_API_KEY);
+                payload.extend_from_slice(key);
             }
         }
         let mut msg = Vec::with_capacity(4 + payload.len());
@@ -1173,6 +1193,17 @@ impl Request {
                     payload: data[HEADER..].to_vec(),
                 })
             }
+            REQ_API_KEY => {
+                // [opcode][key bytes]; the key is the rest of the buffer.
+                let key = &data[1..];
+                if key.is_empty() || key.len() > MAX_API_KEY_LEN {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "API key request: key must be 1 to 128 bytes",
+                    ));
+                }
+                Ok(Request::ApiKey { key: key.to_vec() })
+            }
             v => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unknown request variant: 0x{:02x}", v),
@@ -1315,6 +1346,9 @@ impl Response {
                 payload.push(RESP_CREDIT_OK);
                 payload.extend_from_slice(&gas_added.to_le_bytes());
                 payload.extend_from_slice(&gas_balance.to_le_bytes());
+            }
+            Response::ApiKeyOk => {
+                payload.push(RESP_API_KEY_OK);
             }
         }
         let mut msg = Vec::with_capacity(4 + payload.len());
@@ -1508,6 +1542,15 @@ impl Response {
                     gas_added: u64::from_le_bytes(data[1..9].try_into().unwrap()),
                     gas_balance: i64::from_le_bytes(data[9..17].try_into().unwrap()),
                 })
+            }
+            RESP_API_KEY_OK => {
+                if data.len() != 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "API key ok response must be exactly 1 byte",
+                    ));
+                }
+                Ok(Response::ApiKeyOk)
             }
             RESP_ERROR => {
                 let len = u32::from_le_bytes(data[1..5].try_into().unwrap()) as usize;
@@ -3601,6 +3644,31 @@ mod attest_wire_tests {
 #[cfg(test)]
 mod credit_wire_tests {
     use super::*;
+
+    #[test]
+    fn api_key_round_trips_and_rejects_empty_or_oversized_keys() {
+        let key = b"bpk_0123456789abcdef".to_vec();
+        let encoded = Request::ApiKey { key: key.clone() }.encode();
+        let mut expected = vec![REQ_API_KEY];
+        expected.extend_from_slice(&key);
+        assert_eq!(&encoded[4..], &expected[..]);
+        assert!(matches!(
+            Request::decode(&encoded[4..]).unwrap(),
+            Request::ApiKey { key: got } if got == key
+        ));
+        assert!(Request::decode(&[REQ_API_KEY]).is_err());
+        let mut oversized = vec![REQ_API_KEY];
+        oversized.resize(1 + MAX_API_KEY_LEN + 1, b'a');
+        assert!(Request::decode(&oversized).is_err());
+
+        let ok = Response::ApiKeyOk.encode();
+        assert_eq!(&ok[4..], &[RESP_API_KEY_OK]);
+        assert!(matches!(
+            Response::decode(&ok[4..]).unwrap(),
+            Response::ApiKeyOk
+        ));
+        assert!(Response::decode(&[RESP_API_KEY_OK, 0]).is_err());
+    }
 
     #[test]
     fn credit_present_round_trips_with_exact_length() {

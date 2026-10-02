@@ -208,7 +208,8 @@ fn strict_production_canary_enabled() -> bool {
 /// run unpaid. Read-only: one plain connection per (URL, backend) and a
 /// GET_INFO_JSON round-trip; nothing is presented. Writes
 /// `<backend>_paid=<bool>` for every probed backend to `$GITHUB_OUTPUT` and a
-/// note to `$GITHUB_STEP_SUMMARY` when they are set.
+/// note to `$GITHUB_STEP_SUMMARY` when they are set. With `PIR_API_KEY` set
+/// the live steps present that key, so no backend counts as paid.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn probe_live_credits_required() {
@@ -246,7 +247,10 @@ async fn probe_live_credits_required() {
             panic!("probe: reading credits flags from {url} failed: {error}")
         });
         conn.close().await.ok();
-        if status == CreditStatus::Required && !paid.contains(backend) {
+        if status == CreditStatus::Required
+            && common::api_key().is_none()
+            && !paid.contains(backend)
+        {
             paid.push(*backend);
         }
         lines.push(format!("{url} ({backend}): {status:?}"));

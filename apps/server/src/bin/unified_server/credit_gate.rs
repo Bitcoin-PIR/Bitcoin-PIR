@@ -36,6 +36,9 @@ impl fmt::Display for GasRefusal {
 pub(crate) struct GasBalanceV1 {
     gas: i64,
     presentation_failures: u32,
+    /// Label of the operator-issued API key this connection presented; its
+    /// frames are then served unmetered (docs/CREDITS.md "API keys").
+    api_key: Option<String>,
 }
 
 impl GasBalanceV1 {
@@ -43,6 +46,7 @@ impl GasBalanceV1 {
         Self {
             gas: 0,
             presentation_failures: 0,
+            api_key: None,
         }
     }
 
@@ -92,6 +96,14 @@ impl GasBalanceV1 {
 
     pub(crate) fn presentation_failures(&self) -> u32 {
         self.presentation_failures
+    }
+
+    pub(crate) fn accept_api_key(&mut self, label: &str) {
+        self.api_key = Some(label.to_owned());
+    }
+
+    pub(crate) fn api_key(&self) -> Option<&str> {
+        self.api_key.as_deref()
     }
 }
 

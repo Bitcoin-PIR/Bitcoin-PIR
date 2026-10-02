@@ -113,6 +113,9 @@ pub(crate) struct CliArgs {
     /// How long a free frame may wait for a best-effort slot
     /// (`--free-queue-wait-ms MS`).
     pub(crate) free_queue_wait_ms: u64,
+    /// Operator-issued API keys (`--api-key-file FILE`, docs/CREDITS.md
+    /// "API keys"): a connection that presents a listed key is unmetered.
+    pub(crate) api_key_file: Option<PathBuf>,
     /// Measurement-bound pir2 identity dispatcher. This group is
     /// evaluated before any database, ORAM image, or listener is opened.
     pub(crate) pir2_sealed: Pir2SealedCliV1,
@@ -374,6 +377,7 @@ credits:       --credit-issuer-url URL  --credit-issuer-pubkey FILE  --credit-se
                --require-credits
 access:        --access BACKEND=free|paid|best-effort[:N[:GAS_PER_HOUR]]  (BACKEND: dpf harmony
                onion oram; repeatable)  --free-threads N  --free-queue-wait-ms MS
+               --api-key-file FILE  (`SHA256HEX LABEL` per line; listed keys are unmetered)
 hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
 direct oram:   --direct-oram-db ID=DIR  --direct-oram-dir DIR  --direct-oram-trusted-state-db ID=DIR
                --direct-oram-drain-per-access N  --direct-oram-access-budget N
@@ -456,6 +460,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut access: Vec<(pir_credit::Backend, pir_credit::Access)> = Vec::new();
     let mut free_threads = crate::access_gate::DEFAULT_FREE_THREADS;
     let mut free_queue_wait_ms = crate::access_gate::DEFAULT_FREE_QUEUE_WAIT.as_millis() as u64;
+    let mut api_key_file: Option<PathBuf> = None;
     let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
@@ -638,6 +643,13 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     .get(i + 1)
                     .and_then(|value| value.parse().ok())
                     .unwrap_or_else(|| fatal_cli("--free-queue-wait-ms requires an integer"));
+                i += 1;
+            }
+            "--api-key-file" => {
+                let Some(p) = args.get(i + 1) else {
+                    fatal_cli("--api-key-file requires a file path");
+                };
+                api_key_file = Some(PathBuf::from(p));
                 i += 1;
             }
             "--max-connections" => {
@@ -938,6 +950,7 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         access,
         free_threads,
         free_queue_wait_ms,
+        api_key_file,
         pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,

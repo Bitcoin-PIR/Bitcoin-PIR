@@ -35,6 +35,12 @@ pub(crate) const REQ_CREDIT_PRESENT: u8 = 0x12;
 pub(crate) const RESP_CREDIT_OK: u8 = 0x12;
 /// Mirrors `pir_runtime_core::protocol::MAX_CREDIT_PRESENT_PAYLOAD_LEN`.
 pub const MAX_CREDIT_PRESENT_PAYLOAD_LEN: usize = 256 * 1024;
+/// Mirrors `pir_runtime_core::protocol::REQ_API_KEY`.
+pub(crate) const REQ_API_KEY: u8 = 0x13;
+/// Mirrors `pir_runtime_core::protocol::RESP_API_KEY_OK`.
+pub(crate) const RESP_API_KEY_OK: u8 = 0x13;
+/// Mirrors `pir_runtime_core::protocol::MAX_API_KEY_LEN`.
+pub const MAX_API_KEY_LEN: usize = 128;
 /// Generic server-side error envelope.
 const RESP_ERROR: u8 = 0xff;
 
@@ -100,6 +106,32 @@ pub fn parse_credit_response(response: &[u8]) -> PirResult<CreditReceipt> {
         Some(variant) => Err(PirError::Protocol(format!(
             "unexpected response variant 0x{variant:02x} for credit presentation"
         ))),
+    }
+}
+
+/// Present an operator-issued API key on `transport` (docs/CREDITS.md "API
+/// keys"). Once the server accepts it, every frame on this connection is
+/// served unmetered, so do not also enable credits on it. Bearer material:
+/// call only over the encrypted channel.
+pub async fn present_api_key<T: PirTransport + ?Sized>(
+    transport: &mut T,
+    key: &str,
+) -> PirResult<()> {
+    if key.is_empty() || key.len() > MAX_API_KEY_LEN {
+        return Err(PirError::Protocol(format!(
+            "an API key is 1 to {MAX_API_KEY_LEN} bytes, got {}",
+            key.len()
+        )));
+    }
+    let response = transport
+        .roundtrip(&encode_request(REQ_API_KEY, key.as_bytes()))
+        .await?;
+    match response.first() {
+        Some(&RESP_API_KEY_OK) if response.len() == 1 => Ok(()),
+        Some(&RESP_ERROR) => Err(PirError::ServerError(decode_error_envelope(&response))),
+        _ => Err(PirError::Protocol(
+            "unexpected response to an API key presentation".into(),
+        )),
     }
 }
 
@@ -293,6 +325,42 @@ impl ConnectionCreditMeter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn api_key_presentation_sends_the_key_and_reads_the_answer() {
+        use crate::transport::mock::MockTransport;
+        // The mock returns what a real roundtrip would: the frame minus its
+        // 4-byte length prefix.
+        let framed = |body: &[u8]| {
+            let mut frame = (body.len() as u32).to_le_bytes().to_vec();
+            frame.extend_from_slice(body);
+            frame
+        };
+        let mut ok = MockTransport::new("mock://pir");
+        ok.enqueue_response(framed(&[RESP_API_KEY_OK]));
+        present_api_key(&mut ok, "bpk_test").await.unwrap();
+        assert_eq!(ok.sent, vec![encode_request(REQ_API_KEY, b"bpk_test")]);
+
+        let mut refused = MockTransport::new("mock://pir");
+        let message = b"unknown API key";
+        let mut error = vec![RESP_ERROR];
+        error.extend_from_slice(&(message.len() as u32).to_le_bytes());
+        error.extend_from_slice(message);
+        refused.enqueue_response(framed(&error));
+        match present_api_key(&mut refused, "bpk_wrong").await {
+            Err(PirError::ServerError(text)) => assert_eq!(text, "unknown API key"),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let mut unused = MockTransport::new("mock://pir");
+        assert!(present_api_key(&mut unused, "").await.is_err());
+        assert!(
+            present_api_key(&mut unused, &"k".repeat(MAX_API_KEY_LEN + 1))
+                .await
+                .is_err()
+        );
+        assert!(unused.sent.is_empty());
+    }
 
     const INFO: &str = r#"{"index_bins_per_table":1,"role":"primary","gas":{"unit":"cpu_ms_pir1","params":{"credit_sat":10,"gas_per_credit":72000,"base_gas_per_frame":20,"egress_gas_per_mb":1000},"databases":{"0":{"dpf_index_round":1380,"dpf_chunk_round":4550,"dpf_index_sibling_pass":[456,57,7],"dpf_chunk_sibling_pass":[914,114,14],"tree_tops":5,"onion_register_keys":200,"onion_index_query":197506,"onion_chunk_query":403260,"onion_sibling_query":21000,"harmony_pool_entry":129970,"harmony_index_sibling_set":[3780,470,60],"harmony_chunk_sibling_set":[7570,950,120],"harmony_query_index":8,"harmony_query_chunk":12},"1":{"oram_lookup":512}}}}"#;
 

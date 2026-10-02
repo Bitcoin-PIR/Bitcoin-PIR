@@ -297,6 +297,11 @@ impl AccessGateV1 {
         let (Some((op, _)), Some(cost)) = (op, cost) else {
             return Admission::Free;
         };
+        // A connection that presented an operator-issued API key is served
+        // unmetered at normal priority (docs/CREDITS.md "API keys").
+        if balance.api_key().is_some() {
+            return Admission::Free;
+        }
         let (backend, access) = self.policy.for_op(op);
         match access {
             Access::Free => Admission::Free,
@@ -442,6 +447,23 @@ mod tests {
             Admission::Free
         ));
         assert_eq!(balance.gas(), 0);
+    }
+
+    #[tokio::test]
+    async fn api_key_connections_are_unmetered_on_paid_and_best_effort_backends() {
+        for p in [
+            AccessPolicy::uniform(Access::Paid),
+            policy(&[(Backend::Dpf, BE1)], Access::Paid),
+        ] {
+            let g = gate(p, true);
+            let mut balance = GasBalanceV1::new();
+            balance.accept_api_key("owner");
+            assert!(matches!(
+                g.admit(dpf(), Some(1_400), &mut balance).await,
+                Admission::Free
+            ));
+            assert_eq!(balance.gas(), 0);
+        }
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@
 //! binary sha256. Production flags come from the reviewed run scripts.
 
 mod access_gate;
+mod api_keys;
 mod cli;
 mod credit_gate;
 mod credit_issuer;
@@ -977,6 +978,17 @@ async fn main() {
         println!("  {line}");
     }
 
+    // Operator-issued API keys (docs/CREDITS.md "API keys").
+    let api_keys = args.api_key_file.as_deref().map(|path| {
+        let keys = api_keys::ApiKeysV1::load(path).unwrap_or_else(|error| fatal_cli(error));
+        println!(
+            "  API keys: {} listed in {}; a connection that presents one is unmetered",
+            keys.len(),
+            path.display()
+        );
+        keys
+    });
+
     // Gas table for every loaded database plus the hourly meter
     // (docs/CREDITS.md).
     let credit_meter = {
@@ -1011,6 +1023,7 @@ async fn main() {
         credit_meter,
         credits,
         access,
+        api_keys,
         pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
