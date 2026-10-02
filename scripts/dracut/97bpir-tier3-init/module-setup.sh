@@ -31,6 +31,7 @@
 # shellcheck shell=bash
 
 check() {
+    local busybox_applets
     # Module is opt-in via `--add bpir-tier3-init`. Refuse to install
     # if runit isn't on the build host — the alternative is silently
     # baking a UKI that won't boot.
@@ -41,7 +42,12 @@ check() {
             return 1
         fi
     done
-    if [ ! -x /usr/bin/busybox ] || ! /usr/bin/busybox --list | grep -qx httpd; then
+    # Capture the applet list before matching: dracut runs check() under
+    # `set -o pipefail`, and in `busybox --list | grep -q` busybox can die of
+    # SIGPIPE (141) once grep exits on the match, failing the check at random.
+    if [ ! -x /usr/bin/busybox ] ||
+        ! busybox_applets=$(/usr/bin/busybox --list) ||
+        ! grep -qx httpd <<<"$busybox_applets"; then
         derror "bpir-tier3-init: /usr/bin/busybox with the httpd applet is required"
         derror "  install with: apt install busybox-static"
         return 1
