@@ -197,8 +197,14 @@ EOF
   --connection-idle-timeout-ms 300000 \
   --credit-issuer-pubkey "$NODE/issuer.pub" \
   --credit-issuer-url https://issuer.bitcoinpir.org \
-  --require-credits --access dpf=best-effort:2 --free-threads 2
+  --require-credits --access dpf=best-effort:2 --access harmony=best-effort:2 \
+  --api-key-file "$NODE/api-keys" --free-threads 2
 ```
+
+`$NODE/api-keys` holds the operator's API keys, one `SHA256HEX LABEL` per
+line; the operator mints them with `bpir-admin api-key new` and sends only
+the line (docs/CREDITS.md "API keys"). The server refuses to start without
+at least one key in it.
 
 Expect `Manifest verified: 23 files` (db0), `Manifest verified: 20 files`
 (db1), then `Listening`. Startup hashes about 34 GB; a few minutes is
@@ -232,6 +238,8 @@ it listens, then go to step 9.
     <string>--credit-issuer-url</string><string>https://issuer.bitcoinpir.org</string>
     <string>--require-credits</string>
     <string>--access</string><string>dpf=best-effort:2</string>
+    <string>--access</string><string>harmony=best-effort:2</string>
+    <string>--api-key-file</string><string>/Users/USER/bpir-node/api-keys</string>
     <string>--free-threads</string><string>2</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -249,6 +257,25 @@ launchctl print gui/$(id -u)/org.bitcoinpir.pir2-macbook | grep -E "state|pid"
 
 A LaunchAgent runs while the user is logged in; keep the MacBook logged
 in.
+
+Switching to a new binary later (Flow I) goes through a copy of the plist
+(`plist.new`, pointing at the new `bin/<SHA>/`). `launchctl bootout`
+returns before launchd has unregistered the old service, and an immediate
+`bootstrap` then fails with `5: Input/output error`. So wait for the
+service to disappear, and roll back on any failure:
+
+```sh
+P=~/Library/LaunchAgents/org.bitcoinpir.pir2-macbook.plist
+S=gui/$(id -u)/org.bitcoinpir.pir2-macbook
+LOG="$NODE/logs/unified_server.out.log"
+gone() { for i in $(seq 90); do launchctl print "$S" >/dev/null 2>&1 || return 0; sleep 1; done; return 1; }
+switch_to() { cp "$1" "$P"; launchctl bootout "$S" 2>/dev/null; gone && launchctl bootstrap gui/$(id -u) "$P"; }
+listening() { for i in $(seq 480); do tail -n +"$((N0 + 1))" "$LOG" | grep -q "Listening on" && return 0; sleep 1; done; return 1; }
+cp "$P" "$NODE/plist.rollback"
+N0=$(wc -l < "$LOG")
+if switch_to "$NODE/plist.new" && listening; then echo OK; else
+  N0=$(wc -l < "$LOG"); switch_to "$NODE/plist.rollback" && listening && echo "rolled back"; fi
+```
 
 ## 10. Cloudflare tunnel (the user)
 
