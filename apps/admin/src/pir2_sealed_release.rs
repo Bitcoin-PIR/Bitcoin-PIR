@@ -790,10 +790,12 @@ mod tests {
     fn host_cpus_match_signed_cpuid_and_vcpu_types() {
         for cpu in &HOST_CPUS {
             assert_eq!(cpu.vcpu_type.sig(), cpu.vcpu_sig as i32, "{}", cpu.name);
-            let mut report = SnpReport::default();
-            report.cpuid_fam_id = Some(cpu.family);
-            report.cpuid_mod_id = Some(cpu.model);
-            report.cpuid_step = Some(cpu.stepping);
+            let mut report = SnpReport {
+                cpuid_fam_id: Some(cpu.family),
+                cpuid_mod_id: Some(cpu.model),
+                cpuid_step: Some(cpu.stepping),
+                ..SnpReport::default()
+            };
             assert_eq!(validate_report_cpu(&report).unwrap().name, cpu.name);
             report.cpuid_step = Some(cpu.stepping + 1);
             assert!(validate_report_cpu(&report).is_err());
