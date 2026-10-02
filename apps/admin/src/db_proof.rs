@@ -39,7 +39,7 @@ pub struct VerifyArgs {
 
 #[derive(Args, Debug)]
 pub struct VerifyLiveArgs {
-    /// WebSocket URL of the server, e.g. `wss://weikeng2.bitcoinpir.org`.
+    /// WebSocket URL of the server, e.g. `wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`.
     #[arg(long)]
     server: String,
 

@@ -1,54 +1,80 @@
 #!/usr/bin/env bash
-# Read-only pir1 SSH health plus pir2 VPSBG control-plane status.
+# Read-only pir1 SSH health plus a public attest of the pir2 MacBook node.
 set -euo pipefail
 
 usage() {
   cat <<'EOF'
-usage: scripts/production-status.sh [--server-id ID] [--dry-run]
+usage: scripts/production-status.sh [--dry-run]
 
-Prints pir1 systemd/port/disk health over SSH, then the existing pir2
-VPSBG status snapshot. This command never restarts a service and does
-not inspect Signet or functional-beta units.
+Prints pir1 systemd/port/disk health over SSH, then attests the pir2
+MacBook node over its public endpoint against PIR2_MACBOOK_PIN. The
+endpoint and pin are read from web/src. The VPSBG pir2 host was retired
+on 2026-10-02; scripts/vpsbg-production-status.sh covers a future VPSBG
+host only. This command never restarts a service and does not inspect
+Signet or functional-beta units.
+
+BPIR_ADMIN=/absolute/path/to/bpir-admin runs a prebuilt binary; otherwise
+the attest runs through `cargo run --release -p bpir-admin`.
 EOF
 }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly HETZNER_HOST=65.21.91.217
 readonly HETZNER_KNOWN_HOSTS="$root/deploy/known_hosts"
-readonly DEFAULT_TOKEN_FILE="$root/.secrets/vpsbg-api-token"
+readonly PIN_FILE="$root/web/src/attest-pin.ts"
+readonly PROVIDERS_FILE="$root/web/src/production-providers.ts"
 
-server_id= dry_run=0
+dry_run=0
 while (($#)); do
   case "$1" in
-    --server-id) server_id=${2:?missing server ID}; shift 2 ;;
     --dry-run) dry_run=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-[[ -z "$server_id" || "$server_id" =~ ^[0-9]+$ ]] || { echo 'server ID must be numeric' >&2; exit 2; }
-
 [[ -r "$HETZNER_KNOWN_HOSTS" && -s "$HETZNER_KNOWN_HOSTS" ]] || {
   echo "Hetzner known_hosts is missing or empty: $HETZNER_KNOWN_HOSTS" >&2
   exit 2
 }
-token_file=${VPSBG_API_TOKEN_FILE:-$DEFAULT_TOKEN_FILE}
+
+pir2=$(python3 - "$PROVIDERS_FILE" "$PIN_FILE" <<'PY'
+import re
+import sys
+
+providers = open(sys.argv[1], encoding="utf-8").read()
+pins = open(sys.argv[2], encoding="utf-8").read()
+provider = re.search(r"export const PIR2_PROVIDER\b.*?\n\};", providers, re.S)
+pin = re.search(r"export const PIR2_MACBOOK_PIN\b.*?\n\};", pins, re.S)
+endpoint = provider and re.search(r"endpoint:\s*'(wss://[^']+)'", provider.group(0))
+binary = pin and re.search(r"binarySha256Hex:\s*'([0-9a-fA-F]{64})'", pin.group(0))
+if not endpoint or not binary:
+    sys.stderr.write("PIR2_PROVIDER.endpoint or PIR2_MACBOOK_PIN.binarySha256Hex is missing\n")
+    sys.exit(2)
+print(endpoint.group(1))
+print(binary.group(1).lower())
+PY
+)
+pir2_url=${pir2%%$'\n'*}
+pir2_binary=${pir2#*$'\n'}
 
 if ((dry_run)); then
   echo '[stage] production status preview'
   echo "pir1_host=$HETZNER_HOST"
   echo "pir1_known_hosts=$HETZNER_KNOWN_HOSTS"
-  echo "pir2_token_file=$token_file"
-  [[ -n "$server_id" ]] && echo "server_id=$server_id"
+  echo "pir2_url=$pir2_url"
+  echo "pir2_pin_source=$PIN_FILE"
   echo 'PASS production_status dry_run=true'
-  echo 'NEXT_STEP=run without --dry-run for the live pir1 SSH and pir2 API snapshot'
+  echo 'NEXT_STEP=run without --dry-run for the live pir1 SSH and pir2 attest snapshot'
   exit 0
 fi
 
-[[ -r "$token_file" && -s "$token_file" ]] || {
-  echo "VPSBG API token file is missing or empty: $token_file" >&2
-  exit 2
-}
+if [[ -n "${BPIR_ADMIN:-}" ]]; then
+  [[ "$BPIR_ADMIN" == /* && -f "$BPIR_ADMIN" && -x "$BPIR_ADMIN" ]] \
+    || { echo "BPIR_ADMIN must be an absolute path to an executable file: $BPIR_ADMIN" >&2; exit 2; }
+  admin=("$BPIR_ADMIN")
+else
+  admin=(cargo run --quiet --release --manifest-path "$root/Cargo.toml" -p bpir-admin --)
+fi
 
 echo '[stage] pir1 Hetzner health'
 echo "pir1_host=$HETZNER_HOST"
@@ -78,12 +104,12 @@ REMOTE
 printf '%s\n' "$pir1_out"
 echo 'PASS host=pir1'
 
-echo '[stage] pir2 VPSBG status'
-status_args=()
-[[ -z "$server_id" ]] || status_args+=(--server-id "$server_id")
-# POSIX-safe empty-array expansion: a bare quoted-at expansion is an unbound
-# variable under `set -u` on bash < 4.4 (e.g. macOS /bin/bash 3.2).
-"$root/scripts/vpsbg-production-status.sh" "${status_args[@]+"${status_args[@]}"}"
+echo '[stage] pir2 MacBook node attest'
+echo "pir2_url=$pir2_url"
+"${admin[@]}" attest "$pir2_url" --expect-binary "$pir2_binary" || {
+  echo 'pir2 attest failed or binary_sha256 does not match PIR2_MACBOOK_PIN' >&2
+  exit 1
+}
 echo 'PASS host=pir2'
 echo 'PASS production_status'
-echo 'NEXT_STEP=use scripts/vpsbg-measured-boot.sh or scripts/vpsbg-data-disk.sh only after this run is authorized'
+echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md after this run is authorized'

@@ -2,15 +2,15 @@
 
 Start production work at [Production operations](PRODUCTION_OPERATIONS.md).
 Live production state is queried, never inferred from documents:
-`scripts/production-status.sh` for pir1+pir2,
-`scripts/vpsbg-production-status.sh` for pir2 only, and each operation
-script's status subcommand for the rest.
+`scripts/production-status.sh` for pir1 and the pir2 MacBook node, and
+each operation script's status subcommand for the rest. The VPSBG pir2 host
+was retired on 2026-10-02.
 
 ## Runbooks
 
 | Work | Entry |
 | --- | --- |
-| Diagnose, CI/PR, Pages, pir1, pir2 runtime UKI, data-disk, sealed release, DB/proofs | [Production operations](PRODUCTION_OPERATIONS.md) (flows A–H) |
+| Diagnose, CI/PR, Pages, pir1, pir2 MacBook node, VPSBG runtime UKI, data-disk, sealed release, DB/proofs | [Production operations](PRODUCTION_OPERATIONS.md) (flows A–I) |
 | Database and root rotation (DPF / Harmony / Onion v2 / ORAM proofs) | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
 | Producer (attested-builder) UKI | [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md); producer *scope* is that repo's README |
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |

@@ -269,7 +269,7 @@ short maintenance window and accept temporary fail-closed queries:
    cargo run --release -p bpir-admin -- db-proof verify-live \
      --server wss://weikeng1.bitcoinpir.org --db-id <db-id> <expected-args>
    cargo run --release -p bpir-admin -- db-proof verify-live \
-     --server wss://weikeng2.bitcoinpir.org --db-id <db-id> <expected-args>
+     --server wss://bitcoin-pir-weikeng-laptop.chenweikeng.com --db-id <db-id> <expected-args>
    ```
 
    `verify-live` fetches the v1 database-proof opcode only. It covers

@@ -11,7 +11,7 @@ use pir_sdk::BufferingLeakageRecorder;
 use pir_sdk_client::{HarmonyClient, PirClient, ScriptHash};
 
 const DEFAULT_HINT_SERVER: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_QUERY_SERVER: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_QUERY_SERVER: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 
 struct Args {
     hint_server_url: String,
