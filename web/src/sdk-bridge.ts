@@ -92,6 +92,9 @@ interface PirSdkWasm {
    * at module load (catches drift if the two ever diverge).
    */
   turinArkFingerprint(): Uint8Array;
+  /** The Milan-family ARK fingerprint; same contract as
+   * `turinArkFingerprint`, for Milan servers (`AMD_MILAN_ARK_FINGERPRINT_HEX`). */
+  milanArkFingerprint(): Uint8Array;
   /**
    * Verify a standalone SEV-SNP report plus PEM ARK/ASK/VCEK chain using
    * the same Rust verifier as live runtime attestation. Used for static
@@ -351,6 +354,13 @@ export interface WasmPolicyRequirements {
   setAllowMigrateMa(v: boolean): void;
   /** Require `policy.single_socket_required`. Off by default. */
   setRequireSingleSocket(v: boolean): void;
+  /** Require every SVN of `reported_tcb` to reach these values; `fmc`
+   * only for generations that report one (Turin). */
+  setMinTcb(bootloader: number, tee: number, snp: number, microcode: number, fmc?: number): void;
+  /** Require `platform_info.alias_check_complete` (bit 5). Off by default. */
+  setRequireAliasCheckComplete(v: boolean): void;
+  /** Bits required in both the launch and current mitigation vector. 0 = off. */
+  setRequiredMitVectorBits(bits: number): void;
   /** Pin the expected MEASUREMENT (must be exactly 48 bytes). */
   setExpectedMeasurement(bytes: Uint8Array): void;
   /** Pin the expected family_id (16 bytes). */

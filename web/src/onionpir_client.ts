@@ -47,6 +47,7 @@ import {
   type ServerAttestation,
 } from './dpf-adapter.js';
 import {
+  applySevSnpPlatformFloor,
   getAmdTurinArkFingerprint,
   PIR_OPERATOR_PUBKEY,
   pinAcceptsBinary,
@@ -1625,6 +1626,7 @@ export class OnionPirWebClient {
       if (arkFingerprint) {
         const requirements = new (requireSdkWasm().WasmPolicyRequirements)();
         try {
+          applySevSnpPlatformFloor(requirements, arkFingerprint);
           attestation.verifyFull(arkFingerprint, requirements);
           status = { ...status, state: 'verified-vcek', vcekChain: 'pass' };
         } catch (error) {

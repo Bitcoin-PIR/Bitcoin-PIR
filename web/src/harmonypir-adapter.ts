@@ -79,7 +79,12 @@ import {
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY, pinAcceptsBinary } from './attest-pin.js';
+import {
+  applySevSnpPlatformFloor,
+  getAmdTurinArkFingerprint,
+  PIR_OPERATOR_PUBKEY,
+  pinAcceptsBinary,
+} from './attest-pin.js';
 import {
   gateOperatorIdentity,
   type OperatorIdentity,
@@ -769,6 +774,7 @@ export class HarmonyPirClientAdapter {
     const policyRequirements = new (requireSdkWasm().WasmPolicyRequirements)();
     try {
       const arkFingerprint = this.expectedArkFingerprint();
+      applySevSnpPlatformFloor(policyRequirements, arkFingerprint);
       if (result.state === 'verified' && matched && attestation.hasVcekChain) {
         if (arkFingerprint) {
           try {
@@ -963,6 +969,7 @@ export class HarmonyPirClientAdapter {
 
       const sdk = requireSdkWasm();
       const policyReqs = new sdk.WasmPolicyRequirements();
+      applySevSnpPlatformFloor(policyReqs, expectedArkFp);
       try {
 
         const summarise = (

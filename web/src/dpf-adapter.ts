@@ -54,7 +54,12 @@ import {
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY, pinAcceptsBinary } from './attest-pin.js';
+import {
+  applySevSnpPlatformFloor,
+  getAmdTurinArkFingerprint,
+  PIR_OPERATOR_PUBKEY,
+  pinAcceptsBinary,
+} from './attest-pin.js';
 import {
   assertIndependentOperatorPinsV1,
   assertStrictDatabasePinCoverage,
@@ -1563,6 +1568,7 @@ export class BatchPirClientAdapter {
     const policyRequirements = new (requireSdkWasm().WasmPolicyRequirements)();
     try {
       const arkFingerprint = this.expectedArkFingerprint();
+      applySevSnpPlatformFloor(policyRequirements, arkFingerprint);
       if (result.state === 'verified' && matched && attestation.hasVcekChain) {
         if (arkFingerprint) {
           try {
@@ -1795,6 +1801,7 @@ export class BatchPirClientAdapter {
       // for which server) than the single-line WASM diagnostic.
       const sdk = requireSdkWasm();
       const policyReqs = new sdk.WasmPolicyRequirements();
+      applySevSnpPlatformFloor(policyReqs, expectedArkFp);
       try {
 
         const summarise = (
