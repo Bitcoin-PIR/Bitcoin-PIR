@@ -9,7 +9,7 @@
  * proof verifier on this path.
  */
 
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
+import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY, pinAcceptsBinary } from './attest-pin.js';
 import type { ServerAttestPin } from './attest-pin.js';
 import {
   databaseProofUnavailable,
@@ -720,7 +720,7 @@ export class OramPirClientAdapter {
           result.state = 'mismatch';
         } else if (
           pin.binarySha256Hex
-          && pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+          && !pinAcceptsBinary(pin, att.binarySha256Hex)
         ) {
           result.pinStatus = 'binary-mismatch';
           result.pinError = `binary_sha256 pin mismatch: expected ${pin.binarySha256Hex.slice(0, 16)}..., got ${att.binarySha256Hex.slice(0, 16)}...`;

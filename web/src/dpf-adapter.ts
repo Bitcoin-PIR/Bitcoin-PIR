@@ -54,7 +54,7 @@ import {
   type DatabaseProofPin,
   type DatabaseProofStatus,
 } from './db-proof.js';
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY } from './attest-pin.js';
+import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY, pinAcceptsBinary } from './attest-pin.js';
 import {
   assertIndependentOperatorPinsV1,
   assertStrictDatabasePinCoverage,
@@ -1600,7 +1600,7 @@ export class BatchPirClientAdapter {
         result.pinError = 'binary_sha256 pin required but server report omitted binary_sha256';
       } else if (
         pin.binarySha256Hex
-        && pin.binarySha256Hex.toLowerCase() !== attestation.binarySha256Hex.toLowerCase()
+        && !pinAcceptsBinary(pin, attestation.binarySha256Hex)
       ) {
         result.pinStatus = 'binary-mismatch';
         result.pinError = 'binary_sha256 pin mismatch';
@@ -1895,7 +1895,7 @@ export class BatchPirClientAdapter {
               } else if (
                 pin.binarySha256Hex &&
                 att.binarySha256Hex &&
-                pin.binarySha256Hex.toLowerCase() !== att.binarySha256Hex.toLowerCase()
+                !pinAcceptsBinary(pin, att.binarySha256Hex)
               ) {
                 result.pinStatus = 'binary-mismatch';
                 result.pinError = `binary_sha256 pin mismatch — expected ${pin.binarySha256Hex.slice(0, 16)}…, got ${att.binarySha256Hex.slice(0, 16)}…`;

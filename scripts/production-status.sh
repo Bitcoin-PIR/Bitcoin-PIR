@@ -46,16 +46,17 @@ pins = open(sys.argv[2], encoding="utf-8").read()
 provider = re.search(r"export const PIR2_PROVIDER\b.*?\n\};", providers, re.S)
 pin = re.search(r"export const PIR2_MACBOOK_PIN\b.*?\n\};", pins, re.S)
 endpoint = provider and re.search(r"endpoint:\s*'(wss://[^']+)'", provider.group(0))
-binary = pin and re.search(r"binarySha256Hex:\s*'([0-9a-fA-F]{64})'", pin.group(0))
+binary = pin and re.search(r"\bbinarySha256Hex:\s*'([0-9a-fA-F]{64})'", pin.group(0))
+transition = pin and re.search(r"transitionBinarySha256Hex:\s*'([0-9a-fA-F]{64})'", pin.group(0))
 if not endpoint or not binary:
     sys.stderr.write("PIR2_PROVIDER.endpoint or PIR2_MACBOOK_PIN.binarySha256Hex is missing\n")
     sys.exit(2)
 print(endpoint.group(1))
 print(binary.group(1).lower())
+print(transition.group(1).lower() if transition else "-")
 PY
 )
-pir2_url=${pir2%%$'\n'*}
-pir2_binary=${pir2#*$'\n'}
+{ read -r pir2_url; read -r pir2_binary; read -r pir2_transition; } <<<"$pir2"
 
 if ((dry_run)); then
   echo '[stage] production status preview'
@@ -63,6 +64,7 @@ if ((dry_run)); then
   echo "pir1_known_hosts=$HETZNER_KNOWN_HOSTS"
   echo "pir2_url=$pir2_url"
   echo "pir2_pin_source=$PIN_FILE"
+  echo "pir2_transition_pin=$([[ "$pir2_transition" == - ]] && echo none || echo set)"
   echo 'PASS production_status dry_run=true'
   echo 'NEXT_STEP=run without --dry-run for the live pir1 SSH and pir2 attest snapshot'
   exit 0
@@ -106,10 +108,21 @@ echo 'PASS host=pir1'
 
 echo '[stage] pir2 MacBook node attest'
 echo "pir2_url=$pir2_url"
-"${admin[@]}" attest "$pir2_url" --expect-binary "$pir2_binary" || {
-  echo 'pir2 attest failed or binary_sha256 does not match PIR2_MACBOOK_PIN' >&2
+attest_out=$("${admin[@]}" attest "$pir2_url" 2>&1) || {
+  printf '%s\n' "$attest_out"
+  echo 'pir2 attest failed' >&2
   exit 1
 }
+printf '%s\n' "$attest_out"
+running=$(awk '$1 == "binary_sha256:" { print tolower($2) }' <<<"$attest_out")
+if [[ "$running" == "$pir2_binary" ]]; then
+  echo '✓ binary_sha256 matches PIR2_MACBOOK_PIN'
+elif [[ "$pir2_transition" != - && "$running" == "$pir2_transition" ]]; then
+  echo '✓ binary_sha256 matches the transition build of PIR2_MACBOOK_PIN (switch pending)'
+else
+  echo "pir2 binary_sha256 ${running:-unavailable} matches neither build PIR2_MACBOOK_PIN accepts" >&2
+  exit 1
+fi
 echo 'PASS host=pir2'
 echo 'PASS production_status'
 echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md after this run is authorized'

@@ -121,8 +121,30 @@ function bytesToHex(bytes: Uint8Array): string {
 export interface ServerAttestPin {
   measurementHex?: string;
   binarySha256Hex?: string;
+  /**
+   * A second accepted binary while a host without a TEE switches builds
+   * (docs/PRODUCTION_OPERATIONS.md Flow I): the build it runs now, next to
+   * the new `binarySha256Hex`. Deploy the pin with both, switch the node
+   * whenever, then deploy it again without this field. Leave it unset
+   * otherwise; a TEE host's MEASUREMENT pin changes with every build anyway.
+   */
+  transitionBinarySha256Hex?: string;
   /** Human-readable description shown in the badge tooltip. */
   description?: string;
+}
+
+/**
+ * Whether a server reporting `binarySha256Hex` satisfies the binary pin:
+ * the pinned build, or the transition build while one is set.
+ */
+export function pinAcceptsBinary(
+  pin: { binarySha256Hex?: string; transitionBinarySha256Hex?: string },
+  binarySha256Hex: string,
+): boolean {
+  const reported = binarySha256Hex.toLowerCase();
+  return [pin.binarySha256Hex, pin.transitionBinarySha256Hex].some(
+    (accepted) => accepted !== undefined && accepted.trim() !== '' && accepted.toLowerCase() === reported,
+  );
 }
 
 /**
