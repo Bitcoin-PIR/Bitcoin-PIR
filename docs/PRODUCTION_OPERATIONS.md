@@ -176,7 +176,9 @@ contains a stale single-host caveat — ignore that; pir2 is VPSBG.
    the tunnel itself is broken. Build 2–5 min, hard stop 15 min.
    `unified_server --version` prints the crate version, git revision,
    and binary sha256 of an installed binary without starting a server;
-   `--help` prints the flag reference.
+   `--help` prints the flag reference. To avoid the gap in which strict
+   clients reject pir1, first deploy `PIR1_PIN` with the running build as
+   `transitionBinarySha256Hex` (as in Flow I), then drop it afterwards.
 3. Read — `scripts/production-status.sh` and confirm `:8091` /
    `pir-primary` are active. Do not treat `pir-secondary` as the
    public peer. This step is systemd/SSH health only; it does not
@@ -374,22 +376,27 @@ work runs on the MacBook; this repository's hosts have no SSH to it.
 2. Local (MacBook) — build the approved commit with runbook step 4 into a
    new `bin/<SHA>/` directory. Leave the running binary in place. Any
    rebuild changes the hash, because `git_rev` is compiled in.
-3. Local — Flow B: a PR that sets `PIR2_MACBOOK_PIN.binarySha256Hex` to
-   the new `shasum -a 256 unified_server`.
-4. Auth (MacBook) — switch the node to the new binary with the runbook's
-   switch procedure (after step 9). It waits for launchd to unregister the
-   old service and rolls back on its own if the new binary does not
-   listen. The web pin still names the old binary, so a failed switch
-   costs nothing on the web.
-5. Auth — only after the node reports the new binary listening, merge
-   the step 3 PR and run Flow C at once. Strict clients reject the slot
-   from the switch until the Pages deploy, so keep that gap short. Never
-   deploy the pin first: on 2026-10-02 a pin deployed ahead of a failed
-   switch kept the slot down for about 3 h.
-6. Read — Flow A must print `✓ binary_sha256 matches expected`.
+3. Auth — Flow B, then Flow C: a PR that sets
+   `PIR2_MACBOOK_PIN.binarySha256Hex` to the new `shasum -a 256
+   unified_server` and `transitionBinarySha256Hex` to the build the node
+   runs now. After the deploy, strict clients accept both builds.
+4. Auth (MacBook) — switch the node with the runbook's switch procedure
+   (after step 9), whenever the operator gets to it. The procedure waits
+   for launchd to unregister the old service and rolls back on its own if
+   the new binary does not listen; the web keeps working either way.
+5. Read — Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` once
+   the node runs the new build (`…the transition build…` while it still
+   runs the old one).
+6. Auth — Flow B, then Flow C: a PR that removes
+   `transitionBinarySha256Hex`.
 
-Rollback: point the plist back at the previous `bin/<SHA>/`, restart, and
-revert the pin through Flow C.
+Never deploy a pin that leaves out the running build. On 2026-10-02 a pin
+naming only the new build went out before a switch that then failed, and
+the slot was down for about 3 h.
+
+Rollback: before step 6, point the plist back at the previous `bin/<SHA>/`
+and restart; the transition pin still accepts it. After step 6, roll back
+the same way as an upgrade, through a new transition.
 
 ## Human-only — do not start from this page
 
@@ -409,7 +416,7 @@ revert the pin through Flow C.
 | Operation | Runbook | Command | Successful handoff |
 | --- | --- | --- | --- |
 | Read pir1 and pir2 status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
-| Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, then Flow C | Flow A prints `✓ binary_sha256 matches expected` |
+| Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, transition pin, switch, then drop the transition | Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` |
 | Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
 | Build the **producer** UKI | [Attested-builder UKI](ATTESTED_BUILDER_TIER3_UKI.md) | `scripts/build_uki_attested_builder_tier3.sh` | archived `.efi` + `.meta` |
 | Verify a local DB proof | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) | `bpir-admin db-proof verify` | verifier exit 0 |

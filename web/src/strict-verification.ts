@@ -7,6 +7,7 @@ import {
   type VerifiedDatabaseProof,
 } from './db-proof.js';
 import type { WasmDatabaseProof } from './sdk-bridge.js';
+import { pinAcceptsBinary } from './attest-pin.js';
 
 /**
  * The small WASM surface needed by the strict database-root gate.  Keeping the
@@ -292,6 +293,8 @@ export interface StrictOperatorIdentitySummary {
 export interface StrictServerPin {
   measurementHex?: string;
   binarySha256Hex?: string;
+  /** See `ServerAttestPin.transitionBinarySha256Hex`. */
+  transitionBinarySha256Hex?: string;
 }
 
 export interface StrictTransportOptions {
@@ -423,7 +426,7 @@ export function collectStrictTransportFailures(options: StrictTransportOptions):
           failures.push(`server ${index}: verified operator identity has no binary sha256`);
         } else if (
           configured(expectedBinary)
-          && identity.binarySha256Hex!.toLowerCase() !== expectedBinary!.toLowerCase()
+          && !pinAcceptsBinary(pin!, identity.binarySha256Hex!)
         ) {
           failures.push(
             `server ${index}: operator binary sha256 does not match the configured binary pin`,
@@ -528,7 +531,7 @@ export function collectStrictServerLegFailures(options: StrictServerLegOptions):
         failures.push(`${prefix}: verified operator identity has no binary sha256`);
       } else if (
         configured(expectedBinary)
-        && identity.binarySha256Hex!.toLowerCase() !== expectedBinary!.toLowerCase()
+        && !pinAcceptsBinary(options.expectedPin!, identity.binarySha256Hex!)
       ) {
         failures.push(`${prefix}: operator binary sha256 does not match the configured binary pin`);
       }
@@ -614,7 +617,7 @@ export function collectStrictSingleTransportFailures(
         failures.push('verified operator identity has no binary sha256');
       } else if (
         configured(expectedBinary)
-        && identity.binarySha256Hex!.toLowerCase() !== expectedBinary!.toLowerCase()
+        && !pinAcceptsBinary(options.expectedPin!, identity.binarySha256Hex!)
       ) {
         failures.push('operator binary sha256 does not match the configured binary pin');
       }

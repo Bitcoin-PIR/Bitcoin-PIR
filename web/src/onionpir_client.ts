@@ -49,6 +49,7 @@ import {
 import {
   getAmdTurinArkFingerprint,
   PIR_OPERATOR_PUBKEY,
+  pinAcceptsBinary,
   type ServerAttestPin,
 } from './attest-pin.js';
 
@@ -1641,7 +1642,7 @@ export class OnionPirWebClient {
     }
     if (
       pin.binarySha256Hex
-      && pin.binarySha256Hex.toLowerCase() !== attestation.binarySha256Hex.toLowerCase()
+      && !pinAcceptsBinary(pin, attestation.binarySha256Hex)
     ) {
       return {
         ...status,
