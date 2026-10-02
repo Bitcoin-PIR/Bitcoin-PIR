@@ -9,7 +9,12 @@
  * proof verifier on this path.
  */
 
-import { getAmdTurinArkFingerprint, PIR_OPERATOR_PUBKEY, pinAcceptsBinary } from './attest-pin.js';
+import {
+  applySevSnpPlatformFloor,
+  getAmdTurinArkFingerprint,
+  PIR_OPERATOR_PUBKEY,
+  pinAcceptsBinary,
+} from './attest-pin.js';
 import type { ServerAttestPin } from './attest-pin.js';
 import {
   databaseProofUnavailable,
@@ -564,6 +569,7 @@ export class OramPirClientAdapter {
 
     const sdk = requireSdkWasm();
     const policyReqs = new sdk.WasmPolicyRequirements();
+    applySevSnpPlatformFloor(policyReqs, expectedArkFp);
     try {
       const summary = this.summariseAttestation(att, expectedArkFp, policyReqs);
       this.attestation = summary;

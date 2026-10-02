@@ -15,8 +15,8 @@
 //!    ID, bind this exact release, and repeat its identity generation; for
 //!    non-Observe phases the service identity key is a valid Ed25519 point;
 //! 4. the AMD ARK pin, ARK → ASK → VCEK chain, and SNP report signature;
-//! 5. the report's `REPORT_DATA`, Turin CPUID, measurement, full guest
-//!    policy, and TCB floor against the release.
+//! 5. the report's `REPORT_DATA`, host CPUID (Turin 9745 or Milan 7713P),
+//!    measurement, full guest policy, and TCB floor against the release.
 //!
 //! Nothing here reads a secret: the operator key is a public pin.
 

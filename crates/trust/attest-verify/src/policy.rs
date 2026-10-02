@@ -72,7 +72,17 @@ pub struct PolicyRequirements {
     /// disables the lower-bound check (only TCB monotonicity is
     /// enforced — `reported_tcb` ≤ `committed_tcb`). Set to the
     /// last-known-good TCB after a microcode/firmware update.
+    /// Checked per component: every SVN in `reported_tcb` must reach
+    /// the one here.
     pub min_tcb: Option<TcbVersion>,
+    /// If `true`, require `platform_info.alias_check_complete`
+    /// (bit 5): the firmware verified that no memory aliasing is
+    /// configured (the AMD-SB-3015 / AMD-SB-3033 mitigation).
+    pub require_alias_check_complete: bool,
+    /// Bits that must be set in both the launch and the current
+    /// mitigation vector (report version 5+), e.g. bit 1 for
+    /// AMD-SB-3020. `0` disables the check.
+    pub required_mit_vector_bits: u64,
     /// Pinned MEASUREMENT bytes. `None` skips. Set to the operator-
     /// published value (e.g. from the production attest-pin file)
     /// to lock the verifier to a specific UKI build.
@@ -93,6 +103,8 @@ impl Default for PolicyRequirements {
             allow_migrate_ma: false,
             require_single_socket: false,
             min_tcb: None,
+            require_alias_check_complete: false,
+            required_mit_vector_bits: 0,
             expected_measurement: None,
             expected_family_id: None,
             expected_image_id: None,
@@ -130,6 +142,16 @@ pub enum PolicyError {
     TcbBelowMinimum {
         reported: TcbVersion,
         min: TcbVersion,
+    },
+    /// `platform_info.alias_check_complete` was clear but the
+    /// verifier requires it.
+    AliasCheckIncomplete,
+    /// The launch or current mitigation vector lacks a required bit.
+    /// `None` means the report predates version 5 and has no vector.
+    MitigationVectorMissing {
+        required: u64,
+        launch: Option<u64>,
+        current: Option<u64>,
     },
     /// MEASUREMENT field doesn't match the operator pin.
     MeasurementMismatch {
@@ -172,6 +194,18 @@ impl core::fmt::Display for PolicyError {
             Self::TcbBelowMinimum { reported, min } => {
                 write!(f, "reported TCB {:?} < required min {:?}", reported, min)
             }
+            Self::AliasCheckIncomplete => {
+                write!(f, "platform_info lacks ALIAS_CHECK_COMPLETE")
+            }
+            Self::MitigationVectorMissing {
+                required,
+                launch,
+                current,
+            } => write!(
+                f,
+                "mitigation vector lacks required bits {:#x} (launch {:?}, current {:?})",
+                required, launch, current
+            ),
             Self::MeasurementMismatch { actual, expected } => write!(
                 f,
                 "MEASUREMENT mismatch: expected {}, got {}",
@@ -201,7 +235,8 @@ impl std::error::Error for PolicyError {}
 /// short-circuiting in a stable order — see the source).
 ///
 /// **Order matters for readability of failure messages**: VMPL → policy
-/// bits → TCB monotonicity → TCB minimum → measurement → family/image.
+/// bits → TCB monotonicity → TCB minimum → alias check → mitigation
+/// vector → measurement → family/image.
 /// Callers should NOT depend on a specific order of multiple
 /// concurrent violations, but the order is stable for a given build.
 pub fn verify_policy(report: &SnpReport, req: &PolicyRequirements) -> Result<(), PolicyError> {
@@ -230,12 +265,26 @@ pub fn verify_policy(report: &SnpReport, req: &PolicyRequirements) -> Result<(),
         });
     }
     if let Some(min) = req.min_tcb {
-        if report.reported_tcb < min {
+        if !tcb_meets_minimum(&report.reported_tcb, &min) {
             return Err(PolicyError::TcbBelowMinimum {
                 reported: report.reported_tcb,
                 min,
             });
         }
+    }
+    if req.require_alias_check_complete && !report.plat_info.alias_check_complete() {
+        return Err(PolicyError::AliasCheckIncomplete);
+    }
+    let required = req.required_mit_vector_bits;
+    let has_required = |vector: Option<u64>| vector.is_some_and(|v| v & required == required);
+    if required != 0
+        && !(has_required(report.launch_mit_vector) && has_required(report.current_mit_vector))
+    {
+        return Err(PolicyError::MitigationVectorMissing {
+            required,
+            launch: report.launch_mit_vector,
+            current: report.current_mit_vector,
+        });
     }
     if let Some(exp) = req.expected_measurement {
         if report.measurement != exp {
@@ -262,6 +311,22 @@ pub fn verify_policy(report: &SnpReport, req: &PolicyRequirements) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Whether every SVN in `reported` reaches the one in `min`.
+/// `TcbVersion`'s derived `Ord` is lexicographic, so a newer boot
+/// loader would otherwise hide an older SNP firmware or microcode. A
+/// minimum with an FMC SVN (Turin) requires the report to carry one.
+fn tcb_meets_minimum(reported: &TcbVersion, min: &TcbVersion) -> bool {
+    let fmc_ok = match min.fmc {
+        None => true,
+        Some(min_fmc) => reported.fmc.is_some_and(|fmc| fmc >= min_fmc),
+    };
+    fmc_ok
+        && reported.bootloader >= min.bootloader
+        && reported.tee >= min.tee
+        && reported.snp >= min.snp
+        && reported.microcode >= min.microcode
 }
 
 #[cfg(test)]
@@ -413,6 +478,78 @@ mod tests {
             min_tcb: Some(r.reported_tcb),
             ..PolicyRequirements::default()
         };
+        verify_policy(&r, &req).unwrap();
+    }
+
+    #[test]
+    fn tcb_minimum_is_checked_per_component() {
+        // A newer boot loader must not hide an older SNP firmware: the
+        // derived lexicographic order would accept this report.
+        let min = TcbVersion::new(None, 4, 0, 29, 222);
+        let mut r = base_report();
+        r.reported_tcb = TcbVersion::new(None, 5, 0, 28, 222);
+        r.committed_tcb = r.reported_tcb;
+        assert!(r.reported_tcb > min);
+        let req = PolicyRequirements {
+            min_tcb: Some(min),
+            ..PolicyRequirements::default()
+        };
+        let err = verify_policy(&r, &req).unwrap_err();
+        assert!(
+            matches!(err, PolicyError::TcbBelowMinimum { .. }),
+            "{:?}",
+            err
+        );
+
+        // A minimum with an FMC SVN needs a report that carries one.
+        r.reported_tcb = TcbVersion::new(None, 5, 0, 29, 222);
+        r.committed_tcb = r.reported_tcb;
+        verify_policy(&r, &req).unwrap();
+        let turin_req = PolicyRequirements {
+            min_tcb: Some(TcbVersion::new(Some(1), 4, 0, 29, 222)),
+            ..PolicyRequirements::default()
+        };
+        assert!(matches!(
+            verify_policy(&r, &turin_req),
+            Err(PolicyError::TcbBelowMinimum { .. })
+        ));
+    }
+
+    #[test]
+    fn alias_check_required_when_policy_demands() {
+        let req = PolicyRequirements {
+            require_alias_check_complete: true,
+            ..PolicyRequirements::default()
+        };
+        let mut r = base_report();
+        r.plat_info = 0x05u64.into();
+        assert_eq!(
+            verify_policy(&r, &req),
+            Err(PolicyError::AliasCheckIncomplete)
+        );
+        r.plat_info = 0x25u64.into();
+        verify_policy(&r, &req).unwrap();
+    }
+
+    #[test]
+    fn mitigation_vector_bits_required_at_launch_and_now() {
+        let req = PolicyRequirements {
+            required_mit_vector_bits: 0b10,
+            ..PolicyRequirements::default()
+        };
+        let mut r = base_report();
+        // A pre-version-5 report has no vector at all.
+        assert!(matches!(
+            verify_policy(&r, &req),
+            Err(PolicyError::MitigationVectorMissing { .. })
+        ));
+        r.launch_mit_vector = Some(0x9);
+        r.current_mit_vector = Some(0xB);
+        assert!(matches!(
+            verify_policy(&r, &req),
+            Err(PolicyError::MitigationVectorMissing { .. })
+        ));
+        r.launch_mit_vector = Some(0xB);
         verify_policy(&r, &req).unwrap();
     }
 
