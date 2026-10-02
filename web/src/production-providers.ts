@@ -2,9 +2,9 @@
  * Production provider pins for the free/open query path.
  *
  * The node set is fixed: pir1 (Hetzner — DPF server0 / Harmony hint /
- * OnionPIR) and the pir2 slot (since 2026-10-02 a MacBook without a TEE —
- * DPF server1 / Harmony query; the VPSBG SEV host that also ran Direct ORAM
- * was retired, so Direct ORAM is paused). The page connects to the pinned
+ * OnionPIR), the pir2 slot (since 2026-10-02 a MacBook without a TEE —
+ * DPF server1 / Harmony query) and the Direct ORAM TEE host (VPSBG, AMD
+ * Milan SEV-SNP, ORAM only). The page connects to the pinned
  * providers, runs the strict
  * attestation + database-proof preflight, and queries directly; a provider
  * that requires credits (docs/CREDITS.md) is paid per metered frame from the
@@ -18,8 +18,10 @@
  */
 
 import {
+    AMD_MILAN_ARK_FINGERPRINT,
     PIR1_PIN,
     PIR2_MACBOOK_PIN,
+    PIR2_TIER3_PIN,
     type ServerAttestPin,
 } from './attest-pin.js';
 import { hexToBytes } from './hash.js';
@@ -64,10 +66,19 @@ export const PIR2_PROVIDER: ProductionProviderPin = {
 };
 
 /**
- * Direct ORAM provider. `null` while paused: Direct ORAM needs a TEE, and no
- * TEE host serves it since the VPSBG pir2 was retired on 2026-10-02.
+ * Direct ORAM provider: the VPSBG TEE host weikeng2 (server 26939, AMD Milan,
+ * Direct ORAM only). Same operator key as the pir2 slot; its own server
+ * identity. Set back to `null` to pause Direct ORAM.
  */
-export const ORAM_PROVIDER: ProductionProviderPin | null = null;
+export const ORAM_PROVIDER: ProductionProviderPin | null = {
+    endpoint: 'wss://weikeng2.bitcoinpir.org',
+    stableServerId: 'pir2-oram-v1',
+    serverPin: PIR2_TIER3_PIN,
+    operatorPubkey: hexToBytes(
+        '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
+    ),
+    expectedArkFingerprint: AMD_MILAN_ARK_FINGERPRINT,
+};
 
 /** Shown wherever Direct ORAM would otherwise connect. */
 export const ORAM_PAUSED_MESSAGE =

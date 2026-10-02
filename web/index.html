@@ -850,7 +850,7 @@
                         <span class="name">OnionPIR</span>
                     </button>
                     <button type="button" class="scheme tab-btn" data-tab="oram" role="tab" aria-selected="false" aria-controls="tab-oram">
-                        <span class="name">ORAM TEE (paused)</span>
+                        <span class="name">ORAM TEE</span>
                     </button>
                 </div>
             </section>
@@ -1478,7 +1478,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div id="oram-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
-                        <div id="oram-pausedNotice" class="status disconnected" role="status">Direct ORAM is paused: it needs a TEE host, and none serves it since pir2 was retired on 2026-10-02. DPF-PIR, HarmonyPIR and OnionPIR are available.</div>
                         <div class="step">
                             <label for="oram-scriptPubkeys">Bitcoin address(es) or scriptPubKey hex <span style="font-family:var(--mono); font-weight:500; color:var(--ink-faint); letter-spacing:0; text-transform:none;">· one per line</span></label>
                             <textarea id="oram-scriptPubkeys" rows="4" class="addr-input" spellcheck="false" placeholder="Paste Bitcoin addresses (bc1..., 1..., 3...) or raw scriptPubKey hex, one per line...">1D4HSHPJxoPLqiBNFNarz34dcWPLvpiaeb
@@ -1549,7 +1548,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             <div id="oramVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
                                     <label for="oram-serverUrl">ORAM server</label>
-                                    <input type="text" id="oram-serverUrl" class="input" value="" spellcheck="false">
+                                    <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
                                 </div>
                                 <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
