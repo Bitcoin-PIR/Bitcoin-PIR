@@ -719,6 +719,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --out-dir) out=$2; shift 2 ;;
     --trusted-state-dir) state=$2; shift 2 ;;
+    --index-file|--chunks-file) printf '%s %s\n' "$1" "$2" >> "${directMarker}.inputs"; shift 2 ;;
     *) shift ;;
   esac
 done
@@ -873,6 +874,10 @@ exit 1
   const directSuccess = run("sh", [directRunScript], { env: directEnv });
   assert.equal(directSuccess.status, 0, directSuccess.stdout + directSuccess.stderr);
   const directCalls = readFileSync(directMarker, "utf8");
+  const directInputs = readFileSync(`${directMarker}.inputs`, "utf8");
+  assert.match(directInputs, /--index-file \S*db0-proof\/oram-direct-inputs\/utxo_chunks_index_nodust\.bin/);
+  assert.match(directInputs, /--chunks-file \S*db1-proof\/oram-direct-inputs\/utxo_chunks_nodust\.bin/);
+  assert.doesNotMatch(directInputs, /trusted-inputs/, "large ORAM inputs must not be staged in tmpfs");
   assert.match(directCalls, /db0-mainnet-948454/);
   assert.match(directCalls, /db1-delta-940611-948454/);
   const finalArgs = readFileSync(unifiedArgs, "utf8");

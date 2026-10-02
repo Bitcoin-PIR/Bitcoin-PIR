@@ -9,12 +9,10 @@ use crate::{
     ct, CircuitOram, Error, OramBlock, OramParams, PathPageStore, Result, TrustedBlockSource,
     AEAD_OVERHEAD,
 };
-use memmap2::{Mmap, MmapOptions};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fmt, fs,
-    fs::File,
     path::{Path, PathBuf},
 };
 
@@ -703,33 +701,61 @@ pub fn locate_packed_direct_item(
     })
 }
 
-/// Streaming source for direct INDEX logical blocks.
+/// Read a direct source file whole and check it against the SHA-256 the
+/// build bound for it. Building from these exact bytes instead of a mapping
+/// of the file means the host cannot change the input after it was hashed,
+/// and the build's reads, which follow the secret initial placement, never
+/// reach the disk as page faults.
+pub fn read_verified_source(info: &DirectTableInfo, expected_sha256: &[u8; 32]) -> Result<Vec<u8>> {
+    let bytes = std::fs::read(&info.path)?;
+    let actual: [u8; 32] = Sha256::digest(&bytes).into();
+    if bytes.len() as u64 != info.file_bytes || &actual != expected_sha256 {
+        return Err(Error::InvalidInput(format!(
+            "direct {} source {} changed after it was hashed: {} bytes, sha256 {}",
+            info.level,
+            info.path.display(),
+            bytes.len(),
+            hex::encode(actual)
+        )));
+    }
+    Ok(bytes)
+}
+
+/// Streaming source for direct INDEX logical blocks, read from memory.
 pub struct DirectIndexPackedBlockReader {
     info: DirectTableInfo,
     metadata: DirectTableMetadata,
     next_block: usize,
-    mmap: Mmap,
+    mmap: Vec<u8>,
     placement: Vec<u32>,
 }
 
 impl DirectIndexPackedBlockReader {
-    /// Build a direct INDEX placement and open it as a packed ORAM source.
+    /// Build a direct INDEX placement over the source file read into memory.
     pub fn build(info: DirectTableInfo, items_per_block: usize) -> Result<Self> {
+        let bytes = std::fs::read(&info.path)?;
+        Self::from_bytes(info, items_per_block, bytes)
+    }
+
+    /// Build a direct INDEX placement over the source's exact bytes (see
+    /// [`read_verified_source`]).
+    pub fn from_bytes(
+        info: DirectTableInfo,
+        items_per_block: usize,
+        bytes: Vec<u8>,
+    ) -> Result<Self> {
         if info.level != DirectLevel::Index {
             return Err(Error::InvalidInput(
                 "DirectIndexPackedBlockReader requires index table info".into(),
             ));
         }
-        let file = File::open(&info.path)?;
-        // SAFETY: the file is opened read-only and is not mutated by this reader.
-        let mmap = unsafe { MmapOptions::new().map(&file)? };
-        let placement = build_direct_index_placement(&info, &mmap)?;
+        let placement = build_direct_index_placement(&info, &bytes)?;
         let metadata = DirectTableMetadata::from_info(&info, items_per_block)?;
         Ok(Self {
             info,
             metadata,
             next_block: 0,
-            mmap,
+            mmap: bytes,
             placement,
         })
     }
@@ -840,24 +866,32 @@ impl TrustedBlockSource for DirectIndexPackedBlockReader {
 pub struct DirectChunkPackedBlockReader {
     metadata: DirectTableMetadata,
     next_block: usize,
-    mmap: Mmap,
+    mmap: Vec<u8>,
 }
 
 impl DirectChunkPackedBlockReader {
-    /// Open a direct CHUNK array as a packed ORAM source.
+    /// Open a direct CHUNK array, read into memory, as a packed ORAM source.
     pub fn open(info: DirectTableInfo, items_per_block: usize) -> Result<Self> {
+        let bytes = std::fs::read(&info.path)?;
+        Self::from_bytes(info, items_per_block, bytes)
+    }
+
+    /// Open a direct CHUNK array from its exact bytes (see
+    /// [`read_verified_source`]).
+    pub fn from_bytes(
+        info: DirectTableInfo,
+        items_per_block: usize,
+        bytes: Vec<u8>,
+    ) -> Result<Self> {
         if info.level != DirectLevel::Chunk {
             return Err(Error::InvalidInput(
                 "DirectChunkPackedBlockReader requires chunk table info".into(),
             ));
         }
-        let file = File::open(&info.path)?;
-        // SAFETY: the file is opened read-only and is not mutated by this reader.
-        let mmap = unsafe { MmapOptions::new().map(&file)? };
         Ok(Self {
             metadata: DirectTableMetadata::from_info(&info, items_per_block)?,
             next_block: 0,
-            mmap,
+            mmap: bytes,
         })
     }
 
@@ -1617,7 +1651,28 @@ fn checked_next_power_of_two(value: usize) -> Result<usize> {
 mod tests {
     use super::*;
     use crate::{circuit_meta_page_bytes, circuit_payload_page_bytes, MemPageStore};
+    use std::fs::File;
     use std::io::Write as _;
+
+    #[test]
+    fn verified_source_reads_only_the_bytes_the_build_hashed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DIRECT_CHUNKS_INPUT_FILE);
+        write_chunks(&path, 3);
+        let info = DirectTableInfo::from_chunks_file(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let sha256: [u8; 32] = Sha256::digest(&bytes).into();
+        assert_eq!(read_verified_source(&info, &sha256).unwrap(), bytes);
+
+        // The host swaps one byte after the build hashed the file.
+        let mut swapped = bytes.clone();
+        swapped[0] ^= 1;
+        std::fs::write(&path, &swapped).unwrap();
+        let error = read_verified_source(&info, &sha256)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("changed after it was hashed"), "{error}");
+    }
 
     #[test]
     fn direct_index_source_finds_records() {

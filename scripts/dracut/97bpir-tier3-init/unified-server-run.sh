@@ -1005,30 +1005,25 @@ build_direct_oram() {
     mkdir -p "$trusted_input_dir" "$trusted_state_dir" \
         || fatal "failed to create trusted tmpfs directories for $db_label"
     : >"$log_file" || fatal "failed to create $log_file"
-    copy_to_trusted_runtime "$source_index_file" \
-        "$trusted_input_dir/utxo_chunks_index_nodust.bin" "$db_label index source"
-    copy_to_trusted_runtime "$source_chunks_file" \
-        "$trusted_input_dir/utxo_chunks_nodust.bin" "$db_label chunks source"
+    # The two large sources stay on the data disk. oramctl reads each one
+    # whole into memory, checks those exact bytes against the certified
+    # [direct_oram] hashes and builds from memory, so neither a later change
+    # on disk nor the build's page faults reach it. A 4.6 GB tmpfs copy would
+    # not fit an 8 GB guest, whose tmpfs gets half of RAM.
     copy_to_trusted_runtime "$db_evidence" \
         "$trusted_input_dir/build-evidence.bin" "$db_label DB evidence"
     copy_to_trusted_runtime "$db_manifest" \
         "$trusted_input_dir/server-db-MANIFEST.toml" "$db_label exact server DB manifest"
     copy_to_trusted_runtime "$root_bundle" \
         "$trusted_input_dir/root-bundle-payload.bin" "$db_label root bundle"
-    index_file="$trusted_input_dir/utxo_chunks_index_nodust.bin"
-    chunks_file="$trusted_input_dir/utxo_chunks_nodust.bin"
+    index_file="$source_index_file"
+    chunks_file="$source_chunks_file"
     db_evidence="$trusted_input_dir/build-evidence.bin"
     db_manifest="$trusted_input_dir/server-db-MANIFEST.toml"
     root_bundle="$trusted_input_dir/root-bundle-payload.bin"
-    trusted_index_sha="$(sha256_path "$index_file")"
-    trusted_chunks_sha="$(sha256_path "$chunks_file")"
-    [ "$trusted_index_sha" = "$expected_index_sha" ] \
-        || fatal "$db_label trusted tmpfs index copy hash mismatch"
-    [ "$trusted_chunks_sha" = "$expected_chunks_sha" ] \
-        || fatal "$db_label trusted tmpfs chunks copy hash mismatch"
 
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
-    echo "[unified-server-run] regenerating $db_label direct ORAM from trusted tmpfs into $out_dir; trusted state: $trusted_state_dir" >&2
+    echo "[unified-server-run] regenerating $db_label direct ORAM from in-memory verified sources into $out_dir; trusted state: $trusted_state_dir" >&2
     if [ -n "$expected_from_muhash" ]; then
         run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
             "$out_dir" "$log_file" "$ORAMCTL" build-direct \
