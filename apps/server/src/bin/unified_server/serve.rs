@@ -84,10 +84,6 @@ pub(crate) async fn serve_connections(
             "disabled (no onion_*.bin files in any DB dir)"
         }
     );
-    match args.role {
-        ServerRole::Primary => println!("  HarmonyPIR: query server"),
-        ServerRole::Secondary => println!("  HarmonyPIR: hint server"),
-    }
     if server.main_db().has_bucket_merkle() {
         println!("  Merkle: available (per-bucket)");
     }
