@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `present_api_key` on `DpfClient`, `HarmonyClient`, `OnionClient` and
+  `OramClient` (and `credits::present_api_key` for any transport): present an
+  operator-issued API key over the encrypted channel, after which the server
+  serves that connection unmetered (docs/CREDITS.md "API keys").
+
 ### Security
 
 - Removed the public DPF/Harmony raw-inspector and membership-only split

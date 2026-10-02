@@ -157,6 +157,37 @@ pub(crate) async fn handle_variant<S>(
                         };
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
+                    REQ_API_KEY => {
+                        // Bearer material: encrypted channel only
+                        // (docs/CREDITS.md "API keys"). A rejected key counts
+                        // as a rejected presentation.
+                        let resp = if !request_was_encrypted {
+                            Response::Error(
+                                "REQ_API_KEY must be sent inside the encrypted channel".into(),
+                            )
+                        } else {
+                            match (server.api_keys.as_ref(), Request::decode(payload)) {
+                                (None, _) => Response::Error(
+                                    "API keys are not enabled on this server (no --api-key-file)".into(),
+                                ),
+                                (Some(keys), Ok(Request::ApiKey { key })) => match keys.label(&key) {
+                                    Some(label) => {
+                                        gas_balance.accept_api_key(label);
+                                        Response::ApiKeyOk
+                                    }
+                                    None => {
+                                        gas_balance.note_presentation_failure();
+                                        Response::Error("unknown API key".into())
+                                    }
+                                },
+                                (Some(_), Ok(_)) => Response::Error("malformed REQ_API_KEY".into()),
+                                (Some(_), Err(error)) => {
+                                    Response::Error(format!("malformed REQ_API_KEY: {error}"))
+                                }
+                            }
+                        };
+                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
+                    }
                     REQ_ADMIN_AUTH_CHALLENGE => {
                         match server.admin_config {
                             None => {

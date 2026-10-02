@@ -153,6 +153,7 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 | `--access BACKEND=MODE` | Per-backend override, repeatable (see [Access policy](#access-policy)): `free`, `paid`, or `best-effort[:N[:GAS_PER_HOUR]]`. `paid` needs `--credit-issuer-url`. |
 | `--free-threads N` | Threads of the low-priority pool best-effort free frames run on (default 1). |
 | `--free-queue-wait-ms MS` | How long a free frame waits for a best-effort slot before it is refused as busy (default 10000). |
+| `--api-key-file FILE` | Operator-issued API keys, one `SHA256HEX LABEL` per line (see [API keys](#api-keys)). A connection that presents a listed key is unmetered. |
 
 Redeem requests are signed by the server's identity key and carry its
 operator-signed certificate; answers are signed by the issuer key over the
@@ -230,6 +231,28 @@ on its connection (every request/response exchange, DPF rounds and hint
 requests included); a frame refused behind another pipelined frame ends
 its request.
 
+### API keys
+
+An operator can serve chosen clients without credits, such as its own
+tools, the CI canary, or a partner wallet. `--api-key-file FILE` lists one
+key per line as `SHA256HEX LABEL` (blank lines and `#` comments allowed),
+so the server stores only hashes. `bpir-admin api-key new --label NAME`
+mints a key: the key goes to stdout once, its file line to stderr. To
+revoke a key, delete its line and restart the server.
+
+A client presents the key with `REQ_API_KEY` once the encrypted channel is
+open. In the SDK every backend client has `present_api_key`; the live
+integration suite reads `PIR_API_KEY`. From then on the connection is
+unmetered on every backend: frames are admitted at normal priority,
+nothing is charged, and no free lane or hourly budget applies. Keys are
+not charged for now; per-key budgets would be a later change. An unknown
+key counts as a rejected presentation, so the connection closes after
+three.
+
+Privacy: a key identifies its holder, so the server can link every frame
+on that connection to the key's label. PIR still hides which addresses
+are queried, and admission still never depends on the query.
+
 ## Protocol
 
 `REQ_CREDIT_PRESENT` (`0x12`): `[kind u8][len u32 LE][payload]`, at most
@@ -239,6 +262,9 @@ its request.
 answers `RESP_CREDIT_OK` (`0x12`): `[gas_added u64 LE][gas_balance i64
 LE]`, or `RESP_ERROR` with the issuer's reason. Opcodes `0x08`, `0x09`,
 and `0x0d`–`0x10` stay retired.
+
+`REQ_API_KEY` (`0x13`): the key's bytes (1 to 128), encrypted channel only.
+The server answers `RESP_API_KEY_OK` (`0x13`, no body) or `RESP_ERROR`.
 
 ## Issuer API (v2)
 
