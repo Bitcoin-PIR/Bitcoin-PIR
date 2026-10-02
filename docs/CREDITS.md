@@ -183,10 +183,14 @@ verification data of a backend it runs free.
 
 Examples:
 
-- Reference deployment: DPF and Direct ORAM free when idle, HarmonyPIR and
-  OnionPIR paid. pir1: `--require-credits --access dpf=best-effort:2
-  --free-threads 2`; pir2: `--require-credits --access dpf=best-effort:2
-  --access oram=best-effort:2 --free-threads 2`.
+- Reference deployment (since 2026-10-02): DPF and HarmonyPIR free when
+  idle, OnionPIR paid, Direct ORAM paused (no TEE host). pir1:
+  `--require-credits --access dpf=best-effort:2 --access
+  harmony=best-effort:1:1500000 --free-threads 2`, so HarmonyPIR hints
+  are free up to 1.5M gas (about ten fresh clients) per hour; the pir2
+  MacBook node: `--require-credits --access dpf=best-effort:2 --access
+  harmony=best-effort:2 --free-threads 2`. Both also take
+  `--api-key-file`.
 - A hobby server giving one core of DPF away, no issuer, nobody can pay:
   `--access dpf=best-effort:1`.
 - Paid only: `--require-credits`. Free only: no flag.

@@ -376,10 +376,17 @@ work runs on the MacBook; this repository's hosts have no SSH to it.
    rebuild changes the hash, because `git_rev` is compiled in.
 3. Local — Flow B: a PR that sets `PIR2_MACBOOK_PIN.binarySha256Hex` to
    the new `shasum -a 256 unified_server`.
-4. Auth — merge, point the runbook step 9 plist at the new binary,
-   restart the node, then run Flow C right away. Strict clients reject
-   the slot between the restart and the Pages deploy.
-5. Read — Flow A must print `✓ binary_sha256 matches expected`.
+4. Auth (MacBook) — switch the node to the new binary with the runbook's
+   switch procedure (after step 9). It waits for launchd to unregister the
+   old service and rolls back on its own if the new binary does not
+   listen. The web pin still names the old binary, so a failed switch
+   costs nothing on the web.
+5. Auth — only after the node reports the new binary listening, merge
+   the step 3 PR and run Flow C at once. Strict clients reject the slot
+   from the switch until the Pages deploy, so keep that gap short. Never
+   deploy the pin first: on 2026-10-02 a pin deployed ahead of a failed
+   switch kept the slot down for about 3 h.
+6. Read — Flow A must print `✓ binary_sha256 matches expected`.
 
 Rollback: point the plist back at the previous `bin/<SHA>/`, restart, and
 revert the pin through Flow C.
