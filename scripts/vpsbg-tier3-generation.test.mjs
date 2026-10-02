@@ -879,6 +879,8 @@ exit 1
   assert.match(finalArgs, /--direct-oram-db\n0=.*db0-mainnet-948454/);
   assert.match(finalArgs, /--direct-oram-db\n1=.*db1-delta-940611-948454/);
   assert.match(finalArgs, /--pir2-snp-sealed-require-ready/);
+  assert.match(finalArgs, /^--oram-only$/m);
+  assert.doesNotMatch(finalArgs, /^(?:dpf|harmony|onion)=/m, "the ORAM-only host grants no other backend");
   assert.match(finalArgs, /--pir2-snp-sealed-identity-cert/);
   assert.doesNotMatch(finalArgs, /--pir2-snp-sealed-(?:accounting-authorization|issuer-approval)/);
   assert.doesNotMatch(finalArgs, /--service-|--require-service-auth-v1|--identity-key-path/);

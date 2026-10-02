@@ -58,13 +58,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   printf -v "$key" '%s' "$value"
 done < "$env_file"
 
-# Defaults for the pir2 production topology; every one can be overridden in the env file.
-: "${SERVER_ID:=25285}"; : "${WS_URL:=wss://weikeng2.bitcoinpir.org}"
+# Defaults for the pir2 production topology (server 26939, EPYC 7713P Milan, Direct
+# ORAM only); every one can be overridden in the env file. A Milan report has no FMC
+# SVN, so the FMC floor is empty and --minimum-tcb-fmc is left out.
+: "${SERVER_ID:=26939}"; : "${WS_URL:=wss://weikeng2.bitcoinpir.org}"
 : "${BUILD_ROOT:=/home/pir/data/production-builds}"; : "${KERNEL:=/boot/vmlinuz-7.0.0-29-generic}"
 : "${OVMF:=$REPO/web/public/ovmf/OVMF_SEV_MEASUREDBOOT_4M.fd}"; : "${AMD_CERT_DIR:=$REPO/.keys/pir2-ceremony}"
-: "${OPERATOR_KEY:=$REPO/.keys/pir2-operator.key}"; : "${STABLE_SERVER_ID:=pir2-vpsbg-dpf-v1}"
-: "${VCPUS:=4}"; : "${VCPU_SIG_HEX:=00b10f10}"; : "${VMM_TYPE:=qemu}"; : "${GUEST_FEATURES_HEX:=1}"; : "${GUEST_POLICY_HEX:=30000}"
-: "${MIN_TCB_FMC:=1}"; : "${MIN_TCB_BOOTLOADER:=1}"; : "${MIN_TCB_TEE:=1}"; : "${MIN_TCB_SNP:=4}"; : "${MIN_TCB_MICROCODE:=88}"
+: "${OPERATOR_KEY:=$REPO/.keys/pir2-operator.key}"; : "${STABLE_SERVER_ID:=pir2-oram-v1}"
+: "${VCPUS:=4}"; : "${VCPU_SIG_HEX:=00a00f11}"; : "${VMM_TYPE:=qemu}"; : "${GUEST_FEATURES_HEX:=1}"; : "${GUEST_POLICY_HEX:=30000}"
+: "${MIN_TCB_FMC:=}"; : "${MIN_TCB_BOOTLOADER:=4}"; : "${MIN_TCB_TEE:=0}"; : "${MIN_TCB_SNP:=29}"; : "${MIN_TCB_MICROCODE:=222}"
 : "${SSH_PACE_SECONDS:=2}"; : "${READY_WAIT_SECONDS:=2400}"  # ssh/scp share one ControlMaster connection per window
 : "${TAG:=}"; : "${UKI_LOCAL_DIR:=$REPO/deploy/uki/$TAG}"; : "${HETZNER_ARCHIVE:=}"; : "${IMAGE:=}"; : "${ROLLBACK_LABEL:=}"
 
@@ -209,7 +211,7 @@ build)
     --ark "$AMD_CERT_DIR/ark.pem" --ask "$AMD_CERT_DIR/ask.pem" --vcek "$AMD_CERT_DIR/vcek.pem" --expected-ark-sha256-hex "$ARK_SHA256" \
     --vcpus "$VCPUS" --vcpu-sig-hex "$VCPU_SIG_HEX" --vmm-type "$VMM_TYPE" --guest-features-hex "$GUEST_FEATURES_HEX" \
     --expected-guest-policy-hex "$GUEST_POLICY_HEX" --provider-id-hex "$PROVIDER_ID_HEX" --stable-server-id "$STABLE_SERVER_ID" \
-    --minimum-tcb-fmc "$MIN_TCB_FMC" --minimum-tcb-bootloader "$MIN_TCB_BOOTLOADER" --minimum-tcb-tee "$MIN_TCB_TEE" \
+    ${MIN_TCB_FMC:+--minimum-tcb-fmc "$MIN_TCB_FMC"} --minimum-tcb-bootloader "$MIN_TCB_BOOTLOADER" --minimum-tcb-tee "$MIN_TCB_TEE" \
     --minimum-tcb-snp "$MIN_TCB_SNP" --minimum-tcb-microcode "$MIN_TCB_MICROCODE" \
     --identity-generation "$GEN" --operator-signing-key "$OPERATOR_KEY" --out "$EVIDENCE_DIR/release-generation$GEN.bin"
   echo "PASS pir2_sealed_campaign action=build image=$new$( ((dry_run)) && echo ' dry_run=true')"

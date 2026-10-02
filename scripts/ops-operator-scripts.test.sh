@@ -32,11 +32,11 @@ grep -qx 'PASS action=images dry_run=true' <<<"$images_preview"
 grep -q '\.secrets/vpsbg-api-token' <<<"$images_preview"
 
 open_preview=$("$script_dir/vpsbg-data-disk.sh" open --image-id 291 --dry-run)
-grep -qx 'server_id=25285' <<<"$open_preview"
+grep -qx 'server_id=26939' <<<"$open_preview"
 grep -qx 'detach_body={"kernel_image_id":null}' <<<"$open_preview"
 grep -qx 'PASS action=open dry_run=true' <<<"$open_preview"
 
-close_preview=$("$script_dir/vpsbg-data-disk.sh" close --server-id 25285 --image-id 291 --dry-run)
+close_preview=$("$script_dir/vpsbg-data-disk.sh" close --server-id 26939 --image-id 291 --dry-run)
 grep -qx 'PASS action=close dry_run=true' <<<"$close_preview"
 
 printf '%s\n' \

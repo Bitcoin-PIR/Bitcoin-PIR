@@ -75,10 +75,10 @@ After `PASS sealed_phase_config=observe`, place that exact file with
 [`scripts/vpsbg-data-disk.sh`](../../scripts/vpsbg-data-disk.sh):
 
 ```sh
-scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh open --server-id 26939 --image-id CURRENT --apply
 scripts/vpsbg-data-disk.sh put --local /absolute/observe.startup.env \
   --remote /home/pir/data/pir2-sealed/startup.env --apply
-scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh close --server-id 26939 --image-id CURRENT --apply
 ```
 
 `release`, `receipt`, and `fetch` run `cargo run --locked --offline -p bpir-admin`,

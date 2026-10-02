@@ -107,6 +107,17 @@ test("build --dry-run plans the whole first window in order without touching the
   for (const re of order) { const i = p.slice(at).search(re); assert.ok(i >= 0, `plan lacks ${re} after position ${at}`); at += i; }
   assert.match(r.stdout, /^PASS pir2_sealed_campaign action=build image=<image> dry_run=true$/m);
   assert.doesNotMatch(readFileSync(f.envFile, "utf8"), /^IMAGE=/m, "dry run does not record an image id");
+
+  // Milan defaults: its vCPU signature and TCB floor, and no FMC floor (a
+  // Milan report has no FMC SVN). A Turin env file can still set one.
+  const release = plans(r).find((l) => /pir2-sealed-ceremony\.sh release /.test(l));
+  assert.match(release, /--vcpu-sig-hex 00a00f11 /);
+  assert.match(release, /--stable-server-id pir2-oram-v1 /);
+  assert.match(release, /--minimum-tcb-bootloader 4 --minimum-tcb-tee 0 --minimum-tcb-snp 29 --minimum-tcb-microcode 222 /);
+  assert.doesNotMatch(release, /--minimum-tcb-fmc/);
+  const turin = run(fixture({ MIN_TCB_FMC: "1" }), ["build", "--dry-run"]);
+  assert.equal(turin.status, 0, turin.stdout + turin.stderr);
+  assert.match(plans(turin).find((l) => /pir2-sealed-ceremony\.sh release /.test(l)), /--minimum-tcb-fmc 1 --minimum-tcb-bootloader 4 /);
 });
 
 test("enroll, probe, and ready dry runs require IMAGE and plan their windows", () => {
@@ -122,7 +133,7 @@ test("enroll, probe, and ready dry runs require IMAGE and plan their windows", (
   assert.match(pe, /put --local .*release-generation7\.bin --remote \/home\/pir\/data\/pir2-sealed\/release\.bin/);
   assert.match(pe, /pir2-sealed-recovery-receipt\.sh --phase enroll --ordinal 57/);
   assert.match(pe, /pir2-sealed-ceremony\.sh receipt .*--expected-phase enroll --expected-ordinal 57/);
-  assert.match(pe, /sign-identity --operator-key-path .* --server-id pir2-vpsbg-dpf-v1 .*--valid-from 0 --valid-until 0/);
+  assert.match(pe, /sign-identity --operator-key-path .* --server-id pir2-oram-v1 .*--valid-from 0 --valid-until 0/);
 
   const probe = run(f, ["probe", "--ordinal", "58", "--with-cert", "--dry-run"]);
   assert.equal(probe.status, 0, probe.stdout + probe.stderr);
