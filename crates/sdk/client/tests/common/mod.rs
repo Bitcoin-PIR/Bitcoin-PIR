@@ -1,7 +1,7 @@
 //! Live-server session helpers shared by the integration tests.
 //!
 //! The public PIR deployment (`wss://weikeng1.bitcoinpir.org` /
-//! `wss://weikeng2.bitcoinpir.org`) serves PIR over an X25519 encrypted
+//! `wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`) serves PIR over an X25519 encrypted
 //! channel: a client attests, upgrades to the secure channel, installs the
 //! verified database proof, and queries. There is no policy fetch, no
 //! proof-of-work, and no authorization round — free queries are open.

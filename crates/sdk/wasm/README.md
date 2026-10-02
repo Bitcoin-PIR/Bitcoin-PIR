@@ -79,7 +79,7 @@ const metrics = sdkCreateAtomicMetrics();
 // 4. Build + connect a DPF client.
 const client = new WasmDpfClient(
   'wss://weikeng1.bitcoinpir.org',
-  'wss://weikeng2.bitcoinpir.org',
+  'wss://bitcoin-pir-weikeng-laptop.chenweikeng.com',
 );
 client.setMetricsRecorder(metrics);
 await client.connect();

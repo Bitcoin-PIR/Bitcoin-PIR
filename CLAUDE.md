@@ -57,12 +57,14 @@ cd web && npm run build && npm test
 
 ## Production notes
 
-- Two hosts: pir1 (Hetzner, DPF-0 + OnionPIR + Harmony hint) and pir2
-  (VPSBG AMD SEV Tier 3, Direct ORAM). All operations route through
+- Two hosts: pir1 (Hetzner, DPF-0 + OnionPIR + Harmony hint) and pir2,
+  since 2026-10-01 a MacBook without a TEE (DPF-1 + Harmony query; Flow I).
+  The VPSBG AMD SEV host was retired on 2026-10-02, so Direct ORAM is
+  paused until a new VPSBG TEE host exists. All operations route through
   `docs/PRODUCTION_OPERATIONS.md` and its runbooks — never improvise from
   memory or old documents.
 - Production binaries are bare-Cargo builds (`--locked --release -p runtime`,
-  pir2 adds `--features cuckoo-oram`) + `strip --strip-debug`. The Nix flake
+  a VPSBG TEE host adds `--features cuckoo-oram`) + `strip --strip-debug`. The Nix flake
   is a development harness only.
 - Production databases come from the locked external attested-builder;
   `scripts/build_full.sh` and `tools/db-builder` are development-only.

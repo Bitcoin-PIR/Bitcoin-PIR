@@ -69,7 +69,7 @@ use pir_sdk_client::{DpfClient, PirClient};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut client = DpfClient::new(
         "wss://weikeng1.bitcoinpir.org",
-        "wss://weikeng2.bitcoinpir.org",
+        "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com",
     );
     client.connect().await?;
 
@@ -96,8 +96,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 use pir_sdk_client::{HarmonyClient, PirClient, PRP_HMR12};
 
 let mut client = HarmonyClient::new(
-    "wss://weikeng1.bitcoinpir.org", // query server
-    "wss://weikeng2.bitcoinpir.org", // hint server
+    "wss://weikeng1.bitcoinpir.org", // hint server
+    "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com", // query server
 );
 client.set_prp_backend(PRP_HMR12);
 client.set_master_key(&[0u8; 16]); // 128-bit session key

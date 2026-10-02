@@ -15,7 +15,7 @@ use pir_sdk::BufferingLeakageRecorder;
 use pir_sdk_client::{DpfClient, PirClient, ScriptHash};
 
 const DEFAULT_SERVER0: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_SERVER1: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_SERVER1: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 
 struct Args {
     server0_url: String,

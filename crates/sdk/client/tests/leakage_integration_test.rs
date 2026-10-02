@@ -61,13 +61,13 @@ use pir_sdk_client::OnionClient;
 // ─── Server URL helpers (mirror integration_test.rs) ────────────────────────
 
 const DEFAULT_DPF_SERVER0: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_DPF_SERVER1: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_DPF_SERVER1: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 // Production topology (memory: project_pir1_hint_pir2_query_split.md):
 //   pir1 = Hetzner, no-SEV   → HINT server  (--serve-hints + --pool-size)
-//   pir2 = VPSBG,   SEV-SNP  → QUERY server (--serve-queries)
+//   pir2 = MacBook node, no TEE (since 2026-10-01) → QUERY server (--serve-queries)
 // Defaults were reversed pre-2026-05-13.
 const DEFAULT_HARMONY_HINT: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_HARMONY_QUERY: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_HARMONY_QUERY: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 #[cfg(feature = "onion")]
 const DEFAULT_ONION_URL: &str = "wss://weikeng1.bitcoinpir.org";
 

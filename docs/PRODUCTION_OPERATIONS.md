@@ -2,7 +2,7 @@
 
 Start here for any authorized production change. Query live state first —
 never infer it from documents. Classify the ask as **one campaign**: a
-named release (for example R5.1) or one flow A–H. One explicit
+named release (for example R5.1) or one flow A–I. One explicit
 authorization covers that whole campaign. Run the campaign's numbered
 steps in order. Do not invent a second campaign, and do not re-ask
 between steps of the same campaign.
@@ -13,10 +13,14 @@ Live status:
 scripts/production-status.sh
 ```
 
-That prints pir1 SSH health and the pir2 VPSBG snapshot. For pir2 only,
-use `scripts/vpsbg-production-status.sh` or
-`scripts/vpsbg-measured-boot.sh status`. Each mutation script also has
-`--help` and, where it can change a host, `--dry-run`.
+That prints pir1 SSH health and a public attest of the pir2 MacBook node
+against `PIR2_MACBOOK_PIN`. Each mutation script also has `--help` and,
+where it can change a host, `--dry-run`.
+
+The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
+and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
+Direct ORAM is paused until a new VPSBG TEE host exists. Flows E–G and the
+VPSBG scripts apply only to that future host.
 
 Identity values (hashes, measurements, image IDs) stay in
 [`web/src/attest-pin.ts`](../web/src/attest-pin.ts) or in live command
@@ -86,6 +90,7 @@ stop and report.
 | F | Edit `/home/pir/data/` on VPSBG, including `startup.env` | [Key management](KEY_MANAGEMENT.md) |
 | G | pir2 sealed Observe / Enroll / Probe / Ready | [Sealed release](runbooks/pir2-sealed-release.md) |
 | H | Produce or rotate DPF / Harmony / Onion v2 / ORAM proofs | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
+| I | Rebuild, restart, or re-pin the pir2 MacBook node (no TEE) | Flow I below |
 
 Payment issuer deploy, mainnet Lightning, key generation, funds, and
 image deletion are **not** flows. The retired Payment V1 material lives
@@ -358,6 +363,27 @@ Rollback is rotation §7: restore both hosts to the last generation
 proven on both, then Flow C for the prior pins. If one host fails,
 do not leave a mixed fleet.
 
+## I. pir2 MacBook node — Local then Auth
+
+The node has no TEE: strict clients admit it by `PIR2_MACBOOK_PIN` plus
+its operator-signed identity. Bring-up, data layout, and the launchd unit
+are the [MacBook node runbook](runbooks/pir2-macbook-replacement.md). The
+work runs on the MacBook; this repository's hosts have no SSH to it.
+
+1. Read — Flow A. Record the live `binary_sha256`.
+2. Local (MacBook) — build the approved commit with runbook step 4 into a
+   new `bin/<SHA>/` directory. Leave the running binary in place. Any
+   rebuild changes the hash, because `git_rev` is compiled in.
+3. Local — Flow B: a PR that sets `PIR2_MACBOOK_PIN.binarySha256Hex` to
+   the new `shasum -a 256 unified_server`.
+4. Auth — merge, point the runbook step 9 plist at the new binary,
+   restart the node, then run Flow C right away. Strict clients reject
+   the slot between the restart and the Pages deploy.
+5. Read — Flow A must print `✓ binary_sha256 matches expected`.
+
+Rollback: point the plist back at the previous `bin/<SHA>/`, restart, and
+revert the pin through Flow C.
+
 ## Human-only — do not start from this page
 
 - Key generation and writing `.keys/` from scratch.
@@ -376,6 +402,7 @@ do not leave a mixed fleet.
 | Operation | Runbook | Command | Successful handoff |
 | --- | --- | --- | --- |
 | Read pir1 and pir2 status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
+| Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, then Flow C | Flow A prints `✓ binary_sha256 matches expected` |
 | Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
 | Build the **producer** UKI | [Attested-builder UKI](ATTESTED_BUILDER_TIER3_UKI.md) | `scripts/build_uki_attested_builder_tier3.sh` | archived `.efi` + `.meta` |
 | Verify a local DB proof | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) | `bpir-admin db-proof verify` | verifier exit 0 |
