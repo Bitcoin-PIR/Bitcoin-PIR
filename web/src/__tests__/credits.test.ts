@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CREDIT_PRESENT_PAYLOAD_LEN, REQ_CREDIT_PRESENT, RESP_CREDIT_OK } from '../constants.js';
+import {
+  MAX_API_KEY_LEN,
+  MAX_CREDIT_PRESENT_PAYLOAD_LEN,
+  REQ_API_KEY,
+  REQ_CREDIT_PRESENT,
+  RESP_API_KEY_OK,
+  RESP_CREDIT_OK,
+} from '../constants.js';
 import {
   CREDIT_PRESENT_KIND_ARC,
   CREDIT_PRESENT_KIND_CASHU,
@@ -10,8 +17,10 @@ import {
   IssuerError,
   bytesToHex,
   creditsToCover,
+  encodeApiKeyFrame,
   encodeCreditPresentFrame,
   hexToBytes,
+  parseApiKeyResponsePayload,
   parseCreditResponsePayload,
   parseInsufficientGas,
   parseIssuedCredential,
@@ -88,6 +97,26 @@ const SERVER_INFO = {
     },
   },
 };
+
+describe('API key frame codec', () => {
+  it('frames the key after the opcode and accepts only the empty OK answer', () => {
+    expect(Array.from(encodeApiKeyFrame('bpk_1'))).toEqual(
+      [6, 0, 0, 0, REQ_API_KEY, ...new TextEncoder().encode('bpk_1')],
+    );
+    expect(() => encodeApiKeyFrame('')).toThrow(/1 to 128 bytes/);
+    expect(() => encodeApiKeyFrame('k'.repeat(MAX_API_KEY_LEN + 1))).toThrow(/1 to 128 bytes/);
+
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_API_KEY_OK]))).not.toThrow();
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_API_KEY_OK, 0]))).toThrow(/unexpected/);
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_CREDIT_OK]))).toThrow(/unexpected/);
+    const message = new TextEncoder().encode('unknown API key');
+    const error = new Uint8Array(5 + message.length);
+    error[0] = 0xff;
+    new DataView(error.buffer).setUint32(1, message.length, true);
+    error.set(message, 5);
+    expect(() => parseApiKeyResponsePayload(error)).toThrow('unknown API key');
+  });
+});
 
 describe('credit frame codec', () => {
   it('encodes the present frame with a length prefix and parses receipts', () => {

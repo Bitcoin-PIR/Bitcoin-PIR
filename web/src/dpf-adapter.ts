@@ -349,6 +349,13 @@ export interface BatchPirClientConfig {
    */
   creditProvider?: CreditProvider;
   onCredits?: (serverIndex: 0 | 1, status: CreditEnablement) => void;
+  /**
+   * Operator-issued API key (`docs/CREDITS.md` "API keys"), presented on each
+   * leg once its secure channel is open, in place of credits. A leg that
+   * accepts it is unmetered; outcomes arrive via `onCredits` as `api-key`
+   * or `error`.
+   */
+  apiKey?: string;
   /** Database proof pins the frontend should fetch and verify after the
    * catalog is loaded. Empty/default means no db-proof UI check. */
   databaseProofPins?: DatabaseProofPin[];
@@ -1997,28 +2004,36 @@ export class BatchPirClientAdapter {
    * before sending it. Never throws; the outcome goes to `onCredits`.
    */
   async enableCredits(serverIndex: 0 | 1): Promise<CreditEnablement | null> {
+    const apiKey = this.config.apiKey?.trim();
     const provider = this.config.creditProvider;
-    if (!provider) return null;
+    if (!apiKey && !provider) return null;
     const client = this.wasmClient;
     let outcome: CreditEnablement;
     if (!client || !client.isServerConnected(serverIndex)) {
       outcome = { state: 'error', error: `server${serverIndex} is not connected` };
     } else if (!this.secureChannelLegs[serverIndex]) {
-      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+      outcome = { state: 'error', error: `${apiKey ? 'API key' : 'credits'} withheld: channel is cleartext` };
     } else {
       try {
-        const state = await client.enableCredits(serverIndex, provider);
-        outcome = { state: state as CreditEnablement['state'] };
+        if (apiKey) {
+          await client.presentApiKey(serverIndex, apiKey);
+          outcome = { state: 'api-key' };
+        } else {
+          const state = await client.enableCredits(serverIndex, provider!);
+          outcome = { state: state as CreditEnablement['state'] };
+        }
       } catch (e) {
         outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
       }
     }
-    if (outcome.state === 'required') {
+    if (outcome.state === 'api-key') {
+      this.log(`server${serverIndex}: API key accepted; this connection is unmetered`, 'info');
+    } else if (outcome.state === 'required') {
       this.log(`server${serverIndex}: credits required; metered frames are funded from the wallet`, 'info');
     } else if (outcome.state === 'best-effort') {
       this.log(`server${serverIndex}: free while the server has room; paid from the wallet only when it is busy`, 'info');
     } else if (outcome.state === 'error') {
-      this.log(`server${serverIndex}: credits could not be enabled — ${outcome.error}`, 'error');
+      this.log(`server${serverIndex}: ${apiKey ? 'API key refused' : 'credits could not be enabled'} — ${outcome.error}`, 'error');
     }
     this.config.onCredits?.(serverIndex, outcome);
     return outcome;

@@ -192,6 +192,8 @@ export interface HarmonyPirClientConfig {
   /** Credits (`docs/CREDITS.md`): see `BatchPirClientConfig.creditProvider`; leg 0 is the hint server, 1 the query server. */
   creditProvider?: CreditProvider;
   onCredits?: (providerIndex: 0 | 1, status: CreditEnablement) => void;
+  /** Operator-issued API key; see `BatchPirClientConfig.apiKey`. */
+  apiKey?: string;
   /** Database proof pins the frontend should fetch and verify after the
    * catalog is loaded. Empty/default means no db-proof UI check. */
   databaseProofPins?: DatabaseProofPin[];
@@ -1135,28 +1137,36 @@ export class HarmonyPirClientAdapter {
    */
   /** Turn on credits for one leg when its server requires them; see `BatchPirClient.enableCredits`. */
   async enableCredits(providerIndex: 0 | 1): Promise<CreditEnablement | null> {
+    const apiKey = this.config.apiKey?.trim();
     const provider = this.config.creditProvider;
-    if (!provider) return null;
+    if (!apiKey && !provider) return null;
     const client = this.wasmClient;
     let outcome: CreditEnablement;
     if (!client || !client.isProviderConnected(providerIndex)) {
       outcome = { state: 'error', error: `provider${providerIndex} is not connected` };
     } else if (!this.secureChannelLegs[providerIndex]) {
-      outcome = { state: 'error', error: 'credits withheld: channel is cleartext' };
+      outcome = { state: 'error', error: `${apiKey ? 'API key' : 'credits'} withheld: channel is cleartext` };
     } else {
       try {
-        const state = await client.enableCredits(providerIndex, provider);
-        outcome = { state: state as CreditEnablement['state'] };
+        if (apiKey) {
+          await client.presentApiKey(providerIndex, apiKey);
+          outcome = { state: 'api-key' };
+        } else {
+          const state = await client.enableCredits(providerIndex, provider!);
+          outcome = { state: state as CreditEnablement['state'] };
+        }
       } catch (e) {
         outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
       }
     }
-    if (outcome.state === 'required') {
+    if (outcome.state === 'api-key') {
+      this.log(`provider${providerIndex}: API key accepted; this connection is unmetered`);
+    } else if (outcome.state === 'required') {
       this.log(`provider${providerIndex}: credits required; metered frames are funded from the wallet`);
     } else if (outcome.state === 'best-effort') {
       this.log(`provider${providerIndex}: free while the server has room; paid from the wallet only when it is busy`);
     } else if (outcome.state === 'error') {
-      this.log(`provider${providerIndex}: credits could not be enabled — ${outcome.error}`);
+      this.log(`provider${providerIndex}: ${apiKey ? 'API key refused' : 'credits could not be enabled'} — ${outcome.error}`);
     }
     this.config.onCredits?.(providerIndex, outcome);
     return outcome;

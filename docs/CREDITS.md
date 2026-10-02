@@ -245,8 +245,10 @@ mints a key: the key goes to stdout once, its file line to stderr. To
 revoke a key, delete its line and restart the server.
 
 A client presents the key with `REQ_API_KEY` once the encrypted channel is
-open. In the SDK every backend client has `present_api_key`; the live
-integration suite reads `PIR_API_KEY`. From then on the connection is
+open. In the SDK every backend client has `present_api_key` (`presentApiKey`
+in wasm); the live integration suite reads `PIR_API_KEY`. The web client
+has an API key field under Paid access. It keeps the key for the tab only
+(sessionStorage) and presents it on every leg in place of credits. From then on the connection is
 unmetered on every backend: frames are admitted at normal priority,
 nothing is charged, and no free lane or hourly budget applies. Keys are
 not charged for now; per-key budgets would be a later change. An unknown

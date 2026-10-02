@@ -157,6 +157,15 @@ export const RESP_CREDIT_OK = 0x12;
 /** Largest `REQ_CREDIT_PRESENT` payload a server decodes (256 KiB). */
 export const MAX_CREDIT_PRESENT_PAYLOAD_LEN = 256 * 1024;
 /**
+ * Operator-issued API key (docs/CREDITS.md "API keys"): the key's bytes,
+ * presented inside the encrypted channel; the server answers with an empty
+ * `RESP_API_KEY_OK` and serves the rest of the connection unmetered.
+ */
+export const REQ_API_KEY = 0x13;
+export const RESP_API_KEY_OK = 0x13;
+/** Longest API key a server decodes. */
+export const MAX_API_KEY_LEN = 128;
+/**
  * Client-side pin of the credit issuer (`docs/CREDITS.md`). The server
  * announces no payment endpoint, so this is the only place the browser
  * learns where to buy credits. Operator-owned; change it here, not at

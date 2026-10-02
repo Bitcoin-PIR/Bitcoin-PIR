@@ -1740,6 +1740,24 @@ impl WasmDpfClient {
         Ok(crate::credit::credit_receipt_to_js(receipt))
     }
 
+    /// Present an operator-issued API key on one server (`serverIndex` ∈
+    /// {0, 1}; docs/CREDITS.md "API keys"). Once accepted, that connection
+    /// is served unmetered, so skip `enableCredits` for it. Bearer
+    /// material: call after [`Self::upgrade_to_secure_channel`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, server_index: u8, key: String) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentApiKey: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_api_key(server_index, &key)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections with the encrypted-channel
     /// transport.
     ///
@@ -2356,6 +2374,22 @@ impl WasmHarmonyClient {
         Ok(crate::credit::credit_receipt_to_js(receipt))
     }
 
+    /// Present an operator-issued API key on the hint (0) or query (1)
+    /// server. See [`WasmDpfClient::present_api_key`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, server_index: u8, key: String) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentApiKey: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_api_key(server_index, &key)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections (hint + query) with the encrypted
     /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`]
     /// — same eph_seed caching + binding flow. Argument order matches
@@ -2939,6 +2973,13 @@ impl WasmOramClient {
             .await
             .map_err(err_to_js)?;
         Ok(crate::credit::credit_receipt_to_js(receipt))
+    }
+
+    /// Present an operator-issued API key on the connection. See
+    /// [`WasmDpfClient::present_api_key`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, key: String) -> Result<(), JsError> {
+        self.inner.present_api_key(&key).await.map_err(err_to_js)
     }
 
     /// Wrap the single server connection with the encrypted-channel transport.
