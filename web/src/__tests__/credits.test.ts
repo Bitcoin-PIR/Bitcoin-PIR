@@ -143,7 +143,7 @@ describe('gas card and meter', () => {
     expect(meter.frameGas(0, { kind: 'onion_chunk_query' })).toBe(403_280);
     expect(meter.frameGas(0, { kind: 'harmony_hint_set', level: 21 })).toBe(970);
     expect(meter.frameGas(0, { kind: 'harmony_query', level: 1, subQueries: 3 })).toBe(56);
-    expect(meter.frameGas(0, { kind: 'harmony_continuation' })).toBe(20);
+    expect(meter.frameGas(0, { kind: 'harmony_continuation' })).toBe(20 + 64_985);
     expect(meter.frameGas(0, { kind: 'onion_tree_tops' })).toBe(25);
     expect(meter.frameGas(1, { kind: 'oram_lookup' })).toBe(532);
     expect(meter.frameGas(0, { kind: 'oram_lookup' })).toBeNull();

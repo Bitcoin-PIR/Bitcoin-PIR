@@ -66,7 +66,7 @@ the egress part is charged after the response is known.
 | OnionPIR sibling query | 21,000 per query | 21,000 |
 | HarmonyPIR pool entry (`HINTS_V2`) | 1.016 µs × (INDEX cells + CHUNK cells) | 129,970 |
 | HarmonyPIR `HINTS` at a sibling level | 0.71 µs × cells of that level | 3,780 / 470 / 60 and 7,570 / 950 / 120 |
-| HarmonyPIR `HINTS_V2_HALF` | 0 (continuation of a paid entry) | 0 |
+| HarmonyPIR `HINTS_V2_HALF` | half a pool entry (the first half takes a whole entry; the two halves sum to `HINTS_V2`) | 64,985 |
 | HarmonyPIR query frame | 100 ns × groups × (round(√(2·bins)) − 1) × sub-queries per group | 8 (INDEX), 12 (CHUNK) |
 | Direct ORAM lookup | 2 ms × padded script-hash slots | 2 per slot (provisional) |
 
