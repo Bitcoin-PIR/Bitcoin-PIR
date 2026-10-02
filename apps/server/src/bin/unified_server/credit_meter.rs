@@ -69,6 +69,7 @@ pub(crate) fn database_geometries(
     state: &ServerState,
     onionpir_infos: &[Option<OnionPirInfo>],
     oram_slots: &BTreeMap<u8, u64>,
+    oram_only: bool,
 ) -> BTreeMap<u8, DatabaseGeometry> {
     let mut out = BTreeMap::new();
     for (index, db) in state.databases.iter().enumerate() {
@@ -86,7 +87,8 @@ pub(crate) fn database_geometries(
         out.insert(
             db_id,
             DatabaseGeometry {
-                cuckoo: Some(cuckoo_geometry(db)),
+                // An ORAM-only server prices no DPF or HarmonyPIR work.
+                cuckoo: (!oram_only).then(|| cuckoo_geometry(db)),
                 onion,
                 oram,
             },
@@ -216,10 +218,11 @@ impl CreditMeterV1 {
         state: &ServerState,
         onionpir_infos: &[Option<OnionPirInfo>],
         oram_slots: &BTreeMap<u8, u64>,
+        oram_only: bool,
     ) -> Self {
         Self::new(
             params,
-            database_geometries(state, onionpir_infos, oram_slots),
+            database_geometries(state, onionpir_infos, oram_slots, oram_only),
         )
     }
 

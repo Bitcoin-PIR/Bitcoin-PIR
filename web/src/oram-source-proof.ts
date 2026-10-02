@@ -672,6 +672,36 @@ function databaseProofFromAttestedBuildEvidence(
   };
 }
 
+/** Domain tag of `pir_core::attest::oram_only_manifest_root`. */
+export const ORAM_ONLY_ROOT_DOMAIN_TAG = 'BPIR-ORAM-ONLY-ROOT-V1';
+
+/**
+ * `sha256(BPIR-ORAM-ONLY-ROOT-V1 || manifestRoot)`: the per-database root a
+ * server started with `--oram-only` attests in place of the manifest root,
+ * because it holds none of the PIR table files the manifest lists
+ * (`pir_core::attest::oram_only_manifest_root`).
+ */
+export function oramOnlyManifestRootHex(manifestRootHex: string): string {
+  const tag = new TextEncoder().encode(ORAM_ONLY_ROOT_DOMAIN_TAG);
+  const root = hexToBytes(manifestRootHex);
+  const preimage = new Uint8Array(tag.length + root.length);
+  preimage.set(tag, 0);
+  preimage.set(root, tag.length);
+  return bytesToHex(sha256(preimage));
+}
+
+/**
+ * Whether a live attested per-database root binds `manifestRootHex` for a
+ * Direct ORAM client: the manifest root itself (a server holding the table
+ * files) or its ORAM-only form.
+ */
+export function attestedRootBindsManifest(attestedHex: string, manifestRootHex: string): boolean {
+  const attested = attestedHex.toLowerCase();
+  const manifest = manifestRootHex.toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(attested) || !/^[0-9a-f]{64}$/.test(manifest)) return false;
+  return attested === manifest || attested === oramOnlyManifestRootHex(manifest);
+}
+
 function compareLiveRuntimeBinding(
   runtime: OramSourceLiveRuntime,
   liveProof: VerifiedDatabaseProof | undefined,
@@ -682,17 +712,16 @@ function compareLiveRuntimeBinding(
   compareString('live runtime REPORT_DATA', runtime.sevStatus ?? '', 'reportDataMatch', mismatches);
   compareString('live runtime VCEK chain', runtime.vcekChain ?? '', 'pass', mismatches);
   compareString('live runtime production pin', runtime.pinStatus ?? '', 'match', mismatches);
-  compareHex(
-    'live runtime manifest root',
-    runtime.manifestRootHex ?? '',
-    attestedManifestRootHex,
-    mismatches,
-  );
+  if (!attestedRootBindsManifest(runtime.manifestRootHex ?? '', attestedManifestRootHex)) {
+    mismatches.push(
+      `live runtime manifest root: expected ${attestedManifestRootHex} or its ORAM-only root, got ${runtime.manifestRootHex ?? ''}`,
+    );
+  }
   if (liveProof) {
     compareHex(
-      'live DB proof/runtime manifest root',
+      'live DB proof/source manifest root',
       liveProof.manifestRootHex ?? '',
-      runtime.manifestRootHex ?? '',
+      attestedManifestRootHex,
       mismatches,
     );
   }

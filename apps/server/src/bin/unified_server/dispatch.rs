@@ -307,9 +307,8 @@ pub(crate) async fn handle_variant<S>(
                             let s = Arc::clone(&server);
                             let resp = tokio::task::spawn_blocking(move || {
                                 use pir_runtime_core::attest;
-                                let manifest_roots: Vec<[u8; 32]> = s.state.databases.iter()
-                                    .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
-                                    .collect();
+                                let manifest_roots =
+                                    crate::state::attested_manifest_roots(&s.state.databases, s.oram_only);
                                 let binary_sha256 = attest::self_exe_sha256();
                                 let server_static_pub = s.state.server_static_pub;
                                 let git_rev = attest::GIT_REV;

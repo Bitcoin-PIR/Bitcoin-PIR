@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { oramOnlyManifestRootHex } from '../oram-source-proof.js';
 
 import {
   DEFAULT_ORAM_ACCESS_BUDGET,
@@ -306,6 +307,11 @@ describe('ORAM adapter', () => {
 
     expect(() => internal.assertAttestedManifestRoot(3, '22'.repeat(32))).not.toThrow();
     expect(() => internal.assertAttestedManifestRoot(3, '33'.repeat(32)))
+      .toThrow('attested manifest root mismatch');
+    // An ORAM-only server attests the ORAM-only form of the manifest root.
+    internal.attestation.manifestRootsHex = ['11'.repeat(32), oramOnlyManifestRootHex('44'.repeat(32))];
+    expect(() => internal.assertAttestedManifestRoot(3, '44'.repeat(32))).not.toThrow();
+    expect(() => internal.assertAttestedManifestRoot(3, '22'.repeat(32)))
       .toThrow('attested manifest root mismatch');
     internal.attestation.manifestRootsHex = ['11'.repeat(32)];
     expect(() => internal.assertAttestedManifestRoot(0, '11'.repeat(32)))

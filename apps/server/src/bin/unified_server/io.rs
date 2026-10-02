@@ -1,6 +1,6 @@
 use futures_util::SinkExt;
 use runtime::protocol::*;
-use runtime::table::{DatabaseDescriptor, MappedDatabase};
+use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase};
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
@@ -378,6 +378,81 @@ pub(crate) fn read_exact_secret_v1<const N: usize>(
     label: &str,
 ) -> Result<[u8; N], String> {
     pir_private_files::read_exact_private_file_v1(path, label)
+}
+
+/// Load one database for `--oram-only` from its V2 proof alone (see
+/// `MappedDatabase::direct_oram_only`). The manifest is the proof's exact
+/// `server-db` manifest and must hash to the evidence's
+/// `server_db_manifest_sha256`; the configured type and heights must match
+/// the evidence, whose geometry and chain anchor the database then carries.
+pub(crate) fn load_oram_only_database_v1(
+    db_id: u8,
+    proof_v2_dir: &Path,
+    descriptor: DatabaseDescriptor,
+) -> Result<MappedDatabase, String> {
+    use pir_core::cuckoo::HeaderAnchor;
+    use pir_core::seeds::{ChainAnchor, DeltaAnchor};
+    use pir_db_attest::{BuildEvidence, BuildKind};
+
+    let label = format!("[DB:{}] --oram-only", descriptor.name);
+    let bundle = runtime::db_proof::load_database_proof_bundle(db_id, proof_v2_dir)
+        .map_err(|error| format!("{label}: proof_v2_dir {}: {error}", proof_v2_dir.display()))?;
+    let evidence = BuildEvidence::decode(&bundle.build_evidence)
+        .map_err(|error| format!("{label}: build evidence: {error}"))?;
+    let (manifest, manifest_root) = pir_runtime_core::manifest::DbManifest::parse(
+        &bundle.server_db_manifest_toml,
+        &format!("{}/server-db manifest", proof_v2_dir.display()),
+    )
+    .map_err(|error| format!("{label}: {error}"))?;
+    if manifest_root != evidence.server_db_manifest_sha256 {
+        return Err(format!(
+            "{label}: server-db manifest hashes to {}, the build evidence binds {}",
+            hex::encode(manifest_root),
+            hex::encode(evidence.server_db_manifest_sha256)
+        ));
+    }
+    let core = |anchor: pir_db_attest::ChainAnchor| ChainAnchor {
+        block_hash: anchor.block_hash,
+        block_height: anchor.height,
+    };
+    let anchor = match evidence.build_kind {
+        BuildKind::Snapshot
+            if descriptor.db_type == DatabaseType::Full
+                && descriptor.height == evidence.anchor.height =>
+        {
+            HeaderAnchor::Snapshot(core(evidence.anchor))
+        }
+        BuildKind::Delta
+            if descriptor.db_type == DatabaseType::Delta
+                && descriptor.base_height == evidence.from_anchor.height
+                && descriptor.height == evidence.anchor.height =>
+        {
+            HeaderAnchor::Delta(DeltaAnchor {
+                from: core(evidence.from_anchor),
+                to: core(evidence.anchor),
+            })
+        }
+        kind => {
+            return Err(format!(
+                "{label}: configured {:?} {}..{} does not match the {kind:?} build evidence {}..{}",
+                descriptor.db_type,
+                descriptor.base_height,
+                descriptor.height,
+                evidence.from_anchor.height,
+                evidence.anchor.height
+            ))
+        }
+    };
+    let mut db = MappedDatabase::direct_oram_only(
+        descriptor,
+        manifest,
+        manifest_root,
+        evidence.index_bins_per_table as usize,
+        evidence.chunk_bins_per_table as usize,
+        anchor,
+    )?;
+    db.db_proof_v2 = Some(bundle);
+    Ok(db)
 }
 
 pub(crate) fn load_runtime_database_v1(
