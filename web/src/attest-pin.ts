@@ -174,14 +174,15 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Live hashed unified_server from the Flow D rebuild of e68cca23
-  // (rustls 0.23.45 for RUSTSEC-2026-0285; otherwise as 679fa90e: session
-  // grants retired, issuer key pinned with --credit-issuer-pubkey, access
-  // policy --require-credits --access dpf=best-effort:2, so DPF is free
-  // while pir1 has room and HarmonyPIR hints and OnionPIR are paid).
+  // Live hashed unified_server from the Flow D rebuild of 197511f8
+  // (streaming manifest hash #362, half-hint pricing #364, operator API
+  // keys #365). Access policy --require-credits --access dpf=best-effort:2
+  // --access harmony=best-effort:1:1500000: DPF is free while pir1 has
+  // room, HarmonyPIR hints are free up to 1.5M gas per hour, OnionPIR is
+  // paid.
   binarySha256Hex:
-    'e80334a9ce736a807d44081d25d1ecadbd4c57146c96d55321fb635b19864139',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server with the access policy: DPF best-effort free, HarmonyPIR hints and OnionPIR paid; rustls 0.23.45)',
+    'f472cff57077201a7e95e3375f1f7e9c7ad291946d44e9a6fdd1df1ded393f91',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 197511f8: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR paid; operator API keys)',
 };
 
 /**
