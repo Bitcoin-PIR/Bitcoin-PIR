@@ -32,9 +32,11 @@ sw_vers -productVersion
 df -h ~
 ```
 
-Required: at least 32 GB RAM (startup reads one 15.5 GB file into
-memory) and at least 60 GB free disk. If either is short, stop and
-report.
+Required: at least 32 GB RAM and at least 60 GB free disk. If either is
+short, stop and report. Startup reads the 15.5 GB OnionPIR NTT file into
+memory to hash it: the first node (36 GB M3 Max) peaked at a 31.1 GB memory
+footprint and took 196 s to reach `Listening`, so 36 GB has little
+headroom.
 
 The user runs, once (keeps the MacBook awake, including with the lid
 closed); keep it on AC power, Ethernet if possible:
@@ -274,9 +276,12 @@ $A attest ws://127.0.0.1:8091 --expect-binary "$SHA"       # noSevHost, binary h
 $A channel-test ws://127.0.0.1:8091
 $A attest wss://bitcoin-pir-weikeng-laptop.chenweikeng.com --expect-binary "$SHA"
 $A channel-test wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
-SPK=$(python3 -c "import json;print(json.load(open('$REPO/web/src/example_spks.json'))['main'][0])")
+# simple_query takes the 40-hex HASH160(scriptPubKey) (see web/src/hash.ts),
+# not the scriptPubKey. This is HASH160 of example_spks.json main[0]; it has
+# one UTXO at 948454.
+SH=de2e69f96b7e622f6ad39609b6d8554b37e8aba3
 "$REPO/target/release/examples/simple_query" \
-  --server0 wss://weikeng1.bitcoinpir.org --server1 wss://bitcoin-pir-weikeng-laptop.chenweikeng.com "$SPK"
+  --server0 wss://weikeng1.bitcoinpir.org --server1 wss://bitcoin-pir-weikeng-laptop.chenweikeng.com "$SH"
 ```
 
 DPF is free on a best-effort basis on both servers, so the DPF query
