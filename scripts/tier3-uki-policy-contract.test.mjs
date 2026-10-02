@@ -174,13 +174,13 @@ test("runtime UKI names the credit issuer and its access policy", () => {
   const flags = withoutComments(source);
   assert.match(source, /^PIR2_CREDIT_ISSUER_URL=https:\/\/[a-z0-9.-]+$/m);
   assert.match(source, /--credit-issuer-url "\$PIR2_CREDIT_ISSUER_URL"/);
-  // Flag lines, not mentions: paid by default (HarmonyPIR queries), DPF and
-  // Direct ORAM free while the guest has room.
+  // Flag lines, not mentions: the host serves Direct ORAM only, free while
+  // the guest has room.
   assert.match(flags, /^\s*--require-credits \\$/m);
-  assert.match(flags, /^\s*--access dpf=best-effort:2 \\$/m);
+  assert.match(flags, /^\s*--oram-only \\$/m);
   assert.match(flags, /^\s*--access oram=best-effort:2 \\$/m);
   assert.match(flags, /^\s*--free-threads 2 \\$/m);
-  assert.doesNotMatch(flags, /--access (harmony|onion)=/m);
+  assert.doesNotMatch(flags, /--access (dpf|harmony|onion)=/m);
 });
 
 test("a comment mentioning a retired flag or artifact does not fail any contract, a real line does", () => {

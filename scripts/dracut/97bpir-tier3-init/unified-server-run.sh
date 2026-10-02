@@ -1241,6 +1241,7 @@ exec "$UNIFIED_SERVER" \
     --role secondary \
     --serve-queries \
     --config /home/pir/data/databases.toml \
+    --oram-only \
     --direct-oram-db "0=$ORAM_FULL_DIR" \
     --direct-oram-db "1=$ORAM_DELTA_DIR" \
     --direct-oram-trusted-state-db "0=$ORAM_FULL_TRUSTED_STATE_DIR" \
@@ -1266,7 +1267,6 @@ exec "$UNIFIED_SERVER" \
     --credit-issuer-pubkey "$PIR2_CREDIT_ISSUER_PUBKEY_FILE" \
     --credit-issuer-url "$PIR2_CREDIT_ISSUER_URL" \
     --require-credits \
-    --access dpf=best-effort:2 \
     --access oram=best-effort:2 \
     --free-threads 2 \
     --connection-idle-timeout-ms 300000 \

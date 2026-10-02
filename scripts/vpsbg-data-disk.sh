@@ -27,8 +27,8 @@ EOF
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 readonly API_BASE='https://api.vpsbg.eu/v1'
-readonly DEFAULT_SERVER_ID=25285
-readonly VPSBG_HOST=87.120.8.198
+readonly DEFAULT_SERVER_ID=26939
+readonly VPSBG_HOST=212.73.134.61
 readonly HARD_STOP_SECONDS=${VPSBG_DATA_DISK_HARD_STOP_SECONDS:-900}
 # Status poll interval while waiting for the stock rootfs (tests set 0).
 readonly POLL_SECONDS=${VPSBG_DATA_DISK_POLL_SECONDS:-10}

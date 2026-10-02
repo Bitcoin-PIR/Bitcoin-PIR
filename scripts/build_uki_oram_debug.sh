@@ -137,4 +137,4 @@ echo "UKI sha256:      $UKI_SHA256"
     "oramctl_sha256=$ORAMCTL_SHA256" \
     "index_sha256=$INDEX_SHA256" \
     "chunk_sha256=$CHUNK_SHA256" \
-    "status_url=http://87.120.8.198:22/current/status.env"
+    "status_url=http://212.73.134.61:22/current/status.env"

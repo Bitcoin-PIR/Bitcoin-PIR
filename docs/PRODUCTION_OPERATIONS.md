@@ -19,8 +19,11 @@ where it can change a host, `--dry-run`.
 
 The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
 and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
-Direct ORAM is paused until a new VPSBG TEE host exists. Flows E–G and the
-VPSBG scripts apply only to that future host.
+Direct ORAM is paused while its new VPSBG TEE host is brought up: server
+26939 (212.73.134.61, AMD EPYC 7713P Milan). It serves Direct ORAM only
+(`unified_server --oram-only`), so its data disk needs each database's
+`MANIFEST.toml`, proof sidecars and `oram-direct-inputs/`, not the DPF or
+OnionPIR table files. Flows E–G and the VPSBG scripts target this host.
 
 Identity values (hashes, measurements, image IDs) stay in
 [`web/src/attest-pin.ts`](../web/src/attest-pin.ts) or in live command
@@ -231,12 +234,12 @@ your own `ssh`/`scp` calls beside it during a window.
 
 1. Read — Flow A. The `--image-id` passed to `open` and `close` is
    the UKI to reattach, usually the current live image.
-2. Auth — `open --server-id 25285 --image-id CURRENT --apply`.
+2. Auth — `open --server-id 26939 --image-id CURRENT --apply`.
    Hard stop 15 min: `boot_mode=stock` and SSH.
 3. Auth — `put` (writes), or Read `get` / `ssh`. Remote paths must
    stay under `/home/pir/data/`. A ceremony `startup.env` must land at
    `/home/pir/data/pir2-sealed/startup.env`.
-4. Auth — `close --server-id 25285 --image-id CURRENT --apply`. Same
+4. Auth — `close --server-id 26939 --image-id CURRENT --apply`. Same
    image id as step 1 unless the user named a different one.
 5. Read — confirm the expected image is attached. `close` does not start a
    stopped guest; starting it requires its own explicit authorization. Run
