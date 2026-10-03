@@ -131,7 +131,8 @@ pir1_out=$(
 set -euo pipefail
 primary=$(systemctl is-active pir-primary 2>/dev/null || true)
 cloudflared=$(systemctl is-active cloudflared 2>/dev/null || true)
-if ss -tln 2>/dev/null | grep -Eq ':8091\b'; then
+# Capture first: under pipefail, `ss | grep -q` can fail with SIGPIPE (141).
+if listeners=$(ss -tln 2>/dev/null) && grep -Eq ':8091\b' <<<"$listeners"; then
   port=listening
 else
   port=missing
