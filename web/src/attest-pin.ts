@@ -243,13 +243,13 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
 };
 
 /**
- * bitcoin-pir-weikeng-laptop.chenweikeng.com — the pir2 replacement after VPSBG pir2
- * (PIR2_TIER3_PIN above) was retired on 2026-10-02: a MacBook (macOS arm64),
- * NO TEE. It serves DPF server 1 and the HarmonyPIR query role; Direct ORAM is
- * paused. As with PIR1_PIN there is no MEASUREMENT; the binary pin is not
- * hardware-backed but detects drift from the operator-published build, and
- * strict mode additionally requires the operator-signed identity
- * (server id pir2-macbook-v1, pir2 operator key).
+ * bitcoin-pir-weikeng-laptop.chenweikeng.com — the pir2 replacement after the
+ * original VPSBG pir2 (AMD Turin) was retired on 2026-10-02: a MacBook (macOS
+ * arm64), NO TEE. It serves DPF server 1 and the HarmonyPIR query role; Direct
+ * ORAM runs on weikeng2 (PIR2_TIER3_PIN above). As with PIR1_PIN there is no
+ * MEASUREMENT; the binary pin is not hardware-backed but detects drift from
+ * the operator-published build, and strict mode additionally requires the
+ * operator-signed identity (server id pir2-macbook-v1, pir2 operator key).
  */
 export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // No measurementHex — no SEV on this host.
@@ -259,7 +259,7 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // --access dpf=best-effort:2 --access harmony=best-effort:2.
   binarySha256Hex:
     '368535896775d9526aa09f6dd4c2c8d6340f76fa82699b88d653acf6067fc591',
-  description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys; Direct ORAM paused)',
+  description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys)',
 };
 
 /**
