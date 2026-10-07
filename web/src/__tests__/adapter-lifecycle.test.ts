@@ -542,6 +542,38 @@ describe('adapter WASM lifecycle', () => {
     );
   });
 
+  it('presents an operator API key on each secure leg instead of enabling credits', async () => {
+    const onCredits = vi.fn();
+    const presentApiKey = vi.fn(async (serverIndex: number, key: string) => {
+      if (serverIndex === 1) throw new Error('unknown API key');
+      expect(key).toBe('bpk_owner');
+    });
+    const enableCredits = vi.fn();
+    const dpf = new BatchPirClientAdapter({
+      server0Url: 'wss://pir1.invalid',
+      server1Url: 'wss://pir2.invalid',
+      strictVerification: false,
+      apiKey: ' bpk_owner ',
+      creditProvider: () => null,
+      onCredits,
+    });
+    (dpf as any).wasmClient = { isServerConnected: () => true, presentApiKey, enableCredits };
+    (dpf as any).secureChannelLegs = [true, true];
+
+    await expect(dpf.enableCredits(0)).resolves.toEqual({ state: 'api-key' });
+    await expect(dpf.enableCredits(1)).resolves.toEqual({ state: 'error', error: 'unknown API key' });
+    expect(enableCredits).not.toHaveBeenCalled();
+    expect(onCredits).toHaveBeenCalledWith(0, { state: 'api-key' });
+
+    (dpf as any).secureChannelLegs = [false, true];
+    presentApiKey.mockClear();
+    await expect(dpf.enableCredits(0)).resolves.toEqual({
+      state: 'error',
+      error: 'API key withheld: channel is cleartext',
+    });
+    expect(presentApiKey).not.toHaveBeenCalled();
+  });
+
   it('never inherits a native merkleVerified default before explicit verification', async () => {
     const dpf = new BatchPirClientAdapter({
       server0Url: 'wss://pir1.invalid',

@@ -68,6 +68,35 @@ pub struct MappedSubTable {
 }
 
 impl MappedSubTable {
+    /// A table that carries a database's geometry and seeds but holds no
+    /// bins. An ORAM-only server learns these values from the attested build
+    /// evidence and never reads table data: `try_group_bytes` finds nothing,
+    /// and the server refuses every request that would read bins.
+    pub fn metadata_only(
+        params: TableParams,
+        bins_per_table: usize,
+        master_seed: u64,
+        tag_seed: u64,
+        anchor: pir_core::cuckoo::HeaderAnchor,
+    ) -> Self {
+        let mmap = memmap2::MmapOptions::new()
+            .len(1)
+            .map_anon()
+            .and_then(|mmap| mmap.make_read_only())
+            .expect("anonymous one-byte mapping");
+        let table_byte_size = params.table_byte_size(bins_per_table);
+        MappedSubTable {
+            mmap: Arc::new(mmap),
+            params,
+            bins_per_table,
+            table_byte_size,
+            data_offset: 0,
+            tag_seed,
+            master_seed,
+            anchor: Some(anchor),
+        }
+    }
+
     /// Load and memory-map a cuckoo table file.
     pub fn load(path: &Path, params: TableParams) -> Self {
         println!("  Loading sub-table: {}", path.display());
@@ -501,6 +530,77 @@ impl MappedDatabase {
     /// Automatically detects and loads Merkle sub-tables if present.
     pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
         Self::load_inner(base_dir, descriptor, false)
+    }
+
+    /// A database served only through Direct ORAM (`unified_server
+    /// --oram-only`). The host holds none of the PIR table files: the
+    /// geometry and anchor come from the attested build evidence, the seeds
+    /// are derived from that anchor exactly as clients derive them, and the
+    /// manifest is the exact `server-db` manifest the evidence binds. The
+    /// manifest must carry a `[direct_oram]` section, which the Direct ORAM
+    /// image is bound to before the server listens.
+    pub fn direct_oram_only(
+        descriptor: DatabaseDescriptor,
+        manifest: DbManifest,
+        manifest_root: Hash256,
+        index_bins_per_table: usize,
+        chunk_bins_per_table: usize,
+        anchor: pir_core::cuckoo::HeaderAnchor,
+    ) -> Result<Self, String> {
+        use pir_core::cuckoo::HeaderAnchor;
+        use pir_core::seeds::{DeltaSeeds, SnapshotSeeds};
+
+        if manifest.direct_oram.is_none() {
+            return Err(format!(
+                "[DB:{}] an ORAM-only database needs a [direct_oram] manifest section",
+                descriptor.name
+            ));
+        }
+        let (index_master, index_tag, chunk_master) = match anchor {
+            HeaderAnchor::Snapshot(a) => {
+                let seeds = SnapshotSeeds::derive(&a);
+                (seeds.index_master, seeds.index_tag, seeds.chunk_master)
+            }
+            HeaderAnchor::Delta(a) => {
+                let seeds = DeltaSeeds::derive(&a);
+                (seeds.index_master, seeds.index_tag, seeds.chunk_master)
+            }
+        };
+        let index = MappedSubTable::metadata_only(
+            descriptor.index_params.clone(),
+            index_bins_per_table,
+            index_master,
+            index_tag,
+            anchor,
+        );
+        let chunk = MappedSubTable::metadata_only(
+            descriptor.chunk_params.clone(),
+            chunk_bins_per_table,
+            chunk_master,
+            0,
+            anchor,
+        );
+        println!(
+            "[DB:{}] ORAM-only: INDEX bins={}, CHUNK bins={}, manifest root=sha256({}...) from the build evidence",
+            descriptor.name,
+            index_bins_per_table,
+            chunk_bins_per_table,
+            &hex_encode(&manifest_root)[..16]
+        );
+        Ok(MappedDatabase {
+            descriptor,
+            index,
+            chunk,
+            bucket_merkle_index_siblings: Vec::new(),
+            bucket_merkle_chunk_siblings: Vec::new(),
+            bucket_merkle_tree_tops: None,
+            bucket_merkle_roots: None,
+            bucket_merkle_root: None,
+            manifest_root: Some(manifest_root),
+            manifest: Some(manifest),
+            db_proof: None,
+            db_proof_v2: None,
+        })
     }
 
     /// Load a database that is explicitly backed by production Direct ORAM.

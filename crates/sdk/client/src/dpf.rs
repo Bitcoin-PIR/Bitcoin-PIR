@@ -2590,6 +2590,28 @@ impl DpfClient {
         crate::credits::present_credits(conn.as_mut(), kind, payload).await
     }
 
+    /// Present an operator-issued API key on one server (`server_index` ∈
+    /// {0, 1}); that connection is then served unmetered (docs/CREDITS.md
+    /// "API keys"), so skip [`Self::enable_credits`] for it. Bearer
+    /// material: call this after [`Self::upgrade_to_secure_channel`].
+    pub async fn present_api_key(&mut self, server_index: u8, key: &str) -> PirResult<()> {
+        let conn = match server_index {
+            0 => self.conn0.as_mut(),
+            1 => self.conn1.as_mut(),
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_api_key: server_index must be 0 or 1, got {server_index}"
+                )))
+            }
+        }
+        .ok_or_else(|| {
+            PirError::Protocol(format!(
+                "present_api_key: server{server_index} not connected"
+            ))
+        })?;
+        crate::credits::present_api_key(conn.as_mut(), key).await
+    }
+
     /// Pay one server's metered frames from `provider` when that server
     /// requires credits (docs/CREDITS.md): reads its info JSON over the
     /// connection and, if credits are required there, wraps the connection

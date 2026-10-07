@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-xE4BwzhdHiCHZAn5WmxMzzGpEOKIq2yIJUi573JNEbs=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-wTX9Ennp8ZIht1M//d8nR++choAhXxEfLlJMnjeg8ZI=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -862,6 +862,14 @@
                 </div>
                 <div class="card-body">
                     <p id="pa-status" style="margin: 0 0 8px; min-height: 1.2em;"></p>
+                    <!-- Operator API key (docs/CREDITS.md "API keys"): presented
+                         on each connection in place of credits; a server that
+                         accepts it serves that connection unmetered. -->
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                        <label for="pa-apiKey" style="font-size: 12px;">API key</label>
+                        <input id="pa-apiKey" type="password" autocomplete="off" spellcheck="false" placeholder="optional, issued by the operator" style="flex: 1; min-width: 180px; font-family: monospace; font-size: 12px;">
+                        <button type="button" id="pa-forgetApiKeyBtn" class="btn ghost sm">Forget key</button>
+                    </div>
                     <!-- Credits (docs/CREDITS.md): ARC credentials bought for
                          ecash and spent per metered frame wherever a server
                          requires credits. -->
@@ -1036,7 +1044,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                                 <div class="status-row">
                                     <label for="server1Url">Server 1</label>
-                                    <input type="text" id="server1Url" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                    <input type="text" id="server1Url" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
                                 <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
@@ -1406,7 +1414,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                                 <div class="status-row">
                                     <label for="hp-queryServerUrl">Query server</label>
-                                    <input type="text" id="hp-queryServerUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
+                                    <input type="text" id="hp-queryServerUrl" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
@@ -1609,7 +1617,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
-        import { PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
+        import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
         import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, purchaseCredentialX402, cashuLightningRail, sdkArcFactories } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
@@ -1691,7 +1699,38 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // The DPF composer button says whether the next query can draw on
         // stored credits.
+        // ─── Paid access: operator API key (docs/CREDITS.md "API keys") ────
+        // Presented on each connection in place of credits. Kept for this tab
+        // only (sessionStorage), never in localStorage with the credits.
+        const API_KEY_STORAGE_KEY = 'bitcoinpir.apiKey.v1';
+        const apiKeyInput = document.getElementById('pa-apiKey');
+        try {
+            apiKeyInput.value = sessionStorage.getItem(API_KEY_STORAGE_KEY) ?? '';
+        } catch { /* storage unavailable: the key lives in the field only */ }
+
+        function rememberApiKey(value) {
+            try {
+                if (value) sessionStorage.setItem(API_KEY_STORAGE_KEY, value);
+                else sessionStorage.removeItem(API_KEY_STORAGE_KEY);
+            } catch { /* storage unavailable */ }
+        }
+
+        function currentApiKey() {
+            return apiKeyInput.value.trim() || undefined;
+        }
+
+        apiKeyInput.addEventListener('change', () => {
+            rememberApiKey(apiKeyInput.value.trim());
+            renderCredits();
+        });
+        document.getElementById('pa-forgetApiKeyBtn').addEventListener('click', () => {
+            apiKeyInput.value = '';
+            rememberApiKey('');
+            renderCredits();
+        });
+
         function queryButtonLabel() {
+            if (currentApiKey()) return 'Run query (API key)';
             if (creditStore.remainingCredits(nowUnix()) > 0) return 'Run query (credits)';
             return 'Run free query';
         }
@@ -1753,7 +1792,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             legs.replaceChildren();
             for (const [key, status] of creditLegs) {
                 const line = document.createElement('div');
-                line.textContent = status.state === 'required'
+                line.textContent = status.state === 'api-key'
+                    ? `${key}: API key accepted — unmetered`
+                    : status.state === 'required'
                     ? `${key}: credits required — funded from the wallet per frame`
                     : status.state === 'best-effort'
                         ? `${key}: free while the server has room — paid from the wallet only when it is busy`
@@ -1761,7 +1802,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             ? `${key}: free (credits accepted, not required)`
                             : status.state === 'not-enabled'
                                 ? `${key}: free (credits not enabled)`
-                                : `${key}: credits could not be enabled — ${status.error}`;
+                                : `${key}: ${currentApiKey() ? 'API key refused' : 'credits could not be enabled'} — ${status.error}`;
                 legs.appendChild(line);
             }
             const queryButton = document.getElementById('queryBtn');
@@ -1959,7 +2000,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function ensureOramConnection() {
-            await oramConnect(PIR2_PROVIDER);
+            if (!ORAM_PROVIDER) throw new Error(ORAM_PAUSED_MESSAGE);
+            await oramConnect(ORAM_PROVIDER);
             oramAdmissionDbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
         }
 
@@ -3055,6 +3097,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 if (!client) client = new BatchPirClientAdapter({
                     creditProvider: currentCreditProvider,
+                    apiKey: currentApiKey(),
                     onCredits: (idx, status) => noteCredits(`DPF server${idx}`, status),
                     server0Url: '',
                     server1Url: '',
@@ -3931,6 +3974,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 if (!sdkReady) throw new Error('strict database-proof WASM failed to load');
                 candidate = new OnionPirWebClient({
                     creditProvider: currentCreditProvider,
+                    apiKey: currentApiKey(),
                     onCredits: (status) => noteCredits('OnionPIR', status),
                     serverUrl,
                     strictVerification: true,
@@ -4592,6 +4636,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 if (providerIndex === 0) candidate = new HarmonyPirClientAdapter({
                     creditProvider: currentCreditProvider,
+                    apiKey: currentApiKey(),
                     onCredits: (idx, status) => noteCredits(idx === 0 ? 'HarmonyPIR hint' : 'HarmonyPIR query', status),
                     hintServerUrl: '',
                     queryServerUrl: '',
@@ -5499,6 +5544,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 oramClient = new OramPirClientAdapter({
                     creditProvider: currentCreditProvider,
+                    apiKey: currentApiKey(),
                     onCredits: (status) => noteCredits('ORAM TEE', status),
                     serverUrl,
                     strictVerification: true,

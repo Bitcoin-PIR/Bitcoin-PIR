@@ -736,8 +736,8 @@ impl WasmAttestVerification {
     /// (signature-anchored AND content-acceptable).
     ///
     /// `expectedArkFingerprint`: same as `verifyVcekChain`. Pass the
-    /// `AMD_TURIN_ARK_FINGERPRINT` constant from `attest-pin.ts` for
-    /// production.
+    /// ARK pin from `attest-pin.ts` for the server's CPU generation
+    /// (Turin or Milan).
     ///
     /// `policy` is a `WasmPolicyRequirements` (constructed via its
     /// JS-visible constructor + setters). Defaults to the strictest
@@ -831,6 +831,36 @@ impl WasmPolicyRequirements {
         self.inner.require_single_socket = v;
     }
 
+    /// Require every SVN of the report's `reported_tcb` to reach these
+    /// values. `fmc` is only for generations that report one (Turin);
+    /// pass `undefined` for Milan / Genoa.
+    #[wasm_bindgen(js_name = setMinTcb)]
+    pub fn set_min_tcb(
+        &mut self,
+        bootloader: u8,
+        tee: u8,
+        snp: u8,
+        microcode: u8,
+        fmc: Option<u8>,
+    ) {
+        self.inner.min_tcb = Some(pir_attest_verify::TcbVersion::new(
+            fmc, bootloader, tee, snp, microcode,
+        ));
+    }
+
+    /// Require `platform_info.alias_check_complete` (bit 5). Off by default.
+    #[wasm_bindgen(js_name = setRequireAliasCheckComplete)]
+    pub fn set_require_alias_check_complete(&mut self, v: bool) {
+        self.inner.require_alias_check_complete = v;
+    }
+
+    /// Bits that must be set in both the launch and the current
+    /// mitigation vector (report version 5+). `0` (default) disables it.
+    #[wasm_bindgen(js_name = setRequiredMitVectorBits)]
+    pub fn set_required_mit_vector_bits(&mut self, bits: u32) {
+        self.inner.required_mit_vector_bits = u64::from(bits);
+    }
+
     /// Pin the expected MEASUREMENT (48 bytes). Must be exactly 48
     /// bytes or a JsError is thrown. Set to the operator-published
     /// value for your Tier 3 UKI.
@@ -893,6 +923,13 @@ impl Default for WasmPolicyRequirements {
 #[wasm_bindgen(js_name = turinArkFingerprint)]
 pub fn turin_ark_fingerprint() -> Uint8Array {
     Uint8Array::from(&pir_attest_verify::TURIN_ARK_FINGERPRINT_SHA256[..])
+}
+
+/// JS-visible accessor for the Milan ARK fingerprint pinned in
+/// pir-attest-verify (matches `web/src/attest-pin.ts`), for Milan servers.
+#[wasm_bindgen(js_name = milanArkFingerprint)]
+pub fn milan_ark_fingerprint() -> Uint8Array {
+    Uint8Array::from(&pir_attest_verify::MILAN_ARK_FINGERPRINT_SHA256[..])
 }
 
 /// Verify a standalone SEV-SNP report and PEM certificate chain.
@@ -1740,6 +1777,24 @@ impl WasmDpfClient {
         Ok(crate::credit::credit_receipt_to_js(receipt))
     }
 
+    /// Present an operator-issued API key on one server (`serverIndex` ∈
+    /// {0, 1}; docs/CREDITS.md "API keys"). Once accepted, that connection
+    /// is served unmetered, so skip `enableCredits` for it. Bearer
+    /// material: call after [`Self::upgrade_to_secure_channel`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, server_index: u8, key: String) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentApiKey: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_api_key(server_index, &key)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections with the encrypted-channel
     /// transport.
     ///
@@ -2356,6 +2411,22 @@ impl WasmHarmonyClient {
         Ok(crate::credit::credit_receipt_to_js(receipt))
     }
 
+    /// Present an operator-issued API key on the hint (0) or query (1)
+    /// server. See [`WasmDpfClient::present_api_key`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, server_index: u8, key: String) -> Result<(), JsError> {
+        if server_index >= 2 {
+            return Err(JsError::new(&format!(
+                "presentApiKey: serverIndex must be 0 or 1, got {}",
+                server_index
+            )));
+        }
+        self.inner
+            .present_api_key(server_index, &key)
+            .await
+            .map_err(err_to_js)
+    }
+
     /// Wrap both server connections (hint + query) with the encrypted
     /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`]
     /// — same eph_seed caching + binding flow. Argument order matches
@@ -2939,6 +3010,13 @@ impl WasmOramClient {
             .await
             .map_err(err_to_js)?;
         Ok(crate::credit::credit_receipt_to_js(receipt))
+    }
+
+    /// Present an operator-issued API key on the connection. See
+    /// [`WasmDpfClient::present_api_key`].
+    #[wasm_bindgen(js_name = presentApiKey)]
+    pub async fn present_api_key(&mut self, key: String) -> Result<(), JsError> {
+        self.inner.present_api_key(&key).await.map_err(err_to_js)
     }
 
     /// Wrap the single server connection with the encrypted-channel transport.

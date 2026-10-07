@@ -53,11 +53,11 @@ stock guest, and SSHes with `.keys/vpsbg-ssh.key` plus
 not call `close`.
 
 ```sh
-scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --dry-run
-scripts/vpsbg-data-disk.sh open --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh open --server-id 26939 --image-id CURRENT --dry-run
+scripts/vpsbg-data-disk.sh open --server-id 26939 --image-id CURRENT --apply
 scripts/vpsbg-data-disk.sh put --local /absolute/file \
   --remote /home/pir/data/relative/path --apply
-scripts/vpsbg-data-disk.sh close --server-id 25285 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh close --server-id 26939 --image-id CURRENT --apply
 ```
 
 `close` reattaches the selected measured-boot image but does not call the

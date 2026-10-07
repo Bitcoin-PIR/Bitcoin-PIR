@@ -20,7 +20,7 @@ DB_ID=1
 RUN_LIVE=1
 SERVERS=(
     "wss://weikeng1.bitcoinpir.org"
-    "wss://weikeng2.bitcoinpir.org"
+    "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com"
 )
 
 EXPECT_ARGS=(
@@ -52,7 +52,7 @@ Options:
 
 Default live servers:
   wss://weikeng1.bitcoinpir.org
-  wss://weikeng2.bitcoinpir.org
+  wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
 USAGE
 }
 

@@ -66,7 +66,7 @@ the egress part is charged after the response is known.
 | OnionPIR sibling query | 21,000 per query | 21,000 |
 | HarmonyPIR pool entry (`HINTS_V2`) | 1.016 µs × (INDEX cells + CHUNK cells) | 129,970 |
 | HarmonyPIR `HINTS` at a sibling level | 0.71 µs × cells of that level | 3,780 / 470 / 60 and 7,570 / 950 / 120 |
-| HarmonyPIR `HINTS_V2_HALF` | 0 (continuation of a paid entry) | 0 |
+| HarmonyPIR `HINTS_V2_HALF` | half a pool entry (the first half takes a whole entry; the two halves sum to `HINTS_V2`) | 64,985 |
 | HarmonyPIR query frame | 100 ns × groups × (round(√(2·bins)) − 1) × sub-queries per group | 8 (INDEX), 12 (CHUNK) |
 | Direct ORAM lookup | 2 ms × padded script-hash slots | 2 per slot (provisional) |
 
@@ -153,6 +153,7 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 | `--access BACKEND=MODE` | Per-backend override, repeatable (see [Access policy](#access-policy)): `free`, `paid`, or `best-effort[:N[:GAS_PER_HOUR]]`. `paid` needs `--credit-issuer-url`. |
 | `--free-threads N` | Threads of the low-priority pool best-effort free frames run on (default 1). |
 | `--free-queue-wait-ms MS` | How long a free frame waits for a best-effort slot before it is refused as busy (default 10000). |
+| `--api-key-file FILE` | Operator-issued API keys, one `SHA256HEX LABEL` per line (see [API keys](#api-keys)). A connection that presents a listed key is unmetered. |
 
 Redeem requests are signed by the server's identity key and carry its
 operator-signed certificate; answers are signed by the issuer key over the
@@ -182,10 +183,14 @@ verification data of a backend it runs free.
 
 Examples:
 
-- Reference deployment: DPF and Direct ORAM free when idle, HarmonyPIR and
-  OnionPIR paid. pir1: `--require-credits --access dpf=best-effort:2
-  --free-threads 2`; pir2: `--require-credits --access dpf=best-effort:2
-  --access oram=best-effort:2 --free-threads 2`.
+- Reference deployment (since 2026-10-02): DPF and HarmonyPIR free when
+  idle, OnionPIR paid, Direct ORAM paused (no TEE host). pir1:
+  `--require-credits --access dpf=best-effort:2 --access
+  harmony=best-effort:1:1500000 --free-threads 2`, so HarmonyPIR hints
+  are free up to 1.5M gas (about ten fresh clients) per hour; the pir2
+  MacBook node: `--require-credits --access dpf=best-effort:2 --access
+  harmony=best-effort:2 --free-threads 2`. Both also take
+  `--api-key-file`.
 - A hobby server giving one core of DPF away, no issuer, nobody can pay:
   `--access dpf=best-effort:1`.
 - Paid only: `--require-credits`. Free only: no flag.
@@ -230,6 +235,30 @@ on its connection (every request/response exchange, DPF rounds and hint
 requests included); a frame refused behind another pipelined frame ends
 its request.
 
+### API keys
+
+An operator can serve chosen clients without credits, such as its own
+tools, the CI canary, or a partner wallet. `--api-key-file FILE` lists one
+key per line as `SHA256HEX LABEL` (blank lines and `#` comments allowed),
+so the server stores only hashes. `bpir-admin api-key new --label NAME`
+mints a key: the key goes to stdout once, its file line to stderr. To
+revoke a key, delete its line and restart the server.
+
+A client presents the key with `REQ_API_KEY` once the encrypted channel is
+open. In the SDK every backend client has `present_api_key` (`presentApiKey`
+in wasm); the live integration suite reads `PIR_API_KEY`. The web client
+has an API key field under Paid access. It keeps the key for the tab only
+(sessionStorage) and presents it on every leg in place of credits. From then on the connection is
+unmetered on every backend: frames are admitted at normal priority,
+nothing is charged, and no free lane or hourly budget applies. Keys are
+not charged for now; per-key budgets would be a later change. An unknown
+key counts as a rejected presentation, so the connection closes after
+three.
+
+Privacy: a key identifies its holder, so the server can link every frame
+on that connection to the key's label. PIR still hides which addresses
+are queried, and admission still never depends on the query.
+
 ## Protocol
 
 `REQ_CREDIT_PRESENT` (`0x12`): `[kind u8][len u32 LE][payload]`, at most
@@ -239,6 +268,9 @@ its request.
 answers `RESP_CREDIT_OK` (`0x12`): `[gas_added u64 LE][gas_balance i64
 LE]`, or `RESP_ERROR` with the issuer's reason. Opcodes `0x08`, `0x09`,
 and `0x0d`–`0x10` stay retired.
+
+`REQ_API_KEY` (`0x13`): the key's bytes (1 to 128), encrypted channel only.
+The server answers `RESP_API_KEY_OK` (`0x13`, no body) or `RESP_ERROR`.
 
 ## Issuer API (v2)
 

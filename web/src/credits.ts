@@ -17,8 +17,11 @@
  */
 
 import {
+  MAX_API_KEY_LEN,
   MAX_CREDIT_PRESENT_PAYLOAD_LEN,
+  REQ_API_KEY,
   REQ_CREDIT_PRESENT,
+  RESP_API_KEY_OK,
   RESP_CREDIT_OK,
 } from './constants.js';
 import { mintTokenForQuote, requestLightningQuote, waitForQuotePayment } from './cashu-purchase.js';
@@ -326,6 +329,29 @@ export function parseCreditResponsePayload(payload: Uint8Array): CreditReceipt {
   };
 }
 
+/** `[len u32 LE][0x13][key bytes]`, ready to send (docs/CREDITS.md "API keys"). */
+export function encodeApiKeyFrame(key: string): Uint8Array {
+  const bytes = new TextEncoder().encode(key);
+  if (bytes.length === 0 || bytes.length > MAX_API_KEY_LEN) {
+    throw new Error(`an API key is 1 to ${MAX_API_KEY_LEN} bytes, got ${bytes.length}`);
+  }
+  const frame = new Uint8Array(4 + 1 + bytes.length);
+  new DataView(frame.buffer).setUint32(0, 1 + bytes.length, true);
+  frame[4] = REQ_API_KEY;
+  frame.set(bytes, 5);
+  return frame;
+}
+
+/** Check the answer to an API key presentation (starting at the variant byte). */
+export function parseApiKeyResponsePayload(payload: Uint8Array): void {
+  if (payload.length === 0) throw new Error('empty API key response');
+  const variant = payload[0];
+  if (variant === RESP_ERROR) throw new Error(decodeErrorEnvelope(payload));
+  if (variant !== RESP_API_KEY_OK || payload.length !== 1) {
+    throw new Error(`unexpected response variant 0x${variant.toString(16)} for an API key presentation`);
+  }
+}
+
 function decodeErrorEnvelope(payload: Uint8Array): string {
   if (payload.length >= 5) {
     const len = new DataView(payload.buffer, payload.byteOffset, payload.byteLength).getUint32(1, true);
@@ -450,7 +476,7 @@ export function workGas(card: DatabaseGasCard, op: MeteredOp): number | null {
     case 'harmony_pool_entry':
       return pick(card.harmonyPoolEntry);
     case 'harmony_continuation':
-      return card.harmonyPoolEntry === undefined ? null : 0;
+      return card.harmonyPoolEntry === undefined ? null : Math.floor(card.harmonyPoolEntry / 2);
     case 'harmony_hint_set': {
       if (op.level === 0) return card.harmonyPoolEntry === undefined ? null : Math.floor(card.harmonyPoolEntry / 3);
       if (op.level === 1) return card.harmonyPoolEntry === undefined ? null : card.harmonyPoolEntry - Math.floor(card.harmonyPoolEntry / 3);
@@ -823,9 +849,10 @@ export type FrameExchange = (frame: Uint8Array) => Promise<Uint8Array>;
 export interface CreditEnablement {
   /**
    * `best-effort`: the server serves this backend free while it has room and
-   * the connection pays only when told the free lane is busy.
+   * the connection pays only when told the free lane is busy. `api-key`: the
+   * server accepted the operator API key, so the connection is unmetered.
    */
-  state: 'not-enabled' | 'not-required' | 'required' | 'best-effort' | 'error';
+  state: 'not-enabled' | 'not-required' | 'required' | 'best-effort' | 'api-key' | 'error';
   error?: string;
 }
 

@@ -45,8 +45,9 @@ echo 0 > /proc/sys/kernel/ctrl-alt-del    || true
 
 # ── 3. Network bring-up (STATIC, matching VPSBG netplan) ───────────
 # DISCOVERED Phase 3.1 v3: VPSBG uses STATIC IP via cloud-init / netplan,
-# NOT DHCP. Slice 2's /etc/netplan/50-cloud-init.yaml hardcodes:
-#   addresses: 87.120.8.198/32
+# NOT DHCP. The host's /etc/netplan/50-cloud-init.yaml hardcodes (server
+# 26939, the Direct ORAM host since 2026-10):
+#   addresses: 212.73.134.61/32
 #   gateway:   172.16.0.1 (on-link)
 #   DNS:       9.9.9.9, 208.67.222.222
 # udhcpc was getting no lease (no DHCP server to respond), eth0 stayed
@@ -81,7 +82,7 @@ fi
 # "treat this gateway as directly attached on eth0 even though it
 # isn't in our subnet." This is what netplan's `on-link: true` does.
 ip link set eth0 up
-ip addr add 87.120.8.198/32 dev eth0
+ip addr add 212.73.134.61/32 dev eth0
 ip route add default via 172.16.0.1 dev eth0 onlink
 
 # DNS: same servers as netplan (Quad9 + OpenDNS).

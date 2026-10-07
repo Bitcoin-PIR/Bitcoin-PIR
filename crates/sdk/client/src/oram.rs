@@ -279,6 +279,12 @@ impl OramClient {
         crate::credits::present_credits(self.conn_mut()?.as_mut(), kind, payload).await
     }
 
+    /// Present an operator-issued API key; see
+    /// [`crate::DpfClient::present_api_key`].
+    pub async fn present_api_key(&mut self, key: &str) -> PirResult<()> {
+        crate::credits::present_api_key(self.conn_mut()?.as_mut(), key).await
+    }
+
     /// Upgrade the existing connection to the encrypted channel.
     ///
     /// The `server_static_pub` must come from a verified attestation or

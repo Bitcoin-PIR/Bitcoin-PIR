@@ -92,6 +92,9 @@ interface PirSdkWasm {
    * at module load (catches drift if the two ever diverge).
    */
   turinArkFingerprint(): Uint8Array;
+  /** The Milan-family ARK fingerprint; same contract as
+   * `turinArkFingerprint`, for Milan servers (`AMD_MILAN_ARK_FINGERPRINT_HEX`). */
+  milanArkFingerprint(): Uint8Array;
   /**
    * Verify a standalone SEV-SNP report plus PEM ARK/ASK/VCEK chain using
    * the same Rust verifier as live runtime attestation. Used for static
@@ -351,6 +354,13 @@ export interface WasmPolicyRequirements {
   setAllowMigrateMa(v: boolean): void;
   /** Require `policy.single_socket_required`. Off by default. */
   setRequireSingleSocket(v: boolean): void;
+  /** Require every SVN of `reported_tcb` to reach these values; `fmc`
+   * only for generations that report one (Turin). */
+  setMinTcb(bootloader: number, tee: number, snp: number, microcode: number, fmc?: number): void;
+  /** Require `platform_info.alias_check_complete` (bit 5). Off by default. */
+  setRequireAliasCheckComplete(v: boolean): void;
+  /** Bits required in both the launch and current mitigation vector. 0 = off. */
+  setRequiredMitVectorBits(bits: number): void;
   /** Pin the expected MEASUREMENT (must be exactly 48 bytes). */
   setExpectedMeasurement(bytes: Uint8Array): void;
   /** Pin the expected family_id (16 bytes). */
@@ -461,6 +471,10 @@ export interface WasmDpfClient {
    *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key on one leg (`docs/CREDITS.md`
+   *  "API keys"); that connection is then unmetered. Bearer material: call
+   *  after `upgradeToSecureChannel`. */
+  presentApiKey(serverIndex: number, key: string): Promise<void>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
    *  source (call `attest` first; ideally also check the SEV-SNP report's
@@ -579,6 +593,10 @@ export interface WasmHarmonyClient {
    *  `"best-effort"`. Call after
    *  `upgradeToSecureChannel`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key on one leg (`docs/CREDITS.md`
+   *  "API keys"); that connection is then unmetered. Bearer material: call
+   *  after `upgradeToSecureChannel`. */
+  presentApiKey(serverIndex: number, key: string): Promise<void>;
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
@@ -703,6 +721,8 @@ export interface WasmOramClient {
   presentCredits(kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
   /** Pay the server's metered frames from `provider` when it requires credits; see `WasmDpfClient.enableCredits`. */
   enableCredits(provider: (credits: number) => unknown): Promise<string>;
+  /** Present an operator-issued API key; see `WasmDpfClient.presentApiKey`. */
+  presentApiKey(key: string): Promise<void>;
   upgradeToSecureChannel(serverStaticPub: Uint8Array): Promise<void>;
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   verifyDatabaseProof(

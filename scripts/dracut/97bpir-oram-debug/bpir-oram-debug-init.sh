@@ -29,7 +29,7 @@ while [ ! -d /sys/class/net/eth0 ] && [ "$i" -lt 60 ]; do
 done
 if [ -d /sys/class/net/eth0 ]; then
     ip link set eth0 up || true
-    ip addr add 87.120.8.198/32 dev eth0 || true
+    ip addr add 212.73.134.61/32 dev eth0 || true
     ip route add default via 172.16.0.1 dev eth0 onlink || true
 fi
 
@@ -115,7 +115,7 @@ if [ ! -c /dev/sev-guest ]; then
     while true; do sleep 3600; done
 fi
 
-echo "[bpir-oram-debug-init] starting runner; status URL: http://87.120.8.198:22/current/status.env"
+echo "[bpir-oram-debug-init] starting runner; status URL: http://212.73.134.61:22/current/status.env"
 write_boot_status runner-start
 set +e
 BPIR_ORAM_DEBUG_RUN_DIR="$RUN_DIR" /usr/local/bin/bpir-oram-debug-run \

@@ -14,7 +14,7 @@ use pir_sdk_client::WsConnection;
 #[derive(Args, Debug)]
 pub struct AttestArgs {
     /// WebSocket URL of the server to attest, e.g.
-    /// `wss://weikeng2.bitcoinpir.org` or `ws://localhost:8092`.
+    /// `wss://bitcoin-pir-weikeng-laptop.chenweikeng.com` or `ws://localhost:8092`.
     pub server: String,
 
     /// Expected hex of the server binary's SHA-256. If set, exit

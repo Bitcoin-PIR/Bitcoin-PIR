@@ -1,7 +1,7 @@
 name: PIR SDK Integration Tests
 
 # Runs the `pir-sdk-client` integration suite against the public PIR
-# deployment (wss://weikeng1.bitcoinpir.org / wss://weikeng2.bitcoinpir.org).
+# deployment (wss://weikeng1.bitcoinpir.org / wss://bitcoin-pir-weikeng-laptop.chenweikeng.com).
 # These are the same servers the web client at
 # https://www.bitcoinpir.org uses, so a failure here would
 # typically also break the web client — the workflow is our early-warning
@@ -68,20 +68,25 @@ jobs:
       harmony_paid: ${{ steps.probe.outputs.harmony_paid }}
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       # Pin the default URLs explicitly so the CI log shows what we
       # tested against. Override via repository variables or a fork's
       # env block to hit a different deployment.
       PIR_DPF_SERVER0_URL: wss://weikeng1.bitcoinpir.org
-      PIR_DPF_SERVER1_URL: wss://weikeng2.bitcoinpir.org
+      PIR_DPF_SERVER1_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
       # Production topology (per CLAUDE.md /
       # project_pir1_hint_pir2_query_split.md):
       #   pir1 = Hetzner, no-SEV   → HINT server  (--serve-hints + --pool-size)
-      #   pir2 = VPSBG,   SEV-SNP  → QUERY server (--serve-queries)
+      #   pir2 = MacBook, no TEE   → QUERY server (--serve-queries; VPSBG SEV host retired 2026-10-02)
       # The HINT_URL and QUERY_URL env vars were reversed in this
       # workflow before 2026-05-13 — fixed here so the CI
       # integration tests hit the correct role on each endpoint.
       PIR_HARMONY_HINT_URL: wss://weikeng1.bitcoinpir.org
-      PIR_HARMONY_QUERY_URL: wss://weikeng2.bitcoinpir.org
+      PIR_HARMONY_QUERY_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
 
     steps:
       - name: Checkout
@@ -183,6 +188,11 @@ jobs:
       onion_paid: ${{ steps.probe.outputs.onion_paid }}
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
       # The SEAL submodule is declared with an SSH URL
       # (git@github.com:…) in the `OnionPIRv2-fork` repo. Cargo's
@@ -298,10 +308,15 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_TERM_COLOR: always
+      # Operator API key (docs/CREDITS.md "API keys"): the live tests present
+      # it on every leg once the secure channel is open, so paid backends
+      # serve the suite unmetered and the probe reports nothing as paid.
+      # Empty when the secret is unset; forks and PRs from forks get none.
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
       PIR_DPF_SERVER0_URL: wss://weikeng1.bitcoinpir.org
-      PIR_DPF_SERVER1_URL: wss://weikeng2.bitcoinpir.org
+      PIR_DPF_SERVER1_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
       PIR_HARMONY_HINT_URL: wss://weikeng1.bitcoinpir.org
-      PIR_HARMONY_QUERY_URL: wss://weikeng2.bitcoinpir.org
+      PIR_HARMONY_QUERY_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
       PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 

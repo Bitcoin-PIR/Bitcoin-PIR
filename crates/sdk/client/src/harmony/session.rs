@@ -626,6 +626,27 @@ impl HarmonyClient {
         crate::credits::present_credits(conn.as_mut(), kind, payload).await
     }
 
+    /// Present an operator-issued API key on the hint (0) or query (1)
+    /// server; see [`crate::DpfClient::present_api_key`].
+    pub async fn present_api_key(&mut self, server_index: u8, key: &str) -> PirResult<()> {
+        let conn = match server_index {
+            0 => self.hint_conn.as_mut(),
+            1 => self.query_conn.as_mut(),
+            _ => {
+                return Err(PirError::Protocol(format!(
+                    "present_api_key: server_index must be 0 or 1, got {server_index}"
+                )))
+            }
+        }
+        .ok_or_else(|| {
+            PirError::Protocol(format!(
+                "present_api_key: {} server not connected",
+                if server_index == 0 { "hint" } else { "query" }
+            ))
+        })?;
+        crate::credits::present_api_key(conn.as_mut(), key).await
+    }
+
     /// Pay the hint (0) or query (1) server's metered frames from
     /// `provider` when it requires credits; see
     /// [`crate::DpfClient::enable_credits`]. Call after the secure-channel

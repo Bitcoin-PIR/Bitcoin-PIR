@@ -37,9 +37,11 @@
 
 use pir_core::merkle::{sha256, Hash256, HASH_SIZE};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 /// Filename the verifier looks for in each DB dir.
@@ -273,12 +275,21 @@ impl DbManifest {
             path: manifest_path.display().to_string(),
             err,
         })?;
-        let text = std::str::from_utf8(&raw).map_err(|_| ManifestError::InvalidUtf8 {
-            path: manifest_path.display().to_string(),
+        let (manifest, root) = Self::parse(&raw, &manifest_path.display().to_string())?;
+        manifest.verify_dir_contents(base_dir)?;
+        Ok(Some((manifest, root)))
+    }
+
+    /// Parse and validate a manifest from its exact bytes, without checking
+    /// any directory against it. Returns the manifest and its root
+    /// (`SHA-256` of `raw`). `label` names the source in errors.
+    pub fn parse(raw: &[u8], label: &str) -> Result<(DbManifest, Hash256), ManifestError> {
+        let text = std::str::from_utf8(raw).map_err(|_| ManifestError::InvalidUtf8 {
+            path: label.to_owned(),
         })?;
         let manifest: DbManifest =
             toml::from_str(text).map_err(|err| ManifestError::InvalidToml {
-                path: manifest_path.display().to_string(),
+                path: label.to_owned(),
                 err,
             })?;
         if manifest.manifest.version != SUPPORTED_VERSION {
@@ -287,8 +298,7 @@ impl DbManifest {
         if let Some(direct_oram) = manifest.direct_oram.as_ref() {
             direct_oram.validate()?;
         }
-        manifest.verify_dir_contents(base_dir)?;
-        Ok(Some((manifest, sha256(&raw))))
+        Ok((manifest, sha256(raw)))
     }
 
     /// Verify every listed file matches its expected SHA-256, and that no
@@ -321,11 +331,11 @@ impl DbManifest {
                     value: expected_hex.clone(),
                 });
             }
-            let bytes = fs::read(&full).map_err(|err| ManifestError::Io {
+            let digest = sha256_file(&full).map_err(|err| ManifestError::Io {
                 path: full.display().to_string(),
                 err,
             })?;
-            let actual = hex_encode(&sha256(&bytes));
+            let actual = hex_encode(&digest);
             if !expected_hex.eq_ignore_ascii_case(&actual) {
                 return Err(ManifestError::HashMismatch {
                     path: rel.clone(),
@@ -412,6 +422,25 @@ fn walk(root: &Path, dir: &Path, out: &mut HashSet<String>) -> std::io::Result<(
 /// Files ending in `_cuckoo.bin` are the large cuckoo table mmap files.
 fn is_cuckoo_table(rel: &str) -> bool {
     rel.ends_with("_cuckoo.bin")
+}
+
+/// SHA-256 of a file, streamed through a fixed 1 MiB buffer. Hashed
+/// files reach 15.5 GB (`onion_shared_ntt.bin`), and reading one whole
+/// held that much heap during startup verification.
+fn sha256_file(path: &Path) -> std::io::Result<Hash256> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) => return Err(err),
+        };
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().into())
 }
 
 /// Lowercase hex of a byte slice (no extra deps).
@@ -501,6 +530,22 @@ mod tests {
         assert_eq!(m.files.len(), 2);
         let raw = fs::read(dir.path().join(MANIFEST_FILENAME)).unwrap();
         assert_eq!(root, sha256(&raw));
+    }
+
+    #[test]
+    fn streamed_hash_of_multi_buffer_file_matches_manifest() {
+        // 2.5 MiB spans three 1 MiB read buffers, the last one partial.
+        let content: Vec<u8> = (0..(5u32 << 19)).map(|i| (i % 251) as u8).collect();
+        let dir = tempfile::tempdir().unwrap();
+        let files: &[(&str, &[u8])] = &[("onion_shared_ntt.bin", &content)];
+        write_files(dir.path(), files);
+        write_manifest_for(dir.path(), files);
+
+        assert_eq!(
+            sha256_file(&dir.path().join("onion_shared_ntt.bin")).unwrap(),
+            sha256(&content)
+        );
+        assert!(DbManifest::load_and_verify(dir.path()).unwrap().is_some());
     }
 
     #[test]

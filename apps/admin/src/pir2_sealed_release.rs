@@ -26,12 +26,39 @@ const MAX_CERT_LEN: usize = 128 * 1024;
 pub(crate) const MAX_RELEASE_LEN: usize = 4096;
 
 const REQUIRED_VCPUS: u32 = 4;
-const REQUIRED_VCPU_SIGNATURE: u32 = 0x00B1_0F10;
 const REQUIRED_GUEST_FEATURES: u64 = 0x1;
 const REQUIRED_VMM_TYPE: &str = "qemu";
-const REQUIRED_CPU_FAMILY: u8 = 26;
-const REQUIRED_CPU_MODEL: u8 = 17;
-const REQUIRED_CPU_STEPPING: u8 = 0;
+
+/// An exact AMD part a pir2 host may run on, matched against the signed
+/// report's CPUID. It fixes the QEMU vCPU signature the launch must use
+/// and the vCPU type the launch measurement is computed with.
+pub(crate) struct HostCpu {
+    name: &'static str,
+    family: u8,
+    model: u8,
+    stepping: u8,
+    vcpu_sig: u32,
+    vcpu_type: CpuType,
+}
+
+const HOST_CPUS: [HostCpu; 2] = [
+    HostCpu {
+        name: "Turin 9745",
+        family: 26,
+        model: 17,
+        stepping: 0,
+        vcpu_sig: 0x00B1_0F10,
+        vcpu_type: CpuType::EpycTurin9745,
+    },
+    HostCpu {
+        name: "Milan 7713P",
+        family: 25,
+        model: 1,
+        stepping: 1,
+        vcpu_sig: 0x00A0_0F11,
+        vcpu_type: CpuType::EpycMilan,
+    },
+];
 
 /// Inputs for one offline, fail-closed pir2 sealed-release ceremony.
 #[derive(Args, Debug)]
@@ -78,7 +105,8 @@ pub struct Pir2SealedReleaseArgs {
     /// Launch vCPU count; the source contract accepts exactly 4.
     #[arg(long)]
     pub vcpus: u32,
-    /// Exact QEMU CPUID signature; the source contract accepts 0x00B10F10 only.
+    /// Exact QEMU CPUID signature of the report's host part: 0x00B10F10
+    /// (Turin 9745) or 0x00A00F11 (Milan 7713P).
     #[arg(long)]
     pub vcpu_sig_hex: String,
     /// VMM implementation; the source contract accepts lowercase `qemu` only.
@@ -160,13 +188,14 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
         expected_report_data,
     )?;
 
+    let cpu = validate_report_cpu(&report)?;
     validate_launch_tuple(
         args.vcpus,
         parse_hex_u64(&args.vcpu_sig_hex, "vCPU signature")?,
         &args.vmm_type,
         parse_hex_u64(&args.guest_features_hex, "guest features")?,
+        cpu,
     )?;
-    validate_report_cpu(&report)?;
 
     let uki = read_public_bounded(&args.uki, MAX_UKI_LEN, "exact UKI")?;
     let ovmf = read_public_bounded(&args.ovmf, MAX_OVMF_LEN, "pinned OVMF")?;
@@ -177,7 +206,7 @@ pub fn run(args: Pir2SealedReleaseArgs) -> Result<(), String> {
     let uki_sha256 = verify_exact_sha256(&uki, expected_uki_sha256, "UKI")?;
     verify_exact_sha256(&ovmf, expected_ovmf_sha256, "OVMF")?;
 
-    let measurement = compute_exact_launch_measurement(&uki, &ovmf, args.vcpus)?;
+    let measurement = compute_exact_launch_measurement(&uki, &ovmf, args.vcpus, cpu.vcpu_type)?;
     let expected_guest_policy =
         parse_hex_u64(&args.expected_guest_policy_hex, "expected guest policy")?;
     let minimum_tcb = SnpTcbVersionV1 {
@@ -248,29 +277,32 @@ fn validate_launch_tuple(
     vcpu_signature: u64,
     vmm_type: &str,
     guest_features: u64,
+    cpu: &HostCpu,
 ) -> Result<(), String> {
     if vcpus != REQUIRED_VCPUS
-        || vcpu_signature != u64::from(REQUIRED_VCPU_SIGNATURE)
+        || vcpu_signature != u64::from(cpu.vcpu_sig)
         || vmm_type != REQUIRED_VMM_TYPE
         || guest_features != REQUIRED_GUEST_FEATURES
     {
         return Err(format!(
-            "launch tuple drift: require vcpus={REQUIRED_VCPUS}, vcpu_sig=0x{REQUIRED_VCPU_SIGNATURE:08X}, vmm_type={REQUIRED_VMM_TYPE}, guest_features=0x{REQUIRED_GUEST_FEATURES:x}, no external initrd, and no append"
+            "launch tuple drift: require vcpus={REQUIRED_VCPUS}, vcpu_sig=0x{:08X} ({}), vmm_type={REQUIRED_VMM_TYPE}, guest_features=0x{REQUIRED_GUEST_FEATURES:x}, no external initrd, and no append",
+            cpu.vcpu_sig, cpu.name
         ));
     }
     Ok(())
 }
 
-pub(crate) fn validate_report_cpu(report: &SnpReport) -> Result<(), String> {
-    if report.cpuid_fam_id != Some(REQUIRED_CPU_FAMILY)
-        || report.cpuid_mod_id != Some(REQUIRED_CPU_MODEL)
-        || report.cpuid_step != Some(REQUIRED_CPU_STEPPING)
-    {
-        return Err(
-            "signed report CPUID is not exact Turin 9745 family=26 model=17 stepping=0".to_owned(),
-        );
-    }
-    Ok(())
+pub(crate) fn validate_report_cpu(report: &SnpReport) -> Result<&'static HostCpu, String> {
+    HOST_CPUS
+        .iter()
+        .find(|cpu| {
+            report.cpuid_fam_id == Some(cpu.family)
+                && report.cpuid_mod_id == Some(cpu.model)
+                && report.cpuid_step == Some(cpu.stepping)
+        })
+        .ok_or_else(|| {
+            "signed report CPUID is neither Turin 9745 (family=26 model=17 stepping=0) nor Milan 7713P (family=25 model=1 stepping=1)".to_owned()
+        })
 }
 
 fn verify_exact_sha256(bytes: &[u8], expected: [u8; 32], label: &str) -> Result<[u8; 32], String> {
@@ -285,6 +317,7 @@ fn compute_exact_launch_measurement(
     uki: &[u8],
     ovmf: &[u8],
     vcpus: u32,
+    vcpu_type: CpuType,
 ) -> Result<[u8; 48], String> {
     let mut uki_copy = tempfile::NamedTempFile::new()
         .map_err(|error| format!("create exact UKI measurement copy: {error}"))?;
@@ -301,7 +334,7 @@ fn compute_exact_launch_measurement(
 
     let digest = snp_calc_launch_digest(SnpMeasurementArgs {
         vcpus,
-        vcpu_type: CpuType::EpycTurin9745,
+        vcpu_type,
         ovmf_file: ovmf_copy.path().to_path_buf(),
         guest_features: GuestFeatures(REQUIRED_GUEST_FEATURES),
         kernel_file: Some(uki_copy.path().to_path_buf()),
@@ -571,7 +604,7 @@ mod tests {
             vcek: dir.join("missing.vcek"),
             expected_ark_sha256_hex: hex::encode([3_u8; 32]),
             vcpus: REQUIRED_VCPUS,
-            vcpu_sig_hex: format!("{REQUIRED_VCPU_SIGNATURE:08x}"),
+            vcpu_sig_hex: format!("{:08x}", HOST_CPUS[0].vcpu_sig),
             vmm_type: REQUIRED_VMM_TYPE.to_owned(),
             guest_features_hex: format!("{REQUIRED_GUEST_FEATURES:x}"),
             expected_guest_policy_hex: format!("{:x}", 1_u64 << 17),
@@ -604,9 +637,9 @@ mod tests {
             measurement: claims.expected_measurement,
             reported_tcb: tcb,
             committed_tcb: tcb,
-            cpuid_fam_id: Some(REQUIRED_CPU_FAMILY),
-            cpuid_mod_id: Some(REQUIRED_CPU_MODEL),
-            cpuid_step: Some(REQUIRED_CPU_STEPPING),
+            cpuid_fam_id: Some(HOST_CPUS[0].family),
+            cpuid_mod_id: Some(HOST_CPUS[0].model),
+            cpuid_step: Some(HOST_CPUS[0].stepping),
             ..SnpReport::default()
         }
     }
@@ -740,12 +773,34 @@ mod tests {
         )
         .unwrap();
 
-        let measurement = compute_exact_launch_measurement(&[], &ovmf, REQUIRED_VCPUS).unwrap();
+        // virtee/sev-snp-measure 0.0.12: --mode snp --vcpus 4 --vmm-type QEMU
+        // --kernel <empty> --guest-features 0x1 --vcpu-sig <HostCpu.vcpu_sig>
+        for (cpu, expected) in HOST_CPUS.iter().zip([
+            "d380869e4b3b293c55b438f1d744684d8f9ed687aeb0bd69055ff79976973452a335a7cf9973e843f01865b80221590d",
+            "54b9c3e1949186d207685fc0af35467260c5e191fef42fa0ba038372a7c8f6e32406ac227a875735e610663a724b1dc8",
+        ]) {
+            let measurement =
+                compute_exact_launch_measurement(&[], &ovmf, REQUIRED_VCPUS, cpu.vcpu_type)
+                    .unwrap();
+            assert_eq!(hex::encode(measurement), expected, "{}", cpu.name);
+        }
+    }
 
-        assert_eq!(
-            hex::encode(measurement),
-            "d380869e4b3b293c55b438f1d744684d8f9ed687aeb0bd69055ff79976973452a335a7cf9973e843f01865b80221590d"
-        );
+    #[test]
+    fn host_cpus_match_signed_cpuid_and_vcpu_types() {
+        for cpu in &HOST_CPUS {
+            assert_eq!(cpu.vcpu_type.sig(), cpu.vcpu_sig as i32, "{}", cpu.name);
+            let mut report = SnpReport {
+                cpuid_fam_id: Some(cpu.family),
+                cpuid_mod_id: Some(cpu.model),
+                cpuid_step: Some(cpu.stepping),
+                ..SnpReport::default()
+            };
+            assert_eq!(validate_report_cpu(&report).unwrap().name, cpu.name);
+            report.cpuid_step = Some(cpu.stepping + 1);
+            assert!(validate_report_cpu(&report).is_err());
+        }
+        assert!(validate_report_cpu(&SnpReport::default()).is_err());
     }
 
     #[test]
@@ -802,18 +857,38 @@ mod tests {
         let pin: [u8; 32] = Sha256::digest(b"exact").into();
         assert!(verify_exact_sha256(b"different UKI", pin, "UKI").is_err());
         assert!(verify_exact_sha256(b"different OVMF", pin, "OVMF").is_err());
+        let [turin, milan] = &HOST_CPUS;
         assert!(validate_launch_tuple(
-            REQUIRED_VCPUS + 1,
-            u64::from(REQUIRED_VCPU_SIGNATURE),
+            REQUIRED_VCPUS,
+            u64::from(milan.vcpu_sig),
             REQUIRED_VMM_TYPE,
             REQUIRED_GUEST_FEATURES,
+            milan,
+        )
+        .is_ok());
+        assert!(validate_launch_tuple(
+            REQUIRED_VCPUS + 1,
+            u64::from(turin.vcpu_sig),
+            REQUIRED_VMM_TYPE,
+            REQUIRED_GUEST_FEATURES,
+            turin,
         )
         .is_err());
         assert!(validate_launch_tuple(
             REQUIRED_VCPUS,
-            u64::from(REQUIRED_VCPU_SIGNATURE) ^ 1,
+            u64::from(turin.vcpu_sig) ^ 1,
             REQUIRED_VMM_TYPE,
             REQUIRED_GUEST_FEATURES,
+            turin,
+        )
+        .is_err());
+        // A Milan launch signature never passes for a Turin report.
+        assert!(validate_launch_tuple(
+            REQUIRED_VCPUS,
+            u64::from(milan.vcpu_sig),
+            REQUIRED_VMM_TYPE,
+            REQUIRED_GUEST_FEATURES,
+            turin,
         )
         .is_err());
         assert!(!out.exists());

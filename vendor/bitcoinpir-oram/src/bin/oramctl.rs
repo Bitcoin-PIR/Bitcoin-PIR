@@ -1,17 +1,18 @@
 use bitcoinpir_oram::{
-    circuit_meta_page_bytes, circuit_payload_page_bytes, stress_circuit, stress_ring,
-    AeadPageStore, CircuitCuckooBinReader, CircuitDirectChunkReader, CircuitDirectIndexReader,
-    CircuitEvictionSchedule, CircuitOram, CircuitOramState, CircuitStoreAuthLayout,
-    CircuitStoreAuthState, CircuitStressConfig, CircuitStressPattern, CircuitStressReport,
-    CuckooLevel, CuckooOramEstimate, CuckooOramSizing, CuckooPackedBlockReader, CuckooTableInfo,
-    DirectChunkPackedBlockReader, DirectIndexPackedBlockReader, DirectLevel,
-    DirectOramDatasetBindingV1, DirectOramEstimate, DirectOramSizing, DirectTableInfo,
-    DirectTableMetadata, EmbeddedTreePageStore, Error, FilePageStore, FrontCachedPageStore,
-    OramParams, PageStore, PathPageStore, Result, RingStressConfig, RingStressReport,
-    TieredMerklePageStore, TieredMerkleRootBuilder, TrustedBlockSource, AEAD_OVERHEAD,
-    DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS, DIRECT_INDEX_DEFAULT_LOAD_FACTOR,
-    DIRECT_INDEX_DEFAULT_SEED, DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE,
-    DIRECT_SCRIPT_HASH_SIZE, EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
+    circuit_meta_page_bytes, circuit_payload_page_bytes, read_verified_source, stress_circuit,
+    stress_ring, AeadPageStore, CircuitCuckooBinReader, CircuitDirectChunkReader,
+    CircuitDirectIndexReader, CircuitEvictionSchedule, CircuitOram, CircuitOramState,
+    CircuitStoreAuthLayout, CircuitStoreAuthState, CircuitStressConfig, CircuitStressPattern,
+    CircuitStressReport, CuckooLevel, CuckooOramEstimate, CuckooOramSizing,
+    CuckooPackedBlockReader, CuckooTableInfo, DirectChunkPackedBlockReader,
+    DirectIndexPackedBlockReader, DirectLevel, DirectOramDatasetBindingV1, DirectOramEstimate,
+    DirectOramSizing, DirectTableInfo, DirectTableMetadata, EmbeddedTreePageStore, Error,
+    FilePageStore, FrontCachedPageStore, OramParams, PageStore, PathPageStore, Result,
+    RingStressConfig, RingStressReport, TieredMerklePageStore, TieredMerkleRootBuilder,
+    TrustedBlockSource, AEAD_OVERHEAD, DIRECT_CHUNK_RECORD_SIZE, DIRECT_INDEX_DEFAULT_HASH_FNS,
+    DIRECT_INDEX_DEFAULT_LOAD_FACTOR, DIRECT_INDEX_DEFAULT_SEED,
+    DIRECT_INDEX_DEFAULT_SLOTS_PER_BIN, DIRECT_INDEX_INPUT_RECORD_SIZE, DIRECT_SCRIPT_HASH_SIZE,
+    EMBEDDED_TREE_AUTH_BYTES_PER_PAGE,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use rand::{RngCore, SeedableRng};
@@ -3812,10 +3813,15 @@ fn build_direct_images(
             .iter()
             .find(|info| info.level == selected_level)
             .expect("direct_infos returns both levels");
+        let expected_sha256 = match info.level {
+            DirectLevel::Index => &source_files.index.sha256_bytes,
+            DirectLevel::Chunk => &source_files.chunks.sha256_bytes,
+        };
         let (controller_state, metadata_path, metadata) = build_direct_table(
             out_dir,
             trusted_state_dir,
             info,
+            expected_sha256,
             pack,
             leaf_divisor,
             bucket_size,
@@ -3930,6 +3936,7 @@ fn build_direct_table(
     out_dir: &Path,
     trusted_state_dir: Option<&Path>,
     info: &DirectTableInfo,
+    expected_sha256: &[u8; 32],
     pack: usize,
     leaf_divisor: usize,
     bucket_size: usize,
@@ -3964,7 +3971,10 @@ fn build_direct_table(
 
     match info.level {
         DirectLevel::Index => {
-            let source = DirectIndexPackedBlockReader::build(info.clone(), pack)?;
+            // Build from the exact bytes whose hash the evidence records
+            // (`read_verified_source`), never from a mapping of the file.
+            let bytes = read_verified_source(info, expected_sha256)?;
+            let source = DirectIndexPackedBlockReader::from_bytes(info.clone(), pack, bytes)?;
             let mut metadata = source.metadata().clone();
             if let Some(binding) = dataset_binding {
                 metadata = metadata.bind_dataset(binding)?;
@@ -3988,7 +3998,8 @@ fn build_direct_table(
             Ok((evidence, paths.metadata, metadata))
         }
         DirectLevel::Chunk => {
-            let source = DirectChunkPackedBlockReader::open(info.clone(), pack)?;
+            let bytes = read_verified_source(info, expected_sha256)?;
+            let source = DirectChunkPackedBlockReader::from_bytes(info.clone(), pack, bytes)?;
             let mut metadata = source.metadata().clone();
             if let Some(binding) = dataset_binding {
                 metadata = metadata.bind_dataset(binding)?;

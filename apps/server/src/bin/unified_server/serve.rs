@@ -84,10 +84,6 @@ pub(crate) async fn serve_connections(
             "disabled (no onion_*.bin files in any DB dir)"
         }
     );
-    match args.role {
-        ServerRole::Primary => println!("  HarmonyPIR: query server"),
-        ServerRole::Secondary => println!("  HarmonyPIR: hint server"),
-    }
     if server.main_db().has_bucket_merkle() {
         println!("  Merkle: available (per-bucket)");
     }
@@ -395,6 +391,17 @@ pub(crate) async fn serve_connections(
                     let resp = Response::Error(
                         "server not configured to answer queries — start with --serve-queries (see deploy/systemd/*.service)".into(),
                     );
+                    let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
+                    continue;
+                }
+                // An ORAM-only server holds no table files: of the query
+                // requests it answers Direct ORAM lookups only.
+                if server.oram_only
+                    && is_query_bearing_variant(variant)
+                    && variant != REQ_ORAM_LOOKUP
+                {
+                    let resp =
+                        Response::Error("this server serves Direct ORAM only (--oram-only)".into());
                     let _ = send_resp(&mut sink, channel_session.as_mut(), resp.encode()).await;
                     continue;
                 }

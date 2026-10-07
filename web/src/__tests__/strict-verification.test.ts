@@ -539,6 +539,26 @@ describe('strict transport gate', () => {
     );
   });
 
+  it('accepts the transition build of a no-SEV binary pin during a switch', () => {
+    const expectedPins = [
+      { binarySha256Hex: 'aa'.repeat(32), transitionBinarySha256Hex: '11'.repeat(32) },
+      STRICT_TRANSPORT_OK.expectedPins[1],
+    ] as const;
+    const withServer0Binary = (binary: string) => collectStrictTransportFailures({
+      ...STRICT_TRANSPORT_OK,
+      expectedPins,
+      operatorIdentities: [
+        { state: 'verified', serverId: 'pir1', binarySha256Hex: binary },
+        STRICT_TRANSPORT_OK.operatorIdentities![1],
+      ],
+    });
+    const mismatch = 'server 0: operator binary sha256 does not match the configured binary pin';
+
+    expect(withServer0Binary('11'.repeat(32))).not.toContain(mismatch);
+    expect(withServer0Binary('AA'.repeat(32))).not.toContain(mismatch);
+    expect(withServer0Binary('ff'.repeat(32))).toContain(mismatch);
+  });
+
   it('requires two distinct configured endpoint identities', () => {
     expect(collectStrictTransportFailures({
       ...STRICT_TRANSPORT_OK,

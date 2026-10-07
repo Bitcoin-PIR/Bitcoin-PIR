@@ -2,7 +2,7 @@
 
 Start here for any authorized production change. Query live state first —
 never infer it from documents. Classify the ask as **one campaign**: a
-named release (for example R5.1) or one flow A–H. One explicit
+named release (for example R5.1) or one flow A–I. One explicit
 authorization covers that whole campaign. Run the campaign's numbered
 steps in order. Do not invent a second campaign, and do not re-ask
 between steps of the same campaign.
@@ -13,10 +13,20 @@ Live status:
 scripts/production-status.sh
 ```
 
-That prints pir1 SSH health and the pir2 VPSBG snapshot. For pir2 only,
-use `scripts/vpsbg-production-status.sh` or
-`scripts/vpsbg-measured-boot.sh status`. Each mutation script also has
-`--help` and, where it can change a host, `--dry-run`.
+That prints pir1 SSH health, a public attest of the pir2 MacBook node
+against `PIR2_MACBOOK_PIN`, and the Direct ORAM TEE host's VPSBG status
+plus an attest against `PIR2_TIER3_PIN` (MEASUREMENT, binary, AMD chain).
+Each mutation script also has `--help` and, where it can change a host,
+`--dry-run`.
+
+The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
+and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
+Direct ORAM runs on a separate VPSBG TEE host since 2026-10-03: server
+26939 (212.73.134.61, AMD EPYC 7713P Milan, `wss://weikeng2.bitcoinpir.org`,
+sealed as `pir2-oram-v1`). It serves Direct ORAM only
+(`unified_server --oram-only`), so its data disk needs each database's
+`MANIFEST.toml`, proof sidecars and `oram-direct-inputs/`, not the DPF or
+OnionPIR table files. Flows E–G and the VPSBG scripts target this host.
 
 Identity values (hashes, measurements, image IDs) stay in
 [`web/src/attest-pin.ts`](../web/src/attest-pin.ts) or in live command
@@ -86,6 +96,7 @@ stop and report.
 | F | Edit `/home/pir/data/` on VPSBG, including `startup.env` | [Key management](KEY_MANAGEMENT.md) |
 | G | pir2 sealed Observe / Enroll / Probe / Ready | [Sealed release](runbooks/pir2-sealed-release.md) |
 | H | Produce or rotate DPF / Harmony / Onion v2 / ORAM proofs | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
+| I | Rebuild, restart, or re-pin the pir2 MacBook node (no TEE) | Flow I below |
 
 Payment issuer deploy, mainnet Lightning, key generation, funds, and
 image deletion are **not** flows. The retired Payment V1 material lives
@@ -94,8 +105,8 @@ only in git history.
 ## A. Diagnose — Read
 
 1. Read — `scripts/production-status.sh` (`--dry-run` lists paths only).
-2. Read — if only pir2 matters:
-   `scripts/vpsbg-measured-boot.sh status --server-id ID`.
+2. Read — if only the Direct ORAM host matters:
+   `scripts/vpsbg-measured-boot.sh status --server-id 26939`.
 3. Read — before a UKI upload:
    `scripts/vpsbg-measured-boot.sh images`.
 4. Stop. `image_id=unavailable` is a valid observation, not a selection.
@@ -171,7 +182,9 @@ contains a stale single-host caveat — ignore that; pir2 is VPSBG.
    the tunnel itself is broken. Build 2–5 min, hard stop 15 min.
    `unified_server --version` prints the crate version, git revision,
    and binary sha256 of an installed binary without starting a server;
-   `--help` prints the flag reference.
+   `--help` prints the flag reference. To avoid the gap in which strict
+   clients reject pir1, first deploy `PIR1_PIN` with the running build as
+   `transitionBinarySha256Hex` (as in Flow I), then drop it afterwards.
 3. Read — `scripts/production-status.sh` and confirm `:8091` /
    `pir-primary` are active. Do not treat `pir-secondary` as the
    public peer. This step is systemd/SSH health only; it does not
@@ -224,12 +237,12 @@ your own `ssh`/`scp` calls beside it during a window.
 
 1. Read — Flow A. The `--image-id` passed to `open` and `close` is
    the UKI to reattach, usually the current live image.
-2. Auth — `open --server-id 25285 --image-id CURRENT --apply`.
+2. Auth — `open --server-id 26939 --image-id CURRENT --apply`.
    Hard stop 15 min: `boot_mode=stock` and SSH.
 3. Auth — `put` (writes), or Read `get` / `ssh`. Remote paths must
    stay under `/home/pir/data/`. A ceremony `startup.env` must land at
    `/home/pir/data/pir2-sealed/startup.env`.
-4. Auth — `close --server-id 25285 --image-id CURRENT --apply`. Same
+4. Auth — `close --server-id 26939 --image-id CURRENT --apply`. Same
    image id as step 1 unless the user named a different one.
 5. Read — confirm the expected image is attached. `close` does not start a
    stopped guest; starting it requires its own explicit authorization. Run
@@ -358,6 +371,39 @@ Rollback is rotation §7: restore both hosts to the last generation
 proven on both, then Flow C for the prior pins. If one host fails,
 do not leave a mixed fleet.
 
+## I. pir2 MacBook node — Local then Auth
+
+The node has no TEE: strict clients admit it by `PIR2_MACBOOK_PIN` plus
+its operator-signed identity. Bring-up, data layout, and the launchd unit
+are the [MacBook node runbook](runbooks/pir2-macbook-replacement.md). The
+work runs on the MacBook; this repository's hosts have no SSH to it.
+
+1. Read — Flow A. Record the live `binary_sha256`.
+2. Local (MacBook) — build the approved commit with runbook step 4 into a
+   new `bin/<SHA>/` directory. Leave the running binary in place. Any
+   rebuild changes the hash, because `git_rev` is compiled in.
+3. Auth — Flow B, then Flow C: a PR that sets
+   `PIR2_MACBOOK_PIN.binarySha256Hex` to the new `shasum -a 256
+   unified_server` and `transitionBinarySha256Hex` to the build the node
+   runs now. After the deploy, strict clients accept both builds.
+4. Auth (MacBook) — switch the node with the runbook's switch procedure
+   (after step 9), whenever the operator gets to it. The procedure waits
+   for launchd to unregister the old service and rolls back on its own if
+   the new binary does not listen; the web keeps working either way.
+5. Read — Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` once
+   the node runs the new build (`…the transition build…` while it still
+   runs the old one).
+6. Auth — Flow B, then Flow C: a PR that removes
+   `transitionBinarySha256Hex`.
+
+Never deploy a pin that leaves out the running build. On 2026-10-02 a pin
+naming only the new build went out before a switch that then failed, and
+the slot was down for about 3 h.
+
+Rollback: before step 6, point the plist back at the previous `bin/<SHA>/`
+and restart; the transition pin still accepts it. After step 6, roll back
+the same way as an upgrade, through a new transition.
+
 ## Human-only — do not start from this page
 
 - Key generation and writing `.keys/` from scratch.
@@ -375,7 +421,8 @@ do not leave a mixed fleet.
 
 | Operation | Runbook | Command | Successful handoff |
 | --- | --- | --- | --- |
-| Read pir1 and pir2 status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
+| Read pir1, pir2 and ORAM host status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
+| Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, transition pin, switch, then drop the transition | Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` |
 | Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
 | Build the **producer** UKI | [Attested-builder UKI](ATTESTED_BUILDER_TIER3_UKI.md) | `scripts/build_uki_attested_builder_tier3.sh` | archived `.efi` + `.meta` |
 | Verify a local DB proof | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) | `bpir-admin db-proof verify` | verifier exit 0 |

@@ -1,7 +1,7 @@
 //! Integration tests for PIR SDK Client.
 //!
 //! These tests require running PIR servers. By default they hit the public
-//! deployment at `wss://weikeng1.bitcoinpir.org` / `wss://weikeng2.bitcoinpir.org`
+//! deployment at `wss://weikeng1.bitcoinpir.org` / `wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`
 //! (the same servers the production web client uses) — that's what CI runs
 //! against and what a contributor gets out-of-the-box.
 //!
@@ -39,17 +39,17 @@ use pir_sdk_client::{
 /// real data. The public servers are the same ones the web client at
 /// https://www.bitcoinpir.org uses.
 const DEFAULT_DPF_SERVER0: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_DPF_SERVER1: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_DPF_SERVER1: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 // Production topology (memory: project_pir1_hint_pir2_query_split.md):
 //   pir1 = Hetzner, no-SEV   → HINT server  (--serve-hints + --pool-size)
-//   pir2 = VPSBG,   SEV-SNP  → QUERY server (--serve-queries)
+//   pir2 = MacBook node, no TEE (since 2026-10-01) → QUERY server (--serve-queries)
 // Defaults were reversed pre-2026-05-13 and silently worked because
 // pir2 also had --pool-size enabled. After the mode-flag landing
 // (commit fb8b8a64) pir2 rejects hint requests with a clear
 // wire-level error ("server not configured to serve hints — start
 // with --serve-hints"), which surfaced the reversal in CI.
 const DEFAULT_HARMONY_HINT: &str = "wss://weikeng1.bitcoinpir.org";
-const DEFAULT_HARMONY_QUERY: &str = "wss://weikeng2.bitcoinpir.org";
+const DEFAULT_HARMONY_QUERY: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 #[cfg(feature = "onion")]
 const DEFAULT_ONION_URL: &str = "wss://weikeng1.bitcoinpir.org";
 
@@ -208,7 +208,8 @@ fn strict_production_canary_enabled() -> bool {
 /// run unpaid. Read-only: one plain connection per (URL, backend) and a
 /// GET_INFO_JSON round-trip; nothing is presented. Writes
 /// `<backend>_paid=<bool>` for every probed backend to `$GITHUB_OUTPUT` and a
-/// note to `$GITHUB_STEP_SUMMARY` when they are set.
+/// note to `$GITHUB_STEP_SUMMARY` when they are set. With `PIR_API_KEY` set
+/// the live steps present that key, so no backend counts as paid.
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
 async fn probe_live_credits_required() {
@@ -246,7 +247,10 @@ async fn probe_live_credits_required() {
             panic!("probe: reading credits flags from {url} failed: {error}")
         });
         conn.close().await.ok();
-        if status == CreditStatus::Required && !paid.contains(backend) {
+        if status == CreditStatus::Required
+            && common::api_key().is_none()
+            && !paid.contains(backend)
+        {
             paid.push(*backend);
         }
         lines.push(format!("{url} ({backend}): {status:?}"));
@@ -1150,6 +1154,17 @@ mod onion_tests {
                 });
         }
 
+        common::admit_onion_live(
+            &mut client,
+            0,
+            &common::production_db0_onion_v2_proof_policy(),
+        )
+        .await
+        .expect("strict OnionPIR live admission failed");
+
+        // OnionPIR tree tops are metered, and production charges for
+        // OnionPIR: preflight inside the secure channel, where a presented
+        // API key (`PIR_API_KEY`) or credits can pay for them.
         for pin in PRODUCTION_DATABASE_PINS {
             client
                 .preflight_verified_database(pin.db_id)
@@ -1161,14 +1176,6 @@ mod onion_tests {
                     )
                 });
         }
-
-        common::admit_onion_live(
-            &mut client,
-            0,
-            &common::production_db0_onion_v2_proof_policy(),
-        )
-        .await
-        .expect("strict OnionPIR live admission failed");
 
         let fresh_sync = client
             .sync(&probes, None)

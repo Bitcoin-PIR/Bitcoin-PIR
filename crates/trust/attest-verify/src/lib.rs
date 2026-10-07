@@ -79,6 +79,18 @@ pub const TURIN_ARK_FINGERPRINT_SHA256: [u8; 32] = [
     0xca, 0xfa, 0x5d, 0x05, 0xef, 0x41, 0x93, 0xb2, 0xde, 0xd9, 0xdd, 0x9c, 0x73, 0xdd, 0x3f, 0x6a,
 ];
 
+/// Operator-pinned SHA-256 fingerprint of the AMD **Milan**-family ARK
+/// certificate, DER-encoded, from
+/// `https://kdsintf.amd.com/vcek/v1/Milan/cert_chain` (second PEM
+/// block). Same derivation and rotation steps as
+/// [`TURIN_ARK_FINGERPRINT_SHA256`]; mirrored in `web/src/attest-pin.ts`
+/// as `AMD_MILAN_ARK_FINGERPRINT_HEX`. A verifier passes the pin of the
+/// generation its server runs on, never both.
+pub const MILAN_ARK_FINGERPRINT_SHA256: [u8; 32] = [
+    0x69, 0xd0, 0x63, 0xb4, 0x53, 0x44, 0xd2, 0x6a, 0x2e, 0x94, 0xe1, 0xf4, 0x21, 0x0d, 0xe4, 0x9e,
+    0xf5, 0x55, 0x30, 0x82, 0x87, 0xd4, 0xc1, 0x74, 0x44, 0x5c, 0x95, 0x63, 0x9a, 0x54, 0x0b, 0xcd,
+];
+
 pub mod policy;
 
 /// Bytes-level offset of the report's MEASUREMENT field.
@@ -250,7 +262,8 @@ pub fn verify_chain(
 /// 1. **Chain** ([`verify_chain`]): server-supplied `ark_pem` matches
 ///    the operator-pinned fingerprint, ARK self-signed, ARK→ASK,
 ///    ASK→VCEK (RSA-PSS-SHA384). Pass
-///    `Some(TURIN_ARK_FINGERPRINT_SHA256)` for the Turin pin.
+///    `Some(TURIN_ARK_FINGERPRINT_SHA256)` or
+///    `Some(MILAN_ARK_FINGERPRINT_SHA256)` for the server's generation.
 /// 2. **Report signature** ([`verify_report_against_vcek`]): the SNP
 ///    report's ECDSA-P384-SHA384 signature verifies against the VCEK
 ///    pubkey — i.e. the report was minted by the chip whose VCEK was
@@ -511,6 +524,66 @@ mod tests {
         assert_eq!(TURIN_ARK_FINGERPRINT_SHA256[0], 0x1f);
         // Last byte 0x6a.
         assert_eq!(TURIN_ARK_FINGERPRINT_SHA256[31], 0x6a);
+    }
+
+    // testdata/milan: ARK and ASK from AMD KDS /vcek/v1/Milan/cert_chain;
+    // a version-5 report from VPSBG server 26939 (EPYC 7713P, stock Ubuntu
+    // guest, 2026-10-02: reported TCB bl 4 / tee 0 / snp 29 / ucode 222,
+    // platform_info 0x25, mitigation vectors 0xb) and its VCEK from KDS.
+    const MILAN_ARK: &[u8] = include_bytes!("../testdata/milan/ark.pem");
+    const MILAN_ASK: &[u8] = include_bytes!("../testdata/milan/ask.pem");
+    const MILAN_VCEK: &[u8] = include_bytes!("../testdata/milan/vcek.pem");
+    const MILAN_REPORT: &[u8] = include_bytes!("../testdata/milan/report.bin");
+
+    #[test]
+    fn milan_ark_fingerprint_matches_amd_kds_ark() {
+        assert_eq!(
+            ark_fingerprint_sha256(MILAN_ARK).unwrap(),
+            MILAN_ARK_FINGERPRINT_SHA256
+        );
+        assert_ne!(MILAN_ARK_FINGERPRINT_SHA256, TURIN_ARK_FINGERPRINT_SHA256);
+    }
+
+    #[test]
+    fn real_milan_report_passes_the_milan_floor_and_nothing_stricter() {
+        let floor = policy::PolicyRequirements {
+            min_tcb: Some(TcbVersion::new(None, 4, 0, 29, 222)),
+            require_alias_check_complete: true,
+            required_mit_vector_bits: 0b10,
+            ..policy::PolicyRequirements::default()
+        };
+        let verify = |ark_pin, requirements: &policy::PolicyRequirements| {
+            verify_full(
+                MILAN_REPORT,
+                MILAN_ARK,
+                MILAN_ASK,
+                MILAN_VCEK,
+                Some(ark_pin),
+                requirements,
+            )
+        };
+        let report = verify(MILAN_ARK_FINGERPRINT_SHA256, &floor).unwrap();
+        assert_eq!(
+            (report.cpuid_fam_id, report.cpuid_mod_id, report.cpuid_step),
+            (Some(25), Some(1), Some(1))
+        );
+
+        let snp_above_host = policy::PolicyRequirements {
+            min_tcb: Some(TcbVersion::new(None, 4, 0, 30, 222)),
+            ..floor.clone()
+        };
+        assert!(matches!(
+            verify(MILAN_ARK_FINGERPRINT_SHA256, &snp_above_host),
+            Err(FullVerifyError::Policy(
+                policy::PolicyError::TcbBelowMinimum { .. }
+            ))
+        ));
+        assert!(matches!(
+            verify(TURIN_ARK_FINGERPRINT_SHA256, &floor),
+            Err(FullVerifyError::Chain(
+                VerifyError::ArkFingerprintMismatch { .. }
+            ))
+        ));
     }
 
     #[test]

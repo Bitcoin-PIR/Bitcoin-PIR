@@ -11,7 +11,7 @@ not listed below is local-only by construction.
 |---|---|
 | `installimage.conf` | Hetzner installimage config for the pir1 host (partitioning/RAID; no credentials) |
 | `known_hosts` | Pinned SSH public host keys for the Hetzner host (65.21.91.217) — the host-key-swap defense used by the ops runbooks |
-| `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (87.120.8.198, Slice 2 only) |
+| `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (server 26939, 212.73.134.61; stock-rootfs windows only) |
 | `systemd/*.service` | The four host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
 
 These files are *facts about the deployment*, not activation levers: editing

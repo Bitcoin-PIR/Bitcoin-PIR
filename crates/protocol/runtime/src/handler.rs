@@ -221,6 +221,10 @@ impl RequestHandler {
             Request::CreditPresent { .. } => Response::Error(
                 "credits are handled only by the unified_server's per-connection path".into(),
             ),
+            // API keys mark the connection, which only the unified_server owns.
+            Request::ApiKey { .. } => Response::Error(
+                "API keys are handled only by the unified_server's per-connection path".into(),
+            ),
             // Handshake needs per-connection state to mint a fresh
             // ephemeral keypair, derive the session key, and stash it
             // for subsequent encrypted-frame open/seal. The stateless

@@ -22,10 +22,12 @@ run this read-only command first:
 ./scripts/production-status.sh
 ```
 
-That prints pir1 SSH health and then the pir2 VPSBG snapshot. For pir2
-only, `./scripts/vpsbg-production-status.sh` GETs the VPSBG control plane
-and public `/status.json` and never uses SSH. Both default to
-`.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
+That prints pir1 SSH health and then attests the pir2 MacBook node
+against `PIR2_MACBOOK_PIN` (set `BPIR_ADMIN` to reuse a prebuilt
+`bpir-admin`). The VPSBG pir2 host was retired on 2026-10-02;
+`./scripts/vpsbg-production-status.sh` GETs the VPSBG control plane and
+public `/status.json` of a future VPSBG host, never uses SSH, and defaults
+to `.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
 build/switch; after `unified_server` owns 8091, its fields are expected
 to be `unavailable`.
 Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.

@@ -124,6 +124,9 @@ pub(crate) struct UnifiedServerData {
     /// What each backend charges, and the best-effort free lanes
     /// (docs/CREDITS.md "Access policy").
     pub(crate) access: crate::access_gate::AccessGateV1,
+    /// Operator-issued API keys (`--api-key-file`); `None` keeps
+    /// `REQ_API_KEY` refused (docs/CREDITS.md "API keys").
+    pub(crate) api_keys: Option<crate::api_keys::ApiKeysV1>,
     /// This boot's Ready receipts and preflight marker, served read-only by
     /// REQ_PIR2_SEALED_RECEIPT_GET (sealed Ready pir2 guests only).
     pub(crate) pir2_sealed_receipts: Option<crate::pir2_sealed_receipts::Pir2SealedReadyReceiptsV1>,
@@ -134,6 +137,27 @@ pub(crate) struct UnifiedServerData {
     /// Whether this server accepts PIR query opcodes (DPF + OnionPIR +
     /// HarmonyPIR query phase). Mirrors `CliArgs::serve_queries`.
     pub(crate) serve_queries: bool,
+    /// Direct ORAM only (`--oram-only`): the databases carry no table data,
+    /// so every other query request is refused. Mirrors `CliArgs::oram_only`.
+    pub(crate) oram_only: bool,
+}
+
+/// The per-database roots this server attests and announces, in db_id
+/// order. An ORAM-only server holds none of the table files its manifests
+/// list, so it attests `oram_only_manifest_root` of each manifest root
+/// instead of the root itself. A database without a manifest attests zeros.
+pub(crate) fn attested_manifest_roots(
+    databases: &[runtime::table::MappedDatabase],
+    oram_only: bool,
+) -> Vec<[u8; 32]> {
+    databases
+        .iter()
+        .map(|db| match db.manifest_root {
+            Some(root) if oram_only => pir_core::attest::oram_only_manifest_root(&root),
+            Some(root) => root,
+            None => [0u8; 32],
+        })
+        .collect()
 }
 
 impl UnifiedServerData {

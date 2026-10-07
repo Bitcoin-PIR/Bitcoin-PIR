@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { MAX_CREDIT_PRESENT_PAYLOAD_LEN, REQ_CREDIT_PRESENT, RESP_CREDIT_OK } from '../constants.js';
+import {
+  MAX_API_KEY_LEN,
+  MAX_CREDIT_PRESENT_PAYLOAD_LEN,
+  REQ_API_KEY,
+  REQ_CREDIT_PRESENT,
+  RESP_API_KEY_OK,
+  RESP_CREDIT_OK,
+} from '../constants.js';
 import {
   CREDIT_PRESENT_KIND_ARC,
   CREDIT_PRESENT_KIND_CASHU,
@@ -10,8 +17,10 @@ import {
   IssuerError,
   bytesToHex,
   creditsToCover,
+  encodeApiKeyFrame,
   encodeCreditPresentFrame,
   hexToBytes,
+  parseApiKeyResponsePayload,
   parseCreditResponsePayload,
   parseInsufficientGas,
   parseIssuedCredential,
@@ -89,6 +98,26 @@ const SERVER_INFO = {
   },
 };
 
+describe('API key frame codec', () => {
+  it('frames the key after the opcode and accepts only the empty OK answer', () => {
+    expect(Array.from(encodeApiKeyFrame('bpk_1'))).toEqual(
+      [6, 0, 0, 0, REQ_API_KEY, ...new TextEncoder().encode('bpk_1')],
+    );
+    expect(() => encodeApiKeyFrame('')).toThrow(/1 to 128 bytes/);
+    expect(() => encodeApiKeyFrame('k'.repeat(MAX_API_KEY_LEN + 1))).toThrow(/1 to 128 bytes/);
+
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_API_KEY_OK]))).not.toThrow();
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_API_KEY_OK, 0]))).toThrow(/unexpected/);
+    expect(() => parseApiKeyResponsePayload(new Uint8Array([RESP_CREDIT_OK]))).toThrow(/unexpected/);
+    const message = new TextEncoder().encode('unknown API key');
+    const error = new Uint8Array(5 + message.length);
+    error[0] = 0xff;
+    new DataView(error.buffer).setUint32(1, message.length, true);
+    error.set(message, 5);
+    expect(() => parseApiKeyResponsePayload(error)).toThrow('unknown API key');
+  });
+});
+
 describe('credit frame codec', () => {
   it('encodes the present frame with a length prefix and parses receipts', () => {
     const frame = encodeCreditPresentFrame(CREDIT_PRESENT_KIND_ARC, new Uint8Array([1, 2, 3]));
@@ -143,7 +172,7 @@ describe('gas card and meter', () => {
     expect(meter.frameGas(0, { kind: 'onion_chunk_query' })).toBe(403_280);
     expect(meter.frameGas(0, { kind: 'harmony_hint_set', level: 21 })).toBe(970);
     expect(meter.frameGas(0, { kind: 'harmony_query', level: 1, subQueries: 3 })).toBe(56);
-    expect(meter.frameGas(0, { kind: 'harmony_continuation' })).toBe(20);
+    expect(meter.frameGas(0, { kind: 'harmony_continuation' })).toBe(20 + 64_985);
     expect(meter.frameGas(0, { kind: 'onion_tree_tops' })).toBe(25);
     expect(meter.frameGas(1, { kind: 'oram_lookup' })).toBe(532);
     expect(meter.frameGas(0, { kind: 'oram_lookup' })).toBeNull();

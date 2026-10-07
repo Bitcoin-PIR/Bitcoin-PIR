@@ -2,8 +2,10 @@
  * Production provider pins for the free/open query path.
  *
  * The node set is fixed: pir1 (Hetzner — DPF server0 / Harmony hint /
- * OnionPIR) and pir2 (VPSBG AMD SEV — DPF server1 / Harmony query /
- * Direct ORAM). The page connects to the pinned providers, runs the strict
+ * OnionPIR), the pir2 slot (since 2026-10-02 a MacBook without a TEE —
+ * DPF server1 / Harmony query) and the Direct ORAM TEE host (VPSBG, AMD
+ * Milan SEV-SNP, ORAM only). The page connects to the pinned
+ * providers, runs the strict
  * attestation + database-proof preflight, and queries directly; a provider
  * that requires credits (docs/CREDITS.md) is paid per metered frame from the
  * wallet. There is no bootstrap JSON, no directory, no signed policy, and no
@@ -16,8 +18,9 @@
  */
 
 import {
-    AMD_TURIN_ARK_FINGERPRINT,
+    AMD_MILAN_ARK_FINGERPRINT,
     PIR1_PIN,
+    PIR2_MACBOOK_PIN,
     PIR2_TIER3_PIN,
     type ServerAttestPin,
 } from './attest-pin.js';
@@ -48,16 +51,38 @@ export const PIR1_PROVIDER: ProductionProviderPin = {
     expectedArkFingerprint: null,
 };
 
-/** pir2 (VPSBG AMD SEV Tier 3): DPF server1, HarmonyPIR query, Direct ORAM. */
+/**
+ * pir2 slot (MacBook, no TEE, since 2026-10-02): DPF server1, HarmonyPIR query.
+ * Same operator key as the retired VPSBG pir2, new server identity.
+ */
 export const PIR2_PROVIDER: ProductionProviderPin = {
+    endpoint: 'wss://bitcoin-pir-weikeng-laptop.chenweikeng.com',
+    stableServerId: 'pir2-macbook-v1',
+    serverPin: PIR2_MACBOOK_PIN,
+    operatorPubkey: hexToBytes(
+        '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
+    ),
+    expectedArkFingerprint: null,
+};
+
+/**
+ * Direct ORAM provider: the VPSBG TEE host weikeng2 (server 26939, AMD Milan,
+ * Direct ORAM only). Same operator key as the pir2 slot; its own server
+ * identity. Set back to `null` to pause Direct ORAM.
+ */
+export const ORAM_PROVIDER: ProductionProviderPin | null = {
     endpoint: 'wss://weikeng2.bitcoinpir.org',
-    stableServerId: 'pir2-vpsbg-dpf-v1',
+    stableServerId: 'pir2-oram-v1',
     serverPin: PIR2_TIER3_PIN,
     operatorPubkey: hexToBytes(
         '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
     ),
-    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+    expectedArkFingerprint: AMD_MILAN_ARK_FINGERPRINT,
 };
+
+/** Shown wherever Direct ORAM would otherwise connect. */
+export const ORAM_PAUSED_MESSAGE =
+    'Direct ORAM is paused: it needs a TEE host, and none serves it since pir2 was retired on 2026-10-02.';
 
 /**
  * Direct ORAM request shape used in production. Every lookup is one

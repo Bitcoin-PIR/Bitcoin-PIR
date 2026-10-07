@@ -1,6 +1,8 @@
 //! `bpir-admin` — operator CLI for the BitcoinPIR server fleet.
 //!
 //! Subcommands:
+//! - `api-key new` — mint an operator API key for the server's
+//!   `--api-key-file` (docs/CREDITS.md "API keys").
 //! - `keygen` — generate an ed25519 keypair for the admin auth flow.
 //!   Writes the private key to a file (mode 0600) and prints the
 //!   public key as 64-char hex for the operator to put into the
@@ -31,6 +33,7 @@
 
 use clap::{Parser, Subcommand};
 
+mod api_key;
 mod attest;
 mod channel_test;
 mod db_proof;
@@ -53,6 +56,10 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Mint an operator API key for `unified_server --api-key-file`
+    /// (docs/CREDITS.md "API keys").
+    #[command(name = "api-key")]
+    ApiKey(api_key::ApiKeyArgs),
     /// Generate an ed25519 admin keypair.
     Keygen(keygen::KeygenArgs),
     /// Generate an Ed25519 identity keypair (server identity OR
@@ -104,6 +111,13 @@ enum Command {
 async fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
+        Command::ApiKey(args) => match api_key::run(args) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("api-key: {}", e);
+                1
+            }
+        },
         Command::Keygen(args) => match keygen::run(args) {
             Ok(completion) => completion.exit_code(),
             Err(e) => {
@@ -194,6 +208,7 @@ mod cli_tests {
         let mut command = Cli::command();
         let help = command.render_long_help().to_string();
         for subcommand in [
+            "api-key",
             "keygen",
             "generate-identity",
             "sign-identity",
