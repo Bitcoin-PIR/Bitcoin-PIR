@@ -43,7 +43,6 @@ crates/
     wasm/
 tools/
   db-builder/
-  block-reader/
 ops/                      deployment and reproducible-build integration
 verification/
   locks/                  exact external proof and evidence pins

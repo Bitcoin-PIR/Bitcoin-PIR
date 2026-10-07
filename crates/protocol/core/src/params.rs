@@ -163,16 +163,15 @@ pub const CHUNKS_PER_UNIT: usize = 1;
 pub const UNIT_DATA_SIZE: usize = CHUNKS_PER_UNIT * CHUNK_SIZE;
 
 // ─── Legacy constant aliases ────────────────────────────────────────────────
-// Kept so legacy diagnostic binaries (e.g. test_batch_pir, verify,
-// assign_queries) that take the build-time master seed implicitly via
-// `use common::*;` keep compiling. They are NOT used by the production
+// Kept so legacy callers that take the build-time master seed implicitly
+// via `use common::*;` keep compiling. They are NOT used by the production
 // build pipeline after Phase B — gen_0_extract_utxo_set / build_cuckoo_generic
 // / gen_2_onion / gen_3_onion all derive their cuckoo + tag seeds from
 // the chain anchor (see [`crate::seeds`]).
 //
 // `MASTER_SEED` and `CHUNK_MASTER_SEED` will be zeroed (or removed) in
-// Phase C step 2, blocked on migrating the diagnostic binaries to read
-// the seed from the cuckoo file header instead of importing the const.
+// Phase C step 2, blocked on migrating those callers to read the seed
+// from the cuckoo file header instead of importing the const.
 
 pub const K: usize = INDEX_PARAMS.k;
 pub const NUM_HASHES: usize = INDEX_PARAMS.num_hashes;

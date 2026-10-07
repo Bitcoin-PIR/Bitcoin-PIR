@@ -191,7 +191,7 @@ impl MappedSubTable {
     /// `None` when `group_id >= params.k` or when the computed range
     /// would overrun the mmap (possible for legacy anchor-less files,
     /// whose on-disk size is not asserted at load) — a panic here would
-    /// abort the whole server under the workspace-wide `panic = 'abort'`.
+    /// abort the whole server under the release profile's `panic = 'abort'`.
     pub fn try_group_bytes(&self, group_id: usize) -> Option<&[u8]> {
         if group_id >= self.params.k {
             return None;

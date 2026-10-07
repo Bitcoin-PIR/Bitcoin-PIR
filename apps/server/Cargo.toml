@@ -19,10 +19,12 @@ path = "src/bin/unified_server/main.rs"
 [[bin]]
 name = "client"
 path = "src/bin/client.rs"
+test = false
 
 [[bin]]
 name = "onionpir_client"
 path = "src/bin/onionpir_client.rs"
+test = false
 
 # NOTE: `harmonypir_hint_server` (standalone HarmonyPIR hint server) was
 # removed — superseded by `unified_server --serve-hints`.
@@ -30,6 +32,7 @@ path = "src/bin/onionpir_client.rs"
 [[bin]]
 name = "harmonypir_gen_hints"
 path = "src/bin/harmonypir_gen_hints.rs"
+test = false
 
 # NOTE: the stale HarmonyPIR e2e/trace harnesses (harmonypir_index_to_chunk_e2e,
 # harmonypir_full_e2e, harmonypir_batch_e2e, harmonypir_batch_trace) were

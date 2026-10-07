@@ -19,7 +19,6 @@ members = [
     "apps/admin",
     "tools/db-builder",
     "apps/server",
-    "tools/block-reader",
 ]
 exclude = ["vendor/bitcoinpir-oram"]
 
@@ -40,16 +39,19 @@ opt-level = 3
 debug = false
 rpath = false
 lto = "thin"
-incremental = true
+incremental = false
 debug-assertions = false
 
+# Local builds trade rebuild speed for disk. With debuginfo on, macOS keeps
+# every linked binary's object files beside it for the debugger (unpacked
+# split-debuginfo), and at opt-level 3 the incremental cache is about as big
+# as the build itself. `cargo test` inherits this profile; there is no
+# [profile.test], because its thin LTO made every rlib carry LLVM bitcode
+# and every test binary run its own LTO link. panic = 'abort' is
+# release-only: tests always unwind, so an aborting dev profile compiled
+# every dependency twice (once for `cargo build`, once for `cargo test`).
+# To debug: CARGO_PROFILE_DEV_DEBUG=true cargo test -p <crate> ...
 [profile.dev]
 opt-level = 3
-panic = 'abort'
-
-[profile.test]
-opt-level = 3
-lto = "thin"
-incremental = true
-debug-assertions = true
-debug = true
+debug = false
+incremental = false
