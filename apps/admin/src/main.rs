@@ -90,14 +90,14 @@ async fn main() {
             }
         },
         Command::Keygen(args) => match keygen::run(args) {
-            Ok(completion) => completion.exit_code(),
+            Ok(()) => 0,
             Err(e) => {
                 eprintln!("keygen: {}", e);
                 1
             }
         },
         Command::GenerateIdentity(args) => match generate_identity::run(args) {
-            Ok(completion) => completion.exit_code(),
+            Ok(()) => 0,
             Err(e) => {
                 eprintln!("generate-identity: {}", e);
                 1

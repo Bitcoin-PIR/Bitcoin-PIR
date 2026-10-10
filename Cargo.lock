@@ -308,7 +308,6 @@ dependencies = [
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
- "rustix",
  "rustls",
  "serde",
  "serde_json",
