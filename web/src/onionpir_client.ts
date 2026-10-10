@@ -1308,8 +1308,8 @@ export class OnionPirWebClient {
    *
    * When the database has Merkle data the batch is verified before this
    * returns, as in the Rust `OnionClient`: each result carries
-   * `merkleVerified`, and a result whose proof fails comes back with no
-   * entries and `merkleVerified: false`.
+   * `merkleVerified`, and a result whose proof fails keeps its entries with
+   * `merkleVerified: false`.
    */
   async queryBatch(
     scriptHashes: Uint8Array[],
@@ -1986,17 +1986,8 @@ export class OnionPirWebClient {
         result.merkleVerified = true;
         verified++;
       } else {
-        // As in Rust: a failed result carries no entries.
-        results[i] = {
-          entries: [],
-          totalSats: 0n,
-          startChunkId: 0,
-          numChunks: 0,
-          numRounds: result.numRounds,
-          isWhale: false,
-          merkleVerified: false,
-          scriptHash: result.scriptHash,
-        };
+        // As in Rust: a failed result keeps its entries, unverified.
+        result.merkleVerified = false;
       }
     });
     this.log(
