@@ -7,7 +7,6 @@ resolver = "2"
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
-    "crates/security/private-files",
     "crates/trust/identity",
     "crates/trust/attest-verify",
     "crates/trust/db-attest",

@@ -377,7 +377,12 @@ pub(crate) fn read_exact_secret_v1<const N: usize>(
     path: &std::path::Path,
     label: &str,
 ) -> Result<[u8; N], String> {
-    pir_private_files::read_exact_private_file_v1(path, label)
+    let mut bytes = std::fs::read(path)
+        .map_err(|error| format!("cannot read {label} {}: {error}", path.display()))?;
+    let secret = <[u8; N]>::try_from(bytes.as_slice())
+        .map_err(|_| format!("{label} {} must be exactly {N} bytes", path.display()));
+    zeroize::Zeroize::zeroize(&mut bytes);
+    secret
 }
 
 /// Load one database for `--oram-only` from its V2 proof alone (see

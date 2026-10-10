@@ -1732,15 +1732,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pir-private-files"
-version = "0.1.0"
-dependencies = [
- "rustix",
- "tempfile",
- "zeroize",
-]
-
-[[package]]
 name = "pir-runtime-core"
 version = "0.1.0"
 dependencies = [
@@ -2190,14 +2181,12 @@ dependencies = [
  "pir-credit",
  "pir-db-attest",
  "pir-identity",
- "pir-private-files",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
  "rand",
  "rand_chacha",
  "rayon",
- "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",
