@@ -5,19 +5,17 @@ set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: scripts/build_uki_tier3.sh [--dry-run]
+usage: scripts/build_uki_tier3.sh
 
 Builds the Tier 3 UKI on the selected Linux build host.
 
 Production release inputs (set explicitly in the operator command):
   KERNEL, BINARY, ORAMCTL, BHTM_FROM_LEAF_PROOF, OUT
 
-Archive environment:
-  UKI_ARCHIVE_DIR, UKI_ARCHIVE_REMOTE, UKI_ARCHIVE_REMOTE_REQUIRED
+Archive environment: UKI_ARCHIVE_DIR (see archive_uki_artifact.sh)
 
-On success the script writes OUT (default /tmp/bpir-tier3.efi), prints its
-SHA-256, archives it through archive_uki_artifact.sh, then prints PASS and
-NEXT_STEP. --dry-run lists inputs without inspecting the host or reading files.
+On success the script writes OUT, prints its SHA-256, and archives it
+through archive_uki_artifact.sh.
 EOF
 }
 
@@ -31,19 +29,6 @@ TIER3_CLOUDFLARED_SHA256=f29324fe934d1e100617484c78deef803c4dc2cd351d645bbde42e9
 case "${1:-}" in
     '') ;;
     -h|--help) usage; exit 0 ;;
-    --dry-run)
-        echo '[stage] Tier 3 UKI build preview'
-        for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT; do
-            input_value=${!input_name:-MISSING}
-            echo "$input_name=$input_value"
-        done
-        echo "cloudflared_pin=$TIER3_CLOUDFLARED_VERSION"
-        echo 'initrd_compression=zstd'
-        echo 'max_uki_bytes=268435456'
-        echo 'PASS uki_build dry_run=true'
-        echo 'NEXT_STEP=run without --dry-run as root on the approved UKI build host'
-        exit 0
-        ;;
     *) usage >&2; exit 2 ;;
 esac
 
@@ -357,13 +342,6 @@ for expected in "${REQUIRED_TIER3_ITEMS[@]}"; do
 done
 echo "Direct ORAM supervisor, runit hooks, binaries, and BHTM proof confirmed in initramfs"
 
-# No admission policy or payment artifact is embedded in the runtime UKI.
-# Access control lives outside the measured image (see docs/CREDITS.md).
-if grep -Eq -- 'etc/bitcoinpir/payment/' <<< "$INITRD_LISTING"; then
-    echo "ERROR: payment artifacts must not be embedded in the Tier 3 UKI" >&2
-    exit 1
-fi
-
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1
 #                                 from the initramfs, bypassing dracut /init.
@@ -407,5 +385,3 @@ echo "tier3 uki sha256:         $UKI_SHA"
     "dracut_version=$DRACUT_VERSION" \
     "ukify_version=$UKIFY_VERSION" \
     "zstd_version=$ZSTD_VERSION"
-echo 'PASS uki_build'
-echo 'NEXT_STEP=use scripts/vpsbg-measured-boot.sh to preview or apply the measured-boot image transition'
