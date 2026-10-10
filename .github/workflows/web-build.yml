@@ -147,8 +147,7 @@ jobs:
         working-directory: web
         run: npm run build
 
-      # `npm test` = `vitest run`, including chunk_max/index_max closure
-      # helpers and Payment V1 admission/recovery tests.
+      # `npm test` = `vitest run`.
       #
       # Excludes the live cross-language diff (`onion_leakage_diff.test.ts`)
       # — that test is gated on `RUN_LIVE_DIFF=1` because it requires
@@ -161,9 +160,3 @@ jobs:
       - name: Build production web bundle
         working-directory: web
         run: npm run build-web
-
-      # Parse and discover the browser canary without issuing live production
-      # queries on every PR. The scheduled workflow owns those queries.
-      - name: Discover strict production Playwright canary
-        working-directory: web
-        run: npm run test:e2e:strict-production -- --list

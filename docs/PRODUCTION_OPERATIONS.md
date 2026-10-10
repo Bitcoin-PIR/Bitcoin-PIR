@@ -158,8 +158,7 @@ shape.
    `confirm_production_deploy=true`. Expected 20–60 min, hard stop
    75 min. Progress: wasm-pack, tsc, vitest, `npm run build-web`, then the
    deploy job.
-4. Read — optional live browser check, only if the user asks:
-   dispatch `web-strict-production-canary.yml` (45 min timeout) or the
+4. Read — optional live browser check, only if the user asks: the
    [production-test skill](../.claude/skills/production-test/SKILL.md).
 
 Success: the dispatch run's deploy job is green and the live site

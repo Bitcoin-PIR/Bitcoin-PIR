@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-wTX9Ennp8ZIht1M//d8nR++choAhXxEfLlJMnjeg8ZI=' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval' 'sha256-RWVm/OUC8vUEGlsjafPo+FBblnycISMLULzPhZl9R4E=' 'sha256-/trgIxztzvg7U4CrsWvgkl752ZxtSM4j5zr9O+sqhUI='; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https: wss: ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; manifest-src 'self'">
     <title>Bitcoin PIR</title>
     <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
     <style>
@@ -727,8 +727,6 @@
         .merkle-result-badge.verified { color: #166534; background: #dcfce7; border: 1px solid #86efac; }
         .merkle-result-badge.failed { color: #991b1b; background: #fee2e2; border: 1px solid #fca5a5; }
         .merkle-result-badge.error { color: #92400e; background: #fef3c7; border: 1px solid #fcd34d; }
-        .auto-merkle-bar { padding: 9px 12px !important; }
-        .auto-merkle-bar .batch-merkle-btn { cursor: default; }
 
         /* Compact verification summary. The diagnostic panels and server
            settings live in #verificationDialog so they never lengthen the
@@ -829,7 +827,6 @@
         id="bitcoinPirApp"
         class="app"
         aria-busy="true"
-        data-module-readiness="initializing"
     >
         <!-- MAIN -->
         <main class="main">
@@ -1622,7 +1619,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, computeSyncPlan, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PIR1_PIN, PIR2_TIER3_PIN, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1, prepareQueryInspectorRenderDataV1, requireVerifiedQueryResultsV1 } from './src/index.ts';
         import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
         import { IssuerClient, CreditStore, CreditWallet, purchaseCredential, purchaseCredentialX402, cashuLightningRail, sdkArcFactories } from './src/index.ts';
@@ -1925,16 +1922,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
         renderCredits();
 
-        // ─── Free/open product connection ──────────────────────────────────
-        // Free queries are open: connect the pinned production provider(s),
-        // complete the strict attestation + database-proof preflight, then
-        // query directly. There is no bootstrap JSON, no directory, no
-        // signed policy fetch, no proof-of-work, and no capability
-        // acquisition. One query per verified connection attempt: the
-        // connection closes after each query so every query runs on a
-        // fresh, fully verified session.
+        // ─── Product connections ───────────────────────────────────────────
+        // A query connects the production provider(s) on first use, runs the
+        // attestation and database-proof checks (reported in the badges), and
+        // reuses the connection for later queries and syncs.
 
-        function setAdmissionQueryControlsFrozen(kind, frozen) {
+        function setQueryControlsFrozen(kind, frozen) {
             const controls = {
                 dpf: ['scriptPubkeys', 'dbSelect'],
                 onion: ['op-scriptPubkeys', 'op-dbSelect'],
@@ -1947,7 +1940,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        function validateQueryInputBeforeAdmission(kind) {
+        function validateQueryInput(kind) {
             const textareaId = {
                 dpf: 'scriptPubkeys', onion: 'op-scriptPubkeys',
                 harmony: 'hp-scriptPubkeys', oram: 'oram-scriptPubkeys',
@@ -1960,18 +1953,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 || addressToScriptPubKey(value))) {
                 throw new Error('no valid address or scriptPubKey is present');
             }
-            if (kind === 'oram' && values.length > 25) {
-                throw new Error('one ORAM query is one atomic request with at most 25 inputs');
-            }
         }
 
-        async function ensureDpfPair() {
-            await connectDpfLeg(PIR1_PROVIDER, 0);
-            await connectDpfLeg(PIR2_PROVIDER, 1);
-            const dbId = Number.parseInt(document.getElementById('dbSelect').value, 10) || 0;
-            dpfAdmissionDbId = dbId;
-            await client.prepareStrictAdmission(dbId);
-            log('DPF: both providers verified; running one open query…', 'success');
+        async function ensureDpfConnection() {
+            if (!client || !client.isConnected()) await connectDpf();
         }
 
         async function ensureOnionConnection() {
@@ -1979,52 +1964,46 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             onionAdmissionDbId = connected.getDbId();
         }
 
-        async function ensureHarmonyPair() {
-            await hpConnectLeg(PIR1_PROVIDER, 0);
-            await hpConnectLeg(PIR2_PROVIDER, 1);
-            await hpClient.prepareStrictAdmission(hpClient.getDbId());
-            if (hpHintsLoaded) return;
+        async function ensureHarmonyConnection() {
+            if (!hpClient || !hpClient.isConnected()) await hpConnect();
+            if (!hpClient.hintsLoaded) await hpLoadHints();
+        }
+
+        // Restore the active database's hints from the browser cache, or
+        // download and cache them.
+        async function hpLoadHints() {
+            document.getElementById('hp-offlineContainer').style.display = 'block';
             const datasetIdHex = hpClient.getMerkleRootHex();
-            if (!/^[0-9a-f]{64}$/.test(datasetIdHex ?? '') || /^0{64}$/.test(datasetIdHex)) {
-                throw new Error('verified Harmony hint dataset root is unavailable');
-            }
-            const binding = { datasetIdHex, prpBackend: hpCurrentPrp };
-            const restored = await hpClient.restoreHintsFromCache(binding);
-            if (restored) {
-                hpHintsLoaded = true;
-                document.getElementById('hp-offlineContainer').style.display = 'block';
-                document.getElementById('hp-offlineStatus').textContent = 'Restored from exact bound cache';
+            const binding = datasetIdHex ? { datasetIdHex, prpBackend: hpCurrentPrp } : null;
+            if (binding && await hpClient.restoreHintsFromCache(binding)) {
+                document.getElementById('hp-offlineStatus').textContent = 'Restored from cache';
                 document.getElementById('hp-offlineFill').style.width = '100%';
-                document.getElementById('hp-offlineLabel').textContent =
-                    'Dataset and PRP binding verified against the live database proof.';
+                document.getElementById('hp-offlineLabel').textContent = 'Hints restored from the browser cache.';
                 return;
             }
-            document.getElementById('hp-offlineContainer').style.display = 'block';
-            if (!await hpFetchHints(hpClient)) throw new Error('hint download failed');
-            hpHintsLoaded = true;
-            await hpClient.saveHintsToCache(binding);
+            if (!await hpFetchHints()) throw new Error('hint download failed');
+            if (binding) await hpClient.saveHintsToCache(binding);
         }
 
         async function ensureOramConnection() {
             if (!ORAM_PROVIDER) throw new Error(ORAM_PAUSED_MESSAGE);
-            await oramConnect(ORAM_PROVIDER);
-            oramAdmissionDbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
+            if (!oramClient || !oramClient.isConnected()) await oramConnect(ORAM_PROVIDER);
         }
 
         async function runOpenProductQuery(kind, ensure, query, close) {
-            validateQueryInputBeforeAdmission(kind);
-            setAdmissionQueryControlsFrozen(kind, true);
+            validateQueryInput(kind);
+            setQueryControlsFrozen(kind, true);
             try {
                 await ensure();
             } catch (error) {
-                setAdmissionQueryControlsFrozen(kind, false);
+                setQueryControlsFrozen(kind, false);
                 throw error;
             }
             try {
                 await query();
             } finally {
                 await close();
-                setAdmissionQueryControlsFrozen(kind, false);
+                setQueryControlsFrozen(kind, false);
             }
         }
 
@@ -2381,8 +2360,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             // block against one BHTM root.  The snapshot DB has its own
             // independently pinned database proof, but it must not be compared
             // field-for-field with this delta manifest (different db id, build
-            // kind, and PIR roots).  Wait for the delta callback instead; it is
-            // emitted immediately after snapshot preflight in the strict flow.
+            // kind, and PIR roots).  Wait for the delta callback instead.
             if (
                 dbInfo.proof.dbId !== DELTA_940611_948454_DB_PROOF_PIN.dbId
                 || dbInfo.proof.buildKind !== DELTA_940611_948454_DB_PROOF_PIN.buildKind
@@ -2478,12 +2456,41 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             el.innerHTML = rows.join('');
         }
 
-        function renderOramSourceProofWaitingForDb(dbId) {
-            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
-                state: 'unavailable',
-                checks: [],
-                mismatches: [],
-                error: `waiting for a strictly verified live db ${dbId} proof and its v2 source ceremony`,
+        // Informational: check the selected database's live proof against the
+        // attested ORAM source ceremony, when both are available.
+        function oramRenderSourceProof() {
+            const dbId = Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0;
+            const proofClient = oramClient;
+            const proof = proofClient?.getDatabaseProofStatus(dbId);
+            const position = proofClient?.getCatalog()?.databases.findIndex(database => database.dbId === dbId) ?? -1;
+            const manifestRootHex = position >= 0 ? proofClient.attestation.manifestRootsHex?.[position] : undefined;
+            if (proof?.state !== 'verified' || !proof.proof || !manifestRootHex) {
+                renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                    state: proof?.state === 'unverified' ? 'unverified' : 'unavailable',
+                    checks: [],
+                    mismatches: proof?.mismatches || [],
+                    error: proof?.error || `waiting for a verified live db ${dbId} proof and its attested manifest root`,
+                });
+                return;
+            }
+            const isCurrent = () => oramClient === proofClient
+                && (Number.parseInt(document.getElementById('oram-dbSelect').value, 10) || 0) === dbId;
+            verifyAndRenderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', proof.proof, {
+                state: proofClient.attestation.state,
+                sevStatus: proofClient.attestation.sevStatus,
+                vcekChain: proofClient.attestation.vcekChain,
+                pinStatus: proofClient.attestation.pinStatus,
+                manifestRootHex,
+            }, isCurrent).catch(error => {
+                if (!isCurrent()) return;
+                const message = error?.message || String(error);
+                renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
+                    state: 'unavailable',
+                    checks: [],
+                    mismatches: [],
+                    error: `informational source proof unavailable: ${message}`,
+                });
+                log(`ORAM source proof unavailable (informational): ${message}`, 'info');
             });
         }
 
@@ -2494,9 +2501,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             liveRuntime,
             isCurrent = () => true,
         ) {
-            if (!liveDatabaseProof || !liveRuntime) {
-                throw new Error('ORAM source proof requires the current strictly verified live database proof and runtime');
-            }
             const expectedDbPin = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find(
                 pin => pin.dbId === liveDatabaseProof.dbId,
             );
@@ -2960,239 +2964,85 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             badge.textContent = labels[state] || state;
         }
 
-        // Stable outcome contract for the explicit production canary.  A
-        // completed batch means the backend released a result only after its
-        // strict query path succeeded; `verified` is never set for a partial
-        // or failed batch.  The visible result badges remain the detailed
-        // user-facing evidence for PBC backends.
-        function beginQueryBatch(container) {
-            if (!container) return;
-            container.dataset.queryBatchState = 'running';
-            delete container.dataset.queryResultVerification;
-        }
-
-        function completeVerifiedQueryBatch(container) {
-            if (!container) return;
-            container.dataset.queryResultVerification = 'verified';
-            container.dataset.queryBatchState = 'complete';
-        }
-
-        function failQueryBatch(container) {
-            if (!container) return;
-            container.dataset.queryBatchState = 'failed';
-            delete container.dataset.queryResultVerification;
-        }
-
-        function waitForResultPaint() {
-            return new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        }
-
-        // verifyBatchFn: (results[], onProgress) → Promise<boolean[]>.
-        // Simple queries pass resultElements + autoStart=true so verification
-        // begins after results paint and each verdict returns to its result.
-        function addBatchMerkleButton(
-            container,
-            verifiableResults,
-            prefix,
-            verifyBatchFn,
-            getRootHex,
-            label,
-            resultElements = [],
-            autoStart = false,
-        ) {
-            const bar = document.createElement('div');
-            bar.style.cssText = 'margin: 15px 0; padding: 12px 16px; background: #f0faf0; border: 1px solid #c3e6cb; border-radius: 8px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;';
-            if (autoStart) bar.classList.add('auto-merkle-bar');
-            const btnLabel = label
-                ? `&#128274; Verify Merkle Proofs \u2014 ${label} (${verifiableResults.length})`
-                : `&#128274; Verify All Merkle Proofs (${verifiableResults.length})`;
-            bar.innerHTML = `
-                <button class="batch-merkle-btn" style="background-color: #28a745; white-space: nowrap;">${btnLabel}</button>
-                <span class="batch-merkle-status" style="font-size: 13px; color: #666;"></span>
-            `;
-            container.insertBefore(bar, container.firstChild);
-
-            const btn = bar.querySelector('.batch-merkle-btn');
-            const statusSpan = bar.querySelector('.batch-merkle-status');
-            if (autoStart) {
-                btn.disabled = true;
-                btn.textContent = '⏳ Preparing verification…';
-            }
-
-            const runVerification = async () => {
-                btn.disabled = true;
-                btn.textContent = `⏳ Verifying ${verifiableResults.length} proofs...`;
-                statusSpan.textContent = '';
-                statusSpan.style.color = '#888';
-                resultElements.forEach(section => setResultMerkleState(section, 'verifying'));
-
-                try {
-                    const booleans = await verifyBatchFn(verifiableResults, (step, detail) => {
-                        statusSpan.textContent = `${step}: ${detail}`;
-                    });
-
-                    resultElements.forEach((section, index) => {
-                        setResultMerkleState(section, booleans[index] ? 'verified' : 'failed');
-                    });
-
-                    const verified = booleans.filter(Boolean).length;
-                    const failed = booleans.length - verified;
-
-                    if (failed === 0) {
-                        btn.textContent = `✅ All ${verified} Verified`;
-                        btn.style.backgroundColor = '#155724';
-                        const rootHex = getRootHex();
-                        statusSpan.textContent = rootHex ? `Root: ${rootHex.substring(0, 16)}…` : '';
-                        statusSpan.style.color = '#28a745';
-                        if (autoStart) {
-                            resultElements.forEach(section => {
-                                const badge = section?.querySelector('.merkle-result-badge');
-                                if (badge && rootHex) badge.title = `Merkle root ${rootHex}`;
-                            });
-                            bar.remove();
-                        }
+        async function connectDpf() {
+            document.getElementById('server0Url').value = PIR1_PROVIDER.endpoint;
+            document.getElementById('server1Url').value = PIR2_PROVIDER.endpoint;
+            resetBasicVerification(['dpf0', 'dpf1']);
+            renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for latest delta trust-chain proof',
+            });
+            log('Connecting to the DPF servers...');
+            const candidate = new BatchPirClientAdapter({
+                creditProvider: currentCreditProvider,
+                apiKey: currentApiKey(),
+                onCredits: (idx, status) => noteCredits(`DPF server${idx}`, status),
+                server0Url: PIR1_PROVIDER.endpoint,
+                server1Url: PIR2_PROVIDER.endpoint,
+                expectedServer0Pin: PIR1_PROVIDER.serverPin,
+                expectedServer1Pin: PIR2_PROVIDER.serverPin,
+                pinnedOperatorPubkey0: PIR1_PROVIDER.operatorPubkey,
+                pinnedOperatorPubkey1: PIR2_PROVIDER.operatorPubkey,
+                expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                onDatabaseProof: (dbId, info) => {
+                    if (info.state === 'verified') {
+                        log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
+                    } else if (info.state === 'unverified') {
+                        log(`DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
                     } else {
-                        btn.textContent = `⚠️ ${verified} verified, ${failed} failed`;
-                        btn.style.backgroundColor = failed === booleans.length ? '#dc3545' : '#e0820e';
-                        statusSpan.textContent = '';
-                        statusSpan.style.color = '#dc3545';
+                        log(`DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
                     }
-                    btn.disabled = failed === 0;
-                } catch (err) {
-                    resultElements.forEach(section => setResultMerkleState(section, 'error'));
-                    btn.textContent = '↻ Retry verification';
-                    btn.style.backgroundColor = '#e0820e';
-                    statusSpan.textContent = err.message;
-                    statusSpan.style.color = '#92400e';
-                    btn.disabled = false;
-                    if (autoStart) throw err;
-                }
-            };
+                    renderDatabaseProofBadge('dbProofBadge', 'DPF-PIR', info);
+                    verifyAndRenderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', info)
+                        .catch(e => log(`DPF-PIR Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
+                },
+                onAttestation: (idx, info) => {
+                    const tag = `server${idx}`;
+                    setBasicVerificationCheck(`dpf${idx}`, 'attestation',
+                        info.state === 'verified-vcek' || info.state === 'verified');
+                    if (info.state === 'verified-vcek') {
+                        log(`✓ ${tag}: AMD VCEK chain verified (${info.binarySha256Hex?.slice(0, 16) ?? '?'}…)`, 'success');
+                    } else if (info.state === 'verified') {
+                        log(`${tag}: V2 binding only (${info.vcekChain ?? 'no chain'})`, 'info');
+                    } else if (info.state === 'mismatch' && info.vcekChainError) {
+                        log(`✗ ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
+                    }
+                    // Slice 3: persistent badge under the server URL input
+                    // surfacing binary sha + MEASUREMENT + channel pk + git rev.
+                    renderAttestBadge(`attestBadge${idx}`, tag, info);
+                },
+                onOperatorIdentity: (idx, info) => {
+                    const tag = `server${idx}`;
+                    setBasicVerificationCheck(`dpf${idx}`, 'operator', info.state === 'verified');
+                    if (info.state === 'verified') {
+                        log(`🔏 ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
+                    } else if (info.state === 'unverified') {
+                        log(`⚠ ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
+                    }
+                    renderOperatorBadge(`operatorBadge${idx}`, tag, info);
+                },
+                onConnectionStateChange: (state, message) => {
+                    log(`Connection: ${state}${message ? ' - ' + message : ''}`,
+                        state === 'connected' ? 'success' :
+                        state === 'disconnected' ? 'error' : 'info');
 
-            btn.addEventListener('click', runVerification);
-            if (autoStart) {
-                return waitForResultPaint().then(runVerification);
-            }
-            return Promise.resolve(null);
-        }
+                    const statusDiv = document.getElementById('status');
+                    statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
+                    statusDiv.className = `status ${state}`;
+                    statusDiv.dataset.transportState = state;
 
-        const dpfAdmissionProviders = [null, null];
-        let dpfAdmissionDbId = null;
-
-        async function connectDpfLeg(provider, serverIndex) {
-            if (!provider?.endpoint || (serverIndex !== 0 && serverIndex !== 1)) {
-                throw new Error('DPF query access requires one complete provider pin per leg');
-            }
-            if (serverIndex === 1 && !dpfAdmissionProviders[0]) {
-                throw new Error('DPF server 0 must finish before server 1 connects');
-            }
-            document.getElementById(serverIndex === 0 ? 'server0Url' : 'server1Url').value = provider.endpoint;
-
-            if (serverIndex === 0) {
-                resetBasicVerification(['dpf0', 'dpf1']);
-                renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
-                    state: 'unavailable',
-                    checks: [],
-                    mismatches: [],
-                    error: 'waiting for latest delta trust-chain proof',
-                });
-            }
-
-            try {
-                log(`Connecting to DPF server ${serverIndex} only...`);
-
-                if (!client) client = new BatchPirClientAdapter({
-                    creditProvider: currentCreditProvider,
-                    apiKey: currentApiKey(),
-                    onCredits: (idx, status) => noteCredits(`DPF server${idx}`, status),
-                    server0Url: '',
-                    server1Url: '',
-                    strictVerification: true,
-                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
-                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
-                    onDatabaseProof: (dbId, info) => {
-                        if (info.state === 'verified') {
-                            log(`DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
-                        } else if (info.state === 'unverified') {
-                            log(`DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
-                        } else {
-                            log(`DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
-                        }
-                        renderDatabaseProofBadge('dbProofBadge', 'DPF-PIR', info);
-                        verifyAndRenderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', info)
-                            .catch(e => log(`DPF-PIR Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
-                    },
-                    onAttestation: (idx, info) => {
-                        const tag = `server${idx}`;
-                        setBasicVerificationCheck(`dpf${idx}`, 'attestation',
-                            info.state === 'verified-vcek' || info.state === 'verified');
-                        if (info.state === 'verified-vcek') {
-                            log(`✓ ${tag}: AMD VCEK chain verified (${info.binarySha256Hex?.slice(0, 16) ?? '?'}…)`, 'success');
-                        } else if (info.state === 'verified') {
-                            log(`${tag}: V2 binding only (${info.vcekChain ?? 'no chain'})`, 'info');
-                        } else if (info.state === 'mismatch' && info.vcekChainError) {
-                            log(`✗ ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
-                        }
-                        // Slice 3: persistent badge under the server URL input
-                        // surfacing binary sha + MEASUREMENT + channel pk + git rev.
-                        renderAttestBadge(`attestBadge${idx}`, tag, info);
-                    },
-                    // Operator-signed identity (REQ_ANNOUNCE). The adapter
-                    // fetches each server's bundle after attest, checks it
-                    // against the pinned operator key + the attested channel
-                    // key, and reports the verdict here. Gated on 'verified'.
-                    verifyOperatorIdentity: true,
-                    onOperatorIdentity: (idx, info) => {
-                        const tag = `server${idx}`;
-                        setBasicVerificationCheck(`dpf${idx}`, 'operator', info.state === 'verified');
-                        if (info.state === 'verified') {
-                            log(`🔏 ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
-                        } else if (info.state === 'unverified') {
-                            log(`⚠ ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
-                        }
-                        renderOperatorBadge(`operatorBadge${idx}`, tag, info);
-                    },
-                    onConnectionStateChange: (state, message) => {
-                        log(`Connection: ${state}${message ? ' - ' + message : ''}`,
-                            state === 'connected' ? 'success' :
-                            state === 'disconnected' ? 'error' : 'info');
-
-                        const statusDiv = document.getElementById('status');
-                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
-                        statusDiv.className = `status ${state}`;
-                        statusDiv.dataset.transportState = state;
-
-                        if (state === 'connected') setButtons(true);
-                        else if (state === 'disconnected') setButtons(false);
-                    },
-                    onLog: (msg, level) => log(msg, level),
-                });
-
-                client.configureServerLeg(serverIndex, {
-                    url: provider.endpoint,
-                    expectedPin: provider.serverPin,
-                    expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: provider.operatorPubkey,
-                });
-                await client.connectLeg(serverIndex);
-                dpfAdmissionProviders[serverIndex] = provider;
-                // Post-connect state refresh: enable sync button, reveal the
-                // sync state row IFF a persisted height exists (i.e. user
-                // already synced in a prior session). Advanced DB selector
-                // and delta example buttons stay hidden until the first
-                // successful sync — see executeSync() for their reveal.
-                refreshSyncStateUI();
-            } catch (error) {
-                log(`DPF server ${serverIndex} connection failed: ${error.message}`, 'error');
-                if (serverIndex === 0) {
-                    client?.disconnect();
-                    client = null;
-                    dpfAdmissionProviders[0] = null;
-                }
-                dpfAdmissionProviders[serverIndex] = null;
-                throw error;
-            }
-            return client;
+                    if (state === 'connected') setButtons(true);
+                    else if (state === 'disconnected') setButtons(false);
+                },
+                onLog: (msg, level) => log(msg, level),
+            });
+            await candidate.connect();
+            client = candidate;
+            populateDbSelector();
+            refreshSyncStateUI();
         }
 
         function populateDbSelector() {
@@ -3275,9 +3125,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 setButtons(false);
             }
             publishTransportDisconnected('status');
-            dpfAdmissionProviders[0] = null;
-            dpfAdmissionProviders[1] = null;
-            dpfAdmissionDbId = null;
             // Keep the SyncController cache alive across disconnect/reconnect:
             // the controller's page-refresh safety rule (computePlan) will
             // force a fresh full sync anyway if the cache ends up stale.
@@ -3292,7 +3139,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function queryUtxos() {
             if (!client || !client.isConnected()) {
-                throw new Error('DPF query requires the live strictly verified connection');
+                throw new Error('DPF query requires a connection');
             }
 
             const textarea = document.getElementById('scriptPubkeys');
@@ -3339,7 +3186,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             // Reset results
             const resultsContainer = document.getElementById('resultsContainer');
             resultsContainer.innerHTML = '';
-            beginQueryBatch(resultsContainer);
             document.getElementById('queryBtn').disabled = true;
 
             const N = lines.length;
@@ -3349,16 +3195,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // Compute all script hashes up front
                 const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
 
-                // Get selected database
-                // Both independently authorized legs are bound to the database
-                // captured before the first policy fetch. A later UI change
-                // cannot silently send a query under mismatched grants.
-                const dbId = dpfAdmissionDbId
-                    ?? (parseInt(document.getElementById('dbSelect')?.value ?? '0') || 0);
+                const dbId = parseInt(document.getElementById('dbSelect')?.value ?? '0') || 0;
                 const queryClient = client;
-                if (!queryClient || !queryClient.isConnected()) {
-                    throw new Error('strict DPF connection was replaced before query');
-                }
                 const dbEntry = queryClient.getCatalogEntry(dbId);
                 const isDelta = dbEntry?.dbType === 1;
 
@@ -3381,33 +3219,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         setProgress(pct, `${step}: ${detail}`);
                     }, dbId);
 
-                // Freeze both the transport object and db binding across the
-                // query + verification boundary. No result reaches the DOM
-                // until every inclusion verdict is true.
-                if (client !== queryClient || !queryClient.isConnected()) {
-                    throw new Error('strict DPF connection was replaced before verification');
-                }
-                if (!queryClient.hasMerkleForDb(dbId)) {
-                    throw new Error(`strict DPF db ${dbId} has no authenticated inclusion tree`);
-                }
-                setProgress(92, `Verifying ${N} inclusion proofs...`);
-                const verifiedResults = await requireVerifiedQueryResultsV1(
-                    results,
-                    async concrete => {
-                        if (client !== queryClient || !queryClient.isConnected()) {
-                            throw new Error('live strict DPF connection lost before verification');
-                        }
-                        return queryClient.verifyMerkleBatch(concrete, (step, detail) => {
-                            setProgress(94, `${step}: ${detail}`);
-                        }, dbId);
-                    },
-                    `DPF ${isDelta ? 'delta ' : ''}db ${dbId}`,
-                );
-                if (client !== queryClient || !queryClient.isConnected()) {
-                    throw new Error('strict DPF connection changed after verification');
-                }
-
-                // Render only the verified batch.
+                // Native code rejects the whole batch if any Merkle proof fails.
                 let found = 0;
 
                 if (isDelta) {
@@ -3421,25 +3233,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
-                    const result = verifiedResults[qi];
+                    const result = results[qi];
                     if (result) found++;
 
-                    if (isDelta) {
-                        const section = renderDeltaResult(resultsContainer, spkHex, hashHex, result);
-                        setResultMerkleState(section, 'verified');
-                    } else {
-                        const section = renderResult(resultsContainer, spkHex, hashHex, result);
-                        setResultMerkleState(section, 'verified');
-                    }
+                    const section = isDelta
+                        ? renderDeltaResult(resultsContainer, spkHex, hashHex, result)
+                        : renderResult(resultsContainer, spkHex, hashHex, result);
+                    setResultMerkleState(section, !result || result.merkleVerified ? 'verified' : 'failed');
                 }
 
-                completeVerifiedQueryBatch(resultsContainer);
                 const verb = isDelta ? 'changed' : 'found';
                 setProgress(100, `Done! ${found}/${N} addresses ${verb}`);
                 setTimeout(hideProgress, 2000);
                 log(`Batch complete: ${found}/${N} ${verb}`, 'success');
             } catch (error) {
-                failQueryBatch(resultsContainer);
                 log(`Batch error: ${error.message}`, 'error');
                 setProgress(0, '');
                 hideProgress();
@@ -3449,16 +3256,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('queryBtn').disabled = false;
         }
 
-        async function runDpfQueryOnce() {
+        async function runDpfQuery() {
             const button = document.getElementById('queryBtn');
             if (button.disabled) return;
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runOpenProductQuery(
-                    'dpf', ensureDpfPair, queryUtxos,
-                    async () => disconnect(true),
-                );
+                await runOpenProductQuery('dpf', ensureDpfConnection, queryUtxos, async () => {});
             } catch (error) {
                 log(`DPF query: ${error.message}`, 'error');
             } finally {
@@ -3508,13 +3312,16 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function planSync() {
-            log('Sync is disabled in query-access V1 because it can issue multiple queries.', 'error');
-            return;
-
             const parsed = parseScriptInputs('scriptPubkeys');
             if (!parsed) return;
             const { lines, scriptHashes } = parsed;
 
+            try {
+                await ensureDpfConnection();
+            } catch (error) {
+                log(`DPF connect: ${error.message}`, 'error');
+                return;
+            }
             const catalog = client.getCatalog();
             if (!catalog || catalog.databases.length === 0) {
                 log('No catalog available', 'error');
@@ -3572,8 +3379,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function executeSync() {
-            log('Sync execution is disabled in query-access V1.', 'error');
-            return;
             if (!pendingSync || !client || !client.isConnected()) return;
             const { plan, lines, scriptHashes } = pendingSync;
             const N = scriptHashes.length;
@@ -3647,39 +3452,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // via wireDeltaExampleButtons(), so testers can pick delta
                 // addresses before clicking Sync.
                 populateDbSelector();
-
-                // Offer Merkle verification for each step whose target DB
-                // has per-bucket Merkle available. Rendered in plan order so
-                // the full snapshot button appears above any deltas.
-                const merkleSteps = verifiableSteps
-                    .map(({ step, stepResults }) => ({
-                        step,
-                        verifiable: stepResults.filter(r => r && !r.isWhale && r.indexPbcGroup !== undefined),
-                    }))
-                    .filter(({ step, verifiable }) =>
-                        verifiable.length > 0 && client.hasMerkleForDb(step.dbId));
-
-                if (merkleSteps.length > 0) {
-                    const note = document.createElement('div');
-                    note.style.cssText = 'margin: 12px 0; font-size: 12px; color: #666;';
-                    note.textContent = merkleSteps.length === 1
-                        ? `Merkle verification below applies to the ${merkleSteps[0].step.dbType} step of this sync.`
-                        : `Merkle verification below runs one proof batch per sync step (${merkleSteps.length} steps).`;
-                    resultsContainer.appendChild(note);
-                    // Insert in reverse order so they end up in plan order
-                    // (addBatchMerkleButton inserts before container.firstChild).
-                    for (let i = merkleSteps.length - 1; i >= 0; i--) {
-                        const { step, verifiable } = merkleSteps[i];
-                        const prefix = `dpf-sync-${step.dbType}-${step.dbId}`;
-                        const label = step.dbType === 'full'
-                            ? `full snapshot (db ${step.dbId}, height ${step.tipHeight.toLocaleString()})`
-                            : `delta (db ${step.dbId}, ${step.baseHeight.toLocaleString()} \u2192 ${step.tipHeight.toLocaleString()})`;
-                        addBatchMerkleButton(resultsContainer, verifiable, prefix,
-                            (results, onProg) => client.verifyMerkleBatch(results, onProg, step.dbId),
-                            () => client.getMerkleRootHexForDb(step.dbId),
-                            label);
-                    }
-                }
 
                 setProgress(100, `Sync complete! ${found}/${N} found at height ${plan.targetHeight.toLocaleString()}`);
                 setTimeout(hideProgress, 2000);
@@ -3790,9 +3562,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         wireDeltaExampleButtons('hp-', 'hp-scriptPubkeys');
 
         // ─── Main buttons (DPF) ────────────────────────────────────────
-        document.getElementById('connectBtn').addEventListener('click', runDpfQueryOnce);
+        document.getElementById('connectBtn').addEventListener('click', () => {
+            ensureDpfConnection().catch(error => log(`DPF connect: ${error.message}`, 'error'));
+        });
         document.getElementById('disconnectBtn').addEventListener('click', () => disconnect());
-        document.getElementById('queryBtn').addEventListener('click', runDpfQueryOnce);
+        document.getElementById('queryBtn').addEventListener('click', runDpfQuery);
         document.getElementById('syncBtn').addEventListener('click', planSync);
         document.getElementById('syncConfirmBtn').addEventListener('click', executeSync);
         document.getElementById('syncCancelBtn').addEventListener('click', cancelSync);
@@ -4284,7 +4058,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('op-resultsContainer');
             resultsContainer.innerHTML = '';
-            beginQueryBatch(resultsContainer);
             document.getElementById('op-queryBtn').disabled = true;
 
             const N = lines.length;
@@ -4328,12 +4101,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     setResultMerkleState(section, 'verified');
                 }
 
-                completeVerifiedQueryBatch(resultsContainer);
                 opSetProgress(100, `Done! ${found}/${N} addresses found`);
                 setTimeout(opHideProgress, 2000);
                 log(`OnionPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
-                failQueryBatch(resultsContainer);
                 log(`OnionPIR error: ${error.message}`, 'error');
                 opSetDataIntegrity('no', error.message);
                 opSetProgress(0, '');
@@ -4412,34 +4183,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ═══════════════════════════════════════════════════════════════
 
         let hpClient = null;
-        let hpHintsLoaded = false;
         let hpCurrentPrp = 0;
-
-        // ── Serialization queue for `hpClient` access ───────────────────────
-        // `WasmHarmonyClient` exposes `&mut self` async methods (e.g.
-        // `verifyMerkleBatch`, `fetchHintsWithProgress`); wasm-bindgen's
-        // runtime borrow check panics with "recursive use of an object
-        // detected which would lead to unsafe aliasing in rust" if any
-        // method is called while a `&mut self` future is suspended at an
-        // `await`. The Merkle-verify flow is the trigger we hit in
-        // practice: a fire-and-forget prewarm walks every sync step and
-        // calls `hpSwitchDb` + `verifyMerkleBatch`, while the user's
-        // per-step Verify Merkle button click can land mid-flight on a
-        // *different* dbId — and the per-dbId `siblingPrewarms` await
-        // doesn't cover the cross-dbId case. Wrapping every multi-step
-        // hpClient transaction in `hpExclusive` serialises them through
-        // a single-slot promise queue so the recursive-use case can't
-        // arise. Within a transaction the body runs to completion before
-        // the next queued task starts. (Use `hpExclusive` from the
-        // *outermost* caller; `hpSwitchDb` is intentionally not
-        // self-wrapping so callers can compose `hpSwitchDb` +
-        // `verifyMerkleBatch` atomically inside a single `hpExclusive`.)
-        let hpTaskTail = Promise.resolve();
-        function hpExclusive(asyncFn) {
-            const result = hpTaskTail.then(asyncFn, asyncFn);
-            hpTaskTail = result.then(() => {}, () => {});
-            return result;
-        }
 
         // HarmonyPIR SyncController — owns snapshot cache + lastSyncedHeight
         // for the HarmonyPIR tab. The beforeStep hook delegates to hpSwitchDb,
@@ -4455,11 +4199,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // Pending HarmonyPIR sync plan staged for confirmation.
         let hpPendingSync = null;
 
-        function hpRefreshSyncStateUI(client = hpClient, hintsLoaded = hpHintsLoaded) {
+        function hpRefreshSyncStateUI() {
             const row = document.getElementById('hp-syncStateRow');
             const label = document.getElementById('hp-syncStateLabel');
             const syncBtn = document.getElementById('hp-syncBtn');
-            if (!client || !hintsLoaded) {
+            if (!hpClient) {
                 row.style.display = 'none';
                 if (syncBtn) syncBtn.disabled = true;
                 return;
@@ -4512,15 +4256,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             advancedDetails.style.display = 'block';
         }
 
-        // Caller contract: must run inside `hpExclusive` (or be the only
-        // hpClient task in flight). The queue is what guarantees no two
-        // db-switches overlap and no other hpClient method is suspended
-        // at an `.await` while we mutate state here.
         async function hpSwitchDb(newDbId) {
             if (!hpClient) return;
             if (newDbId === hpClient.getDbId()) return;
             hpClient.setDbId(newDbId);
-            hpHintsLoaded = false;
             log(`HarmonyPIR: db_id=${newDbId} selected; previous hint binding invalidated.`, 'info');
         }
 
@@ -4555,8 +4294,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return { entries, totalSats, isWhale: false };
         }
 
-        async function hpFetchHints(client = hpClient) {
-            if (!client) return false;
+        async function hpFetchHints() {
+            const client = hpClient;
             const offlineStatus = document.getElementById('hp-offlineStatus');
             const offlineFill = document.getElementById('hp-offlineFill');
             const offlineLabel = document.getElementById('hp-offlineLabel');
@@ -4582,7 +4321,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 offlineFill.style.backgroundColor = '#28a745';
                 const remaining = await client.getMinQueriesRemaining();
                 offlineLabel.textContent = 'Hints loaded (~' + client.estimateHintSize() + ' MB, ' + remaining + ' queries available). Ready.';
-                if (client === hpClient) hpHintsLoaded = true;
                 log('HarmonyPIR: Hints downloaded successfully', 'success');
                 return true;
             } catch (error) {
@@ -4593,216 +4331,130 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
         }
 
-        let hpConnecting = false;
-        let hpSwitchingPrp = false;
-        const harmonyAdmissionProviders = [null, null];
-        async function hpConnectLeg(provider, providerIndex) {
-            if (hpConnecting || hpSwitchingPrp) {
-                throw new Error('HarmonyPIR provider bootstrap is already in progress');
-            }
-            if (!provider?.endpoint || (providerIndex !== 0 && providerIndex !== 1)) {
-                throw new Error('HarmonyPIR requires one complete provider pin per role');
-            }
-            if (providerIndex === 1 && !harmonyAdmissionProviders[0]) {
-                throw new Error('Harmony hint role must finish before query role connects');
-            }
-            document.getElementById(
-                providerIndex === 0 ? 'hp-hintServerUrl' : 'hp-queryServerUrl',
-            ).value = provider.endpoint;
-
-            if (providerIndex === 0) {
-                resetBasicVerification(['hpHint', 'hpQuery']);
-                renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
-                    state: 'unavailable',
-                    checks: [],
-                    mismatches: [],
-                    error: 'waiting for latest delta trust-chain proof',
-                });
-            }
-
-            hpConnecting = true;
+        async function hpConnect() {
+            hpDisconnect(true);
+            document.getElementById('hp-hintServerUrl').value = PIR1_PROVIDER.endpoint;
+            document.getElementById('hp-queryServerUrl').value = PIR2_PROVIDER.endpoint;
+            resetBasicVerification(['hpHint', 'hpQuery']);
+            renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
+                state: 'unavailable',
+                checks: [],
+                mismatches: [],
+                error: 'waiting for latest delta trust-chain proof',
+            });
+            const statusDiv = document.getElementById('hp-status');
+            statusDiv.textContent = 'Status: Connecting...';
+            statusDiv.className = 'status connecting';
+            statusDiv.dataset.transportState = 'connecting';
             document.getElementById('hp-connectBtn').disabled = true;
-            let candidate = hpClient;
+            log('HarmonyPIR: connecting to the hint and query servers...');
+            const candidate = new HarmonyPirClientAdapter({
+                creditProvider: currentCreditProvider,
+                apiKey: currentApiKey(),
+                onCredits: (idx, status) => noteCredits(idx === 0 ? 'HarmonyPIR hint' : 'HarmonyPIR query', status),
+                hintServerUrl: PIR1_PROVIDER.endpoint,
+                queryServerUrl: PIR2_PROVIDER.endpoint,
+                prpBackend: hpCurrentPrp,
+                expectedServer0Pin: PIR1_PROVIDER.serverPin,
+                expectedServer1Pin: PIR2_PROVIDER.serverPin,
+                pinnedHintOperatorPubkey: PIR1_PROVIDER.operatorPubkey,
+                pinnedQueryOperatorPubkey: PIR2_PROVIDER.operatorPubkey,
+                expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                databaseProofPins: PRODUCTION_DB_PROOF_PINS,
+                onDatabaseProof: (dbId, info) => {
+                    if (info.state === 'verified') {
+                        log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
+                    } else if (info.state === 'unverified') {
+                        log(`HarmonyPIR DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
+                    } else {
+                        log(`HarmonyPIR DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`);
+                    }
+                    renderDatabaseProofBadge('hp-dbProofBadge', 'HarmonyPIR', info);
+                    verifyAndRenderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', info)
+                        .catch(e => log(`HarmonyPIR Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
+                },
+                onAttestation: (idx, info) => {
+                    const tag = idx === 0 ? 'hint' : 'query';
+                    setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'attestation',
+                        info.state === 'verified-vcek' || info.state === 'verified');
+                    if (info.state === 'verified-vcek') {
+                        log(`✓ HarmonyPIR ${tag}: AMD VCEK chain verified`, 'success');
+                    } else if (info.state === 'verified') {
+                        log(`HarmonyPIR ${tag}: V2 binding only (${info.vcekChain ?? 'no chain'})`);
+                    } else if (info.state === 'mismatch' && info.vcekChainError) {
+                        log(`✗ HarmonyPIR ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
+                    }
+                    // Slice 3: persistent badge under each server URL.
+                    const badgeId = idx === 0 ? 'hp-attestBadgeHint' : 'hp-attestBadgeQuery';
+                    renderAttestBadge(badgeId, `HarmonyPIR ${tag}`, info);
+                },
+                onOperatorIdentity: (idx, info) => {
+                    const tag = idx === 0 ? 'hint' : 'query';
+                    setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'operator',
+                        info.state === 'verified');
+                    if (info.state === 'verified') {
+                        log(`🔏 HarmonyPIR ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
+                    } else if (info.state === 'unverified') {
+                        log(`⚠ HarmonyPIR ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
+                    }
+                    const badgeId = idx === 0 ? 'hp-operatorBadgeHint' : 'hp-operatorBadgeQuery';
+                    renderOperatorBadge(badgeId, `HarmonyPIR ${tag}`, info);
+                },
+                onProgress: (msg) => {
+                    log(`HarmonyPIR: ${msg}`);
+                    const fill = document.getElementById('hp-offlineFill');
+                    const label = document.getElementById('hp-offlineLabel');
+                    // Per-group progress lines from `fetchHints()`:
+                    // `Hints: N/total (X%)` — drive both the offline
+                    // hint bar and the in-flight hp-progress bar so
+                    // the UI fills incrementally instead of sitting
+                    // on "Downloading…" for the full hint download.
+                    const m = msg.match(/^Hints:\s+(\d+)\/(\d+)\s+\((\d+)%\)/);
+                    if (m) {
+                        const done = parseInt(m[1], 10);
+                        const total = parseInt(m[2], 10);
+                        const pct = parseInt(m[3], 10);
+                        if (fill) fill.style.width = `${pct}%`;
+                        if (label) label.textContent = `Downloading hints… ${done}/${total}`;
+                        hpSetProgress(pct, `Hints ${done}/${total}`);
+                        if (done >= total) hpHideProgress();
+                        return;
+                    }
+                    if (msg.startsWith('Hints: downloading')) {
+                        if (fill) fill.style.width = `0%`;
+                        if (label) label.textContent = 'Downloading hints…';
+                        hpSetProgress(0, 'Downloading hints…');
+                    } else if (msg.startsWith('Hints: ready') || msg.startsWith('Hints restored')) {
+                        if (fill) fill.style.width = `100%`;
+                        if (label) label.textContent = 'Hints loaded';
+                        hpHideProgress();
+                    }
+                },
+            });
             try {
-                const statusDiv = document.getElementById('hp-status');
-                statusDiv.textContent = 'Status: Connecting...';
-                statusDiv.className = 'status connecting';
-                statusDiv.dataset.transportState = 'connecting';
-                log(`HarmonyPIR: connecting ${providerIndex === 0 ? 'hint' : 'query'} provider only...`);
-
-                // A prior wrapper without usable hints is not a reconnect
-                // candidate. Tear it down before constructing a replacement.
-                if (providerIndex === 0 && hpClient) {
-                    hpClient.disconnect();
-                    hpClient = null;
-                    hpHintsLoaded = false;
-                    harmonyAdmissionProviders[0] = null;
-                    harmonyAdmissionProviders[1] = null;
-                }
-
-                if (providerIndex === 0) candidate = new HarmonyPirClientAdapter({
-                    creditProvider: currentCreditProvider,
-                    apiKey: currentApiKey(),
-                    onCredits: (idx, status) => noteCredits(idx === 0 ? 'HarmonyPIR hint' : 'HarmonyPIR query', status),
-                    hintServerUrl: '',
-                    queryServerUrl: '',
-                    prpBackend: hpCurrentPrp,
-                    strictVerification: true,
-                    expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
-                    databaseProofPins: PRODUCTION_DB_PROOF_PINS,
-                    onDatabaseProof: (dbId, info) => {
-                        if (info.state === 'verified') {
-                            log(`HarmonyPIR DB proof db ${dbId}: MuHash ${info.proof.muhashHex.slice(0, 16)}... anchored at ${info.proof.fromHeight} -> ${info.proof.height}`, 'success');
-                        } else if (info.state === 'unverified') {
-                            log(`HarmonyPIR DB proof db ${dbId}: UNVERIFIED — ${info.mismatches?.[0] || info.error || 'check failed'}`, 'error');
-                        } else {
-                            log(`HarmonyPIR DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`);
-                        }
-                        renderDatabaseProofBadge('hp-dbProofBadge', 'HarmonyPIR', info);
-                        verifyAndRenderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', info)
-                            .catch(e => log(`HarmonyPIR Bitcoin/MuHash anchor check failed: ${e?.message || e}`, 'error'));
-                    },
-                    onAttestation: (idx, info) => {
-                        const tag = idx === 0 ? 'hint' : 'query';
-                        setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'attestation',
-                            info.state === 'verified-vcek' || info.state === 'verified');
-                        if (info.state === 'verified-vcek') {
-                            log(`✓ HarmonyPIR ${tag}: AMD VCEK chain verified`, 'success');
-                        } else if (info.state === 'verified') {
-                            log(`HarmonyPIR ${tag}: V2 binding only (${info.vcekChain ?? 'no chain'})`);
-                        } else if (info.state === 'mismatch' && info.vcekChainError) {
-                            log(`✗ HarmonyPIR ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
-                        }
-                        // Slice 3: persistent badge under each server URL.
-                        const badgeId = idx === 0 ? 'hp-attestBadgeHint' : 'hp-attestBadgeQuery';
-                        renderAttestBadge(badgeId, `HarmonyPIR ${tag}`, info);
-                    },
-                    // Operator-signed identity (REQ_ANNOUNCE) — same opt-in as
-                    // the DPF card. Verifies each server's bundle against the
-                    // pinned operator key + the attested channel key.
-                    verifyOperatorIdentity: true,
-                    onOperatorIdentity: (idx, info) => {
-                        const tag = idx === 0 ? 'hint' : 'query';
-                        setBasicVerificationCheck(idx === 0 ? 'hpHint' : 'hpQuery', 'operator',
-                            info.state === 'verified');
-                        if (info.state === 'verified') {
-                            log(`🔏 HarmonyPIR ${tag}: operator-endorsed identity verified (${info.serverId})`, 'success');
-                        } else if (info.state === 'unverified') {
-                            log(`⚠ HarmonyPIR ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
-                        }
-                        const badgeId = idx === 0 ? 'hp-operatorBadgeHint' : 'hp-operatorBadgeQuery';
-                        renderOperatorBadge(badgeId, `HarmonyPIR ${tag}`, info);
-                    },
-                    onProgress: (msg) => {
-                        log(`HarmonyPIR: ${msg}`);
-                        const fill = document.getElementById('hp-offlineFill');
-                        const label = document.getElementById('hp-offlineLabel');
-                        // Per-group progress lines from `fetchHints()`:
-                        // `Hints: N/total (X%)` — drive both the offline
-                        // hint bar and the in-flight hp-progress bar so
-                        // the UI fills incrementally instead of sitting
-                        // on "Downloading…" for the full hint download.
-                        const m = msg.match(/^Hints:\s+(\d+)\/(\d+)\s+\((\d+)%\)/);
-                        if (m) {
-                            const done = parseInt(m[1], 10);
-                            const total = parseInt(m[2], 10);
-                            const pct = parseInt(m[3], 10);
-                            if (fill) fill.style.width = `${pct}%`;
-                            if (label) label.textContent = `Downloading hints… ${done}/${total}`;
-                            hpSetProgress(pct, `Hints ${done}/${total}`);
-                            if (done >= total) hpHideProgress();
-                            return;
-                        }
-                        if (msg.startsWith('Hints: downloading')) {
-                            if (fill) fill.style.width = `0%`;
-                            if (label) label.textContent = 'Downloading hints…';
-                            hpSetProgress(0, 'Downloading hints…');
-                        } else if (msg.startsWith('Hints: ready') || msg.startsWith('Hints restored')) {
-                            if (fill) fill.style.width = `100%`;
-                            if (label) label.textContent = 'Hints loaded';
-                            hpHideProgress();
-                        }
-                    },
-                });
-
-                if (!candidate) throw new Error('Harmony hint transport is not available');
-                candidate.configureProviderLeg(providerIndex, {
-                    url: provider.endpoint,
-                    expectedPin: provider.serverPin,
-                    expectedServerId: provider.stableServerId,
-                    pinnedOperatorPubkey: provider.operatorPubkey,
-                });
-                await candidate.loadWasm();
-                log('HarmonyPIR: WASM loaded', 'success');
-
-                await candidate.connectLeg(providerIndex);
-                harmonyAdmissionProviders[providerIndex] = provider;
-                if (providerIndex === 1) await candidate.fetchServerInfo();
-                statusDiv.textContent = providerIndex === 0
-                    ? 'Status: Hint provider verified; hint admission required'
-                    : 'Status: Pair verified; capability admission required before preflight';
-                statusDiv.className = 'status connected';
-                statusDiv.dataset.transportState = 'connected';
-                if (providerIndex === 0) {
-                    document.getElementById('hp-offlineContainer').style.display = 'none';
-                } else {
-                    const connectedCandidate = candidate;
-                    connectedCandidate.onQueryServerClose(() => {
-                        if (hpClient !== connectedCandidate) return;
-                        statusDiv.textContent = 'Status: Query provider disconnected (hints preserved)';
-                        statusDiv.className = 'status disconnected';
-                        statusDiv.dataset.transportState = 'disconnected';
-                    });
-                }
-
-                hpSetButtons(true);
-                hpRefreshSyncStateUI(candidate, hpHintsLoaded);
-                hpClient = candidate;
+                await candidate.connect();
             } catch (error) {
-                if (providerIndex === 0) {
-                    candidate?.disconnect();
-                    hpClient = null;
-                    hpHintsLoaded = false;
-                    harmonyAdmissionProviders[0] = null;
-                }
-                harmonyAdmissionProviders[providerIndex] = null;
-                log(`HarmonyPIR ${providerIndex === 0 ? 'hint' : 'query'} connection failed: ${error.message}`, 'error');
-                const statusDiv = document.getElementById('hp-status');
-                statusDiv.textContent = providerIndex === 0
-                    ? 'Status: Disconnected'
-                    : 'Status: Hint provider remains authorized; query provider failed';
+                log(`HarmonyPIR connection failed: ${error.message}`, 'error');
+                statusDiv.textContent = 'Status: Disconnected';
                 statusDiv.className = 'status disconnected';
                 statusDiv.dataset.transportState = 'disconnected';
-                if (providerIndex === 0) {
-                    hpSetButtons(false);
-                    document.getElementById('hp-offlineContainer').style.display = 'none';
-                }
+                hpSetButtons(false);
                 throw error;
-            } finally {
-                hpConnecting = false;
-                // Re-enable connect button only if not connected.
-                if (!hpClient) {
-                    document.getElementById('hp-connectBtn').disabled = false;
-                }
             }
-            return hpClient;
+            hpClient = candidate;
+            statusDiv.textContent = 'Status: Connected';
+            statusDiv.className = 'status connected';
+            statusDiv.dataset.transportState = 'connected';
+            hpSetButtons(true);
+            hpPopulateDbSelector();
+            hpRefreshSyncStateUI();
         }
 
-        function hpDisconnect(full = false, preserveResults = false) {
-            if (!hpClient) return;
-            if (full || !hpHintsLoaded) {
-                // Full teardown: destroy everything.
-                hpClient.disconnect();
-                hpClient = null;
-                hpHintsLoaded = false;
-                harmonyAdmissionProviders[0] = null;
-                harmonyAdmissionProviders[1] = null;
-                document.getElementById('hp-offlineContainer').style.display = 'none';
-                document.getElementById('hp-advancedDbDetails').style.display = 'none';
-            } else {
-                // Soft disconnect: keep hints alive.
-                hpClient.disconnectQueryServer();
-            }
+        function hpDisconnect(preserveResults = false) {
+            if (hpClient) hpClient.disconnect();
+            hpClient = null;
+            document.getElementById('hp-offlineContainer').style.display = 'none';
+            document.getElementById('hp-advancedDbDetails').style.display = 'none';
             if (!preserveResults) {
                 document.getElementById('hp-resultsContainer').innerHTML = '';
             }
@@ -4811,20 +4463,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('hp-syncBtn').disabled = true;
             hpPendingSync = null;
             const statusDiv = document.getElementById('hp-status');
-            statusDiv.textContent = hpHintsLoaded
-                ? 'Status: Disconnected (hints preserved)'
-                : 'Status: Disconnected';
+            statusDiv.textContent = 'Status: Disconnected';
             statusDiv.className = 'status disconnected';
             statusDiv.dataset.transportState = 'disconnected';
             hpSetButtons(false);
             document.getElementById('hp-connectBtn').disabled = false;
             hpHideProgress();
-        }
-
-        async function persistHarmonyHintsAndDisconnect(preserveResults = true) {
-            // Hint bytes were already persisted to the exact dataset/PRP-bound
-            // IndexedDB record when they were fetched; disconnect only.
-            if (hpClient) hpDisconnect(true, preserveResults);
         }
 
         // ─── HarmonyPIR sync flow ─────────────────────────────────────────
@@ -4855,16 +4499,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpPlanSync() {
-            log('HarmonyPIR sync is disabled in query-access V1 because it can issue multiple queries.', 'error');
-            return;
-            if (hpSwitchingPrp) { log('HarmonyPIR: PRP switch in progress, please wait.', 'error'); return; }
-            if (!hpClient || !hpHintsLoaded) {
-                log('HarmonyPIR: Auto-connecting...', 'info');
-                throw new Error('automatic Harmony reconnect is disabled for query access');
-                if (!hpClient || !hpHintsLoaded) {
-                    log('HarmonyPIR: Connection or hint download failed.', 'error');
-                    return;
-                }
+            try {
+                await ensureHarmonyConnection();
+            } catch (error) {
+                log(`HarmonyPIR connect: ${error.message}`, 'error');
+                return;
             }
 
             const parsed = parseHpScriptInputs();
@@ -4925,9 +4564,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpExecuteSync() {
-            log('HarmonyPIR sync execution is disabled in query-access V1.', 'error');
-            return;
-            if (!hpPendingSync || !hpClient || !hpHintsLoaded) return;
+            if (!hpPendingSync || !hpClient) return;
             const { plan, lines, scriptHashes } = hpPendingSync;
             const N = scriptHashes.length;
 
@@ -4945,54 +4582,22 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             try {
                 const { merged, verifiableSteps, preStepSnapshots } = await hpSync.execute(plan, {
                     scriptHashes,
-                    // beforeStep is intentionally omitted: the (dbId-switch
-                    // + queryBatch) pair must be atomic w.r.t. the hpClient
-                    // queue. A fire-and-forget Merkle prewarm IIFE from a
-                    // *previous* sync may still be running and could squeeze
-                    // a hpSwitchDb between our switch and our query if they
-                    // were split across two queue slots, leading to a
-                    // queryBatch on the wrong dbId. Folding both into
-                    // queryStep guarantees nothing else interleaves.
                     queryStep: async (step, si) => {
                         const stepLabel = describeStep(step, si + 1, plan.steps.length);
                         log(`HarmonyPIR: ${stepLabel}`, 'info');
-                        // Run the entire step (db-switch-if-needed +
-                        // queryBatch) inside one hpClient queue slot so
-                        // nothing else (e.g. a leftover Merkle prewarm
-                        // IIFE from a prior sync) can interleave between
-                        // the switch and the query.
-                        return hpExclusive(async () => {
-                            if (hpClient.getDbId() !== step.dbId) {
-                                hpSetProgress(5, `${stepLabel} \u2014 switching DB / loading hints...`);
-                                await hpSwitchDb(step.dbId);
-                                if (!hpHintsLoaded) {
-                                    throw new Error(`HarmonyPIR: hint load failed for db ${step.dbId}`);
-                                }
-                            }
-                            hpSetProgress(10, stepLabel);
-                            // HarmonyPIR queryBatch takes addresses OR scriptPubKey hex;
-                            // we pass the hex `lines`. Returns Map<qi, HarmonyQueryResult>.
-                            const resultMap = await hpClient.queryBatch(lines, (phase, detail) => {
-                                const pct = phase === 'setup'
-                                    ? 15
-                                    : phase === 'index'
-                                        ? 55
-                                        : phase === 'decode'
-                                            ? 90
-                                            : 10;
-                                const label = phase === 'index'
-                                    ? `${stepLabel} \u2014 waiting for the native query: ${detail}`
-                                    : `${stepLabel} \u2014 ${phase}: ${detail}`;
-                                hpSetProgress(pct, label);
-                            });
-                            // Convert Map<qi, HarmonyQueryResult> → (HarmonyQueryResult|null)[]
-                            // in scripthash order for the SyncController's merge loop.
-                            const arr = new Array(N).fill(null);
-                            for (let qi = 0; qi < N; qi++) {
-                                arr[qi] = resultMap.get(qi) ?? null;
-                            }
-                            return arr;
+                        await hpSwitchDb(step.dbId);
+                        if (!hpClient.hintsLoaded) {
+                            hpSetProgress(5, `${stepLabel} \u2014 loading hints for db ${step.dbId}...`);
+                            await hpLoadHints();
+                        }
+                        hpSetProgress(10, stepLabel);
+                        // queryBatch takes addresses or scriptPubKey hex and
+                        // returns Map<qi, HarmonyQueryResult>.
+                        const resultMap = await hpClient.queryBatch(lines, (phase, detail) => {
+                            const pct = phase === 'setup' ? 15 : phase === 'index' ? 55 : phase === 'decode' ? 90 : 10;
+                            hpSetProgress(pct, `${stepLabel} \u2014 ${phase}: ${detail}`);
                         });
+                        return Array.from({ length: N }, (_, qi) => resultMap.get(qi) ?? null);
                     },
                     mergeStep: (snapshot, delta) =>
                         mergeDeltaIntoHarmonySnapshot(snapshot, delta, (msg) => log(msg, 'error')),
@@ -5042,158 +4647,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 // load (see wireDeltaExampleButtons).
                 hpPopulateDbSelector();
 
-                // Per-step Merkle verification. Matches DPF / OnionPIR pattern:
-                // verify against each step's raw stepResults (not the merged
-                // view) so bin content lines up with the DB the step ran on.
-                // Include NOT FOUND results (no rawChunkData) — verifyMerkleBatch
-                // proves absence using allIndexBins.
-                const merkleSteps = verifiableSteps
-                    .map(({ step, stepResults }) => ({
-                        step,
-                        verifiable: stepResults.filter(r => r && !r.whale && r.indexPbcGroup !== undefined),
-                    }))
-                    .filter(({ step, verifiable }) =>
-                        verifiable.length > 0 && hpClient.hasMerkleForDb(step.dbId));
-
-                if (merkleSteps.length > 0) {
-                    const note = document.createElement('div');
-                    note.style.cssText = 'margin: 12px 0; font-size: 12px; color: #666;';
-                    note.textContent = merkleSteps.length === 1
-                        ? `Merkle verification below applies to the ${merkleSteps[0].step.dbType} step of this sync.`
-                        : `Merkle verification below runs one proof batch per sync step (${merkleSteps.length} steps).`;
-                    resultsContainer.appendChild(note);
-
-                    // Per-dbId prewarm registry. Each entry resolves once
-                    // that step's sibling hints are loaded (and persisted
-                    // to IndexedDB by ensure_sibling_groups_ready inside
-                    // verify). The button wrapper awaits the matching
-                    // prewarm before doing any DB-switch / verify itself,
-                    // so a click during prewarm coordinates cleanly.
-                    const siblingPrewarms = new Map();
-
-                    for (let i = merkleSteps.length - 1; i >= 0; i--) {
-                        const { step, verifiable } = merkleSteps[i];
-                        const prefix = `hp-sync-${step.dbType}-${step.dbId}`;
-                        const label = step.dbType === 'full'
-                            ? `full snapshot (db ${step.dbId}, height ${step.tipHeight.toLocaleString()})`
-                            : `delta (db ${step.dbId}, ${step.baseHeight.toLocaleString()} \u2192 ${step.tipHeight.toLocaleString()})`;
-                        // HarmonyPIR verifyMerkleBatch uses the client's
-                        // active dbId — ensure it matches the step before
-                        // running each proof batch (may trigger an internal
-                        // switch via hpSwitchDb if needed).
-                        addBatchMerkleButton(resultsContainer, verifiable, prefix,
-                            async (results, onProg) => {
-                                // If a background prewarm for this dbId
-                                // is still in flight, wait for it first
-                                // (UI hint only — strict serialisation is
-                                // enforced by hpExclusive below). After
-                                // the prewarm resolves sibling hints are
-                                // loaded + persisted, so our DB-switch
-                                // (if needed) hits the IndexedDB cache.
-                                const prewarm = siblingPrewarms.get(step.dbId);
-                                if (prewarm) {
-                                    onProg?.('Prewarm', `awaiting background sibling-hint load for db ${step.dbId}…`);
-                                    try { await prewarm; } catch { /* fall through; we'll surface our own error */ }
-                                }
-                                // Run the (hpSwitchDb + verifyMerkleBatch)
-                                // pair atomically through the hpClient
-                                // queue. Without this, a click on the
-                                // db=X button can race with the prewarm
-                                // step for db=Y (Y ≠ X): the per-dbId
-                                // `siblingPrewarms[X]` await is already
-                                // resolved, but the prewarm's wasm-side
-                                // `verifyMerkleBatch` for db=Y is still
-                                // suspended on `&mut self` — and any
-                                // method call here (including the sync
-                                // `setDbId` inside `hpSwitchDb`) trips
-                                // wasm-bindgen's recursive-use guard.
-                                return hpExclusive(async () => {
-                                    if (hpClient.getDbId() !== step.dbId) {
-                                        // Surface the DB-switch progress to
-                                        // the per-button status span so
-                                        // the user doesn't see an empty
-                                        // "⏳ Verifying…" bar while
-                                        // hpSwitchDb is doing 100s of MB
-                                        // of IndexedDB I/O behind the
-                                        // statusDiv panel.
-                                        onProg?.('DB switch', `caching db ${hpClient.getDbId()} hints + loading db ${step.dbId}…`);
-                                        await hpSwitchDb(step.dbId);
-                                        if (!hpHintsLoaded) {
-                                            throw new Error(`hint load failed for db ${step.dbId}`);
-                                        }
-                                        onProg?.('DB switch', `done — ready for db ${step.dbId} merkle proofs`);
-                                    }
-                                    return hpClient.verifyMerkleBatch(results, onProg);
-                                });
-                            },
-                            () => hpClient.getMerkleRootHex(),
-                            label);
-                    }
-
-                    // Background prewarm (fire-and-forget). Walks each
-                    // verifiable step in plan order, switches dbId, and
-                    // runs verifyMerkleBatch — discarding the verdicts.
-                    // The side effect is that ensure_sibling_groups_ready
-                    // downloads sibling hints (REQ_HARMONY_HINTS rounds)
-                    // and persists them to IndexedDB, so the user's
-                    // later button click only does the small sibling-
-                    // proof query instead of the full 6-19s sibling-
-                    // hint download.
-                    //
-                    // The button wrapper above awaits siblingPrewarms[dbId]
-                    // so a click during prewarm coordinates cleanly.
-                    //
-                    // We restore back to `savedDbId` (the user-facing
-                    // dbId captured at the top of hpExecuteSync) rather
-                    // than the dbId observed at prewarm-start. Reason:
-                    // prewarm runs concurrently with sync's outer
-                    // `finally` block which is also calling
-                    // hpSwitchDb(savedDbId); both go through hpExclusive
-                    // so whichever runs second is a no-op (dbId already
-                    // matches), but the prewarm's tail must aim for the
-                    // correct end state.
-                    (async () => {
-                        for (const { step, verifiable } of merkleSteps) {
-                            // Run the entire (hpSwitchDb + verifyMerkleBatch)
-                            // step inside the hpClient queue so it can't
-                            // overlap a button click for a different dbId
-                            // (which would otherwise call into the wasm
-                            // client while a `&mut self` future from this
-                            // step is suspended at an `.await`).
-                            const stepPromise = hpExclusive(async () => {
-                                if (hpClient.getDbId() !== step.dbId) {
-                                    await hpSwitchDb(step.dbId);
-                                    if (!hpHintsLoaded) {
-                                        throw new Error(`hint load failed for db ${step.dbId}`);
-                                    }
-                                }
-                                // Side-effect-only call. Verdicts are
-                                // discarded; we only care that
-                                // ensure_sibling_groups_ready ran and
-                                // persisted to IndexedDB.
-                                await hpClient.verifyMerkleBatch(verifiable);
-                            });
-                            siblingPrewarms.set(step.dbId, stepPromise);
-                            try {
-                                await stepPromise;
-                                log(`Merkle: sibling hints prewarmed for db ${step.dbId}`, 'info');
-                            } catch (e) {
-                                log(`Merkle: prewarm failed for db ${step.dbId}: ${e.message || e}`, 'warn');
-                            }
-                        }
-                        // Restore user-facing dbId so the next query /
-                        // db-selector interaction starts from the same
-                        // dbId the user expected. Goes through the queue
-                        // so the restoring switch waits for any pending
-                        // user-clicked verify to drain first.
-                        if (hpClient.getDbId() !== savedDbId) {
-                            try {
-                                await hpExclusive(() => hpSwitchDb(savedDbId));
-                            } catch { /* best-effort */ }
-                        }
-                    })();
-                }
-
                 hpSetProgress(100, `Sync complete! ${found}/${N} found at height ${plan.targetHeight.toLocaleString()}`);
                 setTimeout(hpHideProgress, 2000);
                 log(`HarmonyPIR sync complete: ${found}/${N} found at height ${plan.targetHeight}`, 'success');
@@ -5204,18 +4657,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 hpSetProgress(0, '');
                 hpHideProgress();
             } finally {
-                // Restore the user-facing active DB if possible. hpSwitchDb
-                // handles the hint cache / re-download automatically. The
-                // background Merkle prewarm IIFE may still be running here
-                // — go through the queue so the restoring switch waits
-                // for any in-flight prewarm step / user verify to drain
-                // (otherwise we'd race the wasm client's `&mut self`).
-                if (hpClient && hpClient.getDbId() !== savedDbId) {
-                    try {
-                        await hpExclusive(() => hpSwitchDb(savedDbId));
-                    } catch {}
-                }
-                document.getElementById('hp-syncBtn').disabled = !hpClient || !hpHintsLoaded;
+                // Back to the database the user had selected; its hints load
+                // again on the next query.
+                if (hpClient && hpClient.getDbId() !== savedDbId) await hpSwitchDb(savedDbId);
+                document.getElementById('hp-syncBtn').disabled = !hpClient;
                 document.getElementById('hp-queryBtn').disabled = false;
                 document.getElementById('hp-syncConfirmBtn').disabled = false;
                 document.getElementById('hp-syncCancelBtn').disabled = false;
@@ -5232,13 +4677,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function hpQueryUtxos() {
-            if (hpSwitchingPrp) {
-                log('HarmonyPIR: PRP switch in progress, please wait.', 'error');
-                return;
-            }
-            if (!hpClient || !hpHintsLoaded) {
-                throw new Error('HarmonyPIR query requires authorized exact hints on the live strict connection');
-            }
+            if (!hpClient) throw new Error('HarmonyPIR query requires a connection');
 
             const textarea = document.getElementById('hp-scriptPubkeys');
             const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -5266,7 +4705,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('hp-resultsContainer');
             resultsContainer.innerHTML = '';
-            beginQueryBatch(resultsContainer);
             document.getElementById('hp-queryBtn').disabled = true;
 
             const N = lines.length;
@@ -5275,77 +4713,27 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             try {
                 hpSetProgress(5, `Batching ${N} queries...`);
-                const queryClient = hpClient;
-                const queryDbId = queryClient?.getDbId();
-                if (!queryClient || !hpHintsLoaded || !Number.isInteger(queryDbId)) {
-                    throw new Error('strict Harmony connection or database binding changed before query');
-                }
-                if (!queryClient.hasMerkleForDb(queryDbId)) {
-                    throw new Error(`strict Harmony db ${queryDbId} has no authenticated inclusion tree`);
-                }
-
-                // Pass hex scriptPubKeys — queryBatch now accepts both hex and addresses.
-                // Goes through the hpClient queue: a sync's fire-and-forget Merkle
-                // prewarm IIFE may still be running when the user lands here, and
-                // the wasm client's `&mut self` would otherwise be contended.
-                const results = await hpExclusive(() => queryClient.queryBatch(lines, (phase, detail) => {
-                    const pct = phase === 'setup'
-                        ? 15
-                        : phase === 'index'
-                            ? 55
-                            : phase === 'decode'
-                                ? 90
-                                : 10;
-                    const label = phase === 'index'
-                        ? `Waiting for the native query: ${detail}`
-                        : `${phase}: ${detail}`;
-                    hpSetProgress(pct, label);
-                }, queryDbId));
-
-                if (hpClient !== queryClient || queryClient.getDbId() !== queryDbId) {
-                    throw new Error('strict Harmony connection or database changed before verification');
-                }
-                const pendingResults = Array.from({ length: N }, (_, index) => results.get(index));
-                hpSetProgress(92, `Verifying ${N} inclusion proofs...`);
-                const verifiedResults = await requireVerifiedQueryResultsV1(
-                    pendingResults,
-                    concrete => hpExclusive(async () => {
-                        if (hpClient !== queryClient || !hpHintsLoaded
-                            || queryClient.getDbId() !== queryDbId) {
-                            throw new Error('live strict Harmony connection lost before verification');
-                        }
-                        return queryClient.verifyMerkleBatch(concrete, (step, detail) => {
-                            hpSetProgress(94, `${step}: ${detail}`);
-                        }, queryDbId);
-                    }),
-                    `Harmony db ${queryDbId}`,
-                );
-                if (hpClient !== queryClient || !hpHintsLoaded
-                    || queryClient.getDbId() !== queryDbId) {
-                    throw new Error('strict Harmony connection changed after verification');
-                }
-
-                // Inspector and result DOM state are released only after all
-                // inclusion verdicts succeeded.
-                hpInspectorDataMap = queryClient.lastInspectorData;
+                const results = await hpClient.queryBatch(lines, (phase, detail) => {
+                    const pct = phase === 'setup' ? 15 : phase === 'index' ? 55 : phase === 'decode' ? 90 : 10;
+                    hpSetProgress(pct, `${phase}: ${detail}`);
+                });
+                hpInspectorDataMap = hpClient.lastInspectorData;
 
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
                     const hashHex = bytesToHex(scriptHashes[qi]);
-                    const hResult = verifiedResults[qi];
+                    const hResult = results.get(qi) ?? null;
                     const result = harmonyResultToRenderFormat(hResult);
                     if (result && result.entries.length > 0) found++;
                     const section = renderResult(resultsContainer, spkHex, hashHex, result, qi);
-                    setResultMerkleState(section, 'verified');
+                    setResultMerkleState(section, !hResult || hResult.merkleVerified ? 'verified' : 'failed');
                 }
 
-                completeVerifiedQueryBatch(resultsContainer);
                 hpSetProgress(100, `Done! ${found}/${N} addresses found`);
                 setTimeout(hpHideProgress, 2000);
                 log(`HarmonyPIR batch complete: ${found}/${N} found`, 'success');
             } catch (error) {
-                failQueryBatch(resultsContainer);
                 log(`HarmonyPIR error: ${error.message}`, 'error');
                 hpSetProgress(0, '');
                 hpHideProgress();
@@ -5355,20 +4743,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('hp-queryBtn').disabled = false;
         }
 
-        async function runHarmonyQueryOnce() {
+        async function runHarmonyQuery() {
             const button = document.getElementById('hp-queryBtn');
             if (button.disabled) return;
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runOpenProductQuery(
-                    'harmony', ensureHarmonyPair, hpQueryUtxos,
-                    async () => hpDisconnect(true, true),
-                );
+                await runOpenProductQuery('harmony', ensureHarmonyConnection, hpQueryUtxos, async () => {});
             } catch (error) {
                 log(`HarmonyPIR query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
+                button.textContent = 'Query UTXOs';
             }
         }
 
@@ -5376,14 +4762,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('hp-prpSelect').addEventListener('change', async (e) => {
             const newPrp = parseInt(e.target.value);
             if (newPrp === hpCurrentPrp) return;
-            if (hpConnecting) {
-                e.target.value = String(hpCurrentPrp);
-                log('HarmonyPIR: finish the current provider bootstrap before changing PRP.', 'error');
-                return;
-            }
             hpCurrentPrp = newPrp;
             const names = ['HMR12', 'FastPRP'];
-            if (hpClient) hpDisconnect(true, true);
+            if (hpClient) hpDisconnect(true);
             log(`HarmonyPIR: PRP changed to ${names[newPrp] ?? 'HMR12'}; hints and cached state invalidated.`, 'info');
         });
 
@@ -5417,9 +4798,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
 
         // HarmonyPIR buttons
-        document.getElementById('hp-connectBtn').addEventListener('click', runHarmonyQueryOnce);
-        document.getElementById('hp-disconnectBtn').addEventListener('click', () => hpDisconnect(true));
-        document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQueryOnce);
+        document.getElementById('hp-connectBtn').addEventListener('click', () => {
+            ensureHarmonyConnection().catch(error => log(`HarmonyPIR connect: ${error.message}`, 'error'));
+        });
+        document.getElementById('hp-disconnectBtn').addEventListener('click', () => hpDisconnect());
+        document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQuery);
         document.getElementById('hp-syncBtn').addEventListener('click', hpPlanSync);
         document.getElementById('hp-syncConfirmBtn').addEventListener('click', hpExecuteSync);
         document.getElementById('hp-syncCancelBtn').addEventListener('click', hpCancelSync);
@@ -5454,7 +4837,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // ═══════════════════════════════════════════════════════════════
 
         let oramClient = null;
-        let oramAdmissionDbId = null;
 
         function oramSetButtons(connected) {
             document.getElementById('oram-connectBtn').disabled = connected;
@@ -5520,9 +4902,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function oramConnect(provider) {
-            if (!provider?.endpoint) {
-                throw new Error('ORAM query access requires a complete provider pin');
-            }
             const serverUrl = provider.endpoint;
             document.getElementById('oram-serverUrl').value = serverUrl;
 
@@ -5533,13 +4912,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 mismatches: [],
                 error: 'waiting for latest delta trust-chain proof',
             });
-            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
-                state: 'unavailable',
-                checks: [],
-                mismatches: [],
-                error: 'waiting for the selected strictly verified live database proof',
-            });
-
             try {
                 log('ORAM: Connecting to attested server...', 'info');
                 const statusDiv = document.getElementById('oram-status');
@@ -5553,12 +4925,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     apiKey: currentApiKey(),
                     onCredits: (status) => noteCredits('ORAM TEE', status),
                     serverUrl,
-                    strictVerification: true,
                     expectedArkFingerprint: provider.expectedArkFingerprint,
                     expectedServerPin: provider.serverPin,
-                    expectedServerId: provider.stableServerId,
                     pinnedOperatorPubkey: provider.operatorPubkey,
-                    verifyOperatorIdentity: true,
                     databaseProofPins: PRODUCTION_ORAM_DB_PROOF_V2_PINS,
                     batchPlanner: PRODUCTION_ORAM_BATCH_PLANNER,
                     onDatabaseProof: (dbId, info) => {
@@ -5570,18 +4939,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                             log(`ORAM DB proof db ${dbId}: unavailable — ${info.error || 'not configured'}`, 'info');
                         }
                         renderDatabaseProofBadge('oram-dbProofBadge', 'ORAM TEE', info);
-                        const selectedDbId = Number.parseInt(
-                            document.getElementById('oram-dbSelect').value,
-                            10,
-                        ) || 0;
-                        if (dbId === selectedDbId && info.state !== 'verified') {
-                            renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
-                                state: info.state === 'unavailable' ? 'unavailable' : 'unverified',
-                                checks: [],
-                                mismatches: info.mismatches || [],
-                                error: info.error || `live db ${dbId} proof was not verified`,
-                            });
-                        }
                         verifyAndRenderBitcoinAnchorBadge(
                             'oram-bitcoinAnchorBadge',
                             'ORAM TEE',
@@ -5625,64 +4982,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 });
 
                 await oramClient.connect();
-                const sourceProofClient = oramClient;
                 oramPopulateDbSelector();
-                const selectedDbId = Number.parseInt(
-                    document.getElementById('oram-dbSelect').value,
-                    10,
-                ) || 0;
-                const sourceDbPin = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find(
-                    pin => pin.dbId === selectedDbId,
-                );
-                if (!sourceDbPin) {
-                    throw new Error(`production Direct ORAM source db ${selectedDbId} pin is missing`);
-                }
-                const sourceDbStatus = sourceProofClient.getDatabaseProofStatus(sourceDbPin.dbId);
-                const catalog = sourceProofClient.getCatalog();
-                const sourceDbPosition = catalog?.databases.findIndex(
-                    database => database.dbId === sourceDbPin.dbId,
-                ) ?? -1;
-                const manifestRootHex = sourceDbPosition >= 0
-                    ? sourceProofClient.attestation.manifestRootsHex?.[sourceDbPosition]
-                    : undefined;
-                if (sourceDbStatus?.state !== 'verified' || !sourceDbStatus.proof || !manifestRootHex) {
-                    throw new Error(`strict ORAM connection did not produce a source db ${selectedDbId} proof and attested manifest root`);
-                }
-                // The source ceremony is useful historical provenance, but
-                // the live attestation, verified database proof, and
-                // attested manifest root above are the query admission
-                // boundary.  Do not close an otherwise strict connection if
-                // optional source-proof artifacts are unavailable.
-                const sourceProofIsCurrent = () => (
-                    oramClient === sourceProofClient
-                    && (Number.parseInt(
-                        document.getElementById('oram-dbSelect').value,
-                        10,
-                    ) || 0) === selectedDbId
-                );
-                void verifyAndRenderOramSourceProofBadge(
-                    'oram-sourceProofBadge',
-                    'ORAM TEE',
-                    sourceDbStatus.proof,
-                    {
-                        state: sourceProofClient.attestation.state,
-                        sevStatus: sourceProofClient.attestation.sevStatus,
-                        vcekChain: sourceProofClient.attestation.vcekChain,
-                        pinStatus: sourceProofClient.attestation.pinStatus,
-                        manifestRootHex,
-                    },
-                    sourceProofIsCurrent,
-                ).catch(error => {
-                    if (!sourceProofIsCurrent()) return;
-                    const message = error?.message || String(error);
-                    renderOramSourceProofBadge('oram-sourceProofBadge', 'ORAM TEE', {
-                        state: 'unavailable',
-                        checks: [],
-                        mismatches: [],
-                        error: `informational source proof unavailable: ${message}`,
-                    });
-                    log(`ORAM source proof unavailable (informational): ${message}`, 'info');
-                });
+                oramRenderSourceProof();
             } catch (error) {
                 log(`ORAM connection failed: ${error.message}`, 'error');
                 oramClient = null;
@@ -5693,7 +4994,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 oramSetButtons(false);
                 throw error;
             }
-            return oramClient;
         }
 
         function oramDisconnect(preserveResults = false) {
@@ -5702,7 +5002,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 oramClient = null;
                 log('ORAM: Disconnected', 'info');
             }
-            oramAdmissionDbId = null;
             if (!preserveResults) {
                 document.getElementById('oram-resultsContainer').innerHTML = '';
             }
@@ -5714,10 +5013,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function oramQueryUtxos() {
-            if (!oramClient || !oramClient.isConnected()) {
-                throw new Error('ORAM query requires the live strictly verified admission connection');
-            }
-            const queryClient = oramClient;
+            if (!oramClient) throw new Error('ORAM query requires a connection');
 
             const textarea = document.getElementById('oram-scriptPubkeys');
             const rawLines = textarea.value.trim().split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -5755,33 +5051,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
             const resultsContainer = document.getElementById('oram-resultsContainer');
             resultsContainer.innerHTML = '';
-            beginQueryBatch(resultsContainer);
             document.getElementById('oram-queryBtn').disabled = true;
 
             const N = lines.length;
             const scriptHashes = lines.map(spkHex => scriptHash(hexToBytes(spkHex)));
-            const selectedDbId = parseInt(document.getElementById('oram-dbSelect')?.value ?? '0') || 0;
-            if (oramAdmissionDbId === null || selectedDbId !== oramAdmissionDbId) {
-                throw new Error('ORAM database selection changed after exact admission; start a new attempt');
-            }
-            const dbId = oramAdmissionDbId;
-            const dbEntry = queryClient.getCatalogEntry(dbId);
+            const dbId = parseInt(document.getElementById('oram-dbSelect')?.value ?? '0') || 0;
+            const dbEntry = oramClient.getCatalogEntry(dbId);
             const isDelta = dbEntry?.dbType === 1;
 
             try {
                 oramSetProgress(5, `Preparing ${N} ORAM lookup${N === 1 ? '' : 's'}${isDelta ? ` (delta db ${dbId})` : ''}...`);
-                const results = isDelta
-                    ? await queryClient.queryDelta(scriptHashes, dbId, (step, detail) => {
-                        const pct = step === 'Decode' ? 90 : 45;
-                        oramSetProgress(pct, `${step}: ${detail}`);
-                    })
-                    : await queryClient.queryBatch(scriptHashes, (step, detail) => {
-                        const pct = step === 'Decode' ? 90 : 45;
-                        oramSetProgress(pct, `${step}: ${detail}`);
-                    }, dbId);
-                if (oramClient !== queryClient || !queryClient.isConnected()) {
-                    throw new Error('ORAM connection changed before result release');
-                }
+                const results = await oramClient.queryBatch(scriptHashes, (step, detail) => {
+                    const pct = step === 'Decode' ? 90 : 45;
+                    oramSetProgress(pct, `${step}: ${detail}`);
+                }, dbId);
 
                 let found = 0;
                 if (isDelta) {
@@ -5803,13 +5086,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     }
                 }
 
-                completeVerifiedQueryBatch(resultsContainer);
                 const verb = isDelta ? 'changed' : 'found';
                 oramSetProgress(100, `Done! ${found}/${N} addresses ${verb}`);
                 setTimeout(oramHideProgress, 2000);
                 log(`ORAM batch complete: ${found}/${N} ${verb}`, 'success');
             } catch (error) {
-                failQueryBatch(resultsContainer);
                 log(`ORAM query error: ${error.message}`, 'error');
                 oramSetProgress(0, '');
                 oramHideProgress();
@@ -5819,20 +5100,18 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('oram-queryBtn').disabled = false;
         }
 
-        async function runOramQueryOnce() {
+        async function runOramQuery() {
             const button = document.getElementById('oram-queryBtn');
             if (button.disabled) return;
             button.disabled = true;
             button.textContent = 'Querying…';
             try {
-                await runOpenProductQuery(
-                    'oram', ensureOramConnection, oramQueryUtxos,
-                    async () => oramDisconnect(true),
-                );
+                await runOpenProductQuery('oram', ensureOramConnection, oramQueryUtxos, async () => {});
             } catch (error) {
                 log(`ORAM query: ${error.message}`, 'error');
             } finally {
                 button.disabled = false;
+                button.textContent = 'Query UTXOs';
             }
         }
 
@@ -5858,25 +5137,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('oram-pickRandom3Btn').addEventListener('click', () => {
             document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 3).join('\n');
         });
-        document.getElementById('oram-connectBtn').addEventListener('click', runOramQueryOnce);
+        document.getElementById('oram-connectBtn').addEventListener('click', () => {
+            ensureOramConnection().catch(error => log(`ORAM connect: ${error.message}`, 'error'));
+        });
         document.getElementById('oram-disconnectBtn').addEventListener('click', () => oramDisconnect());
-        document.getElementById('oram-queryBtn').addEventListener('click', runOramQueryOnce);
-        document.getElementById('oram-dbSelect').addEventListener('change', async () => {
-            const select = document.getElementById('oram-dbSelect');
-            const selectedDbId = Number.parseInt(select.value, 10) || 0;
+        document.getElementById('oram-queryBtn').addEventListener('click', runOramQuery);
+        document.getElementById('oram-dbSelect').addEventListener('change', () => {
             oramRefreshDbInfo();
-            renderOramSourceProofWaitingForDb(selectedDbId);
+            oramRenderSourceProof();
         });
         oramSetButtons(false);
-        renderOramSourceProofWaitingForDb(0);
+        oramRenderSourceProof();
 
-        // This is deliberately the final step in the application module.  It
-        // means every backend tab, query control, and admission panel now has
-        // its listener/state initialization, independent of any backend
-        // connection or proof verification that happens after user input.
-        const bitcoinPirApp = document.getElementById('bitcoinPirApp');
-        bitcoinPirApp?.setAttribute('aria-busy', 'false');
-        bitcoinPirApp?.setAttribute('data-module-readiness', 'ready');
+        // Last step of the module: every control now has its listeners.
+        document.getElementById('bitcoinPirApp')?.setAttribute('aria-busy', 'false');
     </script>
 
     <!-- Query Inspector Modal -->

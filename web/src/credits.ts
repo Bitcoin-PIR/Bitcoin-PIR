@@ -856,6 +856,36 @@ export interface CreditEnablement {
   error?: string;
 }
 
+/** The WASM client methods that enable an API key or credits on one server. */
+export interface CreditLegClient {
+  presentApiKey(serverIndex: number, key: string): Promise<void>;
+  enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
+}
+
+/** Present `apiKey`, or else enable credits from `provider`, on one server.
+ * Bearer material, so only over the encrypted channel. `null` when there is
+ * neither a key nor a provider. */
+export async function enableCreditsOnLeg(
+  client: CreditLegClient,
+  serverIndex: number,
+  options: { apiKey?: string; provider?: CreditProvider; secureChannel: boolean },
+): Promise<CreditEnablement | null> {
+  const apiKey = options.apiKey?.trim();
+  if (!apiKey && !options.provider) return null;
+  if (!options.secureChannel) {
+    return { state: 'error', error: `${apiKey ? 'API key' : 'credits'} withheld: the channel is cleartext` };
+  }
+  try {
+    if (apiKey) {
+      await client.presentApiKey(serverIndex, apiKey);
+      return { state: 'api-key' };
+    }
+    return { state: (await client.enableCredits(serverIndex, options.provider!)) as CreditEnablement['state'] };
+  } catch (error) {
+    return { state: 'error', error: (error as Error)?.message ?? String(error) };
+  }
+}
+
 // ─── Access policy (docs/CREDITS.md "Access policy") ───────────────────────
 
 export type AccessBackend = 'dpf' | 'harmony' | 'onion' | 'oram';
