@@ -29,6 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   database id and exposes read-only accessors. Converting it to a legacy
   mutable `QueryResult` explicitly drops verification authority.
 
+### Fixed
+
+- `sync` (all three clients) and `sync_with_progress` (DPF, HarmonyPIR) now
+  reject `last_height = Some(h)` with `PirError::InvalidState` before any
+  network I/O, and `sync_with_plan` rejects a delta-only or at-tip plan
+  without `cached_results`. These calls used to merge the delta chain onto an
+  empty base: unchanged addresses came back `None`, changed ones kept only
+  their new UTXOs, and at the tip every address came back `None`. Resume with
+  `compute_sync_plan(&catalog, Some(previous.synced_height))` +
+  `sync_with_plan(.., Some(&previous.results))`.
+
 ## [0.1.0] — initial release
 
 ### Added

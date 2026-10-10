@@ -101,7 +101,12 @@ pub trait PirClient: Send + Sync {
     /// # Arguments
     ///
     /// * `script_hashes` - Script hashes to query
-    /// * `last_height` - Last synced height, or `None` for fresh sync
+    /// * `last_height` - Must be `None` (or `Some(0)`). `sync` keeps no
+    ///   results between calls, so it always syncs from the best full
+    ///   snapshot. A height is rejected with `PirError::InvalidState` before
+    ///   any network I/O: to resume from a previous sync, compute the plan
+    ///   from its `synced_height` and pass its `results` to
+    ///   [`sync_with_plan`](Self::sync_with_plan).
     ///
     /// # Returns
     ///
@@ -121,7 +126,11 @@ pub trait PirClient: Send + Sync {
     ///
     /// * `script_hashes` - Script hashes to query
     /// * `plan` - Pre-computed sync plan
-    /// * `cached_results` - Optional cached results from previous sync (for delta merging)
+    /// * `cached_results` - The `results` of the sync the plan starts from, one
+    ///   per script hash in the same order. Required unless the plan is fresh:
+    ///   a delta chain (or the empty plan at the tip) only carries changes, so
+    ///   without the previous results it is rejected with
+    ///   `PirError::InvalidState`. A fresh plan ignores them.
     async fn sync_with_plan(
         &mut self,
         script_hashes: &[ScriptHash],

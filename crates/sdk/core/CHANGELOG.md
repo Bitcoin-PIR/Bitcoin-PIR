@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cryptographic release authority; release-sensitive clients use an opaque
   verified-result type.
 
+### Added
+
+- `require_fresh_sync` and `require_sync_base`: the checks the clients run
+  before a sync. A non-fresh plan (a delta chain, or the empty plan at the
+  tip) only carries changes, so it needs the previous sync's results, one per
+  script hash.
+
 ## [0.1.0] — initial release
 
 ### Added

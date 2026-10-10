@@ -832,6 +832,7 @@ impl HarmonyClient {
         progress: &dyn SyncProgress,
     ) -> PirResult<SyncResult> {
         let run = async {
+            require_fresh_sync(last_height)?;
             if !self.is_connected() {
                 self.connect().await?;
             }
@@ -842,14 +843,7 @@ impl HarmonyClient {
             };
 
             let plan = self.compute_sync_plan(&catalog, last_height)?;
-
-            if plan.is_empty() {
-                return Ok(SyncResult {
-                    results: vec![None; script_hashes.len()],
-                    synced_height: plan.target_height,
-                    was_fresh_sync: false,
-                });
-            }
+            require_sync_base(&plan, script_hashes.len(), None)?;
 
             self.verified_roots.require_plan(&plan)?;
 

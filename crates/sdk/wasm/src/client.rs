@@ -1592,8 +1592,10 @@ impl WasmDpfClient {
     ///
     /// # Arguments
     /// * `script_hashes` — packed `Uint8Array` of length `20 * N`
-    /// * `last_height` — `null`/`undefined` for fresh sync, otherwise the
-    ///   last-synced height to compute a delta chain from
+    /// * `last_height` — must be `null`/`undefined`: the client keeps no
+    ///   previous results, so it always syncs from the best full snapshot.
+    ///   A height is rejected before anything is sent (a delta chain only
+    ///   carries changes and needs the previous results to apply them to)
     #[wasm_bindgen(js_name = sync)]
     pub async fn sync(
         &mut self,

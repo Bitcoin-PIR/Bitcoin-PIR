@@ -312,6 +312,7 @@ impl PirClient for HarmonyClient {
         script_hashes: &[ScriptHash],
         last_height: Option<u32>,
     ) -> PirResult<SyncResult> {
+        require_fresh_sync(last_height)?;
         if !self.is_connected() {
             self.connect().await?;
         }
@@ -342,6 +343,7 @@ impl PirClient for HarmonyClient {
         plan: &SyncPlan,
         cached_results: Option<&[Option<QueryResult>]>,
     ) -> PirResult<SyncResult> {
+        require_sync_base(plan, script_hashes.len(), cached_results)?;
         if plan.is_empty() {
             return Ok(SyncResult {
                 results: cached_results

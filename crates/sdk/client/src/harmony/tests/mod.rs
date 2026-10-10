@@ -4,3 +4,4 @@ mod cache;
 mod merkle;
 mod observer;
 mod session;
+mod sync_base;

@@ -30,6 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   marker rather than the mutable payload. Converting sync/query output to
   caller-mutable plain JSON emits `merkleVerified = false`.
 
+### Fixed
+
+- `sync()` and `syncWithProgress()` reject a non-null `lastHeight` before
+  anything is sent. They keep no previous results, so a delta-only plan used
+  to run on an empty base: unchanged addresses came back `null`, changed ones
+  kept only their new UTXOs, and at the tip every address came back `null`.
+  Pass `null` for a full sync.
+
 ## [0.1.0] — initial release
 
 ### Added

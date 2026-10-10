@@ -38,15 +38,20 @@
 //! # Delta Synchronization
 //!
 //! The SDK supports efficient delta sync - if you have results from a previous
-//! height, you only need to query the changes:
+//! height, you only need to query the changes. A delta plan only carries the
+//! changes, so it runs on the previous results through `sync_with_plan`
+//! (`sync` keeps no results and rejects a height):
 //!
 //! ```ignore
 //! // First sync
-//! let result = client.sync(&script_hashes, None).await?;
-//! let height = result.synced_height;
+//! let previous = client.sync(&script_hashes, None).await?;
 //!
-//! // Later: only query changes since last sync
-//! let updated = client.sync(&script_hashes, Some(height)).await?;
+//! // Later: only query changes since `previous.synced_height`
+//! let catalog = client.fetch_catalog().await?;
+//! let plan = client.compute_sync_plan(&catalog, Some(previous.synced_height))?;
+//! let updated = client
+//!     .sync_with_plan(&script_hashes, &plan, Some(&previous.results))
+//!     .await?;
 //! ```
 
 // `connection` hosts the tokio-tungstenite + rustls native WebSocket client.
