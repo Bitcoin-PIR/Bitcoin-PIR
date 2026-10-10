@@ -59,6 +59,11 @@ pub struct DirectoryPublishArgs {
     /// Explicitly publish to exactly one centralized relay (degraded: no relay cross-check).
     #[arg(long)]
     centralized_single_relay: bool,
+    /// Dial the relay's loopback publisher lane over plain `ws://` instead of a
+    /// public `wss://` origin: on the relay host itself or through an SSH
+    /// port-forward. Every `--relay` must then be `ws://127.0.0.1:PORT`.
+    #[arg(long)]
+    loopback_publisher: bool,
     /// Pinned x-only BIP340 directory publisher key (32-byte lowercase hex).
     #[arg(long)]
     directory_pubkey_hex: String,
@@ -280,7 +285,11 @@ async fn run_with_publisher_and_invocation_v1<P: RelayPublisherV1>(
     } else {
         RelaySetModeV1::StrictMultiRelay
     };
-    let targets = validate_relay_targets_v1(args.relays.clone(), relay_mode)?;
+    let targets = validate_relay_targets_with_mode_v1(
+        args.relays.clone(),
+        relay_mode,
+        args.loopback_publisher,
+    )?;
     let manifest_pin = if let Some(path) = &args.artifact_manifest {
         Some(validate_artifact_manifest_v1(path, &loaded.artifacts)?)
     } else {
@@ -897,9 +906,18 @@ fn validate_checkpoint_bundle_v1(
     Ok(())
 }
 
+#[cfg(test)]
 fn validate_relay_targets_v1(
     relays: Vec<String>,
     relay_mode: RelaySetModeV1,
+) -> Result<Vec<RelayTargetV1>, String> {
+    validate_relay_targets_with_mode_v1(relays, relay_mode, false)
+}
+
+fn validate_relay_targets_with_mode_v1(
+    relays: Vec<String>,
+    relay_mode: RelaySetModeV1,
+    loopback_publisher: bool,
 ) -> Result<Vec<RelayTargetV1>, String> {
     match relay_mode {
         RelaySetModeV1::StrictMultiRelay
@@ -921,22 +939,46 @@ fn validate_relay_targets_v1(
     let mut seen_hosts = BTreeSet::new();
     let mut targets = Vec::with_capacity(relays.len());
     for url in relays {
-        if !is_canonical_public_wss_origin_v1(&url) {
-            return Err(
-                "every --relay must be an exact credential-free public wss origin with no path"
-                    .to_owned(),
-            );
-        }
+        let host = if loopback_publisher {
+            if !is_loopback_publisher_url_v1(&url) {
+                return Err(
+                    "with --loopback-publisher every --relay must be ws://127.0.0.1:PORT with no path"
+                        .to_owned(),
+                );
+            }
+            url["ws://".len()..].to_owned()
+        } else {
+            if !is_canonical_public_wss_origin_v1(&url) {
+                return Err(
+                    "every --relay must be an exact credential-free public wss origin with no path"
+                        .to_owned(),
+                );
+            }
+            relay_host_v1(&url)?
+        };
         if !seen_urls.insert(url.clone()) {
             return Err("--relay URLs must be distinct".to_owned());
         }
-        let host = relay_host_v1(&url)?;
         if !seen_hosts.insert(host.clone()) {
             return Err("--relay hostnames must be distinct".to_owned());
         }
         targets.push(RelayTargetV1 { url, host });
     }
     Ok(targets)
+}
+
+/// `ws://127.0.0.1:PORT` exactly: the relay's loopback publisher lane, which
+/// is never published behind TLS. It is reached on the relay host or over an
+/// SSH port-forward; plain `ws://` to any other host is rejected.
+fn is_loopback_publisher_url_v1(url: &str) -> bool {
+    let Some(port) = url.strip_prefix("ws://127.0.0.1:") else {
+        return false;
+    };
+    !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && !port.starts_with('0')
+        && port.parse::<u16>().is_ok_and(|value| value != 0)
 }
 
 fn relay_host_v1(url: &str) -> Result<String, String> {
@@ -1074,6 +1116,59 @@ mod tests {
         .unwrap();
         assert_eq!(targets[0].host, "one.example");
         assert_eq!(targets[1].host, "two.example");
+    }
+
+    #[test]
+    fn loopback_publisher_mode_accepts_only_exact_loopback_ws_ports() {
+        let one = validate_relay_targets_with_mode_v1(
+            vec!["ws://127.0.0.1:8097".into()],
+            RelaySetModeV1::CentralizedSingleRelay,
+            true,
+        )
+        .unwrap();
+        assert_eq!(one[0].host, "127.0.0.1:8097");
+        assert_eq!(one[0].url, "ws://127.0.0.1:8097");
+        for bad in [
+            "wss://127.0.0.1:8097",
+            "ws://localhost:8097",
+            "ws://127.0.0.1:08097",
+            "ws://127.0.0.1:8097/",
+            "ws://127.0.0.1:8097/publish",
+            "ws://127.0.0.1",
+            "ws://127.0.0.1:0",
+            "ws://127.0.0.1:65536",
+            "ws://10.0.0.1:8097",
+            "ws://[::1]:8097",
+        ] {
+            assert!(
+                validate_relay_targets_with_mode_v1(
+                    vec![bad.into()],
+                    RelaySetModeV1::CentralizedSingleRelay,
+                    true,
+                )
+                .is_err(),
+                "accepted {bad}"
+            );
+        }
+        assert!(validate_relay_targets_with_mode_v1(
+            vec!["ws://127.0.0.1:8097".into()],
+            RelaySetModeV1::CentralizedSingleRelay,
+            false,
+        )
+        .is_err());
+        let two = validate_relay_targets_with_mode_v1(
+            vec!["ws://127.0.0.1:8097".into(), "ws://127.0.0.1:8099".into()],
+            RelaySetModeV1::StrictMultiRelay,
+            true,
+        )
+        .unwrap();
+        assert_eq!(two.len(), 2);
+        assert!(validate_relay_targets_with_mode_v1(
+            vec!["ws://127.0.0.1:8097".into(), "ws://127.0.0.1:8097".into()],
+            RelaySetModeV1::StrictMultiRelay,
+            true,
+        )
+        .is_err());
     }
 
     #[test]
@@ -1371,6 +1466,7 @@ mod tests {
                 artifact_manifest: None,
                 relays: vec!["wss://one.example".into(), "wss://two.example".into()],
                 centralized_single_relay: false,
+                loopback_publisher: false,
                 directory_pubkey_hex: hex::encode(key.public_key()),
                 now_unix: NOW,
                 relay_timeout_seconds: 1,
@@ -1417,6 +1513,7 @@ mod tests {
             artifact_manifest: Some(manifest.clone()),
             relays: vec!["wss://one.example".into()],
             centralized_single_relay: true,
+            loopback_publisher: false,
             directory_pubkey_hex: hex::encode(key.public_key()),
             now_unix: NOW,
             relay_timeout_seconds: 1,

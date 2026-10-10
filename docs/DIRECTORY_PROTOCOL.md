@@ -411,9 +411,9 @@ method/provider-pair lookup API.
 ## Repository directory-only relay profile
 
 `apps/directory-relay` implements the server-side subset needed by this
-protocol. (The relay application, the browser adapter and the readback tool
-were removed together with Payment V1 and are restored in follow-up changes;
-this section remains the contract they must meet.) It is not a general-purpose Nostr relay. The sole process interface
+protocol; running it on pir1 is [Directory relay](runbooks/directory-relay.md).
+(The browser adapter and the readback tool were removed together with
+Payment V1 and are restored in follow-up changes.) It is not a general-purpose Nostr relay. The sole process interface
 is `bitcoinpir-directory-relay --config /absolute/owner-only.toml`; the
 configuration fixes distinct public and publisher loopback listeners, one
 absolute SQLite database, one pinned non-zero directory publisher key and
@@ -612,6 +612,24 @@ bpir-admin directory-artifact publish \
   --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
   --now-unix "$NOW" \
   --relay-timeout-seconds 60
+```
+
+The relay's publisher lane is loopback-only and is never published behind
+TLS. To reach it, the operator runs the publisher on the relay host or opens
+an SSH port-forward and adds `--loopback-publisher`; every `--relay` must
+then be exactly `ws://127.0.0.1:PORT`, and plain `ws://` to any other host
+is still rejected:
+
+```sh
+ssh -N -L 8097:127.0.0.1:8097 relay-host &
+bpir-admin directory-artifact publish \
+  --artifact pir-a.entry.event.json \
+  --artifact directory-checkpoints.json \
+  --relay ws://127.0.0.1:8097 \
+  --loopback-publisher \
+  --centralized-single-relay \
+  --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
+  --now-unix "$NOW"
 ```
 
 Exactly one relay is accepted only when the invocation also carries

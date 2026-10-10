@@ -15,6 +15,7 @@ status subcommand for the rest.
 | Producer (attested-builder) UKI | [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md); producer *scope* is that repo's README |
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
 | Direct ORAM diagnosis | [Direct ORAM debug](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md) |
+| Directory relay on pir1 (install, publish entries, upgrade) | [Directory relay](runbooks/directory-relay.md) |
 | Development and PR checks | [Testing](TESTING.md) |
 
 ## Technical references
@@ -32,7 +33,8 @@ status subcommand for the rest.
   is the contract for the service directory (NIP-01/NIP-78 entries and
   checkpoints, operator assertions, client rollback state, relay profile);
   the codec is `crates/directory/nostr`, the operator commands are
-  `bpir-admin directory-artifact`.
+  `bpir-admin directory-artifact`, the relay is `apps/directory-relay`
+  ([Directory relay](runbooks/directory-relay.md)).
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).
 - Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).
