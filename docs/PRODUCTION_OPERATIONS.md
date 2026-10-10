@@ -134,8 +134,7 @@ Usual PR workflows, when their paths match:
 | --- | --- | --- |
 | `web-build.yml` | wasm-pack, `tsc`, vitest, `build-web` | GitHub Pages |
 | `pir-sdk-integration.yml` | deterministic SDK jobs | live servers (live jobs are schedule/dispatch) |
-| `rust-ci.yml` | Rust test/clippy lanes and the wasm32 check | production hosts |
-| `build-determinism.yml` | pir-core reproducibility | databases |
+| `rust-ci.yml` | Rust test/clippy lanes, including pir-core build reproducibility | production hosts, databases |
 
 ## C. Web / GitHub Pages — Local then Auth
 

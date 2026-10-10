@@ -46,13 +46,11 @@
 use std::sync::Arc;
 
 use pir_core::hash::derive_groups_3;
-use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, PirError, RoundKind, RoundProfile};
-use pir_sdk_client::{DpfClient, HarmonyClient, PirClient, ScriptHash};
+use pir_sdk::{BufferingLeakageRecorder, LeakageProfile, PirError, RoundKind};
+use pir_sdk_client::{DatabaseProofPolicy, DpfClient, HarmonyClient, PirClient, ScriptHash};
 
-// Live-server Payment-V1 admission helpers (attest → secure channel →
-// policy → PoW → authorize). The public deployment enforces
-// `--require-service-auth-v1`, so backend queries need these before any
-// INDEX/CHUNK frame is sent. See `tests/common/mod.rs`.
+// Live-server session helpers (attest, secure channel, database proof).
+// See `tests/common/mod.rs`.
 mod common;
 
 #[cfg(feature = "onion")]
@@ -348,8 +346,7 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
-        // The public deployment enforces Payment-V1 admission.
-        common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
+        common::admit_dpf_live(&mut client, db_id, &DatabaseProofPolicy::mainnet()).await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile {
@@ -362,10 +359,6 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 }
 
 /// Harmony equivalent of [`dpf_query_profile`].
-///
-/// Payment-V1 admission is completed before the batch (hint leg V2Full grant
-/// and query leg free offer). The profile is intentionally broader than the
-/// strict health canary and remains advisory in scheduled CI.
 async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("harmony query_batch", move || async move {
         let recorder = Arc::new(BufferingLeakageRecorder::new());
@@ -375,14 +368,8 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
-        // The public deployment enforces Payment-V1 admission.
-        common::admit_harmony_live(
-            &mut client,
-            db_id,
-            &common::production_db0_proof_policy(),
-            shs,
-        )
-        .await?;
+        common::admit_harmony_live(&mut client, db_id, &DatabaseProofPolicy::mainnet(), shs)
+            .await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile {
@@ -395,10 +382,6 @@ async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 }
 
 /// OnionPIR equivalent of [`dpf_query_profile`].
-///
-/// Payment-V1 admission is completed before the batch. The profile is
-/// intentionally broader than the strict health canary and remains advisory
-/// in scheduled CI.
 #[cfg(feature = "onion")]
 async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("onion query_batch", move || async move {
@@ -409,13 +392,7 @@ async fn onion_query_profile(shs: &[ScriptHash]) -> QueryProfile {
         let catalog = client.fetch_catalog().await?;
         let main = &catalog.databases[0];
         let (k_index, k_chunk, db_id) = (main.index_k as usize, main.chunk_k as usize, main.db_id);
-        // The public deployment enforces Payment-V1 admission.
-        common::admit_onion_live(
-            &mut client,
-            db_id,
-            &common::production_db0_onion_v2_proof_policy(),
-        )
-        .await?;
+        common::admit_onion_live(&mut client, db_id, &DatabaseProofPolicy::mainnet()).await?;
         client.query_batch(shs, db_id).await?;
         client.disconnect().await.ok();
         Ok(QueryProfile {
@@ -446,69 +423,6 @@ async fn onion_catalog_k() -> (usize, usize) {
 }
 
 // ─── DPF tests ──────────────────────────────────────────────────────────────
-
-/// Run one DPF batch as a cold session (fresh connection + Payment-V1
-/// admission) and return the query duration. The enforced production servers
-/// grant exactly one query per connection (the grant completes after the
-/// query and the connection is terminal), so benches must reconnect and
-/// re-admit per batch.
-async fn dpf_cold_batch_query(
-    shs: &[ScriptHash],
-    db_id: u8,
-) -> Result<std::time::Duration, PirError> {
-    let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.connect().await?;
-    common::admit_dpf_live(&mut client, db_id, &common::production_db0_proof_policy()).await?;
-    let started = std::time::Instant::now();
-    client.query_batch(shs, db_id).await?;
-    let elapsed = started.elapsed();
-    client.disconnect().await.ok();
-    Ok(elapsed)
-}
-
-/// Empirical amortization benchmark for DPF — same shape as
-/// `harmony_amortization_bench` so the two can be compared
-/// side-by-side. DPF has no hint phase (stateless servers), so the
-/// "cold session" cost is just connection + admission. Per-query cost
-/// should be roughly constant (no amortization curve like Harmony).
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn dpf_amortization_bench() {
-    with_transport_retry("dpf amortization bench", || async {
-        // The enforced production servers grant exactly one query per
-        // connection, so every batch below is measured as a cold session:
-        // connect + Payment-V1 admission + one query_batch.
-        let db_id = 0;
-
-        // Same 10 distinct not-found scripthashes as the Harmony bench.
-        let scripthashes: Vec<ScriptHash> = (0..10u8)
-            .map(|i| {
-                let mut sh = [0u8; 20];
-                sh[0] = i;
-                sh[1] = 0x42;
-                sh
-            })
-            .collect();
-
-        let cold = dpf_cold_batch_query(&scripthashes[..1], db_id).await?;
-        println!("[BENCH] DPF 1st query (cold session): {:.2?}", cold);
-
-        let warm_single = dpf_cold_batch_query(&scripthashes[1..2], db_id).await?;
-        println!("[BENCH] DPF 2nd query: {:.2?}", warm_single);
-
-        let batch_of_8 = dpf_cold_batch_query(&scripthashes[2..], db_id).await?;
-        println!("[BENCH] DPF 8-batch query: {:.2?}", batch_of_8);
-        println!(
-            "[BENCH] DPF per-scripthash: cold={:.2?}, warm-single={:.2?}, batch-of-8={:.2?}/sh",
-            cold,
-            warm_single,
-            batch_of_8 / 8,
-        );
-
-        Ok::<(), PirError>(())
-    })
-    .await
-}
 
 /// Drive a single not-found DPF query and assert per-message invariants.
 #[tokio::test]
@@ -840,83 +754,6 @@ async fn dpf_simulator_property_multi_query_collision() {
 }
 
 // ─── Harmony tests ──────────────────────────────────────────────────────────
-
-/// Run one Harmony batch as a cold session (fresh connection + Payment-V1
-/// admission, incl. the complete main+sibling hint download) and return its
-/// duration. The enforced production servers grant one query job per
-/// connection (`max_logical_inputs = 1` on the live
-/// `harmony-query-job-v1` scope), so multi-batch measurement requires a
-/// fresh admitted session per batch — see `dpf_cold_batch_query`.
-async fn harmony_cold_batch_query(
-    shs: &[ScriptHash],
-    db_id: u8,
-) -> Result<std::time::Duration, PirError> {
-    let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.connect().await?;
-    common::admit_harmony_live(
-        &mut client,
-        db_id,
-        &common::production_db0_proof_policy(),
-        shs,
-    )
-    .await?;
-    let started = std::time::Instant::now();
-    client.query_batch(shs, db_id).await?;
-    let elapsed = started.elapsed();
-    client.disconnect().await.ok();
-    Ok(elapsed)
-}
-
-/// Empirical amortization benchmark. Pre-Payment-V1 this measured one fresh
-/// session plus warm follow-up batches on the same connection (hint load
-/// amortization). Under admission enforcement every batch is a cold session
-/// (connect + admit + full hint download + one batch), so the bench now
-/// reports three cold-session data points with growing batch sizes. Runs via
-/// the same granted production path as `test_harmony_strict_production_canary`.
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn harmony_amortization_bench() {
-    with_transport_retry("harmony amortization bench", || async {
-        let db_id = 0;
-
-        // 10 distinct not-found scripthashes (one byte differs each).
-        let scripthashes: Vec<ScriptHash> = (0..10u8)
-            .map(|i| {
-                let mut sh = [0u8; 20];
-                sh[0] = i;
-                sh[1] = 0x42;
-                sh
-            })
-            .collect();
-
-        let cold = harmony_cold_batch_query(&scripthashes[..1], db_id).await?;
-        println!(
-            "[BENCH] 1st query (cold session, hint download): {:.2?}",
-            cold
-        );
-
-        let warm_single = harmony_cold_batch_query(&scripthashes[1..2], db_id).await?;
-        println!(
-            "[BENCH] 2nd query (cold session again): {:.2?}",
-            warm_single
-        );
-
-        let batch_of_8 = harmony_cold_batch_query(&scripthashes[2..], db_id).await?;
-        println!(
-            "[BENCH] 8-batch query (cold session again): {:.2?}",
-            batch_of_8
-        );
-        println!(
-            "[BENCH] per-scripthash: cold={:.2?}, second-cold={:.2?}, batch-of-8={:.2?}/sh",
-            cold,
-            warm_single,
-            batch_of_8 / 8,
-        );
-
-        Ok::<(), PirError>(())
-    })
-    .await
-}
 
 #[tokio::test]
 #[ignore = "requires running PIR servers"]
@@ -1320,183 +1157,6 @@ async fn onion_simulator_property_multi_query_collision() {
 
 // ─── Phase 2.2 hardening: FOUND path + admitted-leak validation ─────────────
 
-/// FOUND path coverage for DPF: a known-found scripthash MUST emit
-/// CHUNK rounds + ChunkMerkleSiblings, while still satisfying the
-/// per-message invariants. Catches a regression where the chunk-path
-/// branch silently breaks (would manifest as no CHUNK rounds emitted
-/// even for found queries).
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn dpf_found_query_includes_chunk_rounds() {
-    let (sh, _) = found_pair();
-    let QueryProfile {
-        profile,
-        k_index,
-        k_chunk,
-    } = dpf_query_profile(&[sh]).await;
-    println!(
-        "dpf found profile: {} rounds — {:?}",
-        profile.rounds.len(),
-        profile.rounds.iter().map(|r| r.kind).collect::<Vec<_>>()
-    );
-
-    // Found path emits CHUNK rounds (the not-found path skips them).
-    let chunk_rounds = profile.count_of_kind(&RoundKind::Chunk);
-    assert!(
-        chunk_rounds >= 2,
-        "FOUND query expected ≥2 Chunk rounds (one per server), got {}. \
-         If this fires after a server rebuild, the example scripthash \
-         may have been spent — update `found_pair()` from \
-         web/src/example_spks.json.",
-        chunk_rounds,
-    );
-    // Per-message invariants still hold.
-    assert_pir_k_padding(&profile, k_index, k_chunk);
-    assert_merkle_per_level_uniform(&profile);
-    for r in profile.rounds_of_kind(&RoundKind::Index) {
-        assert!(
-            r.items_uniform(k_index, 2),
-            "DPF Index round violates items_uniform(K={}, 2): {:?}",
-            k_index,
-            r.items,
-        );
-    }
-    for r in profile.rounds_of_kind(&RoundKind::Chunk) {
-        // CHUNK items[g] varies because chunks fan out into groups by
-        // the cuckoo placement plan — admitted leak (UTXO count). We
-        // only assert items.len() == K_CHUNK here; the per-group count
-        // is intentionally non-uniform.
-        assert_eq!(
-            r.items.len(),
-            k_chunk,
-            "DPF Chunk round items.len()={}, expected K_CHUNK={}",
-            r.items.len(),
-            k_chunk,
-        );
-    }
-}
-
-/// CHUNK Round-Presence Symmetry P1: a FOUND query and a NOT-FOUND
-/// query MUST produce the same round count. This was the pre-fix
-/// admitted leak — chunk-round absence revealed not-found — that the
-/// symmetry fix in `crates/sdk/client/src/dpf.rs` closes by emitting
-/// dummy K_CHUNK-padded CHUNK rounds even on the not-found path.
-///
-/// Pre-fix this test asserted divergence; post-fix it asserts
-/// equality. If equality fails, either:
-///   (a) the not-found path emits fewer CHUNK rounds than found
-///       (regression — pre-fix behavior reintroduced), or
-///   (b) the FOUND example was spent and degraded to NOT-FOUND
-///       (update `found_pair()` from `web/src/example_spks.json`).
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn dpf_found_vs_not_found_have_same_round_count() {
-    let (sh_found, _) = found_pair();
-    let (sh_not_found, _) = not_found_pair();
-    let p_found = run_dpf_single_query(sh_found).await;
-    let p_not_found = run_dpf_single_query(sh_not_found).await;
-
-    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
-    let not_found_chunks = p_not_found.count_of_kind(&RoundKind::Chunk);
-    println!(
-        "dpf found-vs-not-found: rounds={} vs {}, Chunk={} vs {}",
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-        found_chunks,
-        not_found_chunks,
-    );
-    // Both paths emit ≥2 CHUNK rounds (one per server).
-    assert!(
-        found_chunks >= 2,
-        "FOUND query expected ≥2 CHUNK rounds, got {} — example may be spent",
-        found_chunks,
-    );
-    assert!(
-        not_found_chunks >= 2,
-        "NOT-FOUND query expected ≥2 CHUNK rounds post-fix, got {} \
-         — CHUNK Round-Presence Symmetry violated",
-        not_found_chunks,
-    );
-    // CHUNK round counts AGREE — the property the CHUNK Round-
-    // Presence Symmetry fix delivers. The wire transcripts are
-    // indistinguishable at the CHUNK-PIR-round-count level.
-    assert_eq!(
-        found_chunks, not_found_chunks,
-        "found and not-found CHUNK round counts diverge ({} vs {}) \
-         — CHUNK Round-Presence Symmetry P1 violated",
-        found_chunks, not_found_chunks,
-    );
-
-    // M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). The
-    // ChunkMerkleSiblings count still agrees across found and
-    // not-found via ROUND-PRESENCE: a not-found query does one
-    // all-dummy CHUNK-Merkle pass (the guard in merkle_verify.rs —
-    // the `chunk_sub_items.is_empty()` skip was removed), and a
-    // found query with a small chunk count (1 pass) matches it. A
-    // found address with many chunks would diverge — the
-    // now-admitted per-query UTXO-count leak; the public
-    // `found_pair()` examples are small so equality holds.
-    let found_cms = p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
-    let nf_cms = p_not_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
-    // The not-found path MUST still emit >=1 CHUNK-Merkle pass —
-    // this is the Phase-1 found-vs-not-found guard.
-    assert!(
-        nf_cms >= 1,
-        "not-found emitted 0 ChunkMerkleSiblings rounds — the \
-         found-vs-not-found guard regressed (the all-dummy \
-         CHUNK-Merkle pass was skipped)",
-    );
-    assert_eq!(
-        found_cms, nf_cms,
-        "found and not-found ChunkMerkleSiblings round counts diverge \
-         ({} vs {}) — either the round-presence guard regressed, or \
-         the found example has many chunks (admitted UTXO-count leak)",
-        found_cms, nf_cms,
-    );
-    assert_eq!(
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-        "found and not-found total round counts diverge ({} vs {}) \
-         — round-presence regressed, or the found example is large",
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-    );
-}
-
-/// CHUNK Round-Presence Symmetry P1 (positive form): the wire
-/// transcript's CHUNK-round count must depend only on batch size,
-/// not on per-query found/not-found classification. This is the
-/// integration-level expression of the helper-level Kani harness on
-/// `items_from_trace` in `crates/sdk/client/src/dpf.rs` (which proves the
-/// per-slot decision tree emits the same number of items regardless
-/// of trace outcome).
-///
-/// Drives equal-size single-query batches — one FOUND, one NOT-FOUND
-/// — through fresh DPF clients and asserts identical
-/// `count_of_kind(Chunk)` on the resulting profiles. Captures
-/// regressions that the Kani harness cannot — those bind helper
-/// correctness, this binds it to actual wire emission.
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn dpf_round_count_is_function_of_batch_size_only() {
-    let (sh_found, _) = found_pair();
-    let (sh_nf, _) = not_found_pair();
-    let p_found = run_dpf_single_query(sh_found).await;
-    let p_nf = run_dpf_single_query(sh_nf).await;
-    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
-    let nf_chunks = p_nf.count_of_kind(&RoundKind::Chunk);
-    println!(
-        "dpf batch-size-only: found_chunks={}, nf_chunks={}",
-        found_chunks, nf_chunks,
-    );
-    assert_eq!(
-        found_chunks, nf_chunks,
-        "CHUNK round count must be a function of batch size only \
-         (found={}, not_found={}) — CHUNK Round-Presence Symmetry P1 violated",
-        found_chunks, nf_chunks,
-    );
-}
-
 /// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). A FOUND
 /// query with a SMALL chunk count (1 chunk — the common case) and a
 /// NOT-FOUND query still produce **byte-identical** leakage
@@ -1545,169 +1205,7 @@ async fn dpf_found_vs_not_found_have_byte_identical_profiles() {
     assert_profiles_equivalent(&p_found, &p_nf);
 }
 
-/// Same-class simulator property: two FOUND scripthashes follow the
-/// FOUND path, but their profiles are only structurally equal when
-/// they have the same admitted leakage (UTXO count, whale-ness). The
-/// public examples have varying UTXO counts so we don't assert
-/// equality — instead we assert that BOTH follow the found shape
-/// (Index + Chunk + Merkle present), and we log the divergent fields
-/// so a future tightening (curated equal-UTXO-count corpus) can spot
-/// what aspect of `L` actually leaks across these specific queries.
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn dpf_two_found_queries_both_follow_found_shape() {
-    let (sh_a, sh_b) = found_pair();
-    let p_a = run_dpf_single_query(sh_a).await;
-    let p_b = run_dpf_single_query(sh_b).await;
-
-    for (label, p) in [("a", &p_a), ("b", &p_b)] {
-        let chunks = p.count_of_kind(&RoundKind::Chunk);
-        assert!(
-            chunks >= 2,
-            "found query {} emitted {} CHUNK rounds; expected ≥2 (one per server)",
-            label,
-            chunks,
-        );
-        assert!(p.count_of_kind(&RoundKind::Index) >= 2);
-    }
-
-    // Document the per-round divergences for future hardening — these
-    // are what `L` admits beyond the not-found case (UTXO count, etc.).
-    if p_a.rounds.len() == p_b.rounds.len() {
-        for (i, (ra, rb)) in p_a.rounds.iter().zip(p_b.rounds.iter()).enumerate() {
-            if ra.items != rb.items
-                || ra.request_bytes != rb.request_bytes
-                || ra.response_bytes != rb.response_bytes
-            {
-                println!(
-                    "round[{}] {:?} divergence: items_a={:?} items_b={:?} \
-                     req=({}|{}) resp=({}|{})",
-                    i,
-                    ra.kind,
-                    ra.items,
-                    rb.items,
-                    ra.request_bytes,
-                    rb.request_bytes,
-                    ra.response_bytes,
-                    rb.response_bytes,
-                );
-            }
-        }
-    } else {
-        println!(
-            "round counts differ ({} vs {}) — one side may be a whale",
-            p_a.rounds.len(),
-            p_b.rounds.len(),
-        );
-    }
-}
-
 // ─── Phase 2.2 hardening (Onion) ────────────────────────────────────────────
-
-/// FOUND path coverage for OnionPIR.
-#[cfg(feature = "onion")]
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn onion_found_query_includes_chunk_rounds() {
-    let (sh, _) = found_pair();
-    let QueryProfile {
-        profile,
-        k_index,
-        k_chunk,
-    } = onion_query_profile(&[sh]).await;
-    println!(
-        "onion found profile: {} rounds — {:?}",
-        profile.rounds.len(),
-        profile.rounds.iter().map(|r| r.kind).collect::<Vec<_>>()
-    );
-
-    let chunk_rounds = profile.count_of_kind(&RoundKind::Chunk);
-    assert!(
-        chunk_rounds >= 1,
-        "OnionPIR FOUND query expected ≥1 Chunk round, got {}. \
-         Update `found_pair()` if a server rebuild dropped these.",
-        chunk_rounds,
-    );
-    assert_pir_k_padding(&profile, k_index, k_chunk);
-    assert_merkle_per_level_uniform(&profile);
-    for r in profile.rounds_of_kind(&RoundKind::Index) {
-        assert!(r.items_uniform(k_index, 2));
-    }
-}
-
-/// CHUNK Round-Presence Symmetry P1 (OnionPIR variant): FOUND and
-/// NOT-FOUND queries must produce the same round count. Pre-fix
-/// OnionPIR not-found emitted 0 CHUNK rounds; the symmetry fix in
-/// `crates/sdk/client/src/onion.rs` (and `web/src/onionpir_client.ts`)
-/// emits a K_CHUNK-padded dummy CHUNK round even on the not-found
-/// path.
-#[cfg(feature = "onion")]
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn onion_found_vs_not_found_have_same_round_count() {
-    let (sh_found, _) = found_pair();
-    let (sh_not_found, _) = not_found_pair();
-    let p_found = run_onion_single_query(sh_found).await;
-    let p_not_found = run_onion_single_query(sh_not_found).await;
-
-    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
-    let not_found_chunks = p_not_found.count_of_kind(&RoundKind::Chunk);
-    println!(
-        "onion found-vs-not-found: rounds={} vs {}, Chunk={} vs {}",
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-        found_chunks,
-        not_found_chunks,
-    );
-    assert!(
-        found_chunks >= 1,
-        "FOUND query expected ≥1 CHUNK round, got {}",
-        found_chunks,
-    );
-    assert!(
-        not_found_chunks >= 1,
-        "NOT-FOUND query expected ≥1 CHUNK round post-fix, got {} \
-         — CHUNK Round-Presence Symmetry violated",
-        not_found_chunks,
-    );
-    // CHUNK round counts AGREE — the property the CHUNK Round-
-    // Presence Symmetry fix delivers.
-    assert_eq!(
-        found_chunks, not_found_chunks,
-        "OnionPIR found and not-found CHUNK round counts diverge ({} vs {}) \
-         — CHUNK Round-Presence Symmetry P1 violated",
-        found_chunks, not_found_chunks,
-    );
-
-    // TOTAL round count and ChunkMerkleSiblings round count also
-    // agree for a 1-chunk found example. Pre-fix not-found emitted 0
-    // ChunkMerkleSiblings (and skipped DATA tree-tops) while found
-    // emitted those. M=16 padding was REMOVED; see docs/VERIFICATION_OVERVIEW.md
-    // Phase 4 / WS-A; the agreement now comes from CHUNK Round-Presence
-    // Symmetry — the per-group Merkle verifier (`verify_sub_tree`)
-    // always issues >=1 all-dummy K_CHUNK DATA sibling pass, so a
-    // not-found query (0 real chunks) emits the same ChunkMerkleSiblings
-    // + DATA tree-top traffic as a 1-chunk found query. A found address
-    // with MANY chunks would diverge — the now-admitted per-query
-    // UTXO-count leak; `found_pair()` examples are small (1 chunk).
-    let found_cms = p_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
-    let nf_cms = p_not_found.count_of_kind(&RoundKind::ChunkMerkleSiblings { level: 0 });
-    assert_eq!(
-        found_cms, nf_cms,
-        "OnionPIR found and not-found ChunkMerkleSiblings round counts diverge \
-         ({} vs {}) — CHUNK Round-Presence Symmetry regressed; the not-found \
-         path may have skipped the all-dummy DATA sibling pass",
-        found_cms, nf_cms,
-    );
-    assert_eq!(
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-        "OnionPIR found and not-found total round counts diverge ({} vs {}) \
-         — CHUNK Round-Presence Symmetry regressed",
-        p_found.rounds.len(),
-        p_not_found.rounds.len(),
-    );
-}
 
 /// OnionPIR analog of `dpf_found_vs_not_found_have_byte_identical_profiles`.
 /// M=16 padding REMOVED (see docs/VERIFICATION_OVERVIEW.md). A FOUND
@@ -1759,130 +1257,4 @@ async fn onion_found_vs_not_found_have_byte_identical_profiles() {
     // byte-identical. A large found example would diverge — the
     // admitted UTXO-count leak (see the doc comment).
     assert_profiles_equivalent(&p_found, &p_nf);
-}
-
-/// CHUNK Round-Presence Symmetry P1 (OnionPIR positive form). See
-/// `dpf_round_count_is_function_of_batch_size_only` for the rationale
-/// — same property, different backend.
-#[cfg(feature = "onion")]
-#[tokio::test]
-#[ignore = "requires running PIR servers"]
-async fn onion_round_count_is_function_of_batch_size_only() {
-    let (sh_found, _) = found_pair();
-    let (sh_nf, _) = not_found_pair();
-    let p_found = run_onion_single_query(sh_found).await;
-    let p_nf = run_onion_single_query(sh_nf).await;
-    let found_chunks = p_found.count_of_kind(&RoundKind::Chunk);
-    let nf_chunks = p_nf.count_of_kind(&RoundKind::Chunk);
-    println!(
-        "onion batch-size-only: found_chunks={}, nf_chunks={}",
-        found_chunks, nf_chunks,
-    );
-    assert_eq!(
-        found_chunks, nf_chunks,
-        "OnionPIR CHUNK round count must be a function of batch size only \
-         (found={}, not_found={}) — CHUNK Round-Presence Symmetry P1 violated",
-        found_chunks, nf_chunks,
-    );
-}
-
-// Suppress unused-warning noise when only one backend is built.
-#[allow(dead_code)]
-fn _unused_url_helpers() {
-    let _ = (
-        dpf_server0_url(),
-        dpf_server1_url(),
-        harmony_hint_url(),
-        harmony_query_url(),
-    );
-    #[cfg(feature = "onion")]
-    let _ = onion_url();
-}
-
-// Suppress unused-fn warning for the `RoundProfile` import re-export
-// when building with no feature.
-#[allow(dead_code)]
-fn _unused_round_profile(_p: &RoundProfile) {}
-
-// ─── Data-correctness diagnostic (2026-05-13) ───────────────────────────────
-//
-// The user reported that web-client HarmonyPIR queries return wrong UTXO
-// data even after the varint decoder fix (7e078db0) and the fastprp feature
-// fix (cccad8d6). This test runs the Rust HarmonyClient against the same
-// production servers, queries the two known-found scripthashes
-// (`found_pair()`), and prints the raw chunk bytes + decoded entries in a
-// format that can be eyeballed against an on-chain UTXO oracle.
-//
-// Run with:
-//   PIR_DUMP_RAW_CHUNKS=1 cargo test -p pir-sdk-client --features fastprp \
-//       --test leakage_integration_test -- --ignored --nocapture \
-//       harmony_data_correctness_diagnostic
-//
-// Cross-check the printed `txid` (REVERSED) + `vout` + `amount` against
-// `https://mempool.space/api/address/<addr>/utxo` for:
-//   - SPK `76a91484407a2fe50de7b97ef1a80613b41d06af8fa38788ac` (P2PKH)
-//   - SPK `0014528aa6fb623acd8f574abc89508e0a42cde57b8b` (P2WPKH)
-//
-// If the printed entries are still wrong, the issue is upstream of the
-// varint decoder (likely in chunk_data assembly or PRP backend state).
-#[tokio::test]
-#[ignore = "requires running PIR servers + correctness verification by eye"]
-async fn harmony_data_correctness_diagnostic() {
-    let (sh_a, sh_b) = found_pair();
-    // Returns query *results* (not a leakage profile), retrying transient
-    // transport flakes. The catalog stats print on each attempt.
-    let results = with_transport_retry("harmony correctness query", move || async move {
-        let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-        client.connect().await?;
-        let catalog = client.fetch_catalog().await?;
-        let db = &catalog.databases[0];
-        let db_id = db.db_id;
-        eprintln!(
-            "[DBG_CORR] DB synced_height={} index_bins={} chunk_bins={}",
-            db.height, db.index_bins, db.chunk_bins,
-        );
-        // The public deployment enforces Payment-V1 admission.
-        common::admit_harmony_live(
-            &mut client,
-            db_id,
-            &common::production_db0_proof_policy(),
-            &[sh_a, sh_b],
-        )
-        .await?;
-        let results = client.query_batch(&[sh_a, sh_b], db_id).await?;
-        client.disconnect().await.ok();
-        Ok(results)
-    })
-    .await;
-
-    let labels = [
-        ("sh_a (HASH160 of 76a914...88ac, P2PKH)", sh_a),
-        ("sh_b (HASH160 of 0014...7b8b, P2WPKH)", sh_b),
-    ];
-    for (i, res) in results.iter().enumerate() {
-        let (label, sh) = labels[i];
-        let sh_hex: String = sh.iter().map(|b| format!("{:02x}", b)).collect();
-        eprintln!("[DBG_CORR] query #{} {} sh={}", i, label, sh_hex);
-        match res {
-            None => eprintln!("    -> None (not-found)"),
-            Some(qr) => {
-                eprintln!(
-                    "    -> entries={} merkle_verified={} is_whale={}",
-                    qr.entries.len(),
-                    qr.merkle_verified,
-                    qr.is_whale,
-                );
-                for (j, e) in qr.entries.iter().enumerate() {
-                    let txid_internal: String =
-                        e.txid.iter().map(|b| format!("{:02x}", b)).collect();
-                    let txid_display: String =
-                        e.txid.iter().rev().map(|b| format!("{:02x}", b)).collect();
-                    eprintln!(
-                        "      entry[{}] txid_internal={} txid_display={} vout={} amount_sats={}",
-                        j, txid_internal, txid_display, e.vout, e.amount_sats,
-                    );
-                }
-            }
-        }
-    }
 }

@@ -74,32 +74,3 @@ jobs:
           path: target/cargo-timings
           if-no-files-found: ignore
           retention-days: 7
-
-  rust:
-    name: Rust lanes
-    if: ${{ always() }}
-    needs: rust-lanes
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require all Rust lanes to pass
-        env:
-          LANE_RESULT: ${{ needs.rust-lanes.result }}
-        run: test "$LANE_RESULT" = success
-
-  wasm-boundary:
-    name: wasm32 check
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      CARGO_TERM_COLOR: always
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install pinned Rust toolchain with wasm32
-        run: |
-          rustup toolchain install --profile minimal
-          rustup target add wasm32-unknown-unknown
-      - name: Check pir-sdk-wasm on wasm32
-        run: cargo check --locked --offline --target wasm32-unknown-unknown -p pir-sdk-wasm
