@@ -12,7 +12,7 @@
  * backend. The dataset root (`bucketSuperRootHex` from the verified database
  * proof) already pins the exact database content; the blob's self-describing
  * `fingerprintHex` is re-derived and compared inside
- * `WasmHarmonyClient.loadHints(bytes, catalog, db_id)` before the blob is
+ * `WasmHarmonyClient.loadCompleteHints(bytes, catalog, db_id)` before the blob is
  * accepted, so a record bound to a different database can never replay.
  * A fingerprint mismatch surfaces as a thrown `JsError` from the WASM
  * boundary — the caller treats that as "cache stale" and re-fetches.

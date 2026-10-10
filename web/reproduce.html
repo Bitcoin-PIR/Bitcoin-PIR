@@ -1001,7 +1001,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
                             <li>The ORAM source-binding proof binds the measured regenerate-on-boot path to exact Direct ORAM inputs in AMD-attested BuildEvidence V2 for block <code>948454</code>.</li>
                             <li>The Bitcoin anchor proof binds both delta endpoint block hashes and the latest MuHash to one blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
-                            <li>The web client refuses to upgrade to the encrypted channel if runtime pins do not match what the server reports.</li>
+                            <li>The web client compares the runtime pins with what the server reports and shows any mismatch.</li>
                             <li>DPF, HarmonyPIR, and standalone OnionPIR verify each database proof in Rust/WASM, compare it with the production pin, install the verified bucket or Onion root, and bind the fetched tree-tops before issuing an address query.</li>
                             <li>The ORAM smoke route confirms the live attested binary accepts padded direct ORAM requests for both production databases.</li>
                         </ul>
@@ -1016,7 +1016,6 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>AMD's signing keys are trust roots; the project pins the AMD ARK fingerprint but cannot remove AMD from the trust base.</li>
                             <li>The BHTM proof is an attested MuHash transition from Core-style stripped deltas. It checks header linkage and txid Merkle commitments; it is not a full Bitcoin consensus validator inside the TEE.</li>
                             <li>The strict ORAM source-binding proof is intentionally not a live-image byte-match claim. The measured runtime is trusted to generate and maintain authenticated mutable ORAM state from the verified inputs.</li>
-                            <li>The v1 database proof does not commit the complete standalone OnionPIR query layout. The production web client therefore checks a separate, explicit layout pin and fails closed on mismatch; a future v2 proof can absorb those fields.</li>
                         </ul>
                     </section>
                 </section>

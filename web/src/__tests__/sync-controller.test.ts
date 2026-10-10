@@ -39,7 +39,7 @@ describe('SyncController', () => {
       ],
     };
 
-    await controller.execute(plan, {
+    const out = await controller.execute(plan, {
       scriptHashes: [scriptHash],
       queryStep: async (_step, index) => {
         trace.push(`query:${index}`);
@@ -52,7 +52,8 @@ describe('SyncController', () => {
     });
 
     expect(trace).toEqual(['query:0', 'query:1', 'merge:1']);
-    expect(controller.getSnapshot(scriptHash)?.value).toBe('snapshot+delta');
+    expect(out.merged[0]?.value).toBe('snapshot+delta');
+    expect(controller.hasSnapshotFor(scriptHash)).toBe(true);
     expect(controller.loadLastSyncedHeight()).toBe(110);
   });
 
@@ -74,6 +75,6 @@ describe('SyncController', () => {
     })).rejects.toThrow('returned 1 results; expected 2');
 
     expect(controller.loadLastSyncedHeight()).toBe(0);
-    expect(controller.getSnapshot(scriptHash)).toBeUndefined();
+    expect(controller.hasSnapshotFor(scriptHash)).toBe(false);
   });
 });

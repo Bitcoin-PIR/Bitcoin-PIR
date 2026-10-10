@@ -182,9 +182,6 @@ export function parseServerInfoJson(jsonStr: string): ServerInfoJson {
     }
   }
 
-  // `onionpir` is defined below but we also want it in the top-level
-  // `info.onionpir` assignment. The helper is hoisted via `const` below so
-  // we reference a local inline copy here to avoid hoisting issues.
   if (raw.onionpir) {
     info.onionpir = {
       total_packed_entries: raw.onionpir.total_packed_entries,
@@ -334,9 +331,7 @@ export interface DatabaseCatalog {
 
 /**
  * Translate the catalog returned by `WasmDatabaseCatalog.toJson()` into the
- * web client's canonical catalog shape. In strict mode this post-upgrade
- * catalog is the only input to sync planning; the separate server-info socket
- * remains diagnostic and cannot add, remove, or rewrite sync steps.
+ * web client's canonical catalog shape.
  */
 export function databaseCatalogFromWasmJson(raw: any): DatabaseCatalog {
   if (!raw || !Array.isArray(raw.databases)) {

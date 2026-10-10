@@ -41,7 +41,7 @@ import {
   type OperatorIdentity,
   type ServerAttestation,
 } from './verification.js';
-import type { HarmonyQueryResult, HarmonyUtxoEntry, QueryInspectorData } from './harmony-types.js';
+import type { HarmonyQueryResult, HarmonyUtxoEntry } from './harmony-types.js';
 import {
   buildCacheKey,
   deleteHints as idbDeleteHints,
@@ -100,8 +100,6 @@ export class HarmonyPirClientAdapter {
     query: { state: 'not-checked' },
   };
   databaseProofs: Map<number, DatabaseProofStatus> = new Map();
-  /** Inspector data from the latest `queryBatch` (built from the result's bins). */
-  lastInspectorData: Map<number, QueryInspectorData> | null = null;
 
   constructor(config: HarmonyPirClientConfig) {
     this.config = { ...config };
@@ -176,10 +174,6 @@ export class HarmonyPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  hasMerkleForDb(dbId: number): boolean {
-    return this.getCatalogEntry(dbId)?.hasBucketMerkle ?? false;
-  }
-
   /** The active database's verified bucket Merkle root, if any. */
   getMerkleRootHex(): string | undefined {
     return this.databaseProofs.get(this.dbId)?.proof?.bucketSuperRootHex;
@@ -240,20 +234,15 @@ export class HarmonyPirClientAdapter {
     progress?.('decode', `translating ${handles.length} results`);
 
     const out = new Map<number, HarmonyQueryResult>();
-    const inspector = new Map<number, QueryInspectorData>();
     const merkleRootHex = this.getMerkleRootHex();
     handles.forEach((handle, j) => {
       try {
         const { index, address, scriptHash } = inputs[j];
-        const shHex = bytesToHex(scriptHash);
-        const result = translateWasmResult(handle, address, shHex, scriptHash, merkleRootHex);
-        out.set(index, result);
-        inspector.set(index, buildInspectorShim(address, shHex, result));
+        out.set(index, translateWasmResult(handle, address, bytesToHex(scriptHash), scriptHash, merkleRootHex));
       } finally {
         handle.free();
       }
     });
-    this.lastInspectorData = inspector;
     return out;
   }
 
@@ -440,15 +429,6 @@ function translateWasmResult(
     });
   }
 
-  type WireBin = { pbcGroup: number; binIndex: number; binContent: string };
-  const indexBins = ((wqr.indexBins() as WireBin[]) ?? []).map((b) => ({
-    pbcGroup: b.pbcGroup,
-    binIndex: b.binIndex,
-    binContent: hexToBytes(b.binContent),
-  }));
-  const chunkBins = (wqr.chunkBins() as WireBin[]) ?? [];
-  const matchedIdx = wqr.matchedIndexIdx();
-  const primary = typeof matchedIdx === 'number' ? indexBins[matchedIdx] : indexBins[0];
   const rawChunkData = wqr.rawChunkData();
 
   return {
@@ -460,34 +440,5 @@ function translateWasmResult(
     merkleRootHex,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
     scriptHashBytes,
-    indexPbcGroup: primary?.pbcGroup,
-    indexBinIndex: primary?.binIndex,
-    indexBinContent: primary?.binContent,
-    allIndexBins: indexBins.length > 0 ? indexBins : undefined,
-    chunkPbcGroups: chunkBins.length > 0 ? chunkBins.map((b) => b.pbcGroup) : undefined,
-    chunkBinIndices: chunkBins.length > 0 ? chunkBins.map((b) => b.binIndex) : undefined,
-    chunkBinContents: chunkBins.length > 0 ? chunkBins.map((b) => hexToBytes(b.binContent)) : undefined,
-  };
-}
-
-/** Reduced inspector data: the native client does not expose placement
- * rounds or timings. */
-function buildInspectorShim(
-  address: string,
-  scriptHashHex: string,
-  qr: HarmonyQueryResult,
-): QueryInspectorData {
-  return {
-    address,
-    scriptPubKeyHex: '',
-    scriptHashHex,
-    candidateIndexGroups: [],
-    assignedIndexGroup: qr.indexPbcGroup ?? -1,
-    indexPlacementRound: -1,
-    indexBinIndex: qr.indexBinIndex,
-    isWhale: qr.whale,
-    numChunks: qr.chunkPbcGroups?.length ?? 0,
-    roundTimings: [],
-    totalMs: 0,
   };
 }

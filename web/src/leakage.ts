@@ -182,36 +182,6 @@ export function itemsUniform(
   return true;
 }
 
-/**
- * True if two rounds match on their `kind` discriminator, ignoring the
- * `level` for parametric variants. Mirror of
- * `RoundProfile::kind_matches`.
- */
-export function kindMatches(round: RoundProfile, kind: RoundKind['kind']): boolean {
-  return round.kind === kind;
-}
-
-/**
- * Filter a profile's rounds by `kind` (ignoring `level`). Mirror of
- * Rust's `LeakageProfile::rounds_of_kind`.
- */
-export function roundsOfKind(
-  profile: LeakageProfile,
-  kind: RoundKind['kind'],
-): RoundProfile[] {
-  return profile.rounds.filter((r) => r.kind === kind);
-}
-
-/** Number of rounds matching the given `kind` (ignoring `level`). */
-export function countOfKind(
-  profile: LeakageProfile,
-  kind: RoundKind['kind'],
-): number {
-  let n = 0;
-  for (const r of profile.rounds) if (r.kind === kind) n += 1;
-  return n;
-}
-
 // ─── Cross-language equality ────────────────────────────────────────────────
 
 /**

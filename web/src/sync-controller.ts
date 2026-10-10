@@ -16,7 +16,7 @@
  * No DOM access — all UI updates happen via progress/error callbacks provided
  * by the caller.
  */
-import { computeSyncPlanSdk as computeSyncPlan, type SyncPlan, type SyncStep } from './sdk-bridge.js';
+import { computeSyncPlan, type SyncPlan, type SyncStep } from './sync.js';
 import { bytesToHex } from './hash.js';
 import type { DatabaseCatalog } from './server-info.js';
 
@@ -42,8 +42,6 @@ export interface SyncExecuteHooks<T extends SyncableResult> {
   mergeStep: (snapshot: T | null, delta: T | null) => T | null;
   /** Optional hook run before each step (e.g. HarmonyPIR hint switch / re-download). */
   beforeStep?: (step: SyncStep, stepIdx: number) => Promise<void>;
-  /** Progress callback. `pct` is 0–100 for the whole sync, `detail` is free-form. */
-  onStepProgress?: (stepIdx: number, label: string, pct: number, detail: string) => void;
   /** Error logging callback (non-fatal messages from merge, etc). */
   onError?: (msg: string) => void;
 }
@@ -134,10 +132,6 @@ export class SyncController<T extends SyncableResult> {
     return this.cache.has(bytesToHex(scriptHash));
   }
 
-  getSnapshot(scriptHash: Uint8Array): T | undefined {
-    return this.cache.get(bytesToHex(scriptHash));
-  }
-
   // ── Plan computation ───────────────────────────────────────────────────
 
   /**
@@ -184,8 +178,6 @@ export class SyncController<T extends SyncableResult> {
       preStepSnapshots.push(merged.slice());
 
       const step = plan.steps[si];
-      const label = describeStep(step, si + 1, plan.steps.length);
-      hooks.onStepProgress?.(si, label, 5, 'starting');
 
       if (hooks.beforeStep) {
         await hooks.beforeStep(step, si);

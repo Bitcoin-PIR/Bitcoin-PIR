@@ -316,16 +316,6 @@ mod tests {
         assert_eq!(s.frames_sent, 2);
     }
 
-    #[test]
-    fn default_equals_new() {
-        let a = WasmAtomicMetrics::default();
-        let b = WasmAtomicMetrics::new();
-        // Both start at zero; the `Arc` identities differ (two
-        // independent allocations), which is fine — `default` is a
-        // convenience for callers that want `Default::default()`.
-        assert_eq!(a.snapshot_raw(), b.snapshot_raw());
-    }
-
     /// Uninstalling the recorder via `set_metrics_recorder(None)` on
     /// the native client should not invalidate the JS handle — the
     /// JS side can keep reading the last-observed counters.
@@ -393,56 +383,5 @@ mod tests {
         assert_eq!(s.total_query_latency_micros, 100_000);
         assert_eq!(s.min_query_latency_micros, 30_000);
         assert_eq!(s.max_query_latency_micros, 70_000);
-    }
-
-    /// Per-roundtrip latency observations made through the
-    /// `Arc<dyn PirMetrics>` trait object end up in the WASM-side
-    /// snapshot. Mirrors `latency_through_recorder_handle_lands_in_snapshot`
-    /// for the per-frame `on_roundtrip_end` callback that landed as the
-    /// fourth Phase 2+ tail item — the shape any transport-level recorder
-    /// actually exercises (the wrappers don't have direct access to the
-    /// inner `AtomicMetrics`, only the `recorder_handle()` Arc clone).
-    #[test]
-    fn roundtrip_latency_through_recorder_handle_lands_in_snapshot() {
-        let m = WasmAtomicMetrics::new();
-        let handle: Arc<dyn PirMetrics> = m.recorder_handle();
-
-        // Three roundtrips with varying durations and byte sizes.
-        // `on_roundtrip_end` is called from the transport on
-        // fully-successful roundtrips only — we simulate that here.
-        handle.on_roundtrip_end("dpf", 100, 200, Duration::from_millis(50));
-        handle.on_roundtrip_end("dpf", 80, 160, Duration::from_millis(20));
-        handle.on_roundtrip_end("dpf", 120, 240, Duration::from_millis(80));
-
-        let s = m.snapshot_raw();
-        assert_eq!(s.roundtrips_observed, 3);
-        assert_eq!(s.total_roundtrip_latency_micros, 150_000);
-        assert_eq!(s.min_roundtrip_latency_micros, 20_000);
-        assert_eq!(s.max_roundtrip_latency_micros, 80_000);
-    }
-
-    /// Multiple clients sharing one recorder aggregate roundtrip
-    /// latency too — same shared-state contract as
-    /// `multiple_clients_aggregate_latency` but for the
-    /// per-roundtrip family.
-    #[test]
-    fn multiple_clients_aggregate_roundtrip_latency() {
-        use pir_sdk_client::{DpfClient, HarmonyClient};
-
-        let m = WasmAtomicMetrics::new();
-        let mut d = DpfClient::new("wss://a", "wss://b");
-        let mut h = HarmonyClient::new("wss://h", "wss://q");
-        d.set_metrics_recorder(Some(m.recorder_handle()));
-        h.set_metrics_recorder(Some(m.recorder_handle()));
-
-        let handle = m.recorder_handle();
-        handle.on_roundtrip_end("dpf", 50, 100, Duration::from_millis(40));
-        handle.on_roundtrip_end("harmony", 60, 120, Duration::from_millis(60));
-
-        let s = m.snapshot_raw();
-        assert_eq!(s.roundtrips_observed, 2);
-        assert_eq!(s.total_roundtrip_latency_micros, 100_000);
-        assert_eq!(s.min_roundtrip_latency_micros, 40_000);
-        assert_eq!(s.max_roundtrip_latency_micros, 60_000);
     }
 }

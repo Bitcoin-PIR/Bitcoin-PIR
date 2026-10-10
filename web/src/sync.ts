@@ -39,7 +39,9 @@ const MAX_DELTA_CHAIN_LENGTH = 5;
  *   1. If no lastSyncedHeight (or 0) → pick the highest full checkpoint.
  *   2. If already at the latest tip → empty plan.
  *   3. Try to find a chain of deltas from lastSyncedHeight to the latest tip.
- *   4. If no chain or chain too long → fall back to the latest full checkpoint.
+ *   4. If no chain or chain too long → fall back to a fresh sync (step 1).
+ *
+ * Same plans as `pir_sdk::SyncPlanner::plan`.
  */
 export function computeSyncPlan(
   catalog: DatabaseCatalog,
@@ -72,33 +74,25 @@ export function computeSyncPlan(
     ? fullDbs.reduce((best, db) => db.height > best.height ? db : best)
     : null;
 
-  // ── Fresh sync ─────────────────────────────────────────────────────
-  if (!lastSyncedHeight || lastSyncedHeight === 0) {
+  // Fresh sync: the best full checkpoint, plus a delta chain from it to
+  // the tip when one exists.
+  const freshSyncPlan = (): SyncPlan => {
     if (!bestFull) {
       throw new Error('No full checkpoint available for fresh sync');
     }
     const steps: SyncStep[] = [toStep(bestFull)];
-    // Chain deltas on top of the full checkpoint so "sync to latest"
-    // actually reaches the catalog tip in one run. Without this, the
-    // first-time plan stops at bestFull.height and the user has to
-    // click Sync a second time for deltas to apply — confusing because
-    // "Sync to *latest*" should land the user at the real tip.
     if (bestFull.height < latestTip) {
       const tail = findDeltaChain(deltaDbs, bestFull.height, latestTip);
-      if (tail && tail.length <= MAX_DELTA_CHAIN_LENGTH) {
-        steps.push(...tail.map(toStep));
-      }
-      // If the chain is unreachable or too long, fall through with just
-      // the full checkpoint — matches the existing fallback semantics
-      // for non-fresh syncs that can't find a valid chain.
+      if (tail) steps.push(...tail.map(toStep));
     }
-    const finalHeight = steps[steps.length - 1].tipHeight;
     return {
       steps,
       isFreshSync: true,
-      targetHeight: finalHeight,
+      targetHeight: steps[steps.length - 1].tipHeight,
     };
-  }
+  };
+
+  if (!lastSyncedHeight) return freshSyncPlan();
 
   // ── Already at tip ─────────────────────────────────────────────────
   if (lastSyncedHeight >= latestTip) {
@@ -111,8 +105,7 @@ export function computeSyncPlan(
 
   // ── Try delta chain ────────────────────────────────────────────────
   const chain = findDeltaChain(deltaDbs, lastSyncedHeight, latestTip);
-
-  if (chain && chain.length <= MAX_DELTA_CHAIN_LENGTH) {
+  if (chain) {
     return {
       steps: chain.map(toStep),
       isFreshSync: false,
@@ -120,24 +113,15 @@ export function computeSyncPlan(
     };
   }
 
-  // ── Fallback to full checkpoint ────────────────────────────────────
-  if (!bestFull) {
-    throw new Error('No full checkpoint available and no valid delta chain');
-  }
-  return {
-    steps: [toStep(bestFull)],
-    isFreshSync: false,
-    targetHeight: bestFull.height,
-  };
+  return freshSyncPlan();
 }
 
 // ─── Delta chain search ──────────────────────────────────────────────────────
 
 /**
- * Find a chain of deltas from `fromHeight` to `toHeight`.
- * Returns the ordered list of delta catalog entries, or null if no chain exists.
- *
- * Uses BFS to find the shortest chain.
+ * Find the shortest chain of deltas from `fromHeight` to `toHeight` (BFS).
+ * Returns the ordered delta catalog entries, or null if no chain of at most
+ * `MAX_DELTA_CHAIN_LENGTH` steps exists.
  */
 function findDeltaChain(
   deltas: DatabaseCatalogEntry[],

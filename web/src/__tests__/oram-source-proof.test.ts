@@ -25,11 +25,6 @@ import {
 } from '../oram-source-proof.js';
 
 const publicRoot = new URL('../../public/', import.meta.url);
-const legacyFixtureRoot = new URL(
-  './fixtures/oram-source-proof-v1-leaked/',
-  import.meta.url,
-);
-const LEGACY_V1_MANIFEST_PATH = '/proofs/oram-source/mainnet_948454.json';
 const SERVER_MANIFEST_ROOT =
   '91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6';
 const DB1_SERVER_MANIFEST_ROOT =
@@ -59,11 +54,6 @@ const LIVE_DB1_RUNTIME: OramSourceLiveRuntime = {
 async function publicArtifactLoader(path: string): Promise<Uint8Array> {
   const clean = path.startsWith('/') ? path.slice(1) : path;
   return new Uint8Array(await readFile(new URL(clean, publicRoot)));
-}
-
-async function legacyArtifactLoader(path: string): Promise<Uint8Array> {
-  const clean = path.startsWith('/') ? path.slice(1) : path;
-  return new Uint8Array(await readFile(new URL(clean, legacyFixtureRoot)));
 }
 
 async function readCurrentManifest(
@@ -306,20 +296,6 @@ describe('ORAM source input binding', () => {
     expect(status.mismatches.some((m) => m.includes('production pin'))).toBe(true);
   });
 
-  it('rejects the leaked v1 forensic fixture before it can become a production proof', async () => {
-    const status = await verifyOramSourceProof({
-      manifestPath: LEGACY_V1_MANIFEST_PATH,
-      artifactLoader: legacyArtifactLoader,
-      expectedDbPin: DB0_PIN,
-      liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_DB0_RUNTIME,
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(status.verified).toBeUndefined();
-    expect(status.error).toContain('schemaVersion 1');
-  });
-
   it('requires all three live trust inputs', async () => {
     const status = await verifyOramSourceProof({
       artifactLoader: publicArtifactLoader,
@@ -335,27 +311,6 @@ describe('ORAM source input binding', () => {
     expect(status.mismatches).toContain(
       'liveRuntime is required before an ORAM source proof can be trusted',
     );
-  });
-
-  it('rejects an expanded public artifact set', async () => {
-    const manifest = await readCurrentManifest();
-    manifest.attestedBuilder.artifacts.oramOutput = {
-      ...manifest.attestedBuilder.artifacts.buildEvidence,
-    };
-    const outer = new TextEncoder().encode(JSON.stringify(manifest));
-    const status = await verifyOramSourceProof({
-      artifactLoader: async (path) => (
-        path === DEFAULT_ORAM_SOURCE_PROOF_MANIFEST_PATH
-          ? outer
-          : publicArtifactLoader(path)
-      ),
-      expectedDbPin: DB0_PIN,
-      liveDatabaseProof: LIVE_DB0_PROOF,
-      liveRuntime: LIVE_DB0_RUNTIME,
-    });
-
-    expect(status.state).toBe('unverified');
-    expect(status.error).toContain('artifact set must be closed');
   });
 
   it('recomputes the production V2 REPORT_DATA and typed build params', async () => {

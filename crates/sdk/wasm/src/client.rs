@@ -906,23 +906,6 @@ impl Default for WasmPolicyRequirements {
     }
 }
 
-/// JS-visible accessor for the Turin ARK fingerprint pinned in
-/// pir-attest-verify (matches `web/src/attest-pin.ts`). Returns the
-/// 32-byte SHA-256 as a Uint8Array. Pass directly to
-/// [`WasmAttestVerification::verify_full`] /
-/// [`WasmAttestVerification::verify_vcek_chain`] for Turin servers.
-#[wasm_bindgen(js_name = turinArkFingerprint)]
-pub fn turin_ark_fingerprint() -> Uint8Array {
-    Uint8Array::from(&pir_attest_verify::TURIN_ARK_FINGERPRINT_SHA256[..])
-}
-
-/// JS-visible accessor for the Milan ARK fingerprint pinned in
-/// pir-attest-verify (matches `web/src/attest-pin.ts`), for Milan servers.
-#[wasm_bindgen(js_name = milanArkFingerprint)]
-pub fn milan_ark_fingerprint() -> Uint8Array {
-    Uint8Array::from(&pir_attest_verify::MILAN_ARK_FINGERPRINT_SHA256[..])
-}
-
 /// Verify a standalone SEV-SNP report and PEM certificate chain.
 ///
 /// This is the static-artifact companion to
@@ -1395,10 +1378,7 @@ impl WasmDpfClient {
 
     /// Fetch the database catalog from the server.
     ///
-    /// Returns a [`WasmDatabaseCatalog`] wrapping the native catalog —
-    /// the same class returned by
-    /// `WasmDatabaseCatalog.fromJson(...)` for the TS fallback path, so
-    /// downstream sync-planning code works on both surfaces.
+    /// Returns a [`WasmDatabaseCatalog`] wrapping the native catalog.
     #[wasm_bindgen(js_name = fetchCatalog)]
     pub async fn fetch_catalog(&mut self) -> Result<WasmDatabaseCatalog, JsError> {
         let catalog = self.inner.fetch_catalog().await.map_err(err_to_js)?;
@@ -1503,21 +1483,6 @@ impl WasmDpfClient {
             .await
             .map_err(err_to_js)?;
         Ok(to_js_object(&query_results_to_json(&results)))
-    }
-
-    /// Return the two server URLs this client is connected to as a
-    /// `[string, string]` array (order matches the constructor:
-    /// `[server0_url, server1_url]`).
-    ///
-    /// Safe to call at any time — no network I/O, no connection state
-    /// needed.
-    #[wasm_bindgen(js_name = serverUrls)]
-    pub fn server_urls(&self) -> JsValue {
-        let (a, b) = self.inner.server_urls();
-        let arr = Array::new();
-        arr.push(&JsValue::from_str(a));
-        arr.push(&JsValue::from_str(b));
-        arr.into()
     }
 
     /// Send REQ_ATTEST to one of the connected servers and return a
@@ -2047,21 +2012,6 @@ impl WasmHarmonyClient {
 
     // ─── Session 5: inspector / verify / DB-switch / hint-cache surface ─────
 
-    /// Return the two server URLs this client is connected to as a
-    /// `[string, string]` array (order matches the constructor:
-    /// `[hint_server_url, query_server_url]`).
-    ///
-    /// Safe to call at any time — no network I/O, no connection state
-    /// needed. Mirrors [`WasmDpfClient::server_urls`].
-    #[wasm_bindgen(js_name = serverUrls)]
-    pub fn server_urls(&self) -> JsValue {
-        let (h, q) = self.inner.server_urls();
-        let arr = Array::new();
-        arr.push(&JsValue::from_str(h));
-        arr.push(&JsValue::from_str(q));
-        arr.into()
-    }
-
     /// Send REQ_ATTEST to the hint (`serverIndex=0`) or query
     /// (`serverIndex=1`) server and return the verification result.
     /// See [`WasmDpfClient::attest`] for the full semantics (including
@@ -2182,8 +2132,8 @@ impl WasmHarmonyClient {
 
     /// Wrap both server connections (hint + query) with the encrypted
     /// channel transport. See [`WasmDpfClient::upgrade_to_secure_channel`]
-    /// — same eph_seed caching + binding flow. Argument order matches
-    /// `serverUrls()` — `(hint, query)`.
+    /// — same eph_seed caching + binding flow. Arguments are
+    /// `(hint, query)`.
     #[wasm_bindgen(js_name = upgradeToSecureChannel)]
     pub async fn upgrade_to_secure_channel(
         &mut self,
@@ -2655,12 +2605,6 @@ impl WasmOramClient {
         Ok(to_js_object(&query_results_to_json(&results)))
     }
 
-    /// Return the configured server URL.
-    #[wasm_bindgen(js_name = serverUrl)]
-    pub fn server_url(&self) -> String {
-        self.inner.server_url().to_owned()
-    }
-
     /// Send REQ_ATTEST and return the parsed verification result.
     ///
     /// The nonce is bound to the X25519 ephemeral public key that
@@ -2928,73 +2872,6 @@ mod tests {
     }
 
     #[test]
-    fn wasm_dpf_client_construct_and_introspect() {
-        let client = WasmDpfClient::new("ws://a:1", "ws://b:2");
-        assert!(!client.is_connected());
-    }
-
-    #[test]
-    fn wasm_harmony_client_construct_and_introspect() {
-        let client = WasmHarmonyClient::new("ws://hint:1", "ws://query:2");
-        assert!(!client.is_connected());
-    }
-
-    #[test]
-    fn wasm_oram_client_construct_and_introspect() {
-        let client = WasmOramClient::new("ws://oram:1");
-        assert!(!client.is_connected());
-        assert_eq!(client.inner.server_url(), "ws://oram:1");
-    }
-
-    // ─── Session 5: WasmHarmonyClient surface tests (native-safe only) ──────
-    //
-    // Methods that return `JsValue` / `Uint8Array` / `JsError` can't run
-    // on native because those wasm-bindgen imports panic outside wasm32.
-    // The tests below cover the native-typed slice of the Session 5
-    // surface (dbId / setDbId / minQueriesRemaining /
-    // estimateHintSizeBytes + loadHints error paths where the error
-    // comes from a `String`-returning helper before hitting `JsError`).
-
-    /// Fresh `WasmHarmonyClient` reports `dbId() === None`, and
-    /// `setDbId(0)` stays no-op when no hints are loaded.
-    #[test]
-    fn wasm_harmony_db_id_defaults_to_none() {
-        let mut client = WasmHarmonyClient::new("ws://h:1", "ws://q:2");
-        assert_eq!(client.db_id(), None);
-        client.set_db_id(0);
-        // `set_db_id` only invalidates if the id differs from
-        // `loaded_db_id`; with nothing loaded the transition is inert.
-        assert_eq!(client.db_id(), None);
-    }
-
-    /// `min_queries_remaining()` returns None before any hints are
-    /// loaded — mirrors the native accessor.
-    #[test]
-    fn wasm_harmony_min_queries_remaining_none_when_empty() {
-        let client = WasmHarmonyClient::new("ws://h:1", "ws://q:2");
-        assert_eq!(client.min_queries_remaining(), None);
-    }
-
-    /// `estimate_hint_size_bytes()` is 0 before any hints are loaded.
-    #[test]
-    fn wasm_harmony_estimate_hint_size_zero_when_empty() {
-        let client = WasmHarmonyClient::new("ws://h:1", "ws://q:2");
-        assert_eq!(client.estimate_hint_size_bytes(), 0);
-    }
-
-    /// Sanity: `serverUrls` returns a 2-element JS array; we can't
-    /// inspect the JS side natively but we can assert the native
-    /// `inner.server_urls()` returns the constructor arguments
-    /// verbatim (what `serverUrls` wraps).
-    #[test]
-    fn wasm_harmony_inner_server_urls_match_constructor() {
-        let client = WasmHarmonyClient::new("wss://h.example", "wss://q.example");
-        let (h, q) = client.inner.server_urls();
-        assert_eq!(h, "wss://h.example");
-        assert_eq!(q, "wss://q.example");
-    }
-
-    #[test]
     fn validate_master_key_len_accepts_only_16() {
         assert!(validate_master_key_len(15).is_err());
         assert!(validate_master_key_len(17).is_err());
@@ -3010,15 +2887,6 @@ mod tests {
         assert!(validate_prp_backend(2).is_err());
         assert!(validate_prp_backend(99).is_err());
         assert!(validate_prp_backend(255).is_err());
-    }
-
-    #[test]
-    fn prp_constants_reachable() {
-        assert_eq!(prp_hmr12(), PRP_HMR12);
-        assert_eq!(prp_fastprp(), PRP_FASTPRP);
-        // Exercise the uniqueness invariant — the set_prp_backend guard
-        // above relies on these two being distinct.
-        assert_ne!(PRP_HMR12, PRP_FASTPRP);
     }
 
     #[test]
@@ -3067,10 +2935,4 @@ mod tests {
         assert_eq!(json["results"][0]["merkleVerified"], false);
         assert_eq!(json["results"][0]["entries"].as_array().unwrap().len(), 0);
     }
-
-    // Note: we deliberately don't have a unit test that calls `err_to_js`
-    // directly — `JsError::new` is a wasm-bindgen imported function and
-    // panics on non-wasm targets. The conversion's correctness is
-    // verified at compile time (every `#[wasm_bindgen]` method using
-    // `.map_err(err_to_js)` has to type-check).
 }

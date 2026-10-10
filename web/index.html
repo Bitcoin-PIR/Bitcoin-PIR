@@ -66,13 +66,6 @@
         .brand { display: flex; align-items: center; color: var(--ink); text-decoration: none; flex: 0 0 auto; }
         .brand-logo { display: block; width: 130px; height: auto; }
         .topbar-spacer { flex: 1; }
-        .topbar-meta {
-            display: flex; align-items: center; gap: 14px;
-            color: var(--ink-mute); font-size: 12px;
-            font-family: var(--mono);
-        }
-        .topbar-meta .sep { color: var(--ink-faint); }
-        .topbar-meta b { color: var(--ink); font-weight: 500; }
         .topbar-btn {
             font: inherit; background: transparent; border: 1px solid var(--line);
             border-radius: var(--r); padding: 5px 10px; color: var(--ink-soft);
@@ -152,10 +145,8 @@
             background: var(--ok); color: #fff; border-color: var(--ok); font-weight: 600;
         }
         .btn.success:hover:not(:disabled) { background: oklch(from var(--ok) calc(l - 0.04) c h); }
-        .btn.danger { color: var(--err); border-color: var(--line); }
-        .btn.danger:hover:not(:disabled) { border-color: var(--err); background: var(--err-wash); }
         .btn.sm { padding: 4px 8px; font-size: 12px; }
-        [hidden], .connection-controls { display: none !important; }
+        [hidden] { display: none !important; }
 
         /* ── grid of cards ────────────────────────────────────────── */
         .grid {
@@ -216,70 +207,8 @@
             box-shadow: 0 0 0 3px var(--accent-wash);
         }
 
-        /* ── status pill (repurposed .status.connected/disconnected/…) */
-        .status {
-            display: inline-flex; align-items: center; gap: 6px;
-            font-size: 11.5px; font-family: var(--mono);
-            padding: 3px 9px; border-radius: 999px;
-            border: 1px solid var(--line);
-            background: var(--sunken);
-            color: var(--ink-soft); font-weight: 400;
-            line-height: 1.4;
-        }
-        .status::before {
-            content: ""; width: 6px; height: 6px; border-radius: 999px;
-            background: var(--ink-faint);
-        }
-        .status.connected {
-            color: var(--ok);
-            border-color: oklch(from var(--ok) 82% 0.05 h);
-            background: var(--ok-wash);
-        }
-        .status.connected::before {
-            background: var(--ok);
-            box-shadow: 0 0 0 3px oklch(from var(--ok) 82% 0.05 h / .5);
-            animation: statusPulse 1.8s ease-in-out infinite;
-        }
-        .status.disconnected {
-            color: var(--err);
-            border-color: oklch(from var(--err) 82% 0.05 h);
-            background: var(--err-wash);
-        }
-        .status.disconnected::before { background: var(--err); }
-        .status.connecting, .status.reconnecting {
-            color: oklch(42% 0.12 75);
-            border-color: oklch(82% 0.08 75);
-            background: oklch(97% 0.03 75);
-        }
-        .status.connecting::before, .status.reconnecting::before {
-            background: var(--warn);
-            animation: statusPulse 1.4s ease-in-out infinite;
-        }
-        @keyframes statusPulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-
-        /* ── pill (generic, for inline badges) ────────────────────── */
-        .pill {
-            display: inline-flex; align-items: center; gap: 6px;
-            font-size: 11.5px; font-family: var(--mono);
-            padding: 3px 9px; border-radius: 999px;
-            border: 1px solid var(--line); background: var(--sunken);
-            color: var(--ink-soft);
-        }
-        .pill .dot { width: 6px; height: 6px; border-radius: 999px; background: var(--ink-faint); }
-        .pill.ok  { color: var(--ok); border-color: oklch(from var(--ok) 82% 0.05 h); background: var(--ok-wash); }
-        .pill.ok .dot { background: var(--ok); }
-
         /* ── query composer ───────────────────────────────────────── */
-        .composer-label {
-            font-size: 11px; font-weight: 600; letter-spacing: .08em;
-            text-transform: uppercase; color: var(--ink-mute);
-            margin-bottom: 8px;
-        }
-        .composer-label .hint {
-            font-family: var(--mono); font-weight: 500;
-            color: var(--ink-faint); letter-spacing: 0;
-            margin-left: 4px; text-transform: none;
-        }
+
         textarea.addr-input, #scriptPubkeys, #op-scriptPubkeys, #hp-scriptPubkeys {
             font: inherit; font-family: var(--mono); font-size: 12.5px;
             width: 100%; min-height: 96px; resize: vertical;
@@ -311,7 +240,7 @@
         }
         .chips { display: flex; flex-wrap: wrap; gap: 6px; }
         /* .example-btn retargeted to chip look */
-        .example-btn, .chip {
+        .example-btn {
             font: inherit; font-family: var(--mono); font-size: 11.5px;
             padding: 4px 10px; border-radius: 999px;
             border: 1px solid var(--line); background: var(--panel);
@@ -319,27 +248,24 @@
             display: inline-flex; align-items: center; gap: 6px;
             margin: 0;
         }
-        .example-btn:hover, .chip:hover { border-color: var(--ink-faint); color: var(--ink); background: var(--sunken); }
-        .example-btn.whale, .chip.whale { color: var(--accent-ink); }
-        .example-btn.whale::before, .chip.whale::before {
+        .example-btn:hover { border-color: var(--ink-faint); color: var(--ink); background: var(--sunken); }
+        .example-btn.whale { color: var(--accent-ink); }
+        .example-btn.whale::before {
             content: ""; width: 4px; height: 4px; border-radius: 999px;
             background: var(--accent); display: inline-block;
         }
-        .example-btn.excluded, .chip.excluded {
+        .example-btn.excluded {
             color: var(--err); opacity: .75; border-color: oklch(from var(--err) 86% 0.03 h);
             background: var(--err-wash);
         }
-        .example-btn.delta, .chip.delta {
+        .example-btn.delta {
             color: var(--accent-ink);
             border-color: var(--accent-line);
             background: var(--accent-wash);
         }
-        .example-btn.batch, .chip.batch {
+        .example-btn.batch {
             color: var(--ok); border-color: oklch(from var(--ok) 84% 0.04 h);
             background: var(--ok-wash);
-        }
-        .example-label {
-            display: none; /* now rendered via .ex-head */
         }
 
         /* ── action row + progress ────────────────────────────────── */
@@ -351,18 +277,6 @@
         }
         .action-row .btn { flex: 0 0 auto; padding: 8px 14px; }
         .action-row .btn.grow { flex: 1 1 auto; padding: 10px 14px; font-size: 14px; }
-
-        .plan-box {
-            margin-top: 12px;
-            padding: 10px 14px;
-            border: 1px solid var(--accent-line);
-            background: var(--accent-wash);
-            border-radius: var(--r);
-            font-size: 12.5px;
-            color: var(--accent-ink);
-        }
-        .plan-box .mono { font-family: var(--mono); font-size: 12px; color: var(--ink); }
-        .plan-box .actions { margin-top: 8px; display: flex; gap: 8px; }
 
         .progress-container {
             margin-top: 14px; display: none;
@@ -449,10 +363,6 @@
             box-shadow: var(--shadow-sm);
         }
         .utxo-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line-soft); }
-        .utxo-header {
-            display: flex; justify-content: space-between; align-items: center;
-            margin-bottom: 10px;
-        }
         .utxo-table {
             width: 100%; border-collapse: collapse;
             font-family: var(--mono); font-size: 12.5px;
@@ -473,7 +383,6 @@
             display: flex; justify-content: center; align-items: center;
             margin: 14px 0 0; gap: 10px;
         }
-        .pagination-info { font-size: 12px; color: var(--ink-mute); margin: 0 12px; font-family: var(--mono); }
         .hidden { display: none; }
         .amount-btc { color: var(--ok); font-weight: 600; }
         .txid-link {
@@ -481,33 +390,6 @@
             font-size: 11px; word-break: break-all; text-decoration: none;
         }
         .txid-link:hover { text-decoration: underline; }
-        .server-row {
-            display: flex; align-items: center; gap: 10px;
-            margin: 5px 0;
-        }
-        .server-label {
-            font-size: 12px; color: var(--ink-mute);
-            font-family: var(--mono);
-            min-width: 90px;
-        }
-
-        .summary-box {
-            background: var(--accent-wash); border: 1px solid var(--accent-line);
-            border-radius: var(--r); padding: 14px; margin: 12px 0; display: none;
-            color: var(--accent-ink);
-        }
-        .summary-box.active { display: block; }
-        .summary-stat { display: inline-block; margin: 5px 20px 5px 0; }
-        .summary-stat .label {
-            font-size: 10.5px; color: var(--ink-mute);
-            text-transform: uppercase; font-family: var(--mono);
-            letter-spacing: .05em;
-        }
-        .summary-stat .value {
-            font-size: 17px; font-weight: 600; color: var(--ink);
-            letter-spacing: -0.01em;
-        }
-        .summary-stat .value.btc { color: var(--accent-ink); }
 
         /* ── step boxes (query composer wrapper) ──────────────────── */
         .step {
@@ -522,7 +404,6 @@
             letter-spacing: .08em; text-transform: uppercase;
             color: var(--ink-mute);
         }
-        .step-number { font-weight: 600; color: var(--accent-ink); }
 
         /* ── script box (dark inline script preview) ──────────────── */
         .script-box {
@@ -547,7 +428,6 @@
         .tab-content { display: none; }
         .tab-content.active { display: block; }
         .tab-btn { /* retained for JS compatibility; visual role is .scheme */ }
-        .tab-btn.sr { position: absolute; left: -9999px; }
 
         /* ── terminal log (pinned bottom) ─────────────────────────── */
         .terminal {
@@ -607,8 +487,7 @@
             .status-row { grid-template-columns: 90px minmax(0, 1fr); }
         }
 
-
-        /* Slice 3 attestation badge — persistent per-server status panel
+        /* Attestation badge — persistent per-server status panel
            shown under each server URL input. Populated by the
            onAttestation callback via renderAttestBadge(). */
         .attest-badge {
@@ -761,12 +640,10 @@
         .verification-dialog-close:hover { color: var(--ink); background: var(--sunken); }
         .verification-dialog-body { padding: 18px; overflow-y: auto; max-height: calc(100vh - 96px); }
 
-    </style>    </style>
-    <!-- OnionPIR WASM (post-port ES module) loaded dynamically via
+    </style>
+    <!-- OnionPIR WASM (ES module) is loaded dynamically via
          `await import('/wasm/onionpir_client.mjs')` in
-         web/src/onionpir_client.ts. The pre-port script-tag UMD
-         loader was removed in commit 7 of the onionpir-port branch. -->
-    <!-- HarmonyPIR WASM loaded dynamically in loadWasm() based on PRP selection -->
+         web/src/onionpir_client.ts. -->
 </head>
 <body>
 
@@ -874,7 +751,6 @@
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -949,10 +825,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row connection-controls" aria-hidden="true">
-                                <button id="connectBtn" class="btn">Connect</button>
-                                <button id="disconnectBtn" class="btn ghost" disabled>Disconnect</button>
-                            </div>
                             <div id="syncPlanBox" style="display: none;">
                                 <div id="syncPlanText" class="mono"></div>
                                 <div class="actions">
@@ -1047,7 +919,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="resultsContainer" class="results-container" data-query-batch-state="idle"></div>
+                    <div id="resultsContainer" class="results-container"></div>
                 </div>
             </section>
           </div>
@@ -1060,7 +932,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="op-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1135,10 +1006,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row connection-controls" aria-hidden="true">
-                                <button id="op-connectBtn" class="btn">Connect</button>
-                                <button id="op-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
-                            </div>
                             <div id="op-syncPlanBox" style="display: none;">
                                 <div id="op-syncPlanText" class="mono"></div>
                                 <div class="actions">
@@ -1218,7 +1085,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="op-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
+                    <div id="op-resultsContainer" class="results-container"></div>
                 </div>
             </section>
           </div>
@@ -1231,7 +1098,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="hp-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1306,10 +1172,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row connection-controls" aria-hidden="true">
-                                <button id="hp-connectBtn" class="btn">Connect</button>
-                                <button id="hp-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
-                            </div>
                             <div id="hp-syncPlanBox" style="display: none;">
                                 <div id="hp-syncPlanText" class="mono"></div>
                                 <div class="actions">
@@ -1391,7 +1253,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                             <option value="0" selected>HMR12 (default)</option>
                                             <option value="1">FastPRP</option>
                                         </select>
-                                        <span id="hp-prpNote" style="font-size: 11px; font-family: var(--mono); color: var(--ink-mute);"></span>
                                     </div>
                                 </div>
 
@@ -1426,7 +1287,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="hp-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
+                    <div id="hp-resultsContainer" class="results-container"></div>
                 </div>
             </section>
           </div>
@@ -1439,7 +1300,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 <section class="card">
                     <div class="card-head">
                         <div class="card-title"><span class="num">02</span><span>Query composer</span></div>
-                        <div id="oram-status" class="status disconnected" data-transport-state="disconnected" hidden>Disconnected</div>
                     </div>
                     <div class="card-body">
                         <div class="step">
@@ -1473,10 +1333,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 </div>
                             </details>
 
-                            <div class="action-row connection-controls" aria-hidden="true">
-                                <button id="oram-connectBtn" class="btn">Connect</button>
-                                <button id="oram-disconnectBtn" class="btn ghost" disabled>Disconnect</button>
-                            </div>
                             <div style="margin-top: 10px;">
                                 <button id="oram-queryBtn" class="btn accent" style="width: 100%;">Query UTXOs</button>
                             </div>
@@ -1544,7 +1400,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     <div class="card-title"><span class="num">03</span><span>Results</span></div>
                 </div>
                 <div class="card-body">
-                    <div id="oram-resultsContainer" class="results-container" data-query-batch-state="idle"></div>
+                    <div id="oram-resultsContainer" class="results-container"></div>
                 </div>
             </section>
           </div>
@@ -1997,15 +1853,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (state.attestation === false || state.operator === false) {
                 el.textContent = 'NO';
                 el.className = 'verification-result no';
-                el.dataset.verificationState = 'unverified';
             } else if (state.attestation === true && state.operator === true) {
                 el.textContent = 'YES';
                 el.className = 'verification-result yes';
-                el.dataset.verificationState = 'verified';
             } else {
                 el.textContent = 'Not checked';
                 el.className = 'verification-result pending';
-                el.dataset.verificationState = 'pending';
             }
         }
 
@@ -2062,24 +1915,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             activeVerificationDetails = null;
         });
 
-        function setButtons(connected) {
-            document.getElementById('connectBtn').disabled = connected;
-            document.getElementById('disconnectBtn').disabled = !connected;
-        }
-
-        function publishTransportDisconnected(statusId) {
-            const statusDiv = document.getElementById(statusId);
-            if (!statusDiv) return;
-            statusDiv.textContent = 'Status: Disconnected';
-            statusDiv.className = 'status disconnected';
-            statusDiv.dataset.transportState = 'disconnected';
-        }
-
-        // Slice 3: persistent attestation badge per server. Called from
+        // Persistent attestation badge per server. Called from
         // the onAttestation callback once the per-server attest call
         // resolves. Hides until the first call (display:none → block),
         // then mutates content + state class on every subsequent call.
-        function renderAttestBadge(idElem, serverTag, info) {
+        function renderAttestBadge(idElem, info) {
             const el = typeof idElem === 'string' ? document.getElementById(idElem) : idElem;
             if (!el) return;
             const truncate = (hex, n = 16) =>
@@ -2138,7 +1978,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         // 'verified' (green) or 'unverified' (red). 'unconfigured' (server
         // opted out), 'error' (transient/no attestation) and 'not-checked'
         // stay hidden — they are not security-relevant to surface.
-        function renderOperatorBadge(idElem, serverTag, oid) {
+        function renderOperatorBadge(idElem, oid) {
             const el = typeof idElem === 'string' ? document.getElementById(idElem) : idElem;
             if (!el) return;
             if (oid.state !== 'verified' && oid.state !== 'unverified') {
@@ -2214,7 +2054,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     : `DB proof unavailable — ${anchor}`;
 
             el.className = `attest-badge attest-badge-db-${info.state}`;
-            el.dataset.verificationState = info.state;
             el.style.display = 'block';
 
             const rows = [];
@@ -2519,7 +2358,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         /**
          * Render a single query result into the results container.
          */
-        function renderResult(container, spkHex, hashHex, result) {
+        function renderResult(container, spkHex, result) {
             const section = document.createElement('div');
             section.className = 'container';
             section.style.marginTop = '15px';
@@ -2653,7 +2492,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         /**
          * Render a delta query result (spent + new UTXOs).
          */
-        function renderDeltaResult(container, spkHex, hashHex, result) {
+        function renderDeltaResult(container, spkHex, result) {
             const section = document.createElement('div');
             section.className = 'container';
             section.style.marginTop = '15px';
@@ -2969,9 +2808,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     } else if (info.state === 'mismatch' && info.vcekChainError) {
                         log(`✗ ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
                     }
-                    // Slice 3: persistent badge under the server URL input
+                    // Persistent badge under the server URL input
                     // surfacing binary sha + MEASUREMENT + channel pk + git rev.
-                    renderAttestBadge(`attestBadge${idx}`, tag, info);
+                    renderAttestBadge(`attestBadge${idx}`, info);
                 },
                 onOperatorIdentity: (idx, info) => {
                     const tag = `server${idx}`;
@@ -2981,20 +2820,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     } else if (info.state === 'unverified') {
                         log(`⚠ ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
                     }
-                    renderOperatorBadge(`operatorBadge${idx}`, tag, info);
+                    renderOperatorBadge(`operatorBadge${idx}`, info);
                 },
                 onConnectionStateChange: (state, message) => {
                     log(`Connection: ${state}${message ? ' - ' + message : ''}`,
                         state === 'connected' ? 'success' :
                         state === 'disconnected' ? 'error' : 'info');
-
-                    const statusDiv = document.getElementById('status');
-                    statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
-                    statusDiv.className = `status ${state}`;
-                    statusDiv.dataset.transportState = state;
-
-                    if (state === 'connected') setButtons(true);
-                    else if (state === 'disconnected') setButtons(false);
                 },
                 onLog: (msg, level) => log(msg, level),
             });
@@ -3071,25 +2902,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } else {
                 row.style.display = 'none';
             }
-        }
-
-        function disconnect(preserveResults = false) {
-            if (client) {
-                client.disconnect();
-                client = null;
-                log('Disconnected', 'info');
-                setButtons(false);
-            }
-            publishTransportDisconnected('status');
-            // Keep the SyncController cache alive across disconnect/reconnect:
-            // the controller's page-refresh safety rule (computePlan) will
-            // force a fresh full sync anyway if the cache ends up stale.
-            if (!preserveResults) {
-                document.getElementById('resultsContainer').innerHTML = '';
-            }
-            document.getElementById('advancedDbDetails').style.display = 'none';
-            document.getElementById('syncStateRow').style.display = 'none';
-            document.getElementById('syncPlanBox').style.display = 'none';
         }
 
         async function queryUtxos() {
@@ -3174,7 +2986,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         setProgress(pct, `${step}: ${detail}`);
                     }, dbId);
 
-                // Native code rejects the whole batch if any Merkle proof fails.
                 let found = 0;
 
                 if (isDelta) {
@@ -3187,13 +2998,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const result = results[qi];
                     if (isDelta ? hasDeltaChanges(result) : hasUtxos(result)) found++;
 
                     const section = isDelta
-                        ? renderDeltaResult(resultsContainer, spkHex, hashHex, result)
-                        : renderResult(resultsContainer, spkHex, hashHex, result);
+                        ? renderDeltaResult(resultsContainer, spkHex, result)
+                        : renderResult(resultsContainer, spkHex, result);
                     setResultMerkleState(section, !result || result.merkleVerified ? 'verified' : 'failed');
                 }
 
@@ -3374,10 +3184,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const r = merged[qi];
                     if (r && !r.isWhale && r.entries.length > 0) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, r);
+                    renderResult(resultsContainer, spkHex, r);
 
                     // Append a "delta activity" card for each delta step that
                     // touched this address, showing spent UTXOs with their
@@ -3517,18 +3326,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         wireDeltaExampleButtons('hp-', 'hp-scriptPubkeys');
 
         // ─── Main buttons (DPF) ────────────────────────────────────────
-        document.getElementById('connectBtn').addEventListener('click', () => {
-            ensureDpfConnection().catch(error => log(`DPF connect: ${error.message}`, 'error'));
-        });
-        document.getElementById('disconnectBtn').addEventListener('click', () => disconnect());
         document.getElementById('queryBtn').addEventListener('click', runDpfQuery);
         document.getElementById('syncBtn').addEventListener('click', planSync);
         document.getElementById('syncConfirmBtn').addEventListener('click', executeSync);
         document.getElementById('syncCancelBtn').addEventListener('click', cancelSync);
         document.getElementById('resetSyncBtn').addEventListener('click', resetSyncState);
-
-        setButtons(false);
-        // Initialize sync UI in disconnected state.
 
         // ═══════════════════════════════════════════════════════════════
         // Tab switching
@@ -3558,15 +3360,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (state === 'yes') {
                 el.textContent = 'YES';
                 el.className = 'verification-result yes';
-                el.dataset.verificationState = 'verified';
             } else if (state === 'no') {
                 el.textContent = 'NO';
                 el.className = 'verification-result no';
-                el.dataset.verificationState = 'unverified';
             } else {
                 el.textContent = state === 'checking' ? 'Checking' : 'Not checked';
                 el.className = 'verification-result pending';
-                el.dataset.verificationState = 'pending';
             }
             el.title = title;
         }
@@ -3597,11 +3396,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // Pending OnionPIR sync plan staged for confirmation.
         let opPendingSync = null;
-
-        function opSetButtons(connected) {
-            document.getElementById('op-connectBtn').disabled = connected;
-            document.getElementById('op-disconnectBtn').disabled = !connected;
-        }
 
         function opRefreshSyncStateUI() {
             const row = document.getElementById('op-syncStateRow');
@@ -3711,12 +3505,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     onConnectionStateChange: (state, message) => {
                         log(`OnionPIR: ${state}${message ? ' - ' + message : ''}`,
                             state === 'connected' ? 'success' : state === 'disconnected' ? 'error' : 'info');
-                        const statusDiv = document.getElementById('op-status');
-                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
-                        statusDiv.className = `status ${state}`;
-                        statusDiv.dataset.transportState = state;
-                        if (state === 'connected') opSetButtons(true);
-                        else if (state === 'disconnected') opSetButtons(false);
                     },
                     onDatabaseProof: (dbId, info) => {
                         opDatabaseProofs.set(dbId, info);
@@ -3740,19 +3528,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 opSetDataIntegrity('no', error.message);
                 throw error;
             }
-        }
-
-        function opDisconnect(preserveResults = false) {
-            if (opClient) { opClient.disconnect(); opClient = null; }
-            if (!preserveResults) {
-                document.getElementById('op-resultsContainer').innerHTML = '';
-            }
-            document.getElementById('op-advancedDbDetails').style.display = 'none';
-            document.getElementById('op-syncStateRow').style.display = 'none';
-            document.getElementById('op-syncPlanBox').style.display = 'none';
-            opPendingSync = null;
-            opSetButtons(false);
-            publishTransportDisconnected('op-status');
         }
 
         // ─── OnionPIR sync flow (mirrors DPF) ─────────────────────────────
@@ -3896,10 +3671,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const r = merged[qi];
                     if (r && !r.isWhale && r.entries.length > 0) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, r);
+                    renderResult(resultsContainer, spkHex, r);
 
                     for (let si = 0; si < verifiableSteps.length; si++) {
                         const vs = verifiableSteps[si];
@@ -4002,10 +3776,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const result = results[qi];
                     if (result && !result.isWhale && result.entries.length > 0) found++;
-                    const section = renderResult(resultsContainer, spkHex, hashHex, result);
+                    const section = renderResult(resultsContainer, spkHex, result);
                     setResultMerkleState(section, !result || result.merkleVerified ? 'verified' : 'failed');
                 }
 
@@ -4068,10 +3841,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
 
         // OnionPIR buttons
-        document.getElementById('op-connectBtn').addEventListener('click', () => {
-            ensureOnionConnection().catch(error => log(`OnionPIR connect: ${error.message}`, 'error'));
-        });
-        document.getElementById('op-disconnectBtn').addEventListener('click', () => opDisconnect());
         document.getElementById('op-queryBtn').addEventListener('click', runOnionQuery);
         document.getElementById('op-syncBtn').addEventListener('click', opPlanSync);
         document.getElementById('op-syncConfirmBtn').addEventListener('click', opExecuteSync);
@@ -4082,8 +3851,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             if (!opClient) return;
             opSwitchDb(newDbId);
         });
-        opSetButtons(false);
-        // Initialize sync button in disabled state.
 
         // ═══════════════════════════════════════════════════════════════
         // HarmonyPIR tab logic
@@ -4167,11 +3934,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             log(`HarmonyPIR: db_id=${newDbId} selected; previous hint binding invalidated.`, 'info');
         }
 
-        function hpSetButtons(connected) {
-            document.getElementById('hp-connectBtn').disabled = connected;
-            document.getElementById('hp-disconnectBtn').disabled = !connected;
-        }
-
         function hpSetProgress(percent, label) {
             const container = document.getElementById('hp-progressContainer');
             const fill = document.getElementById('hp-progressFill');
@@ -4246,11 +4008,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 mismatches: [],
                 error: 'waiting for latest delta trust-chain proof',
             });
-            const statusDiv = document.getElementById('hp-status');
-            statusDiv.textContent = 'Status: Connecting...';
-            statusDiv.className = 'status connecting';
-            statusDiv.dataset.transportState = 'connecting';
-            document.getElementById('hp-connectBtn').disabled = true;
             log('HarmonyPIR: connecting to the hint and query servers...');
             const candidate = new HarmonyPirClientAdapter({
                 creditProvider: currentCreditProvider,
@@ -4288,9 +4045,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                     } else if (info.state === 'mismatch' && info.vcekChainError) {
                         log(`✗ HarmonyPIR ${tag}: chain validation failed: ${info.vcekChainError}`, 'error');
                     }
-                    // Slice 3: persistent badge under each server URL.
+                    // Persistent badge under each server URL.
                     const badgeId = idx === 0 ? 'hp-attestBadgeHint' : 'hp-attestBadgeQuery';
-                    renderAttestBadge(badgeId, `HarmonyPIR ${tag}`, info);
+                    renderAttestBadge(badgeId, info);
                 },
                 onOperatorIdentity: (idx, info) => {
                     const tag = idx === 0 ? 'hint' : 'query';
@@ -4302,7 +4059,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         log(`⚠ HarmonyPIR ${tag}: operator identity UNVERIFIED — ${info.error}`, 'error');
                     }
                     const badgeId = idx === 0 ? 'hp-operatorBadgeHint' : 'hp-operatorBadgeQuery';
-                    renderOperatorBadge(badgeId, `HarmonyPIR ${tag}`, info);
+                    renderOperatorBadge(badgeId, info);
                 },
                 onProgress: (msg) => {
                     log(`HarmonyPIR: ${msg}`);
@@ -4339,17 +4096,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 await candidate.connect();
             } catch (error) {
                 log(`HarmonyPIR connection failed: ${error.message}`, 'error');
-                statusDiv.textContent = 'Status: Disconnected';
-                statusDiv.className = 'status disconnected';
-                statusDiv.dataset.transportState = 'disconnected';
-                hpSetButtons(false);
                 throw error;
             }
             hpClient = candidate;
-            statusDiv.textContent = 'Status: Connected';
-            statusDiv.className = 'status connected';
-            statusDiv.dataset.transportState = 'connected';
-            hpSetButtons(true);
             hpPopulateDbSelector();
             hpRefreshSyncStateUI();
         }
@@ -4365,12 +4114,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             document.getElementById('hp-syncStateRow').style.display = 'none';
             document.getElementById('hp-syncPlanBox').style.display = 'none';
             hpPendingSync = null;
-            const statusDiv = document.getElementById('hp-status');
-            statusDiv.textContent = 'Status: Disconnected';
-            statusDiv.className = 'status disconnected';
-            statusDiv.dataset.transportState = 'disconnected';
-            hpSetButtons(false);
-            document.getElementById('hp-connectBtn').disabled = false;
             hpHideProgress();
         }
 
@@ -4512,11 +4255,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const hResult = merged[qi];
                     const r = harmonyResultToRenderFormat(hResult);
                     if (r && r.entries.length > 0) found++;
-                    renderResult(resultsContainer, spkHex, hashHex, r);
+                    renderResult(resultsContainer, spkHex, r);
 
                     for (let si = 0; si < verifiableSteps.length; si++) {
                         const vs = verifiableSteps[si];
@@ -4620,11 +4362,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 let found = 0;
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const hResult = results.get(qi) ?? null;
                     const result = harmonyResultToRenderFormat(hResult);
                     if (result && result.entries.length > 0) found++;
-                    const section = renderResult(resultsContainer, spkHex, hashHex, result);
+                    const section = renderResult(resultsContainer, spkHex, result);
                     setResultMerkleState(section, !hResult || hResult.merkleVerified ? 'verified' : 'failed');
                 }
 
@@ -4696,10 +4437,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
 
         // HarmonyPIR buttons
-        document.getElementById('hp-connectBtn').addEventListener('click', () => {
-            ensureHarmonyConnection().catch(error => log(`HarmonyPIR connect: ${error.message}`, 'error'));
-        });
-        document.getElementById('hp-disconnectBtn').addEventListener('click', () => hpDisconnect());
         document.getElementById('hp-queryBtn').addEventListener('click', runHarmonyQuery);
         document.getElementById('hp-syncBtn').addEventListener('click', hpPlanSync);
         document.getElementById('hp-syncConfirmBtn').addEventListener('click', hpExecuteSync);
@@ -4726,19 +4463,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 }
             }
         });
-        hpSetButtons(false);
-        // Initialize HarmonyPIR sync button in disabled state.
 
         // ═══════════════════════════════════════════════════════════════
         // ORAM TEE tab logic
         // ═══════════════════════════════════════════════════════════════
 
         let oramClient = null;
-
-        function oramSetButtons(connected) {
-            document.getElementById('oram-connectBtn').disabled = connected;
-            document.getElementById('oram-disconnectBtn').disabled = !connected;
-        }
 
         function oramSetProgress(percent, label) {
             const container = document.getElementById('oram-progressContainer');
@@ -4811,11 +4541,6 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             });
             try {
                 log('ORAM: Connecting to attested server...', 'info');
-                const statusDiv = document.getElementById('oram-status');
-                statusDiv.textContent = 'Status: Connecting';
-                statusDiv.className = 'status connecting';
-                statusDiv.dataset.transportState = 'connecting';
-                document.getElementById('oram-connectBtn').disabled = true;
 
                 oramClient = new OramPirClientAdapter({
                     creditProvider: currentCreditProvider,
@@ -4854,7 +4579,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         } else if (info.state === 'mismatch') {
                             log(`✗ ORAM: attestation mismatch${info.vcekChainError ? ': ' + info.vcekChainError : ''}`, 'error');
                         }
-                        renderAttestBadge('oram-attestBadge', 'ORAM', info);
+                        renderAttestBadge('oram-attestBadge', info);
                     },
                     onOperatorIdentity: (info) => {
                         setBasicVerificationCheck('oram', 'operator', info.state === 'verified');
@@ -4863,17 +4588,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         } else if (info.state === 'unverified') {
                             log(`⚠ ORAM: operator identity UNVERIFIED — ${info.error}`, 'error');
                         }
-                        renderOperatorBadge('oram-operatorBadge', 'ORAM', info);
+                        renderOperatorBadge('oram-operatorBadge', info);
                     },
                     onConnectionStateChange: (state, message) => {
                         log(`ORAM connection: ${state}${message ? ' - ' + message : ''}`,
                             state === 'connected' ? 'success' :
                             state === 'disconnected' ? 'error' : 'info');
-                        statusDiv.textContent = `Status: ${state.charAt(0).toUpperCase() + state.slice(1)}${message ? ' - ' + message : ''}`;
-                        statusDiv.className = `status ${state}`;
-                        statusDiv.dataset.transportState = state;
-                        if (state === 'connected') oramSetButtons(true);
-                        else if (state === 'disconnected') oramSetButtons(false);
                     },
                     onLog: (msg, level) => log(msg, level),
                 });
@@ -4884,29 +4604,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } catch (error) {
                 log(`ORAM connection failed: ${error.message}`, 'error');
                 oramClient = null;
-                const statusDiv = document.getElementById('oram-status');
-                statusDiv.textContent = 'Status: Disconnected';
-                statusDiv.className = 'status disconnected';
-                statusDiv.dataset.transportState = 'disconnected';
-                oramSetButtons(false);
                 throw error;
             }
-        }
-
-        function oramDisconnect(preserveResults = false) {
-            if (oramClient) {
-                oramClient.disconnect();
-                oramClient = null;
-                log('ORAM: Disconnected', 'info');
-            }
-            if (!preserveResults) {
-                document.getElementById('oram-resultsContainer').innerHTML = '';
-            }
-            const select = document.getElementById('oram-dbSelect');
-            document.getElementById('oram-advancedDbDetails').style.display =
-                select.options.length > 1 ? 'block' : 'none';
-            oramSetButtons(false);
-            publishTransportDisconnected('oram-status');
         }
 
         async function oramQueryUtxos() {
@@ -4973,13 +4672,12 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
                 for (let qi = 0; qi < N; qi++) {
                     const spkHex = lines[qi];
-                    const hashHex = bytesToHex(scriptHashes[qi]);
                     const result = results[qi];
                     if (isDelta ? hasDeltaChanges(result) : hasUtxos(result)) found++;
                     if (isDelta) {
-                        renderDeltaResult(resultsContainer, spkHex, hashHex, result);
+                        renderDeltaResult(resultsContainer, spkHex, result);
                     } else {
-                        renderResult(resultsContainer, spkHex, hashHex, result);
+                        renderResult(resultsContainer, spkHex, result);
                     }
                 }
 
@@ -5034,16 +4732,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         document.getElementById('oram-pickRandom3Btn').addEventListener('click', () => {
             document.getElementById('oram-scriptPubkeys').value = pickRandom(EXAMPLE_SPKS, 3).join('\n');
         });
-        document.getElementById('oram-connectBtn').addEventListener('click', () => {
-            ensureOramConnection().catch(error => log(`ORAM connect: ${error.message}`, 'error'));
-        });
-        document.getElementById('oram-disconnectBtn').addEventListener('click', () => oramDisconnect());
         document.getElementById('oram-queryBtn').addEventListener('click', runOramQuery);
         document.getElementById('oram-dbSelect').addEventListener('change', () => {
             oramRefreshDbInfo();
             oramRenderSourceProof();
         });
-        oramSetButtons(false);
         oramRenderSourceProof();
 
         // Last step of the module: every control now has its listeners.

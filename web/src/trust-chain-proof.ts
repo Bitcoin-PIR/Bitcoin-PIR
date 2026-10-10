@@ -1,4 +1,4 @@
-import { getAmdTurinArkFingerprint } from './attest-pin.js';
+import { AMD_TURIN_ARK_FINGERPRINT } from './attest-pin.js';
 import {
   BHTM_REPORT_DATA_DOMAIN_V2,
   computeBhtmReportData,
@@ -296,7 +296,7 @@ function verifyStaticSnpReportSignature(
     decodeUtf8(requiredArtifact(artifacts, 'arkPem')),
     decodeUtf8(requiredArtifact(artifacts, 'askPem')),
     decodeUtf8(requiredArtifact(artifacts, 'vcekPem')),
-    getAmdTurinArkFingerprint(),
+    AMD_TURIN_ARK_FINGERPRINT,
     policy,
   );
 }

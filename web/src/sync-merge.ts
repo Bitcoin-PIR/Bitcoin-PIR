@@ -9,10 +9,10 @@
  *   2. Remove entries listed in `delta.spent` (match by txid+vout)
  *   3. Append entries from `delta.newUtxos`
  *
- * Both inputs are typed as `QueryResult` (from client.ts) since both come
- * from `BatchPirClient.queryBatch` / `queryDelta`. The delta's `rawChunkData`
- * is delta-encoded bytes (not standard UTXO data), so we decode it here with
- * `decodeDeltaData` from codec.ts.
+ * Both inputs are `QueryResult`s from a client's `queryBatch` /
+ * `queryDelta`. The delta's `rawChunkData` is delta-encoded bytes (not
+ * standard UTXO data), so we decode it here with `decodeDeltaData` from
+ * codec.ts.
  */
 
 import type { QueryResult, UtxoEntry } from './types.js';
@@ -101,30 +101,6 @@ export function applyDeltaData(
   };
 }
 
-// ─── Batch merge (one delta over many snapshots, parallel arrays) ────────────
-
-/**
- * Merge a batch of delta results into a batch of snapshot results, in the
- * same order. Both arrays must have the same length and the same per-index
- * scripthash. Each pair is processed independently with `mergeDeltaIntoSnapshot`.
- */
-export function mergeDeltaBatch(
-  snapshots: (QueryResult | null)[],
-  deltas: (QueryResult | null)[],
-  onError?: (msg: string) => void,
-): (QueryResult | null)[] {
-  if (snapshots.length !== deltas.length) {
-    throw new Error(
-      `mergeDeltaBatch: length mismatch: snapshots=${snapshots.length}, deltas=${deltas.length}`,
-    );
-  }
-  const out: (QueryResult | null)[] = new Array(snapshots.length);
-  for (let i = 0; i < snapshots.length; i++) {
-    out[i] = mergeDeltaIntoSnapshot(snapshots[i], deltas[i], onError);
-  }
-  return out;
-}
-
 // ─── HarmonyPIR merge (different UTXO shape) ─────────────────────────────────
 
 /**
@@ -189,28 +165,6 @@ export function mergeDeltaIntoHarmonySnapshot(
   }
 
   return { ...snapshot, utxos: remaining };
-}
-
-/**
- * Batch variant of `mergeDeltaIntoHarmonySnapshot` — mirrors `mergeDeltaBatch`
- * for DPF/OnionPIR. Merges parallel arrays of Harmony snapshots and Harmony
- * delta results pairwise.
- */
-export function mergeDeltaHarmonyBatch(
-  snapshots: (HarmonyQueryResult | null)[],
-  deltas: (HarmonyQueryResult | null)[],
-  onError?: (msg: string) => void,
-): (HarmonyQueryResult | null)[] {
-  if (snapshots.length !== deltas.length) {
-    throw new Error(
-      `mergeDeltaHarmonyBatch: length mismatch: snapshots=${snapshots.length}, deltas=${deltas.length}`,
-    );
-  }
-  const out: (HarmonyQueryResult | null)[] = new Array(snapshots.length);
-  for (let i = 0; i < snapshots.length; i++) {
-    out[i] = mergeDeltaIntoHarmonySnapshot(snapshots[i], deltas[i], onError);
-  }
-  return out;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

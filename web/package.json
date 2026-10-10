@@ -3,9 +3,8 @@
   "version": "1.0.0",
   "description": "Web client for Bitcoin Batch PIR system (two-level)",
   "type": "module",
-  "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc --noEmit",
     "dev": "vite",
     "build-web": "vite build && node scripts/verify-csp.mjs",
     "test": "vitest run"
@@ -23,14 +22,12 @@
     "@cashu/cashu-ts": "4.10.2",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "buffer": "^6.0.3",
     "hash.js": "^1.1.7",
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
-    "fake-indexeddb": "^6.2.5",
     "typescript": "^5.0.0",
     "vite": "^8.3.0",
     "vite-plugin-wasm": "^3.6.0",

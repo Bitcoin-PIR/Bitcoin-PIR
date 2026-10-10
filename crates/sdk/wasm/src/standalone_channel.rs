@@ -127,11 +127,6 @@ impl WasmStandaloneSecureChannelV1 {
         Ok(())
     }
 
-    #[wasm_bindgen(getter, js_name = established)]
-    pub fn established(&self) -> bool {
-        self.session.is_some()
-    }
-
     /// Seal one complete length-prefixed BitcoinPIR frame.
     #[wasm_bindgen(js_name = sealFrame)]
     pub fn seal_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>, JsError> {
