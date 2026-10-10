@@ -389,9 +389,9 @@ mod dpf_eval_guard_tests {
     }
 
     /// Keys with mismatched DPF domains produce eval vectors of
-    /// different lengths: n=8 yields 2 blocks for 256 bins, n=7 yields
-    /// 1. The old `evals[0].len()` block count indexed past the short
-    /// key's vector.
+    /// different lengths: n=8 yields 2 blocks for 256 bins, n=7 yields 1.
+    /// The old `evals[0].len()` block count indexed past the short key's
+    /// vector.
     #[test]
     fn ragged_key_domains_do_not_panic() {
         let dpf = Dpf::with_default_key();

@@ -49,17 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - Removed the public DPF/Harmony raw-inspector and membership-only split
-  verifier surface. External callers now use
-  `query_batch_verified_with_inspector`, which binds the exact script-hash
-  inputs and decoded CHUNK payloads before returning an all-or-nothing Merkle
-  verdict. The lower-level split helpers remain crate-private for unit tests
-  and internal composition only.
-- `query_batch_verified_with_inspector` now returns
-  `Vec<VerifiedQueryResult>` instead of mutable
-  `Vec<Option<QueryResult>>`. The opaque result cannot be publicly
-  constructed, mutated, or deserialized; it retains the exact script hash and
-  database id and exposes read-only accessors. Converting it to a legacy
-  mutable `QueryResult` explicitly drops verification authority.
+  verifier surface; the inspector path is `query_batch_with_inspector` (see
+  Changed).
 
 ### Fixed
 

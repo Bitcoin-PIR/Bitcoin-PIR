@@ -394,7 +394,7 @@ pub(crate) fn decode_batch_response_frame(
 }
 
 pub(crate) fn bytes_to_u32_vec(data: &[u8]) -> PirResult<Vec<u32>> {
-    if !data.len().is_multiple_of(4) {
+    if data.len() % 4 != 0 {
         return Err(PirError::Encode(format!(
             "request index bytes not a multiple of 4 (got {})",
             data.len()

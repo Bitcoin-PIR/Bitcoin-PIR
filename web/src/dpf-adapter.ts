@@ -5,8 +5,8 @@
  * UI and `sync-merge.ts` use.
  *
  * The PIR work, the padding invariants and per-query Merkle verification all
- * live in native code: `queryBatchVerified` rejects the whole batch if any
- * proof fails.
+ * live in native code: `queryBatchVerified` verifies each result and
+ * reports its verdict in `merkleVerified`.
  */
 
 import { hexToBytes } from './hash.js';

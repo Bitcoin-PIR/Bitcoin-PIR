@@ -120,7 +120,7 @@ mod harmony_dos_guard_tests {
         for g in 0..params.k {
             for bin in 0..bins_per_table {
                 let marker = (g as u8) ^ (bin as u8);
-                bytes.extend(std::iter::repeat(marker).take(bin_size));
+                bytes.extend(std::iter::repeat_n(marker, bin_size));
             }
         }
         std::fs::File::create(path)

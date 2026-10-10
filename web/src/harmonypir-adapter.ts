@@ -5,8 +5,8 @@
  * IndexedDB cache), and translates results into `HarmonyQueryResult`.
  *
  * The PIR work, the padding invariants and per-query Merkle verification all
- * live in native code: `queryBatchVerified` rejects the whole batch if any
- * proof fails.
+ * live in native code: `queryBatchVerified` verifies each result and
+ * reports its verdict in `merkleVerified`.
  *
  * Hint caching: the native client keys its hints with a 16-byte master PRP
  * key. `saveHintsToCache` stores that key next to the hint blob and

@@ -152,7 +152,7 @@ fn estimate_hint_size_bytes_matches_save_hints_length() {
     populate_main_groups(&mut client, &info);
     let bytes = client.save_hints_bytes().unwrap().expect("bytes");
     assert_eq!(client.estimate_hint_size_bytes(), bytes.len());
-    assert!(bytes.len() > 0);
+    assert!(!bytes.is_empty());
 }
 
 /// `cache_fingerprint` is a pure function of `(master_key,

@@ -694,7 +694,7 @@ mod tests {
             raw_chunk_data: vec![1, 2, 3],
         };
         let mut mock = MockTransport::new("mock://oram");
-        mock.enqueue_response(encode_test_response(3, &[item.clone()]));
+        mock.enqueue_response(encode_test_response(3, std::slice::from_ref(&item)));
 
         let mut client = OramClient::new("mock://oram");
         client.connect_with_transport(Box::new(mock));
@@ -721,7 +721,7 @@ mod tests {
         };
         let mut mock = MockTransport::new("mock://oram");
         mock.enqueue_response(append_frame_padding(
-            encode_test_response(3, &[item.clone()]),
+            encode_test_response(3, std::slice::from_ref(&item)),
             17,
         ));
 

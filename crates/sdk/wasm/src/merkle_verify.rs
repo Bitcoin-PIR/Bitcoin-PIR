@@ -375,7 +375,7 @@ mod tests {
         while levels.last().unwrap().len() > 1 {
             let cur = levels.last().unwrap();
             let mut next: Vec<Hash256> = Vec::new();
-            let chunks = (cur.len() + 7) / 8;
+            let chunks = cur.len().div_ceil(8);
             for c in 0..chunks {
                 let mut children: Vec<Hash256> = Vec::with_capacity(8);
                 for k in 0..8 {
