@@ -7,35 +7,15 @@ use std::sync::{
 };
 
 #[tokio::test]
-async fn empty_sync_requires_verified_roots_and_preflight_before_skipping_query_work() {
+async fn empty_sync_sends_no_query_frames() {
     let db = session_db_info();
     let mut client = HarmonyClient::new("mock://hint", "mock://query");
     client.connect_with_transport(
         Box::new(MockTransport::new("mock://hint")),
         Box::new(MockTransport::new("mock://query")),
     );
-    client.catalog = Some(DatabaseCatalog {
-        databases: vec![db.clone()],
-    });
-    client.set_root_policy(RootPolicy::RequireVerified);
-
-    let error = client.sync(&[], None).await.unwrap_err();
-    assert!(matches!(error, PirError::VerificationFailed(_)));
-
-    client
-        .install_verified_database_roots(session_roots(&db))
-        .unwrap();
-    let preflight_error = client.sync(&[], None).await.unwrap_err();
-    assert!(
-        preflight_error
-            .to_string()
-            .contains("mock: no enqueued response"),
-        "installed roots must not let empty sync bypass tree-top preflight: {preflight_error}"
-    );
-
-    // Verified roots/tree-tops satisfy strict preflight. With no hint
-    // state or queued responses, success proves execute_step skips hint
-    // acquisition, Payment-V1 planning, and query traffic for empty input.
+    // With roots and tree-tops in place and no queued responses, success
+    // proves an empty batch fetches no hints and sends no query.
     seed_verified_session(&mut client);
     let sync = client.sync(&[], None).await.unwrap();
     let recorder = RecordingSyncProgress::default();
@@ -62,7 +42,7 @@ async fn empty_sync_requires_verified_roots_and_preflight_before_skipping_query_
 }
 
 #[tokio::test]
-async fn explicit_preflight_rejects_missing_root_even_in_advisory_mode() {
+async fn explicit_preflight_rejects_missing_root() {
     let mut client = HarmonyClient::new("wss://hint", "wss://query");
     let error = client.preflight_verified_database(0).await.unwrap_err();
     assert!(matches!(error, PirError::VerificationFailed(message) if
@@ -655,59 +635,6 @@ async fn duplicate_connect_is_idempotent_for_verified_session() {
     assert_eq!(client.loaded_db_id, Some(db_id));
     assert!(!client.index_groups.is_empty());
     assert!(!client.chunk_groups.is_empty());
-}
-
-#[tokio::test]
-async fn staged_hint_disconnect_preserves_bindings_until_last_leg() {
-    let mut client = HarmonyClient::new("wss://mock-hint", "wss://mock-query");
-    client.connect_with_transport(
-        Box::new(MockTransport::new("wss://mock-hint")),
-        Box::new(MockTransport::new("wss://mock-query")),
-    );
-    let db_id = seed_verified_session(&mut client);
-
-    client.disconnect_provider(0).await.unwrap();
-
-    assert!(!client.is_provider_connected(0).unwrap());
-    assert!(client.is_provider_connected(1).unwrap());
-    assert!(client.catalog.is_some());
-    assert!(client.verified_database_roots(db_id).is_some());
-    assert!(client.verified_tree_tops.contains_key(&db_id));
-
-    client.disconnect_provider(1).await.unwrap();
-
-    assert!(client.catalog.is_none());
-    assert!(client.verified_database_roots(db_id).is_none());
-    assert!(!client.verified_tree_tops.contains_key(&db_id));
-}
-
-#[tokio::test]
-async fn staged_secure_upgrade_closes_only_the_same_role_secondary_transport() {
-    let mut hint_primary = MockTransport::new("wss://hint-primary");
-    hint_primary.enqueue_response(handshake_frame(0x51));
-    let query_primary = MockTransport::new("wss://query-primary");
-    let hint_closed = Arc::new(AtomicBool::new(false));
-    let query_closed = Arc::new(AtomicBool::new(false));
-    let mut client = HarmonyClient::new("wss://hint", "wss://query");
-    client.connect_with_transport(Box::new(hint_primary), Box::new(query_primary));
-    client.hint_conn_secondary = Some(Box::new(CloseTrackingTransport {
-        url: "wss://hint-secondary",
-        closed: hint_closed.clone(),
-    }));
-    client.query_conn_secondary = Some(Box::new(CloseTrackingTransport {
-        url: "wss://query-secondary",
-        closed: query_closed.clone(),
-    }));
-
-    client
-        .upgrade_provider_to_secure_channel_with_seed(0, [0x11; 32], [0x21; 32], [0x31; 32])
-        .await
-        .unwrap();
-
-    assert!(client.hint_conn_secondary.is_none());
-    assert!(hint_closed.load(Ordering::SeqCst));
-    assert!(client.query_conn_secondary.is_some());
-    assert!(!query_closed.load(Ordering::SeqCst));
 }
 
 #[tokio::test]

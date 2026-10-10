@@ -14,8 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator-issued API key over the encrypted channel, after which the server
   serves that connection unmetered (docs/CREDITS.md "API keys").
 
+### Changed
+
+- Verify and report: `RootPolicy` and `set_root_policy`/`root_policy` are gone.
+  Queries run whether or not proof roots are installed; with installed roots
+  the Merkle tree-tops are checked against them. `merkle_verified` is true
+  only when proofs were checked and passed (a database without Merkle data
+  now reports `false`), and `QueryResult` serializes it.
+- `query_batch_verified_with_inspector` is replaced by
+  `query_batch_with_inspector`: the ordinary verified query plus the probed
+  bins, returning `Vec<QueryResult>` with a per-result verdict.
+  `VerifiedQueryResult` is removed.
+- `HarmonyClient::fetch_complete_hints_with_progress` no longer requires
+  installed roots; `load_complete_hints_bytes` and
+  `has_complete_hints_for_verified_database` are replaced by
+  `load_hints_bytes` and `has_hints_for`.
+- `OnionClient` re-registers its keys and retries a batch once when the
+  server has evicted them, instead of failing.
+
 ### Removed
 
+- The staged per-server connect API: `DpfClient::{set_server_url,
+  connect_server, disconnect_server, is_server_connected,
+  fetch_catalog_from_server, verify_database_proof_from_server,
+  upgrade_server_to_secure_channel_with_seed}` and the HarmonyClient
+  `*_provider` equivalents. Use `connect` and `upgrade_to_secure_channel`.
 - Unused APIs: `announce::announce_bound`, `PirTransport::service_authorization_exporter_v1`,
   `db_proof::verify_database_proof_response` (v1), `OnionClient::verify_database_proof`
   (v1), and `OramClient::{root_policy, set_root_policy}`, whose policy nothing read.

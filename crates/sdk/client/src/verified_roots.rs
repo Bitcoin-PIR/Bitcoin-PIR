@@ -1,21 +1,12 @@
 use crate::db_proof::VerifiedDatabaseRoots;
-use pir_sdk::{DatabaseCatalog, DatabaseInfo, PirError, PirResult, SyncPlan};
+use pir_sdk::{DatabaseCatalog, DatabaseInfo, PirError, PirResult};
 use std::collections::HashMap;
 
-/// Controls whether database-proof roots are advisory or mandatory.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum RootPolicy {
-    /// Preserve the legacy behavior: queries may run without installed roots.
-    #[default]
-    Advisory,
-    /// Refuse every query whose database is not bound to a verified root.
-    RequireVerified,
-}
-
 /// Session-local roots installed explicitly by the caller after verification.
+/// Queries on a database with an installed root check its Merkle tree-tops
+/// against that root.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct VerifiedRootState {
-    policy: RootPolicy,
     roots: HashMap<u8, VerifiedDatabaseRoots>,
     bound_catalog: Option<Vec<CatalogIdentity>>,
 }
@@ -40,14 +31,6 @@ struct CatalogIdentity {
 }
 
 impl VerifiedRootState {
-    pub(crate) fn policy(&self) -> RootPolicy {
-        self.policy
-    }
-
-    pub(crate) fn set_policy(&mut self, policy: RootPolicy) {
-        self.policy = policy;
-    }
-
     pub(crate) fn get(&self, db_id: u8) -> Option<&VerifiedDatabaseRoots> {
         self.roots.get(&db_id)
     }
@@ -90,23 +73,6 @@ impl VerifiedRootState {
         if !self.roots.is_empty() {
             self.bound_catalog = Some(identity);
         }
-    }
-
-    pub(crate) fn require_db(&self, db_id: u8) -> PirResult<()> {
-        if self.policy == RootPolicy::RequireVerified && !self.roots.contains_key(&db_id) {
-            return Err(PirError::VerificationFailed(format!(
-                "strict root policy: db_id {} has no installed VerifiedDatabaseRoots",
-                db_id
-            )));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_plan(&self, plan: &SyncPlan) -> PirResult<()> {
-        for step in &plan.steps {
-            self.require_db(step.db_id)?;
-        }
-        Ok(())
     }
 }
 
@@ -199,8 +165,7 @@ mod tests {
     #[test]
     fn install_is_explicit_and_rotation_invalidates() {
         let mut state = VerifiedRootState::default();
-        state.set_policy(RootPolicy::RequireVerified);
-        assert!(state.require_db(7).is_err());
+        assert!(state.get(7).is_none());
         state
             .install(
                 &DatabaseCatalog {
@@ -209,11 +174,11 @@ mod tests {
                 roots(10),
             )
             .unwrap();
-        assert!(state.require_db(7).is_ok());
+        assert!(state.get(7).is_some());
         state.reconcile_catalog(&DatabaseCatalog {
             databases: vec![db(11)],
         });
-        assert!(state.require_db(7).is_err());
+        assert!(state.get(7).is_none());
     }
 
     #[test]
@@ -240,7 +205,6 @@ mod tests {
 
         for changed in variants {
             let mut state = VerifiedRootState::default();
-            state.set_policy(RootPolicy::RequireVerified);
             state
                 .install(
                     &DatabaseCatalog {
@@ -252,7 +216,7 @@ mod tests {
             state.reconcile_catalog(&DatabaseCatalog {
                 databases: vec![changed],
             });
-            assert!(state.require_db(7).is_err());
+            assert!(state.get(7).is_none());
         }
     }
 }

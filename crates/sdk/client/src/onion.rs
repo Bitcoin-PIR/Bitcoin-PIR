@@ -57,7 +57,7 @@ use crate::db_proof::{
 use crate::protocol::reject_error_response;
 use crate::protocol::{decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG};
 use crate::transport::PirTransport;
-use crate::verified_roots::{RootPolicy, VerifiedRootState};
+use crate::verified_roots::VerifiedRootState;
 use async_trait::async_trait;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, DatabaseCatalog,
@@ -394,10 +394,9 @@ struct FheState {
 /// relin keys once at connect time (the server caches them in a
 /// per-client `KeyStore`), and every subsequent query is a ciphertext
 /// the server can fold against the database without learning its contents.
-/// If the server's FIFO key store evicts this connection, the SDK fails the
-/// query with [`PirError::SessionEvicted`]. It deliberately does not register
-/// again or replay a paid query: V1 admission permits exactly one registration
-/// and treats a second registration as a terminal sequence violation.
+/// If the server's key store has evicted this connection's keys, the SDK
+/// registers them again and retries the batch once; a second eviction is
+/// reported as [`PirError::SessionEvicted`].
 ///
 /// # Feature gating
 ///
@@ -500,14 +499,6 @@ impl OnionClient {
             verified_roots: VerifiedRootState::default(),
             verified_tree_tops: std::collections::HashSet::new(),
         }
-    }
-
-    pub fn root_policy(&self) -> RootPolicy {
-        self.verified_roots.policy()
-    }
-
-    pub fn set_root_policy(&mut self, policy: RootPolicy) {
-        self.verified_roots.set_policy(policy);
     }
 
     /// Fetch and verify the v2 proof without falling back to v1.
@@ -685,7 +676,7 @@ impl OnionClient {
     #[cfg(feature = "onion")]
     async fn preflight_trusted_tree_tops(&mut self, db_id: u8) -> PirResult<()> {
         let Some(roots) = self.verified_roots.get(db_id).cloned() else {
-            return self.verified_roots.require_db(db_id);
+            return Ok(());
         };
         if self.verified_tree_tops.contains(&db_id) {
             return Ok(());
@@ -1335,7 +1326,7 @@ impl OnionClient {
         // `.expect()` is fine here because we just generated the secret key via
         // `Client::new(...).export_secret_key()` on the line below — it cannot
         // be malformed.
-        let mut keygen = onionpir::Client::from_secret_key(
+        let keygen = onionpir::Client::from_secret_key(
             num_entries as u64,
             client_id,
             &onionpir::Client::new(num_entries as u64).export_secret_key(),
@@ -1367,7 +1358,7 @@ impl OnionClient {
     }
 
     /// Register keys for a given database if we haven't already on this
-    /// connection. V1 admission permits this transition exactly once.
+    /// connection.
     #[cfg(feature = "onion")]
     async fn ensure_keys_registered(&mut self, db_info: &DatabaseInfo) -> PirResult<()> {
         let already = self
@@ -1427,12 +1418,11 @@ impl OnionClient {
     }
 
     /// Send one OnionPIR batch and parse its response. An all-empty batch is
-    /// the server's key-eviction signal. It fails closed immediately: replaying
-    /// would consume a second backend frame, and re-registration is forbidden
-    /// by the V1 register-once admission DFA.
-    ///
-    /// [`ErrorKind::SessionEvicted`]: pir_sdk::ErrorKind::SessionEvicted
-    /// [`ErrorKind::ServerError`]: pir_sdk::ErrorKind::ServerError
+    /// the server's key-eviction signal: register the keys again and retry
+    /// the same batch once. A second all-empty batch is a
+    /// [`PirError::SessionEvicted`] (usually FHE parameter drift or an
+    /// overloaded server), distinct from a generic server error so a caller
+    /// can reconnect on this cause specifically.
     ///
     /// This is the single chokepoint for INDEX and CHUNK. The Merkle path
     /// independently fails verification on an empty ciphertext result.
@@ -1458,11 +1448,32 @@ impl OnionClient {
                 db_id,
             )
             .await?;
+        if !batch_looks_evicted(&batch) {
+            return Ok(batch);
+        }
+        log::warn!(
+            "[PIR-AUDIT] OnionPIR: all-empty {} for db_id={} — assuming the \
+             server evicted our keys. Re-registering and retrying once.",
+            variant_name,
+            db_id,
+        );
+        self.register_keys(db_id).await?;
+        let batch = self
+            .onionpir_batch_rpc_once(
+                msg,
+                expected_variant,
+                expected_round_id,
+                variant_name,
+                round_kind,
+                items_per_group,
+                db_id,
+            )
+            .await?;
         if batch_looks_evicted(&batch) {
             return Err(PirError::SessionEvicted(format!(
                 "OnionPIR {} returned all-empty batch for db_id={} \
-                 — server keys were evicted or FHE parameters drifted; \
-                 V1 did not re-register or replay the query",
+                 even after re-registering keys — the server may be \
+                 overloaded, or FHE parameters may have drifted",
                 variant_name, db_id,
             )));
         }
@@ -1614,9 +1625,8 @@ impl OnionClient {
                 queries.push(index_client.generate_query(bin));
             }
 
-            // Send and receive exactly once. An LRU eviction fails the V1
-            // session closed; register/replay would violate the paid grant's
-            // register-once monotonic DFA.
+            // `onionpir_batch_rpc` re-registers keys and retries once on
+            // eviction.
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_INDEX_QUERY,
                 round_id as u16,
@@ -1865,8 +1875,7 @@ impl OnionClient {
                 queries.push(chunk_client.generate_query(bin));
             }
 
-            // Same one-shot eviction behavior as the INDEX round — see
-            // `onionpir_batch_rpc` for the reasoning.
+            // Same eviction handling as the INDEX round.
             let msg = encode_onionpir_batch_query(
                 REQ_ONIONPIR_CHUNK_QUERY,
                 round_id as u16,
@@ -2073,8 +2082,6 @@ impl PirClient for OnionClient {
             });
         }
 
-        self.verified_roots.require_plan(plan)?;
-
         let catalog = self
             .catalog
             .clone()
@@ -2135,7 +2142,6 @@ impl PirClient for OnionClient {
             .get(db_id)
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
-        self.verified_roots.require_db(db_id)?;
         self.preflight_trusted_tree_tops(db_id).await?;
         // Fire the query lifecycle callbacks so a recorder can time
         // the end-to-end round. `fire_*` is a no-op absent a recorder;
@@ -3217,7 +3223,6 @@ mod tests {
             },
         );
         client.info_json = Some("{\"session\":\"old\"}".into());
-        client.set_root_policy(RootPolicy::RequireVerified);
         #[cfg(feature = "onion")]
         {
             let merkle_json = r#"{
@@ -3455,22 +3460,6 @@ mod tests {
         assert!(error.to_string().contains("not compiled in"));
     }
 
-    #[tokio::test]
-    async fn empty_onion_sync_still_requires_verified_roots() {
-        use crate::transport::mock::MockTransport;
-
-        let db = proof_test_db(10_273, 20_547, 948_454);
-        let mut client = OnionClient::new("wss://mock-onion");
-        client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
-        client.catalog = Some(DatabaseCatalog {
-            databases: vec![db],
-        });
-        client.set_root_policy(RootPolicy::RequireVerified);
-
-        let error = client.sync(&[], None).await.unwrap_err();
-        assert!(matches!(error, PirError::VerificationFailed(_)));
-    }
-
     #[cfg(feature = "onion")]
     #[tokio::test]
     async fn empty_onion_sync_succeeds_after_verified_preflight_without_fhe_or_network() {
@@ -3505,21 +3494,20 @@ mod tests {
 
     #[cfg(not(feature = "onion"))]
     #[tokio::test]
-    async fn query_fails_closed_without_onion_feature_for_every_root_policy() {
+    async fn query_fails_without_onion_feature_with_or_without_roots() {
         use crate::transport::mock::MockTransport;
 
         let db = proof_test_db(10_273, 20_547, 948_454);
         let script_hashes = [[0u8; 20]];
 
-        for policy in [RootPolicy::Advisory, RootPolicy::RequireVerified] {
+        for with_roots in [false, true] {
             let mut client = OnionClient::new("wss://mock-onion");
             client.connect_with_transport(Box::new(MockTransport::new("wss://mock-onion")));
             client.catalog = Some(DatabaseCatalog {
                 databases: vec![db.clone()],
             });
             client.proof_catalog = client.catalog.clone();
-            client.set_root_policy(policy);
-            if policy == RootPolicy::RequireVerified {
+            if with_roots {
                 client
                     .install_verified_database_roots(proof_test_roots(db.height))
                     .unwrap();
@@ -3896,7 +3884,6 @@ mod tests {
         assert!(client.verified_tree_tops.is_empty());
         assert!(client.onion_params.is_empty());
         assert!(client.info_json.is_none());
-        assert_eq!(client.root_policy(), RootPolicy::RequireVerified);
         #[cfg(feature = "onion")]
         {
             assert!(client.onion_merkle.is_empty());

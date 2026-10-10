@@ -47,148 +47,6 @@ impl HarmonyClient {
         }
     }
 
-    /// Configure one independently selected Harmony role before connecting it.
-    /// A connected role is immutable so a policy/grant cannot be moved to a
-    /// different provider URL inside the same browser attempt.
-    pub fn set_provider_url(&mut self, provider_index: u8, url: &str) -> PirResult<()> {
-        if url.trim().is_empty() {
-            return Err(PirError::InvalidState(
-                "Harmony staged provider URL must not be empty".into(),
-            ));
-        }
-        match provider_index {
-            0 if self.hint_conn.is_none() => self.hint_server_url = url.to_string(),
-            1 if self.query_conn.is_none() => self.query_server_url = url.to_string(),
-            0 | 1 => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider {provider_index} URL is frozen after connect"
-                )))
-            }
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        }
-        Ok(())
-    }
-
-    /// Open exactly one primary provider transport. The peer role is neither
-    /// selected nor dialled, and a later peer failure leaves this connection
-    /// and its admission state untouched.
-    pub async fn connect_provider(&mut self, provider_index: u8) -> PirResult<()> {
-        let already_connected = match provider_index {
-            0 => self.hint_conn.is_some(),
-            1 => self.query_conn.is_some(),
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        if already_connected {
-            return Ok(());
-        }
-        let url = if provider_index == 0 {
-            self.hint_server_url.clone()
-        } else {
-            self.query_server_url.clone()
-        };
-        if url.trim().is_empty() {
-            return Err(PirError::InvalidState(format!(
-                "Harmony provider {provider_index} URL is not configured"
-            )));
-        }
-        self.notify_state(ConnectionState::Connecting);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let transport_result: PirResult<Box<dyn PirTransport>> = WsConnection::connect(&url)
-            .await
-            .map(|connection| Box::new(connection) as Box<dyn PirTransport>);
-        #[cfg(target_arch = "wasm32")]
-        let transport_result: PirResult<Box<dyn PirTransport>> = {
-            use crate::wasm_transport::WasmWebSocketTransport;
-            WasmWebSocketTransport::connect(&url)
-                .await
-                .map(|connection| Box::new(connection) as Box<dyn PirTransport>)
-        };
-        let transport = match transport_result {
-            Ok(transport) => transport,
-            Err(error) => {
-                if self.hint_conn.is_none() && self.query_conn.is_none() {
-                    self.notify_state(ConnectionState::Disconnected);
-                }
-                return Err(error);
-            }
-        };
-
-        if provider_index == 0 {
-            self.hint_conn = Some(transport);
-        } else {
-            self.query_conn = Some(transport);
-        }
-        if let Some(recorder) = self.metrics_recorder.clone() {
-            let slot = if provider_index == 0 {
-                self.hint_conn.as_mut()
-            } else {
-                self.query_conn.as_mut()
-            };
-            if let Some(connection) = slot {
-                connection.set_metrics_recorder(Some(recorder), "harmony");
-            }
-        }
-        self.fire_connect(&url);
-        if self.is_connected() {
-            self.notify_state(ConnectionState::Connected);
-        }
-        Ok(())
-    }
-
-    /// Close only one staged role while preserving the other role's live
-    /// connection and its already-authorized operation state.
-    pub async fn disconnect_provider(&mut self, provider_index: u8) -> PirResult<()> {
-        let (primary, secondary) = match provider_index {
-            0 => (&mut self.hint_conn, &mut self.hint_conn_secondary),
-            1 => (&mut self.query_conn, &mut self.query_conn_secondary),
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        if let Some(mut connection) = primary.take() {
-            let _ = connection.close().await;
-        }
-        if let Some(mut connection) = secondary.take() {
-            let _ = connection.close().await;
-        }
-        if self.hint_conn.is_none() && self.query_conn.is_none() {
-            self.invalidate_session_bindings();
-        }
-        if !self.is_connected() {
-            self.notify_state(ConnectionState::Disconnected);
-        }
-        Ok(())
-    }
-
-    pub fn is_provider_connected(&self, provider_index: u8) -> PirResult<bool> {
-        match provider_index {
-            0 => Ok(self.hint_conn.is_some()),
-            1 => Ok(self.query_conn.is_some()),
-            _ => Err(PirError::InvalidState(format!(
-                "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-            ))),
-        }
-    }
-
-    pub fn root_policy(&self) -> RootPolicy {
-        self.verified_roots.policy()
-    }
-
-    pub fn set_root_policy(&mut self, policy: RootPolicy) {
-        self.verified_roots.set_policy(policy);
-    }
-
     pub fn install_verified_database_roots(
         &mut self,
         roots: VerifiedDatabaseRoots,
@@ -240,7 +98,7 @@ impl HarmonyClient {
 
     pub(crate) async fn preflight_bucket_tree_tops(&mut self, db: &DatabaseInfo) -> PirResult<()> {
         let Some(roots) = self.verified_roots.get(db.db_id).cloned() else {
-            return self.verified_roots.require_db(db.db_id);
+            return Ok(());
         };
         if !db.has_bucket_merkle {
             return Err(PirError::VerificationFailed(format!(
@@ -267,9 +125,8 @@ impl HarmonyClient {
     /// Fetch and bind the bucket Merkle tree-tops for `db_id` to an
     /// explicitly installed database proof before any private query is sent.
     ///
-    /// Web clients call this after the Rust proof verifier and TypeScript
-    /// production-pin comparison, so a mismatched tree-top is rejected before
-    /// an address query can leave the browser.
+    /// Queries check the tree-tops against an installed root anyway; this
+    /// runs the check up front.
     pub async fn preflight_verified_database(&mut self, db_id: u8) -> PirResult<()> {
         if self.verified_database_roots(db_id).is_none() {
             return Err(PirError::VerificationFailed(format!(
@@ -481,75 +338,6 @@ impl HarmonyClient {
         (&self.hint_server_url, &self.query_server_url)
     }
 
-    /// Fetch the V1 catalog from exactly one Harmony role. The first role
-    /// installs it and the second must be query-compatible before its proof or
-    /// payment policy is trusted. Display names, ordering, and peer-only
-    /// entries are ignored.
-    pub async fn fetch_catalog_from_provider(
-        &mut self,
-        provider_index: u8,
-    ) -> PirResult<DatabaseCatalog> {
-        let connection = match provider_index {
-            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        let response = connection
-            .roundtrip(&encode_request(REQ_GET_DB_CATALOG, &[]))
-            .await?;
-        if response.first().copied() != Some(RESP_DB_CATALOG) {
-            return Err(PirError::Protocol(format!(
-                "Harmony provider {provider_index} did not return a V1 database catalog"
-            )));
-        }
-        let catalog = decode_catalog(&response[1..])?;
-        if let Some(existing) = &self.catalog {
-            ensure_catalog_query_compatible(existing, &catalog).map_err(|error| {
-                PirError::VerificationFailed(format!(
-                    "Harmony provider {provider_index} catalog differs from the first verified role: {error}"
-                ))
-            })?;
-        } else {
-            self.verified_roots.reconcile_catalog(&catalog);
-            self.catalog = Some(catalog.clone());
-        }
-        Ok(catalog)
-    }
-
-    /// Verify one Harmony role's own database proof against the common staged
-    /// catalog. The browser independently checks production pins before
-    /// installing the returned roots.
-    pub async fn verify_database_proof_from_provider(
-        &mut self,
-        provider_index: u8,
-        db_id: u8,
-        policy: &DatabaseProofPolicy,
-    ) -> PirResult<VerifiedDatabaseRoots> {
-        let catalog = self
-            .catalog
-            .as_ref()
-            .ok_or_else(|| PirError::InvalidState("no verified staged catalog".into()))?;
-        let db_info = catalog
-            .get(db_id)
-            .cloned()
-            .ok_or(PirError::DatabaseNotFound(db_id))?;
-        let connection = match provider_index {
-            0 => self.hint_conn.as_mut().ok_or(PirError::NotConnected)?,
-            1 => self.query_conn.as_mut().ok_or(PirError::NotConnected)?,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        let bundle = fetch_database_proof(connection.as_mut(), db_id).await?;
-        verify_database_proof(&db_info, &bundle, policy)
-    }
-
     /// Send REQ_ATTEST to one of the connected servers (`server_index`:
     /// 0 = hint server, 1 = query server) and return the verification
     /// result. See [`super::DpfClient::attest`] for the full semantics.
@@ -678,46 +466,6 @@ impl HarmonyClient {
                 .await;
         *slot = Some(conn);
         status
-    }
-
-    /// Upgrade one staged Harmony role using the seed committed by that
-    /// role's attestation. No peer URL, key, or connection is involved.
-    pub async fn upgrade_provider_to_secure_channel_with_seed(
-        &mut self,
-        provider_index: u8,
-        server_static_pub: [u8; 32],
-        eph_seed: [u8; 32],
-        hs_nonce: [u8; 32],
-    ) -> PirResult<()> {
-        let secondary = match provider_index {
-            0 => &mut self.hint_conn_secondary,
-            1 => &mut self.query_conn_secondary,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        if let Some(mut connection) = secondary.take() {
-            let _ = connection.close().await;
-        }
-        let slot = match provider_index {
-            0 => &mut self.hint_conn,
-            1 => &mut self.query_conn,
-            _ => {
-                return Err(PirError::InvalidState(format!(
-                    "Harmony provider index must be 0 (hint) or 1 (query), got {provider_index}"
-                )))
-            }
-        };
-        let raw = slot.take().ok_or(PirError::NotConnected)?;
-        match crate::channel::establish(raw, server_static_pub, eph_seed, hs_nonce).await {
-            Ok(secured) => {
-                *slot = Some(Box::new(secured));
-                Ok(())
-            }
-            Err(error) => Err(error),
-        }
     }
 
     /// Replace both server connections with secure-channel-wrapped
@@ -974,23 +722,15 @@ impl HarmonyClient {
         db_info: &DatabaseInfo,
         progress: &dyn HintProgress,
     ) -> PirResult<()> {
-        // Hint acquisition is its own priced workload and touches only the
-        // independently selected hint provider. The query provider may not be
-        // selected yet in a staged browser flow.
         if self.hint_conn.is_none() {
             return Err(PirError::NotConnected);
         }
         self.ensure_groups_ready(db_info, Some(progress)).await
     }
 
-    /// Pre-fetch the complete paid hint resource: every main group plus every
-    /// Merkle-sibling group dictated by the proof-verified tree tops.
-    ///
-    /// This is intentionally separate from [`fetch_hints_with_progress`],
-    /// whose main-only behaviour remains useful to legacy/ungated clients.
-    /// Payment-aware browser flows call this method after both provider legs
-    /// and the database tree tops have been verified, then persist the result
-    /// as one restart-safe entitlement resource.
+    /// [`fetch_hints_with_progress`](Self::fetch_hints_with_progress) plus
+    /// the Merkle-sibling hint groups, so the whole set can be cached and no
+    /// later query has to download hints.
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "harmony", db_id = db_info.db_id))]
     pub async fn fetch_complete_hints_with_progress(
         &mut self,
@@ -1000,33 +740,25 @@ impl HarmonyClient {
         if self.hint_conn.is_none() {
             return Err(PirError::NotConnected);
         }
-        self.verified_roots.require_db(db_info.db_id)?;
-        let tree_tops = self
-            .verified_tree_tops
-            .get(&db_info.db_id)
-            .cloned()
-            .ok_or_else(|| {
-                PirError::InvalidState(format!(
-                    "db_id {} has no proof-verified Harmony tree tops",
-                    db_info.db_id
-                ))
-            })?;
         self.ensure_groups_ready(db_info, Some(progress)).await?;
-        self.ensure_sibling_groups_ready(db_info, &tree_tops)
-            .await?;
-        if !self.complete_hint_shape_for_verified_database(db_info)? {
-            return Err(PirError::BackendState(
-                "Harmony complete hint fetch produced an incomplete group shape".into(),
-            ));
+        if db_info.has_bucket_merkle {
+            let tree_tops = self.tree_tops_for(db_info).await?;
+            self.ensure_sibling_groups_ready(db_info, &tree_tops)
+                .await?;
         }
         Ok(())
+    }
+
+    /// Whether hints for `db_info` are loaded.
+    pub fn has_hints_for(&self, db_info: &DatabaseInfo) -> bool {
+        self.loaded_db_id == Some(db_info.db_id)
     }
 
     /// Invalidate any loaded hint state and pin subsequent queries to
     /// `db_id`. No network traffic yet; the next
     /// [`execute_step`](Self::execute_step) /
     /// [`query_batch`](Self::query_batch) /
-    /// [`query_batch_verified_with_inspector`](Self::query_batch_verified_with_inspector)
+    /// [`query_batch_with_inspector`](Self::query_batch_with_inspector)
     /// will see the db mismatch and refetch (or restore from the hint cache
     /// if configured).
     ///

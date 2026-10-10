@@ -178,30 +178,30 @@ tag_seed, k_index, k_chunk)`; mismatched keys fail fast with
 
 ## Merkle verification
 
-All three clients expose legacy Merkle diagnostic metadata during `sync`:
+All three clients verify Merkle proofs inline during `sync` and
+`query_batch` and report the verdict per result:
 
 ```rust,ignore
 if let Some(Some(q)) = result.results.first() {
     if !q.merkle_verified {
-        // untrusted result — treat as absent
+        // proofs failed (entries are empty) or the database has no Merkle data
     }
 }
 ```
 
-Because `QueryResult` and its boolean are publicly mutable, a positive flag is
-not a release authority. Strict consumers should use the atomic inspector API
-below and retain its opaque return type.
+Install proof-verified roots (`verify_database_proof` +
+`install_verified_database_roots`) to check the server's tree-tops against
+the attested root; without them the proofs show the server is consistent
+with its own tree-tops.
 
 DPF and Harmony use per-PBC-bucket Merkle trees (INDEX + CHUNK roots per
 group). OnionPIR uses two global flat trees (INDEX + DATA) with FHE-encrypted
 sibling queries.
 
-For inspector/audit output, use
-`query_batch_verified_with_inspector` on the DPF and Harmony clients. Query
-execution, exact input/result semantic reconstruction, and Merkle verification
-are one all-or-nothing operation. It returns `Vec<VerifiedQueryResult>` with
-read-only `script_hash()`, `db_id()`, `entries()`, and inspector accessors; the
-SDK does not expose raw split-verifier results as a public release authority.
+For inspector/audit output, use `query_batch_with_inspector` on the DPF and
+Harmony clients: the same verified query, returning one `QueryResult` per
+input with the probed bins in `index_bins` / `chunk_bins` /
+`matched_index_idx` (a not-found query holds its two INDEX bins).
 
 ## Observability
 

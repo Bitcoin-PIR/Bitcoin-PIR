@@ -384,10 +384,8 @@ impl OramClient {
     }
 
     /// Query a database with a fixed padded slot count and decode only the
-    /// real input script hashes. One service entitlement authorizes exactly
-    /// one such wire request: product callers must reject an oversized atomic
-    /// query or acquire a fresh capability on a fresh connection, never split
-    /// one authorized query into multiple frames.
+    /// real input script hashes. The request carries at most `padded_slots`
+    /// script hashes; split a larger batch into several requests.
     pub async fn query_batch_padded(
         &mut self,
         script_hashes: &[ScriptHash],

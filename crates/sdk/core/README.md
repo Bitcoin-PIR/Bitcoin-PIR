@@ -98,7 +98,7 @@ Per-script-hash result of a PIR query.
 pub struct QueryResult {
     pub entries: Vec<UtxoEntry>,
     pub is_whale: bool,                    // true if the address is excluded
-    pub merkle_verified: bool,             // mutable diagnostic metadata only
+    pub merkle_verified: bool,             // Merkle proofs checked and passed
     pub raw_chunk_data: Option<Vec<u8>>,   // retained for delta merging
     pub index_bins: Vec<BucketRef>,        // optional inspector state
     pub chunk_bins: Vec<BucketRef>,        // optional inspector state
@@ -106,13 +106,9 @@ pub struct QueryResult {
 }
 ```
 
-Constructors and serde imports always start with `merkle_verified == false`;
-serde output omits the field. Some native query paths set it as useful
-diagnostic metadata, but the public mutable flag is forgeable and must not
-authorize release. Use
-`pir_sdk_client::VerifiedQueryResult` for immutable results bound to an exact
-query input and database. `merge_delta_batch` still ANDs the diagnostic field
-across snapshot × delta so a known-unverified input taints the merge.
+`merkle_verified` is true when the query's Merkle proofs were checked and
+passed; a result whose proofs fail carries no entries. `merge_delta_batch`
+ANDs the flag across snapshot × delta.
 
 ### `SyncResult`
 

@@ -10,17 +10,14 @@
 //! integration tests keep exercising the real backend paths against the
 //! production deployment (the same servers the web client uses).
 //!
-//! Session setup is deliberately **fail-closed**: if a provider's
-//! attestation or database proof does not verify, the helper returns an
-//! error and the test fails loudly rather than silently skipping the
-//! backend path.
+//! If a provider's attestation or database proof does not verify, the
+//! helper returns an error and the test fails rather than silently skipping
+//! the backend path.
 
 #![allow(dead_code)]
 
 use pir_sdk::{PirError, PirResult};
-use pir_sdk_client::{
-    DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient, RootPolicy,
-};
+use pir_sdk_client::{DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient};
 
 /// Database-proof policy for the pinned production db0 (main) snapshot.
 /// Mirrors the db0 entry of `PRODUCTION_DATABASE_PINS` in
@@ -83,79 +80,46 @@ pub fn api_key() -> Option<String> {
         .filter(|key| !key.is_empty())
 }
 
-/// Open one DPF server leg's secure channel: attest → X25519 handshake.
-async fn open_dpf_server_channel(client: &mut DpfClient, server_index: u8) -> PirResult<()> {
-    let nonce = fresh_32()?;
-    let attestation = client.attest(server_index, nonce).await?;
-    if attestation
-        .response
-        .server_static_pub
-        .iter()
-        .all(|b| *b == 0)
-    {
+/// A server's attested channel key; an all-zero key means no channel.
+fn channel_key(key: [u8; 32], label: &str) -> PirResult<[u8; 32]> {
+    if key.iter().all(|b| *b == 0) {
         return Err(PirError::VerificationFailed(format!(
-            "server{server_index} attestation returned all-zero server static pubkey"
+            "{label} attestation returned all-zero server static pubkey"
         )));
     }
-    let eph_seed = fresh_32()?;
-    let hs_nonce = fresh_32()?;
-    client
-        .upgrade_server_to_secure_channel_with_seed(
-            server_index,
-            attestation.response.server_static_pub,
-            eph_seed,
-            hs_nonce,
-        )
-        .await?;
-    if let Some(key) = api_key() {
-        client.present_api_key(server_index, &key).await?;
-    }
-    Ok(())
+    Ok(key)
 }
 
 /// Complete the live session sequence for a DPF two-server query: install
-/// the database proof, then open both legs' secure channels
-/// (server0 = Hetzner, server1 = VPSBG).
+/// the database proof, attest both servers and open the secure channel
+/// (server0 = Hetzner, server1 = pir2).
 pub async fn admit_dpf_live(
     client: &mut DpfClient,
     db_id: u8,
     proof_policy: &DatabaseProofPolicy,
 ) -> PirResult<()> {
-    client.set_root_policy(RootPolicy::RequireVerified);
     let roots = client.verify_database_proof(db_id, proof_policy).await?;
     client.install_verified_database_roots(roots)?;
-    open_dpf_server_channel(client, 0).await?;
-    open_dpf_server_channel(client, 1).await?;
-    Ok(())
-}
-
-/// Open one Harmony provider leg's secure channel: attest → X25519
-/// handshake.
-async fn open_harmony_leg_channel(client: &mut HarmonyClient, provider_index: u8) -> PirResult<()> {
-    let nonce = fresh_32()?;
-    let attestation = client.attest(provider_index, nonce).await?;
-    if attestation
-        .response
-        .server_static_pub
-        .iter()
-        .all(|b| *b == 0)
-    {
-        return Err(PirError::VerificationFailed(format!(
-            "Harmony provider{provider_index} attestation returned all-zero server static pubkey"
-        )));
-    }
-    let eph_seed = fresh_32()?;
-    let hs_nonce = fresh_32()?;
-    client
-        .upgrade_provider_to_secure_channel_with_seed(
-            provider_index,
-            attestation.response.server_static_pub,
-            eph_seed,
-            hs_nonce,
-        )
-        .await?;
+    let key0 = channel_key(
+        client
+            .attest(0, fresh_32()?)
+            .await?
+            .response
+            .server_static_pub,
+        "server0",
+    )?;
+    let key1 = channel_key(
+        client
+            .attest(1, fresh_32()?)
+            .await?
+            .response
+            .server_static_pub,
+        "server1",
+    )?;
+    client.upgrade_to_secure_channel(key0, key1).await?;
     if let Some(key) = api_key() {
-        client.present_api_key(provider_index, &key).await?;
+        client.present_api_key(0, &key).await?;
+        client.present_api_key(1, &key).await?;
     }
     Ok(())
 }
@@ -166,21 +130,16 @@ impl pir_sdk_client::HintProgress for NoopHintProgress {
     fn on_group_complete(&self, _done: u32, _total: u32, _phase: &str) {}
 }
 
-/// Complete the live session sequence for a HarmonyPIR query:
-///
-/// 1. install the verified database proof,
-/// 2. snapshot the catalog (the hint download below needs the db geometry),
-/// 3. open the query leg's secure channel and preflight the proof-verified
-///    tree tops,
-/// 4. open the hint leg's secure channel,
-/// 5. download the complete main + Merkle-sibling hint bundle.
+/// Complete the live session sequence for a HarmonyPIR query: install the
+/// verified database proof, open the secure channel to both servers,
+/// preflight the proof-verified tree tops, and download the main +
+/// Merkle-sibling hints.
 pub async fn admit_harmony_live(
     client: &mut HarmonyClient,
     db_id: u8,
     proof_policy: &DatabaseProofPolicy,
     _script_hashes: &[pir_sdk::ScriptHash],
 ) -> PirResult<()> {
-    client.set_root_policy(RootPolicy::RequireVerified);
     let roots = client.verify_database_proof(db_id, proof_policy).await?;
     client.install_verified_database_roots(roots)?;
 
@@ -191,10 +150,30 @@ pub async fn admit_harmony_live(
         .find(|db| db.db_id == db_id)
         .cloned()
         .ok_or(PirError::DatabaseNotFound(db_id))?;
-    open_harmony_leg_channel(client, 1).await?;
+    let hint_key = channel_key(
+        client
+            .attest(0, fresh_32()?)
+            .await?
+            .response
+            .server_static_pub,
+        "hint",
+    )?;
+    let query_key = channel_key(
+        client
+            .attest(1, fresh_32()?)
+            .await?
+            .response
+            .server_static_pub,
+        "query",
+    )?;
+    client
+        .upgrade_to_secure_channel(hint_key, query_key)
+        .await?;
+    if let Some(key) = api_key() {
+        client.present_api_key(0, &key).await?;
+        client.present_api_key(1, &key).await?;
+    }
     client.preflight_verified_database(db_id).await?;
-
-    open_harmony_leg_channel(client, 0).await?;
     client
         .fetch_complete_hints_with_progress(&db_info, &NoopHintProgress)
         .await?;
@@ -209,7 +188,6 @@ pub async fn admit_onion_live(
     db_id: u8,
     proof_policy: &DatabaseProofPolicy,
 ) -> PirResult<()> {
-    client.set_root_policy(RootPolicy::RequireVerified);
     let roots = client.verify_database_proof_v2(db_id, proof_policy).await?;
     client.install_verified_database_roots(roots)?;
 

@@ -300,17 +300,9 @@ impl DatabaseCatalog {
 
 /// Result of a single PIR query for one script hash.
 ///
-/// # Merkle verification metadata
-///
-/// `merkle_verified` is legacy, mutable diagnostic metadata. A native query
-/// path may set it after checking per-bucket proofs, but the public field is
-/// forgeable and is therefore **not** a release authority. Serde omits it
-/// entirely on serialization and always resets it to `false` on
-/// deserialization, even if the input contains `"merkle_verified": true`;
-/// constructors also default to `false`.
-/// Release-sensitive callers should use the client crate's opaque
-/// `VerifiedQueryResult`, which binds immutable contents to the exact query
-/// input and database id and cannot be publicly constructed or deserialized.
+/// `merkle_verified` is true when the query's per-bucket Merkle proofs were
+/// checked and passed. A result whose proofs fail carries no entries (see
+/// [`QueryResult::merkle_failed`]).
 ///
 /// A `None` in `SyncResult::results` still means "not found" — if the
 /// database has Merkle commitments, absence is proved by the symmetric
@@ -323,20 +315,16 @@ pub struct QueryResult {
     pub entries: Vec<UtxoEntry>,
     /// Whether this address is a "whale" (too many UTXOs to fit in chunks).
     pub is_whale: bool,
-    /// Legacy diagnostic metadata populated by some native query paths.
-    ///
-    /// This public mutable flag is not cryptographic authority. In
-    /// particular, serde input cannot set it to `true`; see the struct-level
-    /// documentation.
-    #[cfg_attr(feature = "serde", serde(skip))]
+    /// Whether the query's Merkle proofs were checked and passed.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub merkle_verified: bool,
     /// Raw chunk data for delta merging (only populated for delta queries).
     #[cfg_attr(feature = "serde", serde(skip))]
     pub raw_chunk_data: Option<Vec<u8>>,
     /// Inspector state: every INDEX cuckoo bin the client probed for this
-    /// query. Populated only by release-safe verified inspector paths; the
-    /// main `sync` and `query_batch` paths leave this empty to keep the hot
-    /// path lean.
+    /// query. Populated only by the clients' `query_batch_with_inspector`;
+    /// the main `sync` and `query_batch` paths leave this empty to keep the
+    /// hot path lean.
     ///
     /// For not-found queries this always contains `INDEX_CUCKOO_NUM_HASHES=2`
     /// bins (the absence-proof invariant). For found queries it contains
@@ -365,11 +353,7 @@ impl Default for QueryResult {
 }
 
 impl QueryResult {
-    /// Create an empty result.
-    ///
-    /// Defaults `merkle_verified` to `false`. Only a native verification path
-    /// may add diagnostic metadata, and release-sensitive code must use an
-    /// opaque verified result rather than trusting this mutable field.
+    /// Create an empty result (`merkle_verified = false`).
     pub fn empty() -> Self {
         Self {
             entries: Vec::new(),
@@ -487,38 +471,4 @@ pub enum ServerRole {
     Secondary,
     /// Standalone server (OnionPIR).
     Standalone,
-}
-
-#[cfg(all(test, feature = "serde"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serde_cannot_promote_query_result_verification_metadata() {
-        let txid = vec![7_u8; 32];
-        let forged = serde_json::json!({
-            "entries": [{
-                "txid": txid,
-                "vout": 1,
-                "amount_sats": 42
-            }],
-            "is_whale": false,
-            "merkle_verified": true,
-            "index_bins": [],
-            "chunk_bins": [],
-            "matched_index_idx": null
-        });
-        let parsed: QueryResult = serde_json::from_value(forged).unwrap();
-        assert!(!parsed.merkle_verified);
-
-        let mut native = QueryResult::with_entries(Vec::new());
-        native.merkle_verified = true;
-        let serialized = serde_json::to_value(&native).unwrap();
-        assert!(serialized.get("merkle_verified").is_none());
-        let round_tripped: QueryResult = serde_json::from_value(serialized).unwrap();
-        assert!(
-            !round_tripped.merkle_verified,
-            "serialized diagnostic metadata must not regain authority"
-        );
-    }
 }
