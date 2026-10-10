@@ -96,12 +96,6 @@ impl HarmonyClient {
             rounds.len() * CHUNK_CUCKOO_NUM_HASHES,
             k_chunk,
         );
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]   CHUNK plan: {} chunks × {} queries → {} PBC × {} h = {} wire rounds",
-                flat.len(), n, rounds.len(), CHUNK_CUCKOO_NUM_HASHES, rounds.len() * CHUNK_CUCKOO_NUM_HASHES,
-            );
-        }
 
         // Per-(sh, slot) outputs. We use HashMap<(sh, slot), _> rather
         // than HashMap<cid, _> because two scripthashes could pad to
@@ -119,9 +113,7 @@ impl HarmonyClient {
         // padding makes every wire round identical in shape anyway, so
         // bandwidth is unchanged. The benefit: one RTT + one
         // server-walk pipelined into the other, ~3 s of wall-time
-        // saved per query batch against the public Hetzner deployment
-        // (see `[HARMONY_BENCH]` numbers in
-        // `docs/PLAN_HARMONY_PERF_AUDIT.md`).
+        // saved per query batch against the public Hetzner deployment.
         //
         // We assert `CHUNK_CUCKOO_NUM_HASHES == 2` here — pair-mode
         // would need generalisation to 3+ cuckoo positions. The

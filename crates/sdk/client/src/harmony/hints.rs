@@ -87,11 +87,9 @@ impl HarmonyClient {
         // Dispatch matrix for main hint fetch (cold cache only — the
         // warm-cache fast path returned above):
         //
-        //   db_id != 0, legacy mode: → V1 (default V2 pool is bound to db0)
-        //   pool=2 AND v2:           → V2-half (parallel; this commit)
-        //   pool=2 AND v1-opt-in:    → V1 parallel (slow; bench/fallback only)
-        //   pool=1 AND v2:           → V2 full single-stream
-        //   pool=1 AND !v2:          → V1 single-stream serial
+        //   V2 (the pool serves this db), two hint sockets: → V2-half (parallel)
+        //   V2, one hint socket:                           → V2 full single-stream
+        //   otherwise:                                     → V1 (parallel on two sockets)
         //
         // V2 (full or half) uses the server's pre-computed hint pool —
         // zero server CPU per request, just stream bytes. V1 triggers
@@ -107,9 +105,7 @@ impl HarmonyClient {
         // fail-closed. The server's exact preamble-level pool-empty response
         // is permission to retry through V1.
         let use_v2_for_db = should_use_v2_hint_pool(self.use_v2_protocol, db_info.db_id);
-        let want_v1_parallel =
-            matches!(std::env::var("HARMONY_USE_V1_PARALLEL").as_deref(), Ok("1"));
-        if (want_v1_parallel || !use_v2_for_db) && self.hint_conn_secondary.is_some() {
+        if !use_v2_for_db && self.hint_conn_secondary.is_some() {
             return self
                 .ensure_groups_ready_v1_parallel(db_info, progress)
                 .await;
@@ -239,197 +235,186 @@ impl HarmonyClient {
         let mut conn = self.hint_conn.take().ok_or(PirError::NotConnected)?;
 
         let result = async {
-
-        // ── 1. Send V2 request ──────────────────────────────────────────
-        let mut payload = Vec::with_capacity(4);
-        payload.push(0xFFu8); // level_sentinel: all levels
-        payload.push(0x00u8); // reserved
-        if db_id != 0 {
-            payload.push(db_id);
-        }
-        // Trailing db_id byte
-        let request = crate::protocol::encode_request(REQ_HARMONY_HINTS_V2, &payload);
-        let request_bytes = request.len() as u64;
-
-        conn.send(request).await?;
-
-        // ── 2. Receive key preamble ─────────────────────────────────────
-        let preamble = conn.recv().await?;
-        let (prp_backend, prp_key) = match parse_v2_key_preamble(
-            &preamble,
-            expected_total_groups,
-            "V2 full",
-        )? {
-            V2KeyPreambleOutcome::Key {
-                prp_backend,
-                prp_key,
-            } => (prp_backend, prp_key),
-            V2KeyPreambleOutcome::PoolUnavailable => {
-                return Ok(V2HintFetchOutcome::PoolUnavailable);
+            // ── 1. Send V2 request ──────────────────────────────────────────
+            let mut payload = Vec::with_capacity(4);
+            payload.push(0xFFu8); // level_sentinel: all levels
+            payload.push(0x00u8); // reserved
+            if db_id != 0 {
+                payload.push(db_id);
             }
-        };
+            // Trailing db_id byte
+            let request = crate::protocol::encode_request(REQ_HARMONY_HINTS_V2, &payload);
+            let request_bytes = request.len() as u64;
 
-        self.prp_backend = prp_backend;
-        self.master_prp_key = prp_key;
+            conn.send(request).await?;
 
-        // ── 3. Create HarmonyGroup instances with the server-assigned key ──
-        let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
-        let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
+            // ── 2. Receive key preamble ─────────────────────────────────────
+            let preamble = conn.recv().await?;
+            let (prp_backend, prp_key) =
+                match parse_v2_key_preamble(&preamble, expected_total_groups, "V2 full")? {
+                    V2KeyPreambleOutcome::Key {
+                        prp_backend,
+                        prp_key,
+                    } => (prp_backend, prp_key),
+                    V2KeyPreambleOutcome::PoolUnavailable => {
+                        return Ok(V2HintFetchOutcome::PoolUnavailable);
+                    }
+                };
 
-        for g in 0..k_index {
-            let group = new_harmony_group(
-                db_info.index_bins,
-                index_w as u32,
-                0,
-                &self.master_prp_key,
-                g as u32,
-                self.prp_backend,
-            )
-            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
-            self.index_groups.insert(g as u8, group);
-        }
+            self.prp_backend = prp_backend;
+            self.master_prp_key = prp_key;
 
-        for g in 0..k_chunk {
-            let group = new_harmony_group(
-                db_info.chunk_bins,
-                chunk_w as u32,
-                0,
-                &self.master_prp_key,
-                (k_index + g) as u32,
-                self.prp_backend,
-            )
-            .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
-            self.chunk_groups.insert(g as u8, group);
-        }
+            // ── 3. Create HarmonyGroup instances with the server-assigned key ──
+            let index_w = INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
+            let chunk_w = CHUNK_SLOTS_PER_BIN * CHUNK_SLOT_SIZE;
 
-        // ── 4. Receive per-group INDEX frames ───────────────────────────
-        let mut done: u32 = 0;
-        let mut total_response_bytes: u64 = 0;
-        let mut seen_index = vec![false; k_index];
-        for _g in 0..k_index {
-            let msg = conn.recv().await?;
-            total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
-            let body = v2_record_body(&msg, "V2 full INDEX hint")?;
-            if body.is_empty() {
-                return Err(PirError::Protocol("empty V2 hint frame body".into()));
+            for g in 0..k_index {
+                let group = new_harmony_group(
+                    db_info.index_bins,
+                    index_w as u32,
+                    0,
+                    &self.master_prp_key,
+                    g as u32,
+                    self.prp_backend,
+                )
+                .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+                self.index_groups.insert(g as u8, group);
             }
-            reject_error_response(body, "V2 full INDEX hint")?;
-            if body[0] != RESP_HARMONY_HINTS {
-                return Err(PirError::Protocol(format!(
-                    "expected RESP_HARMONY_HINTS, got 0x{:02x}",
-                    body[0]
-                )));
+
+            for g in 0..k_chunk {
+                let group = new_harmony_group(
+                    db_info.chunk_bins,
+                    chunk_w as u32,
+                    0,
+                    &self.master_prp_key,
+                    (k_index + g) as u32,
+                    self.prp_backend,
+                )
+                .map_err(|e| PirError::BackendState(format!("HarmonyGroup init: {:?}", e)))?;
+                self.chunk_groups.insert(g as u8, group);
             }
-            if body.len() < 14 {
-                return Err(PirError::Protocol("V2 hint frame header truncated".into()));
+
+            // ── 4. Receive per-group INDEX frames ───────────────────────────
+            let mut done: u32 = 0;
+            let mut total_response_bytes: u64 = 0;
+            let mut seen_index = vec![false; k_index];
+            for _g in 0..k_index {
+                let msg = conn.recv().await?;
+                total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
+                let body = v2_record_body(&msg, "V2 full INDEX hint")?;
+                if body.is_empty() {
+                    return Err(PirError::Protocol("empty V2 hint frame body".into()));
+                }
+                reject_error_response(body, "V2 full INDEX hint")?;
+                if body[0] != RESP_HARMONY_HINTS {
+                    return Err(PirError::Protocol(format!(
+                        "expected RESP_HARMONY_HINTS, got 0x{:02x}",
+                        body[0]
+                    )));
+                }
+                if body.len() < 14 {
+                    return Err(PirError::Protocol("V2 hint frame header truncated".into()));
+                }
+                let group_id = body[1];
+                let hints_data = &body[14..];
+
+                let seen = seen_index.get_mut(group_id as usize).ok_or_else(|| {
+                    PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
+                })?;
+                if *seen {
+                    return Err(PirError::Protocol(format!(
+                        "V2: duplicate INDEX group {}",
+                        group_id
+                    )));
+                }
+                *seen = true;
+
+                let group = self.index_groups.get_mut(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
+                })?;
+                group
+                    .load_hints(hints_data)
+                    .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+
+                done += 1;
+                if let Some(p) = progress {
+                    p.on_group_complete(done, total, "index");
+                }
             }
-            let group_id = body[1];
-            let hints_data = &body[14..];
 
-            let seen = seen_index.get_mut(group_id as usize).ok_or_else(|| {
-                PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
-            })?;
-            if *seen {
-                return Err(PirError::Protocol(format!(
-                    "V2: duplicate INDEX group {}",
-                    group_id
-                )));
+            // ── 5. Receive per-group CHUNK frames ───────────────────────────
+            let mut seen_chunk = vec![false; k_chunk];
+            for _g in 0..k_chunk {
+                let msg = conn.recv().await?;
+                total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
+                let body = v2_record_body(&msg, "V2 full CHUNK hint")?;
+                if body.is_empty() {
+                    return Err(PirError::Protocol("empty V2 hint frame body".into()));
+                }
+                reject_error_response(body, "V2 full CHUNK hint")?;
+                if body[0] != RESP_HARMONY_HINTS {
+                    return Err(PirError::Protocol(format!(
+                        "expected RESP_HARMONY_HINTS, got 0x{:02x}",
+                        body[0]
+                    )));
+                }
+                if body.len() < 14 {
+                    return Err(PirError::Protocol("V2 hint frame header truncated".into()));
+                }
+                let group_id = body[1];
+                let hints_data = &body[14..];
+
+                let seen = seen_chunk.get_mut(group_id as usize).ok_or_else(|| {
+                    PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
+                })?;
+                if *seen {
+                    return Err(PirError::Protocol(format!(
+                        "V2: duplicate CHUNK group {}",
+                        group_id
+                    )));
+                }
+                *seen = true;
+
+                // CHUNK groups are stored under the local offset (0..79),
+                // matching the wire group_id byte.
+                let group = self.chunk_groups.get_mut(&group_id).ok_or_else(|| {
+                    PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
+                })?;
+                group
+                    .load_hints(hints_data)
+                    .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+
+                done += 1;
+                if let Some(p) = progress {
+                    p.on_group_complete(done, total, "chunk");
+                }
             }
-            *seen = true;
 
-            let group = self.index_groups.get_mut(&group_id).ok_or_else(|| {
-                PirError::Protocol(format!("V2: unexpected INDEX group {}", group_id))
-            })?;
-            group
-                .load_hints(hints_data)
-                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
+            // ── 6. Receive terminal sentinel ────────────────────────────────
+            let terminal = conn.recv().await?;
+            validate_v2_terminal(&terminal, "V2 full")?;
 
-            done += 1;
-            if let Some(p) = progress {
-                p.on_group_complete(done, total, "index");
+            self.loaded_db_id = Some(db_info.db_id);
+
+            // Record the round.
+            self.record_round(RoundProfile {
+                kind: RoundKind::HarmonyHintRefresh,
+                server_id: 1,
+                db_id: Some(db_id),
+                request_bytes,
+                response_bytes: total_response_bytes,
+                items: vec![1u32; total as usize],
+            });
+
+            // Persist to cache.
+            if let Err(e) = self.persist_hints_to_cache(db_info) {
+                log::warn!(
+                    "[PIR-AUDIT] HarmonyPIR V2: failed to persist main hints to cache: {}",
+                    e
+                );
             }
-        }
 
-        // ── 5. Receive per-group CHUNK frames ───────────────────────────
-        let mut seen_chunk = vec![false; k_chunk];
-        for _g in 0..k_chunk {
-            let msg = conn.recv().await?;
-            total_response_bytes = total_response_bytes.saturating_add(msg.len() as u64);
-            let body = v2_record_body(&msg, "V2 full CHUNK hint")?;
-            if body.is_empty() {
-                return Err(PirError::Protocol("empty V2 hint frame body".into()));
-            }
-            reject_error_response(body, "V2 full CHUNK hint")?;
-            if body[0] != RESP_HARMONY_HINTS {
-                return Err(PirError::Protocol(format!(
-                    "expected RESP_HARMONY_HINTS, got 0x{:02x}",
-                    body[0]
-                )));
-            }
-            if body.len() < 14 {
-                return Err(PirError::Protocol("V2 hint frame header truncated".into()));
-            }
-            let group_id = body[1];
-            let hints_data = &body[14..];
-
-            let seen = seen_chunk.get_mut(group_id as usize).ok_or_else(|| {
-                PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
-            })?;
-            if *seen {
-                return Err(PirError::Protocol(format!(
-                    "V2: duplicate CHUNK group {}",
-                    group_id
-                )));
-            }
-            *seen = true;
-
-            // CHUNK groups are stored under the local offset (0..79),
-            // matching the wire group_id byte.
-            let group = self.chunk_groups.get_mut(&group_id).ok_or_else(|| {
-                PirError::Protocol(format!("V2: unexpected CHUNK group {}", group_id))
-            })?;
-            group
-                .load_hints(hints_data)
-                .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
-
-            done += 1;
-            if let Some(p) = progress {
-                p.on_group_complete(done, total, "chunk");
-            }
-        }
-
-        // ── 6. Receive terminal sentinel ────────────────────────────────
-        let terminal = conn.recv().await?;
-        validate_v2_terminal(&terminal, "V2 full")?;
-
-        self.loaded_db_id = Some(db_info.db_id);
-
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]   V2 main hint stream: req {}B  resp_total {}B  (k_index={}, k_chunk={})",
-                request_bytes, total_response_bytes, k_index, k_chunk,
-            );
-        }
-
-        // Record the round.
-        self.record_round(RoundProfile {
-            kind: RoundKind::HarmonyHintRefresh,
-            server_id: 1,
-            db_id: Some(db_id),
-            request_bytes,
-            response_bytes: total_response_bytes,
-            items: vec![1u32; total as usize],
-        });
-
-        // Persist to cache.
-        if let Err(e) = self.persist_hints_to_cache(db_info) {
-            log::warn!(
-                "[PIR-AUDIT] HarmonyPIR V2: failed to persist main hints to cache: {}",
-                e
-            );
-        }
-
-        Ok(V2HintFetchOutcome::Loaded)
+            Ok(V2HintFetchOutcome::Loaded)
         }
         .await;
 
@@ -673,8 +658,6 @@ impl HarmonyClient {
             )))
         }
 
-        let t_half_start = Instant::now();
-
         let index_fut = async {
             hint_primary.send(request_index).await?;
             drain_half_build(
@@ -791,17 +774,6 @@ impl HarmonyClient {
         // to return to the client state.
         self.hint_conn = Some(hint_primary);
         self.hint_conn_secondary = Some(hint_secondary);
-
-        let dt_wire = t_half_start.elapsed();
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]   V2-half parallel hint+build: total {:?} (req {}B+{}B, resp {}B+{}B, k_index={}, k_chunk={})",
-                dt_wire,
-                request_index_bytes, request_chunk_bytes,
-                idx_bytes, chk_bytes,
-                k_index, k_chunk,
-            );
-        }
 
         self.prp_backend = idx_backend;
         self.master_prp_key = idx_key;
@@ -920,8 +892,6 @@ impl HarmonyClient {
         let prp_backend = self.prp_backend;
         let db_id = db_info.db_id;
 
-        let t_main_start = Instant::now();
-
         let index_fut = async {
             let profile = fetch_and_load_main_hints_into_map(
                 hint_primary.as_mut(),
@@ -957,14 +927,6 @@ impl HarmonyClient {
 
         let (hp, idx_groups, idx_profile) = idx_out;
         let (hs, chk_groups, chk_profile) = chk_out;
-
-        let dt_main = t_main_start.elapsed();
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]   V1 parallel main hint stream: total {:?} (req INDEX+CHUNK in parallel on 2 sockets, k_index={}, k_chunk={})",
-                dt_main, k_index, k_chunk,
-            );
-        }
 
         // Restore state to self.
         self.hint_conn = Some(hp);
@@ -1062,10 +1024,8 @@ impl HarmonyClient {
         let request = encode_request(REQ_HARMONY_HINTS, &payload);
         let request_bytes = request.len() as u64;
 
-        let t_send = Instant::now();
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         conn.send(request).await?;
-        let dt_send = t_send.elapsed();
 
         // The hint server streams `num_groups` separate response frames.
         // Sum their sizes for a single `HarmonyHintRefresh` round event —
@@ -1147,16 +1107,6 @@ impl HarmonyClient {
             received += 1;
         }
 
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]     fetch_and_load_hints(level={:02}): send={:?} first_byte={:?} recv_total={:?} load_total={:?} groups={} bytes={}",
-                level, dt_send,
-                dt_first.unwrap_or_default(),
-                dt_recv_total, dt_load_total,
-                num_groups, total_response_bytes,
-            );
-        }
-
         self.record_round(RoundProfile {
             kind: RoundKind::HarmonyHintRefresh,
             server_id: 1,
@@ -1204,9 +1154,7 @@ pub(crate) async fn fetch_and_load_main_hints_into_map(
     let request = encode_request(REQ_HARMONY_HINTS, &payload);
     let request_bytes = request.len() as u64;
 
-    let t_send = Instant::now();
     conn.send(request).await?;
-    let dt_send = t_send.elapsed();
 
     let mut received = 0u32;
     let mut seen = vec![false; num_groups as usize];
@@ -1268,16 +1216,6 @@ pub(crate) async fn fetch_and_load_main_hints_into_map(
         received += 1;
     }
 
-    if std::env::var("HARMONY_BENCH").is_ok() {
-        eprintln!(
-            "[HARMONY_BENCH]   main_fetch(level={:02}): send={:?} first_byte={:?} recv_total={:?} load_total={:?} groups={} bytes={}",
-            wire_level, dt_send,
-            dt_first.unwrap_or_default(),
-            dt_recv_total, dt_load_total,
-            num_groups, total_response_bytes,
-        );
-    }
-
     Ok(RoundProfile {
         kind: RoundKind::HarmonyHintRefresh,
         server_id: 1,
@@ -1327,9 +1265,7 @@ pub(crate) async fn fetch_and_load_sib_hints_into_map(
     let request = encode_request(REQ_HARMONY_HINTS, &payload);
     let request_bytes = request.len() as u64;
 
-    let t_send = Instant::now();
     conn.send(request).await?;
-    let dt_send = t_send.elapsed();
 
     let mut received = 0u32;
     let mut seen = vec![false; num_groups as usize];
@@ -1389,16 +1325,6 @@ pub(crate) async fn fetch_and_load_sib_hints_into_map(
             .map_err(|e| PirError::BackendState(format!("load_hints: {:?}", e)))?;
         dt_load_total += t_load.elapsed();
         received += 1;
-    }
-
-    if std::env::var("HARMONY_BENCH").is_ok() {
-        eprintln!(
-            "[HARMONY_BENCH]     sib_fetch(level={:02}): send={:?} first_byte={:?} recv_total={:?} load_total={:?} groups={} bytes={}",
-            wire_level, dt_send,
-            dt_first.unwrap_or_default(),
-            dt_recv_total, dt_load_total,
-            num_groups, total_response_bytes,
-        );
     }
 
     Ok(RoundProfile {

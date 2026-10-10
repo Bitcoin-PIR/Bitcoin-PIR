@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator-issued API key over the encrypted channel, after which the server
   serves that connection unmetered (docs/CREDITS.md "API keys").
 
+### Removed
+
+- The `HARMONY_BENCH`, `PIR_DUMP_RAW_CHUNKS`, `HARMONY_USE_V1_PARALLEL`,
+  `HARMONY_QUERY_POOL_SIZE` and `HARMONY_HINT_POOL_SIZE` environment
+  switches. The HarmonyPIR client always opens two sockets per server, the
+  previous default.
+
 ### Changed
 
 - Verify and report: `RootPolicy` and `set_root_policy`/`root_policy` are gone.

@@ -24,33 +24,9 @@ impl PirClient for HarmonyClient {
         );
         self.notify_state(ConnectionState::Connecting);
 
-        // Pool sizes: 1 = single-socket (legacy behaviour); 2 = open a
-        // secondary socket too so parallel paths can fan rounds across
-        // A/B. We cap at 2 today — the structurally parallel axis
-        // count maxes out at 3 and within-level fan-out beyond the
-        // current pipelining gives diminishing returns. Default is 2
-        // because the iperf data on the public deployment shows
-        // ~3× wall-time savings vs single socket per server.
-        //
-        // `HARMONY_QUERY_POOL_SIZE` controls pir2 (query server).
-        // `HARMONY_HINT_POOL_SIZE`  controls pir1 (hint  server).
-        // Independent because the two servers have independent
-        // bandwidth-delay-product characteristics.
-        let query_pool: usize = std::env::var("HARMONY_QUERY_POOL_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2)
-            .clamp(1, 2);
-        let hint_pool: usize = std::env::var("HARMONY_HINT_POOL_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2)
-            .clamp(1, 2);
-
-        // Dial up to 4 sockets in parallel (2× hint, 2× query) so the
-        // cold-connect cost is one RTT, not four. The secondary slots
-        // for each server are `Option` because pool_size=1 leaves them
-        // empty (single-socket fallback).
+        // Two sockets per server, dialled in parallel so the cold-connect
+        // cost is one RTT: the second one lets parallel paths fan rounds
+        // across A/B (about 3x wall time against the public deployment).
         type DialResult = PirResult<(
             Box<dyn PirTransport>,
             Option<Box<dyn PirTransport>>,
@@ -58,120 +34,41 @@ impl PirClient for HarmonyClient {
             Option<Box<dyn PirTransport>>,
         )>;
         #[cfg(not(target_arch = "wasm32"))]
-        let dial_result: DialResult = {
-            // tokio::try_join! is variadic up to 64 args at compile
-            // time; we use a small fixed shape (1-4 sockets) here.
-            let hint_primary = WsConnection::connect(&self.hint_server_url);
-            let query_primary = WsConnection::connect(&self.query_server_url);
-            match (hint_pool >= 2, query_pool >= 2) {
-                (true, true) => {
-                    let hint_secondary = WsConnection::connect(&self.hint_server_url);
-                    let query_secondary = WsConnection::connect(&self.query_server_url);
-                    let (h, hs, q, qs) = tokio::try_join!(
-                        hint_primary,
-                        hint_secondary,
-                        query_primary,
-                        query_secondary
-                    )?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        Some(Box::new(hs) as Box<dyn PirTransport>),
-                        Box::new(q) as Box<dyn PirTransport>,
-                        Some(Box::new(qs) as Box<dyn PirTransport>),
-                    ))
-                }
-                (true, false) => {
-                    let hint_secondary = WsConnection::connect(&self.hint_server_url);
-                    let (h, hs, q) = tokio::try_join!(hint_primary, hint_secondary, query_primary)?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        Some(Box::new(hs) as Box<dyn PirTransport>),
-                        Box::new(q) as Box<dyn PirTransport>,
-                        None,
-                    ))
-                }
-                (false, true) => {
-                    let query_secondary = WsConnection::connect(&self.query_server_url);
-                    let (h, q, qs) =
-                        tokio::try_join!(hint_primary, query_primary, query_secondary)?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        None,
-                        Box::new(q) as Box<dyn PirTransport>,
-                        Some(Box::new(qs) as Box<dyn PirTransport>),
-                    ))
-                }
-                (false, false) => {
-                    let (h, q) = tokio::try_join!(hint_primary, query_primary)?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        None,
-                        Box::new(q) as Box<dyn PirTransport>,
-                        None,
-                    ))
-                }
-            }
-        };
+        let dial_result: DialResult = async {
+            let (h, hs, q, qs) = tokio::try_join!(
+                WsConnection::connect(&self.hint_server_url),
+                WsConnection::connect(&self.hint_server_url),
+                WsConnection::connect(&self.query_server_url),
+                WsConnection::connect(&self.query_server_url),
+            )?;
+            Ok((
+                Box::new(h) as Box<dyn PirTransport>,
+                Some(Box::new(hs) as Box<dyn PirTransport>),
+                Box::new(q) as Box<dyn PirTransport>,
+                Some(Box::new(qs) as Box<dyn PirTransport>),
+            ))
+        }
+        .await;
         #[cfg(target_arch = "wasm32")]
         let dial_result: DialResult = async {
             use crate::wasm_transport::WasmWebSocketTransport;
-            // wasm32 doesn't have a 4-tuple try_join; fall back to
-            // try_join3 / try_join2 with the same shape conditionals.
-            let hint_primary = WasmWebSocketTransport::connect(&self.hint_server_url);
-            let query_primary = WasmWebSocketTransport::connect(&self.query_server_url);
-            match (hint_pool >= 2, query_pool >= 2) {
-                (true, true) => {
-                    let hint_secondary = WasmWebSocketTransport::connect(&self.hint_server_url);
-                    let query_secondary = WasmWebSocketTransport::connect(&self.query_server_url);
-                    // Pair-up two try_joins to avoid needing a 4-arg variant.
-                    let (a, b) = futures::future::try_join(
-                        futures::future::try_join(hint_primary, hint_secondary),
-                        futures::future::try_join(query_primary, query_secondary),
-                    )
-                    .await?;
-                    let (h, hs) = a;
-                    let (q, qs) = b;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        Some(Box::new(hs) as Box<dyn PirTransport>),
-                        Box::new(q) as Box<dyn PirTransport>,
-                        Some(Box::new(qs) as Box<dyn PirTransport>),
-                    ))
-                }
-                (true, false) => {
-                    let hint_secondary = WasmWebSocketTransport::connect(&self.hint_server_url);
-                    let (h, hs, q) =
-                        futures::future::try_join3(hint_primary, hint_secondary, query_primary)
-                            .await?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        Some(Box::new(hs) as Box<dyn PirTransport>),
-                        Box::new(q) as Box<dyn PirTransport>,
-                        None,
-                    ))
-                }
-                (false, true) => {
-                    let query_secondary = WasmWebSocketTransport::connect(&self.query_server_url);
-                    let (h, q, qs) =
-                        futures::future::try_join3(hint_primary, query_primary, query_secondary)
-                            .await?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        None,
-                        Box::new(q) as Box<dyn PirTransport>,
-                        Some(Box::new(qs) as Box<dyn PirTransport>),
-                    ))
-                }
-                (false, false) => {
-                    let (h, q) = futures::future::try_join(hint_primary, query_primary).await?;
-                    Ok((
-                        Box::new(h) as Box<dyn PirTransport>,
-                        None,
-                        Box::new(q) as Box<dyn PirTransport>,
-                        None,
-                    ))
-                }
-            }
+            let ((h, hs), (q, qs)) = futures::future::try_join(
+                futures::future::try_join(
+                    WasmWebSocketTransport::connect(&self.hint_server_url),
+                    WasmWebSocketTransport::connect(&self.hint_server_url),
+                ),
+                futures::future::try_join(
+                    WasmWebSocketTransport::connect(&self.query_server_url),
+                    WasmWebSocketTransport::connect(&self.query_server_url),
+                ),
+            )
+            .await?;
+            Ok((
+                Box::new(h) as Box<dyn PirTransport>,
+                Some(Box::new(hs) as Box<dyn PirTransport>),
+                Box::new(q) as Box<dyn PirTransport>,
+                Some(Box::new(qs) as Box<dyn PirTransport>),
+            ))
         }
         .await;
 
