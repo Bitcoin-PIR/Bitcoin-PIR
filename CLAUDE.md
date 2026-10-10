@@ -44,7 +44,7 @@ reopening that decision).
 `crates/protocol` (core primitives, server runtime), `crates/sdk`
 (core/client/wasm), `crates/trust`, `crates/directory/nostr` (Nostr
 service-directory codec), `apps/server`
-(unified_server), `apps/admin`, `tools/db-builder`,
+(unified_server), `apps/admin`, `apps/directory-relay`, `tools/db-builder`,
 `web/` (browser client), `deploy/`. Full map in
 [`README.md`](README.md);
 terminology in [`GLOSSARY.md`](GLOSSARY.md).

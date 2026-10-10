@@ -1,0 +1,58 @@
+# BitcoinPIR directory-only Nostr relay (docs/runbooks/directory-relay.md).
+# The binary is installed content-addressed under
+# /opt/bitcoinpir/directory-relay/<sha256>/ with a `current` symlink, like the
+# issuer. Both listeners are loopback-only; cloudflared publishes the public
+# lane as wss://directory.bitcoinpir.org. The directory publisher private key
+# is never installed on this host.
+[Unit]
+Description=BitcoinPIR directory-only Nostr relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bpir-directory-relay
+Group=bpir-directory-relay
+UMask=0077
+StateDirectory=bitcoinpir-directory-relay
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-directory-relay
+Environment=RUST_LOG=error
+ExecStart=/opt/bitcoinpir/directory-relay/current/bitcoinpir-directory-relay --config /etc/bitcoinpir/directory-relay/config.toml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+LimitCORE=0
+LimitNOFILE=4096
+MemoryMax=536870912
+MemorySwapMax=0
+TasksMax=128
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+ReadOnlyPaths=/etc/bitcoinpir/directory-relay /opt/bitcoinpir/directory-relay
+ReadWritePaths=/var/lib/bitcoinpir-directory-relay
+
+[Install]
+WantedBy=multi-user.target
