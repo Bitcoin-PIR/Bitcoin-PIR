@@ -40,7 +40,8 @@ reopening that decision).
 ## Layout
 
 `crates/protocol` (core primitives, server runtime), `crates/sdk`
-(core/client/wasm), `crates/trust`, `apps/server`
+(core/client/wasm), `crates/trust`, `crates/directory/nostr` (Nostr
+service-directory codec), `apps/server`
 (unified_server), `apps/admin`, `tools/db-builder`,
 `web/` (browser client), `deploy/`, `verification/`. Full map in
 [`README.md`](README.md);
