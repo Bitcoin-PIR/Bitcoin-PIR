@@ -9,25 +9,8 @@
  * proof verifier on this path.
  */
 
-import {
-  applySevSnpPlatformFloor,
-  getAmdTurinArkFingerprint,
-  PIR_OPERATOR_PUBKEY,
-  pinAcceptsBinary,
-} from './attest-pin.js';
 import type { ServerAttestPin } from './attest-pin.js';
-import {
-  databaseProofUnavailable,
-  verifiedDatabaseProofFromWasm,
-  verifyDatabaseProofAgainstPin,
-  type DatabaseProofPin,
-  type DatabaseProofStatus,
-} from './db-proof.js';
-import {
-  gateOperatorIdentity,
-  type OperatorIdentity,
-  type ServerAttestation,
-} from './dpf-adapter.js';
+import type { DatabaseProofPin, DatabaseProofStatus } from './db-proof.js';
 import { hexToBytes } from './hash.js';
 import { attestedRootBindsManifest } from './oram-source-proof.js';
 import {
@@ -39,19 +22,19 @@ import {
   initSdkWasm,
   isSdkWasmReady,
   requireSdkWasm,
-  type WasmAnnounceVerification,
   type WasmAtomicMetrics,
-  type WasmAttestVerification,
-  type WasmPolicyRequirements,
   type WasmOramClient,
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
-import { trustedNowUnixV1 } from './trusted-time.js';
 import {
-  assertStrictDatabasePinCoverage,
-  assertStrictSingleTransportReady,
-} from './strict-verification.js';
-import type { CreditEnablement, CreditProvider } from './credits.js';
+  arkFingerprint,
+  checkOperatorIdentity,
+  summariseAttestation,
+  verifyDatabaseProofs,
+  type OperatorIdentity,
+  type ServerAttestation,
+} from './verification.js';
+import { enableCreditsOnLeg, type CreditEnablement, type CreditProvider } from './credits.js';
 
 export interface OramLayoutInfo {
   backend: 'oram-direct';
@@ -112,42 +95,27 @@ export interface OramPirClientConfig {
   serverUrl: string;
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
   onLog?: (msg: string, level: 'info' | 'success' | 'error') => void;
-  /**
-   * Default true. ORAM lookups reveal script hashes to the server process, so
-   * production callers should leave this enabled and require the server to
-   * reject cleartext ORAM frames.
-   */
+  /** Upgrade to the encrypted channel after attesting (default `true`). ORAM
+   * lookups reveal script hashes to the server process, so privacy rests on
+   * the attestation and the channel. */
   useSecureChannel?: boolean;
-  /** Production enables the complete attestation/identity/root fail-closed gate. */
-  strictVerification?: boolean;
   onAttestation?: (info: ServerAttestation) => void;
+  /** `undefined` uses the Turin ARK; `null` skips the VCEK chain check. */
   expectedArkFingerprint?: Uint8Array | null;
   expectedServerPin?: ServerAttestPin;
-  verifyOperatorIdentity?: boolean;
-  /** Expected operator-endorsed runtime identity. Required for V1 admission. */
-  expectedServerId?: string;
+  /** Operator key; the announce bundle is checked when it is set. */
   pinnedOperatorPubkey?: Uint8Array;
   maxAnnounceAgeSeconds?: number;
   onOperatorIdentity?: (info: OperatorIdentity) => void;
-  /** Credits (`docs/CREDITS.md`): see `BatchPirClientConfig.creditProvider`. */
   creditProvider?: CreditProvider;
   onCredits?: (status: CreditEnablement) => void;
-  /** Operator-issued API key; see `BatchPirClientConfig.apiKey`. */
   apiKey?: string;
   databaseProofPins?: DatabaseProofPin[];
   onDatabaseProof?: (dbId: number, info: DatabaseProofStatus) => void;
-  /**
-   * Number of script hashes to send in one fixed-budget ORAM lookup request.
-   * The default is deliberately conservative: one script hash gets the full
-   * server access budget after its fixed INDEX probes. Operators can raise
-   * this after measuring their direct-index hash count and chunk overflow rate.
-   */
+  /** Script hashes per lookup request; a larger batch is split. */
   maxScriptHashesPerRequest?: number;
-  /**
-   * Opt-in direct ORAM fixed-budget planner. When unset, the adapter preserves
-   * the conservative `maxScriptHashesPerRequest` split behavior.
-   * When set, every request is sent with explicit padded empty slots.
-   */
+  /** Fixed-budget planner: when set, every request carries explicit padded
+   * empty slots. */
   batchPlanner?: OramBatchPlannerConfig;
 }
 
@@ -156,10 +124,8 @@ export class OramPirClientAdapter {
   private wasmClient: WasmOramClient | null = null;
   private catalog: DatabaseCatalog | null = null;
   private connected = false;
-  private strictReady = false;
-  private secureChannelEstablished = false;
+  private secureChannel = false;
   private readonly databaseProofs = new Map<number, DatabaseProofStatus>();
-  private sessionGeneration = 0;
 
   attestation: ServerAttestation = { state: 'unattested' };
   operatorIdentity: OperatorIdentity = { state: 'not-checked' };
@@ -182,90 +148,47 @@ export class OramPirClientAdapter {
   }
 
   async connect(): Promise<void> {
-    await this.teardown().catch(() => { /* start from an empty native session */ });
-    const generation = ++this.sessionGeneration;
-    let client: WasmOramClient | null = null;
-    this.resetSessionTrust();
+    await this.teardown().catch(() => {});
     this.setState('connecting');
     try {
-      if (this.isStrictVerification() && this.config.useSecureChannel === false) {
-        throw new Error('strict ORAM requires the secure channel');
+      if (!isSdkWasmReady() && !(await initSdkWasm())) {
+        throw new Error('PIR SDK WASM failed to load');
       }
-
-      await this.ensureSdkWasmInitialized();
-      const sdk = requireSdkWasm();
-      client = new sdk.WasmOramClient(this.config.serverUrl);
+      const client = new (requireSdkWasm().WasmOramClient)(this.config.serverUrl);
       this.wasmClient = client;
       await client.connect();
-      this.assertCurrentSession(generation, client, 'connect');
+      if (this.config.useSecureChannel !== false) await this.attestAndUpgrade(client);
 
-      if (this.config.useSecureChannel !== false) {
-        await this.attestAndUpgrade();
-      }
-      this.assertCurrentSession(generation, client, 'secure-channel upgrade');
-      if (this.isStrictVerification()) {
-        assertStrictSingleTransportReady({
-          secureChannelEstablished: this.secureChannelEstablished,
-          attestation: this.attestation,
-          expectedPin: this.config.expectedServerPin,
-          expectedServerId: this.config.expectedServerId,
-          operatorIdentity: this.operatorIdentity,
-        });
-      }
-
-      // This native catalog is fetched over the exact transport that was just
-      // upgraded. A second clear diagnostic WebSocket is deliberately absent:
-      // it cannot add, remove, or rewrite databases used by query routing.
-      const wasmCatalog = await client.fetchCatalog();
+      const catalog = await client.fetchCatalog();
       try {
-        this.assertCurrentSession(generation, client, 'catalog fetch');
-        this.catalog = databaseCatalogFromWasmJson(wasmCatalog.toJson());
+        this.catalog = databaseCatalogFromWasmJson(catalog.toJson());
       } finally {
-        wasmCatalog.free();
+        catalog.free();
       }
-      if (this.isStrictVerification()) {
-        assertStrictDatabasePinCoverage(
-          this.catalog.databases.map((database) => database.dbId),
-          this.config.databaseProofPins ?? [],
-        );
-      }
-      await this.verifyConfiguredDatabaseProofs(generation, client);
-      this.assertCurrentSession(generation, client, 'database-proof verification');
-      if (this.isStrictVerification()) {
-        for (const database of this.catalog.databases) {
-          if (this.databaseProofs.get(database.dbId)?.state !== 'verified') {
-            throw new Error(
-              `strict ORAM requires a verified database proof for db ${database.dbId}`,
-            );
-          }
-        }
-      }
-
+      await verifyDatabaseProofs(client, this.config.databaseProofPins ?? [], (dbId, status) => {
+        const error = status.state === 'verified' ? this.manifestBindingError(dbId, status) : null;
+        const reported: DatabaseProofStatus = error ? { ...status, state: 'unverified', error } : status;
+        this.databaseProofs.set(dbId, reported);
+        this.config.onDatabaseProof?.(dbId, reported);
+      });
       this.connected = true;
-      this.strictReady = this.isStrictVerification();
       this.setState('connected');
       this.log('Connected to ORAM server', 'success');
-    } catch (e) {
-      this.log(`ORAM connect failed: ${(e as Error)?.message ?? e}`, 'error');
-      if (
-        generation === this.sessionGeneration
-        && (client === null || this.wasmClient === client)
-      ) {
-        await this.teardown().catch(() => { /* preserve original error */ });
-        this.setState('disconnected', (e as Error)?.message);
-      }
-      throw e;
+    } catch (error) {
+      this.log(`ORAM connect failed: ${(error as Error)?.message ?? error}`, 'error');
+      await this.teardown().catch(() => {});
+      this.setState('disconnected', (error as Error)?.message);
+      throw error;
     }
   }
 
   disconnect(): void {
-    void this.teardown().catch(() => { /* best-effort close */ });
+    void this.teardown().catch(() => {});
     this.setState('disconnected');
   }
 
   isConnected(): boolean {
-    const nativeConnected = this.connected && !!this.wasmClient?.isConnected;
-    return this.isStrictVerification() ? nativeConnected && this.strictReady : nativeConnected;
+    return this.connected && !!this.wasmClient?.isConnected;
   }
 
   getCatalog(): DatabaseCatalog | null {
@@ -280,24 +203,10 @@ export class OramPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  /**
-   * ORAM does not publish client-verifiable per-PBC bucket trees. The direct
-   * ORAM page store is authenticated server-side against trusted state.
-   */
-  hasMerkle(): boolean {
-    return false;
-  }
-
+  /** Direct ORAM has no client-verifiable bucket Merkle trees; the page store
+   * is authenticated inside the TEE. */
   hasMerkleForDb(_dbId: number): boolean {
     return false;
-  }
-
-  getMerkleRootHex(): undefined {
-    return undefined;
-  }
-
-  getMerkleRootHexForDb(_dbId: number): undefined {
-    return undefined;
   }
 
   async queryBatch(
@@ -305,7 +214,33 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
     dbId: number = 0,
   ): Promise<(QueryResult | null)[]> {
-    return this.queryBatchInternal(scriptHashes, dbId, onProgress);
+    const client = this.wasmClient;
+    if (!client || !this.isConnected()) throw new Error('Not connected');
+    const plan = this.config.batchPlanner
+      ? resolveOramBatchPlan({
+          ...this.config.batchPlanner,
+          maxScriptHashesPerRequest:
+            this.config.batchPlanner.maxScriptHashesPerRequest ?? this.config.maxScriptHashesPerRequest,
+        })
+      : null;
+    const perRequest = plan?.maxScriptHashesPerRequest
+      ?? resolveMaxScriptHashesPerRequest(this.config.maxScriptHashesPerRequest);
+    const batches = splitOramScriptHashBatches(scriptHashes, perRequest);
+    const results: (QueryResult | null)[] = [];
+    for (const [i, batch] of batches.entries()) {
+      onProgress?.('ORAM', `lookup ${i + 1}/${batches.length} (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`);
+      const packed = packScriptHashes(batch);
+      const raw = plan
+        ? await client.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
+        : await client.queryBatch(packed, dbId);
+      raw.forEach((value, j) => {
+        const result = oramJsonResultToQueryResult(value);
+        if (result) result.scriptHash = batch[j];
+        results.push(result);
+      });
+    }
+    onProgress?.('Decode', `translated ${results.length} result(s)`);
+    return results;
   }
 
   async queryDelta(
@@ -313,20 +248,7 @@ export class OramPirClientAdapter {
     dbId: number = 1,
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
-    return this.queryBatchInternal(scriptHashes, dbId, onProgress);
-  }
-
-  /**
-   * There is no browser-side PBC Merkle verifier on direct ORAM. Kept as an
-   * explicit method so UI code can fail closed if it accidentally routes ORAM
-   * results into the DPF/Harmony verification path.
-   */
-  async verifyMerkleBatch(
-    _results: QueryResult[],
-    _onProgress?: (step: string, detail: string) => void,
-    _dbId: number = 0,
-  ): Promise<boolean[]> {
-    throw new Error('Direct ORAM does not expose PBC bucket Merkle proofs');
+    return this.queryBatch(scriptHashes, onProgress, dbId);
   }
 
   setMetricsRecorder(metrics: WasmAtomicMetrics): void {
@@ -337,460 +259,91 @@ export class OramPirClientAdapter {
     this.wasmClient?.clearMetricsRecorder();
   }
 
-  private async queryBatchInternal(
-    scriptHashes: Uint8Array[],
-    dbId: number,
-    onProgress?: (step: string, detail: string) => void,
-  ): Promise<(QueryResult | null)[]> {
-    if (!this.wasmClient) throw new Error('Not connected');
+  /** Present the API key, or enable credits. */
+  async enableCredits(): Promise<CreditEnablement | null> {
     const client = this.wasmClient;
-    const generation = this.sessionGeneration;
-    this.assertLiveQuerySession(generation, client, dbId, 'start');
-    const plannerConfig = this.config.batchPlanner
-      ? {
-          ...this.config.batchPlanner,
-          maxScriptHashesPerRequest:
-            this.config.batchPlanner.maxScriptHashesPerRequest ??
-            this.config.maxScriptHashesPerRequest,
-        }
-      : null;
-    const plan = plannerConfig ? resolveOramBatchPlan(plannerConfig) : null;
-    const maxRealInputs = plan
-      ? plan.maxScriptHashesPerRequest
-      : resolveMaxScriptHashesPerRequest(this.config.maxScriptHashesPerRequest);
-    const batch = requireAtomicOramRequest(scriptHashes, maxRealInputs);
-    if (batch.length === 0) return [];
-
-    // One service authorization grants exactly one REQ_ORAM_LOOKUP frame. Do
-    // not silently split a product query: the first frame would complete the
-    // grant and a second frame would either fail or tempt cross-query reuse.
-    onProgress?.(
-      'ORAM',
-      plan
-        ? `one atomic fixed-budget lookup (${batch.length}/${plan.paddedSlotCount} real slot${batch.length === 1 ? '' : 's'})`
-        : `one atomic fixed-budget lookup (${batch.length} script hash${batch.length === 1 ? '' : 'es'})`,
+    if (!client) return null;
+    const outcome = await enableCreditsOnLeg(
+      {
+        presentApiKey: (_idx, key) => client.presentApiKey(key),
+        enableCredits: (_idx, provider) => client.enableCredits(provider),
+      },
+      0,
+      { apiKey: this.config.apiKey, provider: this.config.creditProvider, secureChannel: this.secureChannel },
     );
-    const packed = packScriptHashes(batch);
-    const raw = plan
-      ? await client.queryBatchPadded(packed, dbId, plan.paddedSlotCount)
-      : await client.queryBatch(packed, dbId);
-    this.assertLiveQuerySession(generation, client, dbId, 'response');
-    if (raw.length !== batch.length) {
-      throw new Error(
-        `ORAM response length ${raw.length} does not match request length ${batch.length}`,
+    if (outcome) this.config.onCredits?.(outcome);
+    return outcome;
+  }
+
+  private async attestAndUpgrade(client: WasmOramClient): Promise<void> {
+    let att = null;
+    try {
+      att = await client.attest();
+    } catch (error) {
+      this.log(`ORAM attest failed: ${(error as Error)?.message ?? error}`, 'error');
+    }
+    try {
+      this.attestation = summariseAttestation(
+        att,
+        this.config.expectedServerPin,
+        arkFingerprint(this.config.expectedArkFingerprint),
       );
-    }
-    onProgress?.('Decode', `translating ${raw.length} direct result(s)`);
-    const results: (QueryResult | null)[] = [];
-    for (let i = 0; i < raw.length; i++) {
-      const qr = oramJsonResultToQueryResult(raw[i]);
-      if (qr) qr.scriptHash = batch[i];
-      results.push(qr);
-    }
-
-    return results;
-  }
-
-  private async teardown(): Promise<void> {
-    ++this.sessionGeneration;
-    this.strictReady = false;
-    this.secureChannelEstablished = false;
-    this.connected = false;
-    this.catalog = null;
-    this.databaseProofs.clear();
-    this.attestation = { state: 'unattested' };
-    this.operatorIdentity = { state: 'not-checked' };
-    const client = this.wasmClient;
-    if (client) {
-      this.wasmClient = null;
-      try {
-        await client.disconnect();
-      } catch {
-        /* already closed */
-      }
-      client.free();
-    }
-  }
-
-  /**
-   * The page boot path starts the shared SDK loader, but a direct adapter
-   * connection can otherwise race it. Keep the transport boundary fail-closed:
-   * no native client is constructed or dialed until the module is ready.
-   */
-  private async ensureSdkWasmInitialized(): Promise<void> {
-    if (isSdkWasmReady()) return;
-    try {
-      if (await initSdkWasm()) return;
-    } catch {
-      // Normalize loader failures with the unavailable case. The native SDK
-      // must not be touched until it has completed initialization.
-    }
-    throw new Error('PIR SDK WASM initialization failed; cannot establish ORAM transport');
-  }
-
-  private async verifyConfiguredDatabaseProofs(
-    generation: number,
-    client: WasmOramClient,
-  ): Promise<void> {
-    this.assertCurrentSession(generation, client, 'database-proof start');
-    this.databaseProofs.clear();
-    const pins = this.config.databaseProofPins ?? [];
-    for (const pin of pins) {
-      let status: DatabaseProofStatus;
-      let proofHandle: Awaited<ReturnType<WasmOramClient['verifyDatabaseProof']>> | null = null;
-      try {
-        proofHandle = await client.verifyDatabaseProof(
-          pin.dbId,
-          pin.paramsHashHex,
-          pin.builderBinarySha256Hex,
-          pin.builderGitCommit,
-        );
-        if (generation !== this.sessionGeneration || this.wasmClient !== client) {
-          proofHandle.free();
-          proofHandle = null;
-          throw new Error(`stale ORAM database-proof result for db ${pin.dbId}`);
-        }
-        const proof = verifiedDatabaseProofFromWasm(proofHandle);
-        status = verifyDatabaseProofAgainstPin(proof, pin);
-        if (status.state === 'verified') {
-          this.assertAttestedManifestRoot(pin.dbId, proof.manifestRootHex ?? '');
-          const moved = proofHandle;
-          proofHandle = null;
-          client.installVerifiedDatabaseProof(moved);
-        }
-      } catch (e) {
-        if (generation !== this.sessionGeneration || this.wasmClient !== client) throw e;
-        status = databaseProofUnavailable(pin, e);
-      } finally {
-        proofHandle?.free();
-      }
-      this.assertCurrentSession(generation, client, `database-proof db ${pin.dbId}`);
-      this.databaseProofs.set(pin.dbId, status);
-      this.config.onDatabaseProof?.(pin.dbId, status);
-      if (status.state === 'verified') {
-        this.log(
-          `ORAM DB proof db ${pin.dbId}: verified MuHash ${status.proof?.muhashHex.slice(0, 16)}...`,
-          'success',
-        );
-      } else if (status.state === 'unavailable') {
-        this.log(`ORAM DB proof db ${pin.dbId}: unavailable (${status.error})`, 'info');
-      } else {
-        this.log(
-          `ORAM DB proof db ${pin.dbId}: unverified (${status.mismatches?.[0] ?? status.error ?? 'check failed'})`,
-          'error',
-        );
-      }
-    }
-  }
-
-  private isStrictVerification(): boolean {
-    return this.config.strictVerification === true;
-  }
-
-  private assertAttestedManifestRoot(dbId: number, proofManifestRootHex: string): void {
-    if (!this.isStrictVerification()) return;
-    const databases = this.catalog?.databases ?? [];
-    const position = databases.findIndex((database) => database.dbId === dbId);
-    const roots = this.attestation.manifestRootsHex;
-    if (position < 0 || !roots || roots.length !== databases.length) {
-      throw new Error('strict ORAM attestation did not bind the complete database catalog');
-    }
-    const attested = roots[position]?.toLowerCase();
-    const proven = proofManifestRootHex.toLowerCase();
-    if (!/^[0-9a-f]{64}$/.test(attested ?? '') || /^0{64}$/.test(attested ?? '')) {
-      throw new Error(`strict ORAM attestation has no manifest root for db ${dbId}`);
-    }
-    // A server holding the table files attests the manifest root; an
-    // ORAM-only server attests its ORAM-only form (oram-source-proof.ts).
-    if (!attestedRootBindsManifest(attested ?? '', proven)) {
-      throw new Error(`strict ORAM attested manifest root mismatch for db ${dbId}`);
-    }
-  }
-
-  private resetSessionTrust(): void {
-    this.connected = false;
-    this.strictReady = false;
-    this.secureChannelEstablished = false;
-    this.catalog = null;
-    this.databaseProofs.clear();
-    this.attestation = { state: 'unattested' };
-    this.operatorIdentity = { state: 'not-checked' };
-  }
-
-  private assertCurrentSession(
-    generation: number,
-    client: WasmOramClient,
-    operation: string,
-  ): void {
-    if (generation !== this.sessionGeneration || this.wasmClient !== client) {
-      throw new Error(`stale ORAM ${operation} result`);
-    }
-  }
-
-  private assertLiveQuerySession(
-    generation: number,
-    client: WasmOramClient,
-    dbId: number,
-    operation: string,
-  ): void {
-    this.assertCurrentSession(generation, client, `query ${operation}`);
-    if (!this.isStrictVerification()) return;
-    if (!this.strictReady || !this.connected || !client.isConnected) {
-      throw new Error('strict ORAM query requires the live verified native session');
-    }
-    if (this.databaseProofs.get(dbId)?.state !== 'verified') {
-      throw new Error(`strict ORAM query requires a verified database proof for db ${dbId}`);
-    }
-  }
-
-  private async attestAndUpgrade(): Promise<void> {
-    if (!this.wasmClient) return;
-
-    let att: WasmAttestVerification | null = null;
-    try {
-      att = await this.wasmClient.attest();
-    } catch (e) {
-      this.log(`ORAM attest failed: ${(e as Error)?.message ?? e}`, 'error');
-    }
-
-    let expectedArkFp: Uint8Array | null;
-    if (this.config.expectedArkFingerprint === null) {
-      expectedArkFp = null;
-    } else if (this.config.expectedArkFingerprint !== undefined) {
-      expectedArkFp = this.config.expectedArkFingerprint;
-    } else {
-      try {
-        expectedArkFp = getAmdTurinArkFingerprint();
-      } catch (e) {
-        this.log(
-          `ORAM default ARK fingerprint unavailable: ${(e as Error)?.message ?? e}`,
-          'info',
-        );
-        expectedArkFp = null;
-      }
-    }
-
-    const sdk = requireSdkWasm();
-    const policyReqs = new sdk.WasmPolicyRequirements();
-    applySevSnpPlatformFloor(policyReqs, expectedArkFp);
-    try {
-      const summary = this.summariseAttestation(att, expectedArkFp, policyReqs);
-      this.attestation = summary;
-      this.config.onAttestation?.(summary);
-
-      const channelReady = this.isStrictVerification()
-        ? summary.state === 'verified-vcek'
-        : summary.state === 'verified' || summary.state === 'verified-vcek';
-      if (channelReady && att) {
+      this.config.onAttestation?.(this.attestation);
+      if (att && att.serverStaticPub.some((b) => b !== 0)) {
         try {
-          await this.wasmClient.upgradeToSecureChannel(att.serverStaticPub);
-          this.secureChannelEstablished = true;
-          this.log('ORAM upgraded to encrypted channel', 'success');
-        } catch (e) {
-          this.log(`ORAM upgradeToSecureChannel failed: ${(e as Error)?.message ?? e}`, 'error');
-          this.attestation = { ...summary, state: 'mismatch' };
-          this.config.onAttestation?.(this.attestation);
+          await client.upgradeToSecureChannel(att.serverStaticPub);
+          this.secureChannel = true;
+          this.log('ORAM upgraded to the encrypted channel', 'success');
+        } catch (error) {
+          this.log(`ORAM upgradeToSecureChannel failed: ${(error as Error)?.message ?? error}`, 'error');
         }
       } else {
-        this.log(`ORAM channel left in cleartext (${summary.state})`, 'info');
+        this.log('ORAM channel left in cleartext: no channel key', 'info');
       }
-
-      if (this.config.verifyOperatorIdentity && this.secureChannelEstablished && att) {
-        const pin = this.config.pinnedOperatorPubkey ?? PIR_OPERATOR_PUBKEY;
-        const oid = await this.verifyOperatorIdentity(att, pin);
-        this.operatorIdentity = oid;
-        this.config.onOperatorIdentity?.(oid);
-      } else if (this.config.verifyOperatorIdentity) {
-        const oid: OperatorIdentity = {
-          state: 'error',
-          error: 'secure channel unavailable; operator identity was not requested',
-        };
-        this.operatorIdentity = oid;
-        this.config.onOperatorIdentity?.(oid);
+      if (this.config.pinnedOperatorPubkey) {
+        this.operatorIdentity = await checkOperatorIdentity(
+          () => client.announce(),
+          att,
+          this.config.pinnedOperatorPubkey,
+          this.config.maxAnnounceAgeSeconds ?? 0,
+        );
+        this.config.onOperatorIdentity?.(this.operatorIdentity);
       }
-
-      if (this.secureChannelEstablished) {
-        await this.enableCredits();
-      }
+      if (this.secureChannel) await this.enableCredits();
     } finally {
-      policyReqs.free();
       att?.free();
     }
   }
 
-  /** Turn on credits when the server requires them; see `BatchPirClient.enableCredits`. */
-  async enableCredits(): Promise<CreditEnablement | null> {
-    const apiKey = this.config.apiKey?.trim();
-    const provider = this.config.creditProvider;
-    if (!apiKey && !provider) return null;
+  /** Whether the attested server's manifest roots bind this proof. `null` when
+   * they do, or when the attestation carried no roots. */
+  private manifestBindingError(dbId: number, status: DatabaseProofStatus): string | null {
+    const roots = this.attestation.manifestRootsHex;
+    const position = this.catalog?.databases.findIndex((database) => database.dbId === dbId) ?? -1;
+    if (!roots || position < 0) return null;
+    const attested = roots[position] ?? '';
+    return attestedRootBindsManifest(attested, status.proof?.manifestRootHex ?? '')
+      ? null
+      : `the attested manifest root does not bind database ${dbId}`;
+  }
+
+  private async teardown(): Promise<void> {
+    this.connected = false;
+    this.secureChannel = false;
+    this.catalog = null;
+    this.databaseProofs.clear();
+    this.attestation = { state: 'unattested' };
+    this.operatorIdentity = { state: 'not-checked' };
     const client = this.wasmClient;
-    let outcome: CreditEnablement;
-    if (!client || !client.isConnected) {
-      outcome = { state: 'error', error: 'not connected' };
-    } else if (!this.secureChannelEstablished) {
-      outcome = { state: 'error', error: `${apiKey ? 'API key' : 'credits'} withheld: channel is cleartext` };
-    } else {
-      try {
-        if (apiKey) {
-          await client.presentApiKey(apiKey);
-          outcome = { state: 'api-key' };
-        } else {
-          const state = await client.enableCredits(provider!);
-          outcome = { state: state as CreditEnablement['state'] };
-        }
-      } catch (e) {
-        outcome = { state: 'error', error: (e as Error)?.message ?? String(e) };
-      }
-    }
-    if (outcome.state === 'api-key') {
-      this.log('ORAM: API key accepted; this connection is unmetered', 'info');
-    } else if (outcome.state === 'required') {
-      this.log('ORAM: credits required; metered frames are funded from the wallet', 'info');
-    } else if (outcome.state === 'best-effort') {
-      this.log('ORAM: free while the server has room; paid from the wallet only when it is busy', 'info');
-    } else if (outcome.state === 'error') {
-      this.log(`ORAM: ${apiKey ? 'API key refused' : 'credits could not be enabled'} — ${outcome.error}`, 'error');
-    }
-    this.config.onCredits?.(outcome);
-    return outcome;
-  }
-
-  private summariseAttestation(
-    att: WasmAttestVerification | null,
-    expectedArkFp: Uint8Array | null,
-    policyReqs: WasmPolicyRequirements,
-  ): ServerAttestation {
-    if (!att) return { state: 'mismatch' };
-
-    const allZero = att.serverStaticPub.every((b) => b === 0);
-    const matched = att.sevStatus === 'reportDataMatch';
-    const noSev = att.sevStatus === 'noSevHost';
-    const channelOk = matched || (!this.isStrictVerification() && noSev);
-    let state: ServerAttestation['state'];
-    if (allZero) state = 'plaintext';
-    else if (!channelOk) state = 'mismatch';
-    else state = 'verified';
-
-    const result: ServerAttestation = {
-      state,
-      sevStatus: att.sevStatus,
-      serverStaticPubHex: att.serverStaticPubHex,
-      binarySha256Hex: att.binarySha256Hex,
-      gitRev: att.gitRev,
-      launchMeasurementHex: att.launchMeasurementHex,
-      manifestRootsHex: matched && Array.isArray(att.manifestRootsHex)
-        ? att.manifestRootsHex.map((root) => root.toLowerCase())
-        : undefined,
-    };
-
-    if (state === 'verified' && matched && att.hasVcekChain) {
-      if (expectedArkFp) {
-        try {
-          att.verifyFull(expectedArkFp, policyReqs);
-          result.state = 'verified-vcek';
-          result.vcekChain = 'pass';
-        } catch (e) {
-          result.vcekChain = 'fail';
-          result.vcekChainError = (e as Error)?.message ?? String(e);
-          result.state = 'mismatch';
-          this.log(`ORAM verifyFull failed: ${result.vcekChainError}`, 'error');
-        }
-      } else {
-        result.vcekChain = 'skipped';
-      }
-    } else if (state === 'verified' && matched && !att.hasVcekChain) {
-      result.vcekChain = 'skipped';
-    }
-
-    if (this.isStrictVerification() && result.state !== 'verified-vcek') {
-      result.state = 'mismatch';
-      if (!result.vcekChainError) {
-        result.vcekChainError = expectedArkFp
-          ? 'strict ORAM requires a complete AMD VCEK chain and valid report signature'
-          : 'strict ORAM requires a pinned AMD ARK fingerprint';
-      }
-    }
-
-    const pin = this.config.expectedServerPin;
-    if (this.isStrictVerification()
-        && (!pin?.measurementHex || !pin.binarySha256Hex)) {
-      result.state = 'mismatch';
-      result.pinStatus = !pin?.measurementHex ? 'measurement-mismatch' : 'binary-mismatch';
-      result.pinError = 'strict ORAM requires both launch measurement and binary sha256 pins';
-      return result;
-    }
-    if (pin) {
-      const stateOk = result.state === 'verified' || result.state === 'verified-vcek';
-      if (stateOk) {
-        if (pin.measurementHex && !att.launchMeasurementHex) {
-          result.pinStatus = 'measurement-mismatch';
-          result.pinError = 'attestation omitted the configured launch measurement claim';
-          result.state = 'mismatch';
-        } else if (
-          pin.measurementHex
-          && pin.measurementHex.toLowerCase() !== att.launchMeasurementHex.toLowerCase()
-        ) {
-          result.pinStatus = 'measurement-mismatch';
-          result.pinError = `MEASUREMENT pin mismatch: expected ${pin.measurementHex.slice(0, 16)}..., got ${att.launchMeasurementHex.slice(0, 16)}...`;
-          result.state = 'mismatch';
-        } else if (pin.binarySha256Hex && !att.binarySha256Hex) {
-          result.pinStatus = 'binary-mismatch';
-          result.pinError = 'attestation omitted the configured binary sha256 claim';
-          result.state = 'mismatch';
-        } else if (
-          pin.binarySha256Hex
-          && !pinAcceptsBinary(pin, att.binarySha256Hex)
-        ) {
-          result.pinStatus = 'binary-mismatch';
-          result.pinError = `binary_sha256 pin mismatch: expected ${pin.binarySha256Hex.slice(0, 16)}..., got ${att.binarySha256Hex.slice(0, 16)}...`;
-          result.state = 'mismatch';
-        } else if (pin.measurementHex || pin.binarySha256Hex) {
-          result.pinStatus = 'match';
-        } else {
-          result.pinStatus = 'no-pin';
-        }
-      }
-    } else {
-      result.pinStatus = 'no-pin';
-    }
-    return result;
-  }
-
-  private async verifyOperatorIdentity(
-    att: WasmAttestVerification | null,
-    pin: Uint8Array,
-  ): Promise<OperatorIdentity> {
-    if (!this.wasmClient) {
-      return { state: 'error', error: 'wasm client not initialised' };
-    }
-    if (!att) {
-      return { state: 'error', error: 'attestation unavailable; cannot bind channel key' };
-    }
-    let v: WasmAnnounceVerification;
+    if (!client) return;
+    this.wasmClient = null;
+    // `disconnect()` borrows the native value; await it before `free()`.
     try {
-      v = await this.wasmClient.announce();
-    } catch (e) {
-      const msg = (e as Error)?.message ?? String(e);
-      if (/not configured/i.test(msg)) {
-        this.log('ORAM operator identity not configured', 'info');
-        return { state: 'unconfigured' };
-      }
-      this.log(`ORAM announce failed: ${msg}`, 'error');
-      return { state: 'error', error: msg };
+      await client.disconnect();
+    } catch {
+      /* already closed */
     }
-    try {
-      const nowSecs = trustedNowUnixV1();
-      const maxAge = BigInt(this.config.maxAnnounceAgeSeconds ?? 0);
-      const result = gateOperatorIdentity(v, pin, att.serverStaticPub, nowSecs, maxAge);
-      if (result.state === 'verified') {
-        this.log(`ORAM operator identity verified (${result.serverId})`, 'success');
-      } else {
-        this.log(`ORAM operator identity UNVERIFIED: ${result.error}`, 'error');
-      }
-      return result;
-    } finally {
-      v.free();
-    }
+    client.free();
   }
 
   private setState(state: ConnectionState, message?: string): void {
@@ -800,12 +353,6 @@ export class OramPirClientAdapter {
   private log(msg: string, level: 'info' | 'success' | 'error' = 'info'): void {
     this.config.onLog?.(msg, level);
   }
-}
-
-export function createOramPirClientAdapter(
-  config: OramPirClientConfig,
-): OramPirClientAdapter {
-  return new OramPirClientAdapter(config);
 }
 
 export function splitOramScriptHashBatches<T>(
@@ -818,25 +365,6 @@ export function splitOramScriptHashBatches<T>(
     out.push(items.slice(i, i + max));
   }
   return out;
-}
-
-/**
- * Fixed-size product boundary: one user query must fit one ORAM wire
- * frame. This is checked before the SDK sends anything; callers should run a
- * separate query for another atomic batch, never split one attempt behind
- * the user's back.
- */
-export function requireAtomicOramRequest<T>(
-  items: readonly T[],
-  maxPerRequest: number = DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
-): T[] {
-  const max = resolveMaxScriptHashesPerRequest(maxPerRequest);
-  if (items.length > max) {
-    throw new Error(
-      `atomic ORAM query has ${items.length} real inputs but this deployment profile permits at most ${max} in one request; reduce the query or run a separate batch`,
-    );
-  }
-  return items.slice();
 }
 
 export function planOramScriptHashBatches<T>(

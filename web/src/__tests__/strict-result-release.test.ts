@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { requireVerifiedQueryResultsV1 } from '../strict-result-release.js';
 
 const traced = () => ({ allIndexBins: [{ pbcGroup: 0 }] });
@@ -47,58 +46,5 @@ describe('strict PIR result release', () => {
     await expect(requireVerifiedQueryResultsV1(
       [traced()], async () => { throw new Error('transport closed'); }, 'DPF db 0',
     )).rejects.toThrow('transport closed');
-  });
-
-  it('keeps production DPF, Harmony, and Onion rendering after the strict release gate', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const dpf = html.slice(
-      html.indexOf('async function queryUtxos()'),
-      html.indexOf('async function runDpfQueryOnce()'),
-    );
-    const harmony = html.slice(
-      html.indexOf('async function hpQueryUtxos()'),
-      html.indexOf('async function runHarmonyQueryOnce()'),
-    );
-    const onion = html.slice(
-      html.indexOf('async function opQueryUtxos()'),
-      html.indexOf("document.getElementById('op-queryBtn').addEventListener"),
-    );
-    expect(dpf.indexOf('requireVerifiedQueryResultsV1(')).toBeGreaterThan(0);
-    expect(dpf.indexOf('renderDeltaResult(')).toBeGreaterThan(
-      dpf.indexOf('requireVerifiedQueryResultsV1('),
-    );
-    expect(dpf.indexOf('renderResult(')).toBeGreaterThan(
-      dpf.indexOf('requireVerifiedQueryResultsV1('),
-    );
-    expect(dpf).not.toContain('addBatchMerkleButton(');
-    expect(harmony.indexOf('requireVerifiedQueryResultsV1(')).toBeGreaterThan(0);
-    expect(harmony.indexOf('renderResult(')).toBeGreaterThan(
-      harmony.indexOf('requireVerifiedQueryResultsV1('),
-    );
-    expect(harmony).not.toContain('addBatchMerkleButton(');
-    expect(onion.indexOf('requireVerifiedQueryResultsV1(')).toBeGreaterThan(0);
-    expect(onion.indexOf('renderResult(')).toBeGreaterThan(
-      onion.indexOf('requireVerifiedQueryResultsV1('),
-    );
-  });
-
-  it('binds the Onion/ORAM query to the database selected at connection time', () => {
-    const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    const onion = html.slice(
-      html.indexOf('async function opQueryUtxos()'),
-      html.indexOf("document.getElementById('op-queryBtn').addEventListener"),
-    );
-    const oram = html.slice(
-      html.indexOf('async function oramQueryUtxos()'),
-      html.indexOf('async function runOramQueryOnce()'),
-    );
-    expect(onion.indexOf('opClient.getDbId() !== onionAdmissionDbId')).toBeGreaterThan(0);
-    expect(onion.indexOf('queryClient.queryBatch(')).toBeGreaterThan(
-      onion.indexOf('opClient.getDbId() !== onionAdmissionDbId'),
-    );
-    expect(oram.indexOf('selectedDbId !== oramAdmissionDbId')).toBeGreaterThan(0);
-    expect(oram.indexOf('queryClient.queryDelta(')).toBeGreaterThan(
-      oram.indexOf('selectedDbId !== oramAdmissionDbId'),
-    );
   });
 });

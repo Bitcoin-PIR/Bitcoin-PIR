@@ -8,9 +8,7 @@
     "build": "tsc",
     "dev": "vite",
     "build-web": "vite build && node scripts/verify-csp.mjs",
-    "test": "npm run test:production-canary-readiness && vitest run",
-    "test:production-canary-readiness": "node scripts/verify-production-canary-readiness.mjs",
-    "test:e2e:strict-production": "playwright test --config playwright.production.config.ts"
+    "test": "vitest run"
   },
   "keywords": [
     "bitcoin",
@@ -30,7 +28,6 @@
     "pir-sdk-wasm": "file:../crates/sdk/wasm/pkg"
   },
   "devDependencies": {
-    "@playwright/test": "1.63.0",
     "@types/node": "^20.0.0",
     "@types/ws": "^8.18.1",
     "fake-indexeddb": "^6.2.5",

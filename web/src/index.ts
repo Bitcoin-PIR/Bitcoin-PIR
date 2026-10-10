@@ -137,7 +137,6 @@ export {
 
 export {
   HarmonyPirClientAdapter,
-  createHarmonyPirClientAdapter,
   type HarmonyPirClientConfig,
 } from './harmonypir-adapter.js';
 
@@ -146,10 +145,8 @@ export {
   DEFAULT_ORAM_INDEX_READS_PER_SCRIPT_HASH,
   DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
   OramPirClientAdapter,
-  createOramPirClientAdapter,
   oramJsonResultToQueryResult,
   planOramScriptHashBatches,
-  requireAtomicOramRequest,
   resolveOramBatchPlan,
   splitOramScriptHashBatches,
   type OramBatchPlan,
