@@ -8,7 +8,6 @@
 import {
   K, K_CHUNK, NUM_HASHES,
   MASTER_SEED, CHUNK_MASTER_SEED,
-  SCRIPT_HASH_SIZE,
 } from './constants.js';
 
 import {
@@ -189,21 +188,6 @@ export function cuckooHashInt(chunkId: number, key: bigint, numBins: number): nu
 }
 
 // ─── Merkle sibling integer-keyed hashing ─────────────────────────────────
-
-/** Derive 3 distinct group indices for an integer ID (generic K). */
-export function deriveIntGroups3(id: number, k: number): [number, number, number] {
-  const groups: number[] = [];
-  let nonce = 0n;
-  while (groups.length < 3) {
-    const h = hashChunkForGroup(id, nonce);
-    const group = Number(h % BigInt(k));
-    nonce += 1n;
-    if (!groups.includes(group)) {
-      groups.push(group);
-    }
-  }
-  return groups as [number, number, number];
-}
 
 /** Derive a cuckoo hash function key for a given (masterSeed, groupId, hashFn). */
 export function deriveCuckooKeyGeneric(masterSeed: bigint, groupId: number, hashFn: number): bigint {
@@ -543,13 +527,6 @@ const OPCODES: Record<number, string> = {
   0xb1: 'OP_CLTV', 0xb2: 'OP_CSV',
 };
 
-/** Small number opcode → number (OP_0=0, OP_1..OP_16 = 1..16) */
-function smallNum(op: number): number | null {
-  if (op === 0x00) return 0;
-  if (op >= 0x51 && op <= 0x60) return op - 0x50;
-  return null;
-}
-
 export interface DecompiledOp {
   type: 'opcode' | 'data';
   text: string;       // opcode name or full hex
@@ -590,29 +567,7 @@ export function decompileScript(spkHex: string): DecompiledOp[] {
   return result;
 }
 
-/**
- * Render decompiled ops to a plain-text one-liner (for tooltips, etc.).
- */
-export function decompileScriptText(spkHex: string, maxLen = 120): string {
-  const ops = decompileScript(spkHex);
-  const parts = ops.map(o => o.type === 'data'
-    ? (o.text.length <= 16 ? `<${o.text}>` : `<${o.text.substring(0, 8)}…${o.text.substring(o.text.length - 8)}>`)
-    : o.text);
-  const result = parts.join(' ');
-  if (result.length <= maxLen) return result;
-  return result.substring(0, maxLen - 1) + '…';
-}
-
 // ─── Byte utilities ────────────────────────────────────────────────────────
-
-/** Reverse byte array (for Bitcoin TXID display) */
-export function reverseBytes(data: Uint8Array): Uint8Array {
-  const reversed = new Uint8Array(data.length);
-  for (let i = 0; i < data.length; i++) {
-    reversed[i] = data[data.length - 1 - i];
-  }
-  return reversed;
-}
 
 /** Convert hex string to Uint8Array */
 export function hexToBytes(hex: string): Uint8Array {

@@ -6,7 +6,7 @@
  * and fall back to the TS implementation if not.
  */
 
-import type { DatabaseCatalog, DatabaseCatalogEntry } from './server-info.js';
+import type { DatabaseCatalog } from './server-info.js';
 import type { SyncPlan, SyncStep } from './sync.js';
 import { computeSyncPlan as computeSyncPlanTS } from './sync.js';
 
@@ -121,7 +121,7 @@ interface PirSdkWasm {
    * `pir_sdk_client::announce::parse_announce_response`.
    */
   verifyAnnounceResponse(respPayload: Uint8Array): WasmAnnounceVerification;
-  /** V2-only proof verifier used by strict standalone OnionPIR. */
+  /** V2 proof verifier used by the standalone OnionPIR client. */
   verifyDatabaseProofV2Response(
     responseFrame: Uint8Array,
     catalog: WasmDatabaseCatalog,
@@ -428,12 +428,6 @@ export interface WasmDatabaseProof {
 export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
-  /** Configure one provider before that leg is connected. */
-  setServerUrl(serverIndex: number, url: string): void;
-  /** Connect or disconnect exactly one independently selected provider. */
-  connectServer(serverIndex: number): Promise<void>;
-  disconnectServer(serverIndex: number): Promise<void>;
-  isServerConnected(serverIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Send REQ_ATTEST to one of the connected servers (`serverIndex`
@@ -476,16 +470,10 @@ export interface WasmDpfClient {
    *  otherwise). On handshake failure both connections are dropped —
    *  call `connect` again to retry. */
   upgradeToSecureChannel(pub0: Uint8Array, pub1: Uint8Array): Promise<void>;
-  /** Upgrade one staged provider without touching the peer leg. */
-  upgradeServerToSecureChannel(serverIndex: number, serverStaticPub: Uint8Array): Promise<void>;
   /** Populate the native-side catalog so subsequent `queryBatchVerified` calls
    * can resolve `db_id`
    * against an in-memory catalog. Returns the freshly fetched catalog. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
-  /** Fetch the catalog from one staged provider. The second catalog must be
-   *  query-compatible with the first before the native client accepts it;
-   *  display names, ordering, and peer-only entries do not affect matching. */
-  fetchCatalogFromServer(serverIndex: number): Promise<WasmDatabaseCatalog>;
   /** Fetch and verify an attested-builder database proof against the
    * native catalog. Optional string policy pins may be `undefined` or empty.
    * Mainnet network magic is always enforced by the WASM method. */
@@ -495,25 +483,13 @@ export interface WasmDpfClient {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
-  verifyDatabaseProofFromServer(
-    serverIndex: number,
-    dbId: number,
-    expectedParamsHashHex?: string | null,
-    allowedBuilderBinarySha256Hex?: string | null,
-    allowedBuilderGitCommit?: string | null,
-  ): Promise<WasmDatabaseProof>;
-  /** Switch the native client between advisory roots and the fail-closed
-   * policy that requires a proof-installed root for every queried DB. */
-  setRequireVerifiedDatabaseRoots(requireVerified: boolean): void;
-  /** Consume the exact live proof handle returned by `verifyDatabaseProof`.
-   * The caller must complete the TypeScript production-pin comparison first
-   * and must not call `free()` after ownership transfers here. */
+  /** Install the roots of a proof from `verifyDatabaseProof`; queries then
+   * check the Merkle tree-tops against them. Takes ownership of `proof`. */
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
-  /** Fetch and bind this DB's Merkle tree-tops to the installed proof root. */
+  /** Check this DB's Merkle tree-tops against the installed proof root. */
   preflightDatabase(dbId: number): Promise<void>;
-  /** Release-safe inspector query. Native code binds each result to the
-   * exact input order and db, verifies every INDEX/CHUNK bin, and rejects
-   * the whole batch before exposing handles if any proof fails. */
+  /** Query with inspector state: one result per input, each with the bins
+   * it probed and its own `merkleVerified`. */
   queryBatchVerified(scriptHashes: Uint8Array, dbId: number): Promise<WasmQueryResult[]>;
   /** Register a JS callback for every `ConnectionState` transition; the
    * callback receives a single string (`"connecting"` / `"connected"` /
@@ -554,13 +530,6 @@ interface WasmSyncPlan {
 export interface WasmHarmonyClient {
   free(): void;
   readonly isConnected: boolean;
-  /** Provider 0 is the independently priced hint workload; provider 1 is
-   *  the per-query workload. Either role may be configured/connected first
-   *  without disclosing the peer selection. */
-  setProviderUrl(providerIndex: number, url: string): void;
-  connectProvider(providerIndex: number): Promise<void>;
-  disconnectProvider(providerIndex: number): Promise<void>;
-  isProviderConnected(providerIndex: number): boolean;
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Same as `WasmDpfClient.attest`. `serverIndex` 0 = hint server,
@@ -590,13 +559,11 @@ export interface WasmHarmonyClient {
   /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
    *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
-  upgradeProviderToSecureChannel(providerIndex: number, serverStaticPub: Uint8Array): Promise<void>;
   /** Fetch + cache the database catalog over the WASM client's
    *  internal connection. Returns a `WasmDatabaseCatalog` handle the
    *  caller can pass back into `fetchHintsWithProgress` / `loadHints`
    *  / `fingerprint`. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
-  fetchCatalogFromProvider(providerIndex: number): Promise<WasmDatabaseCatalog>;
   /** Same as `WasmDpfClient.verifyDatabaseProof`. */
   verifyDatabaseProof(
     dbId: number,
@@ -604,18 +571,9 @@ export interface WasmHarmonyClient {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
-  verifyDatabaseProofFromProvider(
-    providerIndex: number,
-    dbId: number,
-    expectedParamsHashHex?: string | null,
-    allowedBuilderBinarySha256Hex?: string | null,
-    allowedBuilderGitCommit?: string | null,
-  ): Promise<WasmDatabaseProof>;
-  /** Same strict root-policy switch as `WasmDpfClient`. */
-  setRequireVerifiedDatabaseRoots(requireVerified: boolean): void;
-  /** Consume a pin-matched `WasmDatabaseProof` and install its roots. */
+  /** Same as `WasmDpfClient.installVerifiedDatabaseProof`. */
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
-  /** Fetch and bind this DB's Merkle tree-tops before any address query. */
+  /** Same as `WasmDpfClient.preflightDatabase`. */
   preflightDatabase(dbId: number): Promise<void>;
   serverUrls(): [string, string];
   /** Returns the active `db_id`, or `undefined` if no hints are loaded. */
@@ -675,8 +633,7 @@ export interface WasmHarmonyClient {
     dbId: number,
     progress: (event: { done: number; total: number; phase: string }) => void,
   ): Promise<void>;
-  /** Fetch the restart-safe paid resource: all main and Merkle-sibling hints.
-   *  Strict tree-top preflight must already have completed. */
+  /** Fetch all main and Merkle-sibling hints, so the set can be cached. */
   fetchCompleteHintsWithProgress(
     catalog: WasmDatabaseCatalog,
     dbId: number,
@@ -1325,53 +1282,6 @@ function requireSdkForMerkle(): PirSdkWasm {
     );
   }
   return sdkWasm;
-}
-
-/** SDK-backed SHA-256 (matches `pir_core::merkle::sha256`). */
-export function sdkBucketMerkleSha256(data: Uint8Array): Uint8Array {
-  return requireSdkForMerkle().bucketMerkleSha256(data);
-}
-
-/** SDK-backed bin leaf hash: `SHA256(bin_index_u32_LE || bin_content)`. */
-export function sdkBucketMerkleLeafHash(
-  binIndex: number,
-  binContent: Uint8Array,
-): Uint8Array {
-  return requireSdkForMerkle().bucketMerkleLeafHash(binIndex, binContent);
-}
-
-/**
- * SDK-backed arity-N parent hash. Takes an array of 32-byte child hashes
- * (length = arity) and returns `SHA256(child_0 || child_1 || …)`. Flattens
- * the input before handing it to WASM.
- */
-export function sdkBucketMerkleParentN(children: Uint8Array[]): Uint8Array {
-  const flat = new Uint8Array(children.length * 32);
-  for (let i = 0; i < children.length; i++) flat.set(children[i], i * 32);
-  return requireSdkForMerkle().bucketMerkleParentN(flat);
-}
-
-/**
- * SDK-backed XOR of two equal-length buffers. Returns an empty `Uint8Array`
- * on length mismatch (so the caller can surface it as a verification failure).
- */
-export function sdkXorBuffers(a: Uint8Array, b: Uint8Array): Uint8Array {
-  return requireSdkForMerkle().xorBuffers(a, b);
-}
-
-/**
- * Parse a per-bucket Merkle tree-tops blob (payload of `REQ_BUCKET_MERKLE_TREE_TOPS`,
- * excluding the variant byte). Returns an opaque `WasmBucketMerkleTreeTops`
- * handle that can be passed to `sdkVerifyBucketMerkleItem` repeatedly.
- *
- * Remember to call `.free()` on the returned handle when done (or lean on a
- * `FinalizationRegistry`). Callers should wrap verification in
- * `try { … } finally { handle.free(); }` to avoid leaking WASM allocations.
- */
-export function sdkParseBucketMerkleTreeTops(
-  data: Uint8Array,
-): WasmBucketMerkleTreeTops {
-  return requireSdkForMerkle().WasmBucketMerkleTreeTops.fromBytes(data);
 }
 
 /**

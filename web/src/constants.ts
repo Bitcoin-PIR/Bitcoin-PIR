@@ -178,8 +178,3 @@ export const BUCKET_MERKLE_ARITY = 8;
 
 /** Each flat sibling row: arity × 32B child hashes */
 export const BUCKET_MERKLE_SIB_ROW_SIZE = BUCKET_MERKLE_ARITY * 32; // 256
-
-// ─── Default server URLs ───────────────────────────────────────────────────
-
-export const DEFAULT_SERVER0_URL = 'wss://weikeng1.bitcoinpir.org';
-export const DEFAULT_SERVER1_URL = 'wss://bitcoin-pir-weikeng-laptop.chenweikeng.com';

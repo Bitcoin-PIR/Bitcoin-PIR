@@ -35,7 +35,6 @@ import {
 
 export const X402_VERSION = 2;
 export const X402_NETWORK_MAINNET = 'lnbtc:000000000019d6689c085ae165831e93';
-export const X402_NETWORK_TESTNET = 'lnbtc:000000000933ea01ad0ee984209779ba';
 export const X402_DOMAIN_HTTP1 = 'x402:exact:lnbtc:bolt11:http:1';
 export const CREDENTIALS_PATH = '/v2/credentials';
 /** Tolerated clock difference for the invoice creation time (spec default). */

@@ -102,17 +102,6 @@ export function getAmdTurinArkFingerprint(): Uint8Array {
   return cachedArkFingerprint;
 }
 
-/** [`getAmdTurinArkFingerprint`] for the Milan ARK. */
-let cachedMilanArkFingerprint: Uint8Array | null = null;
-export function getAmdMilanArkFingerprint(): Uint8Array {
-  if (cachedMilanArkFingerprint) return cachedMilanArkFingerprint;
-  cachedMilanArkFingerprint = checkedWasmArkFingerprint(
-    'milanArkFingerprint',
-    requireSdkWasm().milanArkFingerprint(),
-    AMD_MILAN_ARK_FINGERPRINT_HEX,
-  );
-  return cachedMilanArkFingerprint;
-}
 
 /**
  * @deprecated Use [`getAmdTurinArkFingerprint`] instead. This eager

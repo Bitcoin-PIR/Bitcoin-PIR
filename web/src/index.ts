@@ -57,7 +57,6 @@ export {
   deriveChunkGroups,
   deriveChunkCuckooKey,
   cuckooHashInt,
-  deriveIntGroups3,
   deriveCuckooKeyGeneric,
   sha256,
   ripemd160,
@@ -65,9 +64,7 @@ export {
   scriptPubKeyToAddress,
   addressToScriptPubKey,
   decompileScript,
-  decompileScriptText,
   type DecompiledOp,
-  reverseBytes,
   hexToBytes,
   bytesToHex,
 } from './hash.js';
@@ -80,8 +77,6 @@ export {
   CHUNK_SLOTS_PER_BIN, CHUNK_CUCKOO_NUM_HASHES,
   DPF_N, CHUNK_DPF_N,
   HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
-  DEFAULT_SERVER0_URL,
-  DEFAULT_SERVER1_URL,
   BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
   REQ_BUCKET_MERKLE_SIB_BATCH, RESP_BUCKET_MERKLE_SIB_BATCH,
   REQ_BUCKET_MERKLE_TREE_TOPS, RESP_BUCKET_MERKLE_TREE_TOPS,
@@ -124,9 +119,7 @@ export {
 } from './credits.js';
 
 export {
-  computeDataHash,
   computeParentN,
-  computeBinLeafHash,
 } from './merkle.js';
 
 export {
