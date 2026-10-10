@@ -279,9 +279,11 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
+ "k256",
  "pir-attest-verify",
  "pir-core",
  "pir-db-attest",
+ "pir-directory-nostr",
  "pir-identity",
  "pir-sdk-client",
  "sha2",
@@ -1555,6 +1557,20 @@ dependencies = [
  "rootbundle",
  "sha2",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pir-directory-nostr"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "ed25519-dalek",
+ "futures",
+ "getrandom 0.2.17",
+ "k256",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
