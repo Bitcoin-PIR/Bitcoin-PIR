@@ -142,23 +142,22 @@ export function pinAcceptsBinary(
 /**
  * weikeng2.bitcoinpir.org — the Direct ORAM host since 2026-10-02: VPSBG
  * server 26939, an AMD EPYC 7713P (Milan), so its reports chain to the
- * Milan ARK and must meet AMD_MILAN_SEV_SNP_FLOOR. Tier 3 SNP-sealed UKI
- * image 359 (r10, source `64067cc9`, kernel 6.17.0-23, built on pir1),
- * sealed generation 10 as `pir2-oram-v1`: Observe/Enroll/Probe/Probe/Ready
- * with the pir2 operator key. It runs `unified_server --oram-only` (no DPF,
- * HarmonyPIR or OnionPIR tables; the attested root is the tagged ORAM-only
- * root), builds Direct ORAM from hash-checked in-memory inputs, and serves
- * it free while the guest has room (credits otherwise).
+ * Milan ARK and must meet AMD_MILAN_SEV_SNP_FLOOR. Tier 3 runtime UKI image
+ * 375 (r11, source `987fad2f`, kernel 6.17.0-23, built on pir1) with no
+ * server identity: a fresh channel key every boot, bound by the report. It
+ * runs `unified_server --oram-only` (no DPF, HarmonyPIR or OnionPIR tables;
+ * the attested root is the tagged ORAM-only root), builds Direct ORAM from
+ * hash-checked in-memory inputs, and serves it free on a best-effort lane.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
-  // MEASUREMENT read back from the signed Observe report (ordinal 71), equal
-  // to the offline prediction for this UKI + pinned OVMF on 4 Milan vCPUs;
-  // binary_sha256 is the stripped unified_server baked into image 359.
+  // MEASUREMENT is the offline sev-snp-measure prediction for this UKI +
+  // pinned OVMF on 4 Milan vCPUs, equal to the chip-signed report after the
+  // switch; binary_sha256 is the stripped unified_server baked into image 375.
   measurementHex:
-    '4271e56548b2c968e28bd0eedf35fb3a4684075de52e84943b904b7bcdda3e2046b9332c4c580705fd759eb8bfbaba0d',
+    'a5df91087a4781c675a337d6b6403650dac17225f9a72d9f5fe549aeff042087b007df42c33db4a46aef0b7996274a04',
   binarySha256Hex:
-    '03cafc89a3088836e9a775f6899d91b44110bf6331440515e93fd50c8cfe67a6',
-  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, sealed Tier 3 image 359: Direct ORAM only, best-effort free)',
+    '6ebb7f47097081e1840fdd7a9938349930dde9da6a54434398fa83fda7dc92e1',
+  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, Tier 3 image 375: Direct ORAM only, best-effort free)',
 };
 
 /**
@@ -191,15 +190,17 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // Live hashed unified_server from the Flow D rebuild of 197511f8
-  // (streaming manifest hash #362, half-hint pricing #364, operator API
-  // keys #365). Access policy --require-credits --access dpf=best-effort:2
-  // --access harmony=best-effort:1:1500000: DPF is free while pir1 has
-  // room, HarmonyPIR hints are free up to 1.5M gas per hour, OnionPIR is
-  // paid.
+  // unified_server from the Flow D rebuild of 987fad2f (Phase 1
+  // consolidation, #403–#418), `--locked --release` + strip. Access policy
+  // --require-credits --access dpf=best-effort:2 --access
+  // harmony=best-effort:1:1500000: DPF is free while pir1 has room,
+  // HarmonyPIR hints are free up to 1.5M gas per hour, OnionPIR is paid.
   binarySha256Hex:
+    'b9f1be2f56d1d0d6a9f501a259ba118cbce91d66c86537037270cf8976a67a6d',
+  // The 197511f8 build pir1 runs until the Flow D switch.
+  transitionBinarySha256Hex:
     'f472cff57077201a7e95e3375f1f7e9c7ad291946d44e9a6fdd1df1ded393f91',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 197511f8: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR paid; operator API keys)',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 987fad2f: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR paid; operator API keys)',
 };
 
 /**
