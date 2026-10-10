@@ -19,7 +19,6 @@ pir-sdk-client = { path = "../../crates/sdk/client" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-attest-verify = { path = "../../crates/trust/attest-verify" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
-pir-private-files = { path = "../../crates/security/private-files" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
 
 clap = { version = "4", features = ["derive"] }
@@ -35,7 +34,6 @@ serde_json = { version = "1", features = ["raw_value"] }
 rustix = { version = "1", features = ["fs", "net", "process"] }
 zeroize = "1"
 sha2 = "0.10"
-sev = { version = "7", default-features = false, features = ["snp", "crypto_nossl"] }
 tempfile = "3"
 
 [dev-dependencies]

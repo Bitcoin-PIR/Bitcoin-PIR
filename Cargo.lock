@@ -305,7 +305,6 @@ dependencies = [
  "pir-core",
  "pir-db-attest",
  "pir-identity",
- "pir-private-files",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",
@@ -313,7 +312,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sev",
  "sha2",
  "tempfile",
  "tokio",
@@ -1746,11 +1744,9 @@ dependencies = [
 name = "pir-runtime-core"
 version = "0.1.0"
 dependencies = [
- "chacha20poly1305",
  "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
- "hkdf",
  "libc",
  "libdpf",
  "memmap2",
@@ -1758,16 +1754,13 @@ dependencies = [
  "pir-channel",
  "pir-core",
  "pir-identity",
- "pir-private-files",
  "rand_core",
  "rayon",
  "serde",
- "sev",
  "sha2",
  "tempfile",
  "toml",
  "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]

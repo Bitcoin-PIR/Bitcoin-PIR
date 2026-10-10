@@ -71,7 +71,7 @@ the egress part is charged after the response is known.
 | Direct ORAM lookup | 2 ms × padded script-hash slots | 2 per slot (provisional) |
 
 Everything else (info, ping, attest, handshake, announce, catalog, DB
-proofs, sealed receipts, admin, the presentation itself) is free.
+proofs, admin, the presentation itself) is free.
 
 ### Measurements (2026-09-09)
 
@@ -86,7 +86,7 @@ agreed within 1%.
 | DPF (per server) | 7.7 s | INDEX 1.4, CHUNK 4.6, nine sibling passes 1.8; 18.4 GB scanned; the fit lands 18% above the measured sibling total |
 | OnionPIR | 664 s | key registration 0.2, INDEX 197, CHUNK 403, three sibling queries 63; twelve threads busy for 55 s |
 | HarmonyPIR hint side | 142 s per fresh client | one pool-entry regeneration 130 (the docs' 136), six on-demand sibling sets 13 |
-| HarmonyPIR query side, Direct ORAM | not measured (pir2 is sealed) | analytical: ~50 ms of random reads per HarmonyPIR lookup; ~0.3 MB of AEAD and hash I/O per ORAM address |
+| HarmonyPIR query side, Direct ORAM | not measured | analytical: ~50 ms of random reads per HarmonyPIR lookup; ~0.3 MB of AEAD and hash I/O per ORAM address |
 
 Egress per lookup: DPF 9.6 MB, OnionPIR 6.5 MB down and 15 MB up,
 HarmonyPIR 131 MB for a fresh client. A HarmonyPIR pool entry serves 532
@@ -146,7 +146,7 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 
 | Flag | Effect |
 | --- | --- |
-| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--credit-issuer-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*` or the sealed pir2 identity) to sign redeem requests. |
+| `--credit-issuer-url URL` | Enable credits. `https://` (or `http://` on loopback for tests). Presentations go to `URL/v2/redeem`; `URL/v2/info` supplies the gas parameters at startup (the built-in 2026-09 set applies when it is unreachable). Needs at least one `--credit-issuer-pubkey FILE`: redeem answers are signed by that key. Needs the server identity (`--identity-*`) to sign redeem requests. |
 | `--credit-issuer-pubkey FILE` | The issuer's Ed25519 public key (32 raw bytes or 64 hex characters), repeatable; redeem answers must verify under one of them. |
 | `--credit-server-id ID` | Name the server settles under at the issuer; defaults to the identity certificate's server id. |
 | `--require-credits` | Default every backend to `paid`: charge metered frames to the connection balance and refuse uncovered ones. Without it every backend defaults to `free`. |
@@ -158,8 +158,8 @@ OnionPIR web client uses `CreditedChannel` in `web/src/credits.ts`):
 Redeem requests are signed by the server's identity key and carry its
 operator-signed certificate; answers are signed by the issuer key over the
 request nonce, so a CDN or proxy between the two cannot grant gas. The
-transport is HTTPS with the Mozilla roots compiled in (no CA files on the
-sealed pir2 guest). One issuer call has a 15-second budget and one retry
+transport is HTTPS with the Mozilla roots compiled in (no CA files on a
+TEE guest). One issuer call has a 15-second budget and one retry
 with the same nonce.
 
 ## Access policy

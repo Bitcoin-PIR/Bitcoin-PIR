@@ -92,7 +92,7 @@ impl CreditsV1 {
         }
         let Some((identity_key, cert)) = identity else {
             return Err(
-                "--credit-issuer-url needs the server identity (--identity-key-path, --identity-cert-path, --identity-server-id, or the sealed pir2 identity) to sign redeem requests"
+                "--credit-issuer-url needs the server identity (--identity-key-path, --identity-cert-path, --identity-server-id) to sign redeem requests"
                     .to_owned(),
             );
         };

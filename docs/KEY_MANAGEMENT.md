@@ -10,27 +10,16 @@ Both are git-ignored (see `.gitignore`) and must never be committed.
 | --- | --- |
 | `pir1-operator.key` | pir1 provider-operator Ed25519 seed |
 | `pir1-server-identity.key` | pir1 server identity Ed25519 seed |
-| `pir2-operator.key` | pir2 provider-operator Ed25519 seed (used by `pir2-sealed-release`) |
+| `pir2-operator.key` | pir2 provider-operator Ed25519 seed |
 | `vpsbg-ssh.key` | SSH Ed25519 key for the VPSBG Ubuntu host |
 
 Key files of the retired Payment V1 roles (policy, clearing, issuer, BAT,
 quote, redeem) may still exist locally; nothing in the repository reads them.
 
-### `.keys/pir2-ceremony/` — sealed ceremony artifacts
-
-Subdirectory holding AMD certs (ARK/ASK/VCEK PEMs), per-generation
-`release.bin`, `credentials.envelope.bin`, `identity.cert`, and
-per-ordinal `startup.env` files.
-
-The owner identity-authority activation certificate and the sealed runtime
-certificate are different wire artifacts. `GenerationBoundIdentityCertV2`
-belongs to the owner authority store and is not accepted at the runtime
-`identity.cert` path. The current sealed runtime requires a legacy
-`IdentityCert` V1 signed for the same enrolled identity public key. Its
-`server_id` must be copied from the signature-verified sealed `release.bin`
-`stable_server_id`; do not infer that value from the authority-store record.
-Keep both certificates because the V2 artifact proves the reserved generation
-activation while the V1 artifact is the runtime compatibility certificate.
+`.keys/pir2-ceremony/` holds the artifacts of the retired sealed-identity
+release (AMD certs, `release.bin`, `credentials.envelope.bin`,
+`identity.cert`, `startup.env`). Nothing in the repository reads them; keep
+them while a rollback to a sealed image is possible.
 
 ## `.secrets/` — API tokens
 
@@ -78,7 +67,5 @@ tens of seconds to settle. Always re-read the nested `state.running` value
 before concluding the final power state; never infer it from the first
 snapshot or from the HTTP response alone.
 
-A sealed `startup.env` must be placed at
-`/home/pir/data/pir2-sealed/startup.env` through this data-disk window.
 Never build a dedicated "provisioner UKI" to write files to the data
 disk; that approach was tried, judged an error, and removed.

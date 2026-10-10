@@ -24,8 +24,7 @@ mutations into one argv. Inside an authorized campaign, keep going.
 | Publish www.bitcoinpir.org | C |
 | Restart or rebuild Hetzner | D |
 | New **runtime** pir2 UKI / switch / rollback | E |
-| Edit `/home/pir/data/` or place `startup.env` | F |
-| Sealed Observe / Enroll / Probe / Ready | G |
+| Edit `/home/pir/data/` | F |
 | New DB / DPF / Harmony / Onion / ORAM proofs / pins | H (producer scope: attested-builder README; UKI: ATTESTED_BUILDER_TIER3_UKI.md) |
 
 Before a long step, state the duration, hard stop, and progress signal
@@ -33,8 +32,8 @@ from the workload table on that page.
 
 ## Commands the flows already own
 
-Status, images, UKI, measured-boot, data-disk, post-switch check, sealed
-phase/release, and Pages dispatch are listed in
+Status, images, UKI, measured-boot, data-disk, post-switch check, and
+Pages dispatch are listed in
 Production operations. Copy commands from the matching flow; do not
 invent issuer deploy, keygen, funds, or image delete.
 

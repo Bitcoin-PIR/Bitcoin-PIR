@@ -187,4 +187,4 @@ else
   echo 'PASS host=oram'
 fi
 echo 'PASS production_status'
-echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md, and the ORAM host only through Flows E-G, after this run is authorized'
+echo 'NEXT_STEP=change the pir2 MacBook node only through docs/runbooks/pir2-macbook-replacement.md, and the ORAM host only through Flows E-F, after this run is authorized'

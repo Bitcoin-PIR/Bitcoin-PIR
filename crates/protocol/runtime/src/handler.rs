@@ -210,12 +210,6 @@ impl RequestHandler {
                         .into(),
                 ),
             },
-            // Ready evidence is loaded by the unified_server binary from
-            // the sealed pir2 startup flags; the stateless handler has none.
-            Request::Pir2SealedReceiptGet { .. } => Response::Error(
-                "pir2 sealed receipts are served only by the unified_server's per-connection path"
-                    .into(),
-            ),
             // Credits need the per-connection balance and the issuer client
             // that only the unified_server owns.
             Request::CreditPresent { .. } => Response::Error(

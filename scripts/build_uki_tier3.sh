@@ -63,7 +63,6 @@ fi
 CUSTOM_INITRD=/tmp/bpir-tier3-initrd.img
 TIER3_INITRD_COMPRESSION=zstd
 TIER3_INITRD_MAGIC=28b52ffd
-TIER3_MAX_UKI_BYTES=$((256 * 1024 * 1024))
 # Only the three modules in --add below belong to the production runtime UKI.
 # Omit dracut modules that may be installed globally by maintenance, builder,
 # or retired release work. The generic drm module pulls host GPU firmware into
@@ -194,14 +193,8 @@ fi
 echo "SEV modules: $REQUIRED_SEV_MODS — all found in $SEV_MODULES_DIR"
 
 # ─── Install dracut modules ────────────────────────────────────────────────
-# Same pattern as build_uki.sh: copy module dirs into dracut's search
-# path with mtime preservation so --reproducible can produce a
-# byte-deterministic cpio.
-#
-# Note: 95bpir-verify is intentionally NOT installed in Tier 3 — its
-# job (verify on-disk binary against cmdline pin) is moot when the
-# binary lives inside the UKI itself (covered directly by MEASUREMENT,
-# no transitive pin needed).
+# Copy module dirs into dracut's search path with mtime preservation so
+# --reproducible can produce a byte-deterministic cpio.
 for mod in 96bpir-cloudflared 96bpir-unified-server 97bpir-tier3-init; do
     src="$DRACUT_MODULE_DIR/$mod"
     dst="/usr/lib/dracut/modules.d/$mod"
@@ -364,15 +357,6 @@ for expected in "${REQUIRED_TIER3_ITEMS[@]}"; do
 done
 echo "Direct ORAM supervisor, runit hooks, binaries, and BHTM proof confirmed in initramfs"
 
-# The pir2 sealed profile derives both long-lived signing seeds inside the
-# measured guest.  A plaintext identity seed in the UKI would bypass that
-# boundary even if the runtime never selected it, so inventory rejects the old
-# fallback path unconditionally.
-if grep -Eq -- 'etc/bitcoinpir/identity/server\.key$' <<< "$INITRD_LISTING"; then
-    echo "ERROR: private identity key must not be embedded in the Tier 3 UKI" >&2
-    exit 1
-fi
-
 # No admission policy or payment artifact is embedded in the runtime UKI.
 # Access control lives outside the measured image (see docs/CREDITS.md).
 if grep -Eq -- 'etc/bitcoinpir/payment/' <<< "$INITRD_LISTING"; then
@@ -407,13 +391,6 @@ ukify build \
 # ─── Report ────────────────────────────────────────────────────────────────
 SIZE=$(du -h "$OUT" | cut -f1)
 UKI_BYTES=$(stat -c '%s' "$OUT")
-if [ "$UKI_BYTES" -gt "$TIER3_MAX_UKI_BYTES" ]; then
-    echo "ERROR: Tier 3 UKI exceeds the sealed-release input limit" >&2
-    echo "  limit: $TIER3_MAX_UKI_BYTES bytes" >&2
-    echo "  actual: $UKI_BYTES bytes" >&2
-    echo "  refusing archive; inspect the initramfs inventory" >&2
-    exit 1
-fi
 UKI_SHA=$(sha256sum "$OUT" | awk '{print $1}')
 echo
 echo "wrote tier3 UKI:          $OUT (${SIZE}, $UKI_BYTES bytes)"

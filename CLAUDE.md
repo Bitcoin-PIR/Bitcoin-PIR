@@ -60,7 +60,7 @@ cd web && npm run build && npm test
 - Hosts: pir1 (Hetzner, DPF-0 + OnionPIR + Harmony hint); pir2, since
   2026-10-01 a MacBook without a TEE (DPF-1 + Harmony query; Flow I); and
   since 2026-10-03 the Direct ORAM TEE host weikeng2 (VPSBG server 26939,
-  AMD Milan SEV-SNP, `--oram-only`; Flows E–G). All operations route through
+  AMD Milan SEV-SNP, `--oram-only`; Flows E–F). All operations route through
   `docs/PRODUCTION_OPERATIONS.md` and its runbooks — never improvise from
   memory or old documents.
 - Production binaries are bare-Cargo builds (`--locked --release -p runtime`,

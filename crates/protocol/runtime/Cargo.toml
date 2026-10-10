@@ -22,7 +22,6 @@ pir-channel = { version = "0.1.0", path = "../channel" }
 # server-side I/O wrapper (loading the identity key + cert from disk,
 # building the per-boot ChannelManifest) lives in `crate::identity`.
 pir-identity = { version = "0.1.0", path = "../../trust/identity" }
-pir-private-files = { version = "0.1.0", path = "../../security/private-files" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 memmap2 = "0.9"
 rayon = "1.10"
@@ -35,16 +34,7 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 getrandom = "0.2"
 parking_lot = "0.12"
 sha2 = "0.10"
-hkdf = { version = "0.12", default-features = false }
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-zeroize = { version = "1", features = ["zeroize_derive"] }
 hex = "0.4"
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# The typed guest firmware API keeps the message-version-1 derived-key ABI in
-# one reviewed upstream definition. The runtime never relies on sev's default
-# (currently message version 2).
-sev = { version = "7", default-features = false, features = ["snp"] }
 
 [dev-dependencies]
 tempfile = "3"
