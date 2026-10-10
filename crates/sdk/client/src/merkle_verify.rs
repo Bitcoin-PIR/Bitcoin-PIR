@@ -32,12 +32,11 @@
 //!
 //! ## Trust model (what "verified" means here)
 //!
-//! In advisory mode, the per-group roots come from the server's tree-tops
-//! blob and prove internal consistency only. When a client explicitly installs
+//! Without an installed root, the per-group roots come from the server's
+//! tree-tops blob and prove internal consistency only. When a client installs
 //! [`crate::VerifiedDatabaseRoots`], the SDK first checks the exact ordered
 //! root list against its attested `bucket_super_root` and caches the tree-tops
-//! only after that binding succeeds. [`crate::RootPolicy::RequireVerified`]
-//! additionally refuses queries for databases without installed roots.
+//! only after that binding succeeds.
 
 use crate::protocol::decode_error_response_message;
 use crate::transport::PirTransport;

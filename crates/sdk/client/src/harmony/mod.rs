@@ -40,12 +40,11 @@ pub(crate) use crate::merkle_verify::{
     TreeTop, BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 pub(crate) use crate::protocol::{
-    decode_catalog, decode_error_response_message, encode_request, ensure_catalog_query_compatible,
-    reject_error_response, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
+    decode_catalog, decode_error_response_message, encode_request, reject_error_response,
+    REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 pub(crate) use crate::transport::PirTransport;
-pub(crate) use crate::verified_query::VerifiedQueryResult;
-pub(crate) use crate::verified_roots::{RootPolicy, VerifiedRootState};
+pub(crate) use crate::verified_roots::VerifiedRootState;
 pub(crate) use async_trait::async_trait;
 pub(crate) use harmonypir::remote::{PrpBackend, RemoteClient as HarmonyGroup};
 pub(crate) use pir_core::params::{
@@ -270,9 +269,7 @@ pub struct HarmonyClient {
     verified_tree_tops: HashMap<u8, Vec<TreeTop>>,
     /// If true, use V2 hint protocol: server generates the PRP key.
     /// Default: true for new clients. Set to false for V1 fallback
-    /// (client generates key, sends in request) on ungated legacy sessions.
-    /// A granted Payment V1 V2Full operation always follows its exact wire
-    /// contract and does not consult this compatibility preference.
+    /// (client generates key, sends in request) on legacy servers.
     use_v2_protocol: bool,
 }
 

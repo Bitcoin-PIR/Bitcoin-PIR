@@ -30,8 +30,8 @@
 mod common;
 
 use pir_sdk_client::{
-    DatabaseProofPolicy, DpfClient, HarmonyClient, PirClient, PirError, QueryResult, RootPolicy,
-    ScriptHash, SyncResult, VerifiedDatabaseRoots, WsConnection,
+    DatabaseProofPolicy, DpfClient, HarmonyClient, PirClient, PirError, QueryResult, ScriptHash,
+    SyncResult, VerifiedDatabaseRoots, WsConnection,
 };
 
 /// Default to the public deployment so CI — and contributors who haven't
@@ -725,7 +725,6 @@ async fn test_dpf_strict_production_canary() {
     }
 
     let mut client = DpfClient::new(&dpf_server0_url(), &dpf_server1_url());
-    client.set_root_policy(RootPolicy::RequireVerified);
     client.connect().await.expect("strict DPF connect failed");
     let catalog = client
         .fetch_catalog()
@@ -825,7 +824,6 @@ async fn test_dpf_strict_production_canary() {
         !client.is_connected(),
         "DPF remained connected after disconnect"
     );
-    assert_eq!(client.root_policy(), RootPolicy::RequireVerified);
     for pin in PRODUCTION_DATABASE_PINS {
         assert!(
             client.verified_database_roots(pin.db_id).is_none(),
@@ -894,7 +892,6 @@ async fn test_harmony_strict_production_canary() {
     }
 
     let mut client = HarmonyClient::new(&harmony_hint_url(), &harmony_query_url());
-    client.set_root_policy(RootPolicy::RequireVerified);
     client
         .connect()
         .await
@@ -1005,7 +1002,6 @@ async fn test_harmony_strict_production_canary() {
         !client.is_connected(),
         "HarmonyPIR remained connected after disconnect",
     );
-    assert_eq!(client.root_policy(), RootPolicy::RequireVerified);
     for pin in PRODUCTION_DATABASE_PINS {
         assert!(
             client.verified_database_roots(pin.db_id).is_none(),
@@ -1115,7 +1111,6 @@ mod onion_tests {
         }
 
         let mut client = OnionClient::new(&onion_url());
-        client.set_root_policy(RootPolicy::RequireVerified);
         client
             .connect()
             .await
@@ -1228,7 +1223,6 @@ mod onion_tests {
             !client.is_connected(),
             "OnionPIR remained connected after disconnect",
         );
-        assert_eq!(client.root_policy(), RootPolicy::RequireVerified);
         for pin in PRODUCTION_DATABASE_PINS {
             assert!(
                 client.verified_database_roots(pin.db_id).is_none(),

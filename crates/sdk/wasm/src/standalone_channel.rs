@@ -6,7 +6,6 @@
 //! TypeScript to send the resulting frames over the exact WebSocket used by
 //! the SEAL protocol. No channel key or ephemeral secret crosses into JS.
 
-use js_sys::Uint8Array;
 use pir_channel::{ClientHandshake, Direction, Session};
 use wasm_bindgen::prelude::*;
 use zeroize::Zeroizing;

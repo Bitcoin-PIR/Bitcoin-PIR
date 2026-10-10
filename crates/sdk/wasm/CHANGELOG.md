@@ -7,8 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `queryBatchVerified` returns one result per input with its own
+  `merkleVerified` instead of rejecting the batch when a proof fails.
+- `merkleVerified` is a plain field: `fromJson` reads it, `toJson`, sync JSON
+  and `queryBatch` JSON emit the real value, and `mergeDelta` keeps the
+  snapshot's value.
+- `loadCompleteHints` and `hasCompleteHints` no longer require proof roots;
+  `fetchCompleteHintsWithProgress` fetches the tree-tops itself when none are
+  installed.
+
 ### Removed
 
+- The staged connect API (`setServerUrl`, `connectServer`, `disconnectServer`,
+  `isServerConnected`, `fetchCatalogFromServer`,
+  `verifyDatabaseProofFromServer`, `upgradeServerToSecureChannel` and the
+  Harmony `*Provider` equivalents) and `setRequireVerifiedDatabaseRoots`.
 - `serviceAuthorizationExporterV1`, `verifyDatabaseProofResponse` (v1), and
   `WasmOramClient.setRequireVerifiedDatabaseRoots`; nothing called them.
 

@@ -119,9 +119,9 @@ Client methods (both `Dpf` and `Harmony`):
   deltas). A height is rejected: the client keeps no previous results to
   apply a delta chain to
 - `queryBatch(scriptHashes, dbId): Promise<WasmQueryResult[]>`
-- `queryBatchVerified(scriptHashes, dbId)` — all-or-nothing inspector query;
-  native code binds outputs to the exact input order and finishes Merkle
-  verification before any result handle is exposed
+- `queryBatchVerified(scriptHashes, dbId)` — query with inspector state: one
+  non-null `WasmQueryResult` per input carrying the probed bins and its own
+  `merkleVerified`
 - `serverUrls(): [string, string]`
 - `onStateChange(cb)` — push `ConnectionState` transitions to JS
 - `syncWithProgress(scriptHashes, null, onEvent)` — progress events
@@ -180,15 +180,8 @@ TypeScript type signatures.
   of 20 throws `Error`.
 - **`WasmQueryResult` JSON** — `toJson()` returns a plain object with
   hex-encoded `txid` / `binContent` / `rawChunkData` fields; symmetric
-  `fromJson(obj)` parses the round-trip shape for data interchange only. It
-  does not establish authenticity or admit a result into the browser query
-  path; imported (and newly constructed) results always expose
-  `merkleVerified === false`, even if the JSON claims otherwise, and
-  `mergeDelta()` always drops verification authority. DPF/Harmony verification
-  is atomic inside `queryBatchVerified()`; its positive status comes from an
-  opaque native result and is kept outside the deserializable payload. Plain
-  JSON query/sync output always emits `merkleVerified === false`; retain the
-  `WasmQueryResult` handle when provenance is required.
+  `fromJson(obj)` parses the round-trip shape, including `merkleVerified`.
+  `mergeDelta()` keeps the snapshot's `merkleVerified`.
 - **All byte counts are `bigint`** (`u64` on the Rust side) to survive
   multi-PB session totals safely above `Number.MAX_SAFE_INTEGER`.
 

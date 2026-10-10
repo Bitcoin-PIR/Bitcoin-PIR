@@ -65,7 +65,6 @@ pub struct VerifiedDatabaseRoots {
     pub db_id: u8,
     /// SHA-256 of the exact server database `MANIFEST.toml` whose bytes were
     /// verified by `ProofBundle::verify` against the attested build evidence.
-    /// This is the `DatasetBindingV1::ManifestRoot` used by paid admission.
     pub manifest_root: [u8; 32],
     pub build_kind: BuildKind,
     pub from_height: u32,

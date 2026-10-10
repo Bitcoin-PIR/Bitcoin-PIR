@@ -361,7 +361,6 @@ impl PirClient for HarmonyClient {
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
 
-        self.verified_roots.require_db(db_id)?;
         self.preflight_bucket_tree_tops(&db_info).await?;
 
         // Fire query lifecycle callbacks so a recorder can time the

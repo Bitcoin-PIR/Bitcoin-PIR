@@ -27,16 +27,30 @@ impl HarmonyClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<Vec<Option<QueryResult>>> {
-        // Root verification and trusted tree-top preflight are owned by the
-        // sync orchestrator. Empty input has no hint, Payment-V1, or PIR work.
+        let (results, _traces) = self
+            .execute_step_traced(script_hashes, _step, db_info)
+            .await?;
+        Ok(results)
+    }
+
+    /// [`execute_step`](Self::execute_step), also returning each query's
+    /// probed bins. Results of a database without a bucket-Merkle commitment
+    /// stay `merkle_verified = false`.
+    pub(crate) async fn execute_step_traced(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        step: &SyncStep,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<(Vec<Option<QueryResult>>, Vec<QueryTraces>)> {
+        // An empty batch sends nothing.
         if script_hashes.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         }
 
         let bench = std::env::var("HARMONY_BENCH").is_ok();
         let t_step_start = Instant::now();
         let (mut results, traces) = self
-            .execute_step_unverified(script_hashes, _step, db_info)
+            .execute_step_unverified(script_hashes, step, db_info)
             .await?;
 
         let t_merkle_start = Instant::now();
@@ -44,11 +58,6 @@ impl HarmonyClient {
             self.run_merkle_verification(&mut results, &traces, db_info)
                 .await?;
         } else {
-            // Preserve the ordinary API's historical N/A-success semantics.
-            // The split inspector API returns before this promotion.
-            for result in results.iter_mut().flatten() {
-                result.merkle_verified = true;
-            }
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
                 db_info.db_id
@@ -67,13 +76,11 @@ impl HarmonyClient {
             );
         }
 
-        Ok(results)
+        Ok((results, traces))
     }
 
-    /// Execute the shared batched INDEX/CHUNK plan while retaining the
-    /// per-query traces and deliberately stopping before Merkle verification.
-    /// The hot path and split inspector path therefore have one Payment V1 DFA
-    /// shape instead of the inspector issuing one job per address.
+    /// Execute the batched INDEX/CHUNK plan, retaining the per-query traces,
+    /// without Merkle verification.
     pub(crate) async fn execute_step_unverified(
         &mut self,
         script_hashes: &[ScriptHash],

@@ -413,10 +413,8 @@ impl HarmonyClient {
         Ok(())
     }
 
-    /// Shared verifier backend used by both
-    /// [`run_merkle_verification`](Self::run_merkle_verification) (inline,
-    /// over fresh `QueryTraces`) and the crate-internal membership stage over
-    /// ephemeral `QueryResult.index_bins/chunk_bins`.
+    /// Verifier backend for
+    /// [`run_merkle_verification`](Self::run_merkle_verification).
     ///
     /// Runs the full Merkle pipeline: `REQ_BUCKET_MERKLE_TREE_TOPS`
     /// fetch on the query server, `ensure_sibling_groups_ready` (which
@@ -452,14 +450,7 @@ impl HarmonyClient {
             return Ok(vec![None; num_queries]);
         }
 
-        // Fetch tree-tops blob via the query server (same blob both servers share).
-        let leakage = self.leakage_recorder.clone();
-        let tree_tops = if let Some(tops) = self.verified_tree_tops.get(&db_info.db_id) {
-            tops.clone()
-        } else {
-            let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-            fetch_tree_tops(conn, db_info.db_id, leakage.as_ref(), "harmony", 0).await?
-        };
+        let tree_tops = self.tree_tops_for(db_info).await?;
 
         // Ensure sibling groups + hints are initialised.
         self.ensure_sibling_groups_ready(db_info, &tree_tops)
@@ -589,217 +580,76 @@ impl HarmonyClient {
         Ok(per_query)
     }
 
-    /// Crate-internal first half of the verified inspector composition.
-    /// Returns raw per-query results with inspector state populated and must
-    /// never be exposed outside this crate before semantic and Merkle checks.
-    ///
-    /// # Shape vs. the trait-level `query_batch`
-    ///
-    /// Mirrors the DPF crate-internal raw stage. In short:
-    ///
-    /// * Every successful query returns `Some(QueryResult)` with
-    ///   `index_bins` / `chunk_bins` / `matched_index_idx` populated
-    ///   from the query's internal `QueryTraces`.
-    /// * `matched_index_idx == None && entries.is_empty()` encodes
-    ///   "not found".
-    /// * `merkle_verified` is always `false` because Merkle was **not**
-    ///   attempted. The atomic wrapper keeps entries quarantined, validates
-    ///   exact input/decoded semantics, then runs the membership-only helper.
-    /// * Empty input and databases without a bucket-Merkle commitment are
-    ///   rejected before an address-dependent query frame is sent.
-    ///
-    /// # 🔒 Padding invariant
-    ///
-    /// This method uses the same batched PBC INDEX/CHUNK executor as the hot
-    /// path rather than looping `query_single`. K=75 INDEX / K_CHUNK=80 CHUNK
-    /// padding and the paired round-id sequence are unchanged. Payment V1
-    /// therefore observes one logical job per PBC batch instead of one job per
-    /// address.
+    /// Bucket Merkle tree-tops for `db_info`: the proof-checked ones when the
+    /// database has an installed root, else fetched from the query server
+    /// (both servers share the blob).
+    pub(crate) async fn tree_tops_for(
+        &mut self,
+        db_info: &DatabaseInfo,
+    ) -> PirResult<Vec<TreeTop>> {
+        if let Some(tops) = self.verified_tree_tops.get(&db_info.db_id) {
+            return Ok(tops.clone());
+        }
+        let leakage = self.leakage_recorder.clone();
+        let conn = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
+        fetch_tree_tops(conn, db_info.db_id, leakage.as_ref(), "harmony", 0).await
+    }
+
+    /// Like [`PirClient::query_batch`], but every slot is `Some` and carries
+    /// the bins the query probed (`index_bins`, `chunk_bins`,
+    /// `matched_index_idx`) for an inspector. A not-found query is an empty
+    /// result holding its two INDEX bins; its `merkle_verified` is the
+    /// absence proof's verdict.
     #[tracing::instrument(
         level = "debug",
         skip_all,
         fields(backend = "harmony", db_id, num_queries = script_hashes.len())
     )]
-    pub(crate) async fn query_batch_with_inspector(
+    pub async fn query_batch_with_inspector(
         &mut self,
         script_hashes: &[ScriptHash],
         db_id: u8,
-    ) -> PirResult<Vec<Option<QueryResult>>> {
+    ) -> PirResult<Vec<QueryResult>> {
         if !self.is_connected() {
             return Err(PirError::NotConnected);
         }
-
-        let catalog = self
+        let db_info = self
             .catalog
-            .clone()
-            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-        let db_info = catalog
+            .as_ref()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?
             .get(db_id)
             .ok_or(PirError::DatabaseNotFound(db_id))?
             .clone();
-
-        self.verified_roots.require_db(db_id)?;
-        if script_hashes.is_empty() {
-            return Err(PirError::MerkleVerificationFailed(
-                "Harmony split inspector requires at least one query".into(),
-            ));
-        }
-        if !db_info.has_bucket_merkle {
-            return Err(PirError::MerkleVerificationFailed(
-                "Harmony split inspector requires a bucket-Merkle commitment".into(),
-            ));
-        }
         self.preflight_bucket_tree_tops(&db_info).await?;
 
         let step = SyncStep::from_db_info(&db_info);
         let (results, traces) = self
-            .execute_step_unverified(script_hashes, &step, &db_info)
+            .execute_step_traced(script_hashes, &step, &db_info)
             .await?;
-        let results = attach_inspector_traces(results, traces)?;
-        validate_inspector_results(&results, &db_info)?;
-        Ok(results)
-    }
-
-    /// Release-safe inspector query. Query execution, semantic
-    /// reconstruction, and Merkle proof verification are one native async
-    /// operation, and the batch is released only when every slot passes.
-    /// Success returns immutable, non-deserializable authority objects bound
-    /// to each exact script hash and to `db_id`.
-    pub async fn query_batch_verified_with_inspector(
-        &mut self,
-        script_hashes: &[ScriptHash],
-        db_id: u8,
-    ) -> PirResult<Vec<VerifiedQueryResult>> {
-        let results = self
-            .query_batch_with_inspector(script_hashes, db_id)
-            .await?;
-        let db_info = self
-            .catalog
-            .as_ref()
-            .and_then(|catalog| catalog.get(db_id))
-            .ok_or(PirError::DatabaseNotFound(db_id))?
-            .clone();
-        validate_inspector_results(&results, &db_info)?;
-        validate_inspector_semantics(script_hashes, &results, &db_info)?;
-        let verdicts = self
-            .verify_merkle_batch_for_results(&results, db_id)
-            .await?;
-        if verdicts.len() != results.len() || verdicts.iter().any(|verdict| !verdict) {
-            return Err(PirError::MerkleVerificationFailed(
-                "Harmony verified inspector batch contains a failed inclusion proof".into(),
-            ));
-        }
-        if results.len() != script_hashes.len() {
-            return Err(PirError::MerkleVerificationFailed(format!(
-                "Harmony verified inspector result count mismatch: expected {}, got {}",
-                script_hashes.len(),
-                results.len()
-            )));
-        }
-        script_hashes
-            .iter()
-            .copied()
-            .zip(results)
-            .map(|(script_hash, result)| {
-                result
-                    .map(|result| VerifiedQueryResult::new(script_hash, db_id, result))
-                    .ok_or_else(|| {
-                        PirError::MerkleVerificationFailed(
-                            "Harmony verified inspector released a missing result".into(),
-                        )
-                    })
-            })
-            .collect()
-    }
-
-    /// Crate-internal per-bucket Merkle membership stage for fresh results
-    /// retained by the atomic verified-inspector call.
-    ///
-    /// This helper authenticates bin membership only. It does **not** bind
-    /// `QueryResult.entries` to script-hash inputs and therefore must never be
-    /// exposed as, or interpreted as, a complete result release verdict.
-    ///
-    /// Rebuilds the same `BucketMerkleItem` set the inline
-    /// [`run_merkle_verification`](Self::run_merkle_verification) path
-    /// builds, then runs the networked verifier via the shared
-    /// [`verify_merkle_items`](Self::verify_merkle_items) helper.
-    ///
-    /// Returns one membership `bool` per input query:
-    /// * `true`  — every required item for that query verified.
-    /// * `false` — at least one attached item failed the proof; the
-    ///   corresponding result must be treated as untrusted and should
-    ///   be discarded or surfaced as `QueryResult::merkle_failed()`.
-    ///
-    /// Empty batches, `None` slots, default/empty inspector results, malformed
-    /// trace geometry, and databases without bucket-Merkle commitments return
-    /// `Err`; none can be interpreted as a successful absence proof.
-    ///
-    /// # 🔒 Padding invariant
-    ///
-    /// The underlying Merkle round is uniform by construction — the
-    /// caller supplies items built from `INDEX_CUCKOO_NUM_HASHES`
-    /// probes per query, and the shared verifier pads each level's
-    /// sibling batch to K / K_CHUNK siblings (see CLAUDE.md "Query
-    /// Padding").
-    #[tracing::instrument(
-        level = "debug",
-        skip_all,
-        fields(backend = "harmony", db_id, num_results = results.len())
-    )]
-    pub(crate) async fn verify_merkle_batch_for_results(
-        &mut self,
-        results: &[Option<QueryResult>],
-        db_id: u8,
-    ) -> PirResult<Vec<bool>> {
-        if !self.is_connected() {
-            return Err(PirError::NotConnected);
-        }
-
-        let catalog = self
-            .catalog
-            .clone()
-            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-        let db_info = catalog
-            .get(db_id)
-            .ok_or(PirError::DatabaseNotFound(db_id))?
-            .clone();
-
-        self.verified_roots.require_db(db_id)?;
-        if !db_info.has_bucket_merkle {
-            return Err(PirError::MerkleVerificationFailed(
-                "Harmony split verifier requires a bucket-Merkle commitment".into(),
-            ));
-        }
-        validate_inspector_results(results, &db_info)?;
-        self.preflight_bucket_tree_tops(&db_info).await?;
-
-        // ensure_groups_ready + ensure_sibling_groups_ready need the
-        // main groups to exist before sibling hints are fetched —
-        // otherwise the HarmonySiblingQuerier would see empty
-        // `index_sib_groups`/`chunk_sib_groups` maps.
-        self.ensure_groups_ready(&db_info, None).await?;
-
-        let (items, item_to_query) = collect_merkle_items_from_results(results);
-        let verdicts = self
-            .verify_merkle_items(&items, &item_to_query, results.len(), &db_info)
-            .await?;
-
-        // Defense in depth: validated inputs contribute exactly two INDEX
-        // items, so a missing aggregate verdict is an internal verification
-        // failure rather than a vacuous success.
-        verdicts
+        Ok(results
             .into_iter()
-            .enumerate()
-            .map(|(query_index, verdict)| {
-                verdict.ok_or_else(|| {
-                    PirError::MerkleVerificationFailed(format!(
-                        "Harmony split verifier produced no verdict for result {query_index}"
-                    ))
-                })
+            .zip(traces)
+            .map(|(result, trace)| {
+                // A `None` slot is a not-found whose proof passed (a failed
+                // proof is already `Some(merkle_failed())`).
+                let mut result = result.unwrap_or_else(|| QueryResult {
+                    merkle_verified: db_info.has_bucket_merkle,
+                    ..QueryResult::empty()
+                });
+                result.index_bins = trace
+                    .index_bins
+                    .iter()
+                    .map(index_trace_to_bucket_ref)
+                    .collect();
+                result.chunk_bins = trace
+                    .chunk_bins
+                    .iter()
+                    .map(chunk_trace_to_bucket_ref)
+                    .collect();
+                result.matched_index_idx = trace.matched_index_idx;
+                result
             })
-            .collect()
+            .collect())
     }
 
     /// Like [`PirClient::sync`], but drives a [`SyncProgress`] observer
@@ -875,8 +725,6 @@ impl HarmonyClient {
                 was_fresh_sync: false,
             });
         }
-
-        self.verified_roots.require_plan(plan)?;
 
         let catalog = self
             .catalog
