@@ -100,7 +100,6 @@ impl HarmonyClient {
                 for sl in 0..index_sib_levels {
                     let level_n = nodes.div_ceil(arity);
                     nodes = level_n;
-                    let t_init = Instant::now();
                     for g in 0..k_index {
                         let group = new_harmony_group(
                             level_n as u32,
@@ -115,8 +114,6 @@ impl HarmonyClient {
                         })?;
                         index_sib_groups.insert((sl, g as u8), group);
                     }
-                    let dt_init = t_init.elapsed();
-                    let t_fetch = Instant::now();
                     let profile = fetch_and_load_sib_hints_into_map(
                         hint_primary.as_mut(),
                         &mut index_sib_groups,
@@ -128,13 +125,6 @@ impl HarmonyClient {
                         prp_backend,
                     )
                     .await?;
-                    let dt_fetch = t_fetch.elapsed();
-                    if std::env::var("HARMONY_BENCH").is_ok() {
-                        eprintln!(
-                            "[HARMONY_BENCH]   sib INDEX L{} (parallel): group_init={:?}  fetch+load={:?}  (k={}, level_n={})",
-                            sl, dt_init, dt_fetch, k_index, level_n,
-                        );
-                    }
                     profiles.push(profile);
                 }
                 Ok::<_, PirError>((hint_primary, index_sib_groups, profiles))
@@ -146,7 +136,6 @@ impl HarmonyClient {
                 for sl in 0..chunk_sib_levels {
                     let level_n = nodes.div_ceil(arity);
                     nodes = level_n;
-                    let t_init = Instant::now();
                     for g in 0..k_chunk {
                         let group = new_harmony_group(
                             level_n as u32,
@@ -162,8 +151,6 @@ impl HarmonyClient {
                         })?;
                         chunk_sib_groups.insert((sl, g as u8), group);
                     }
-                    let dt_init = t_init.elapsed();
-                    let t_fetch = Instant::now();
                     let profile = fetch_and_load_sib_hints_into_map(
                         hint_secondary.as_mut(),
                         &mut chunk_sib_groups,
@@ -175,13 +162,6 @@ impl HarmonyClient {
                         prp_backend,
                     )
                     .await?;
-                    let dt_fetch = t_fetch.elapsed();
-                    if std::env::var("HARMONY_BENCH").is_ok() {
-                        eprintln!(
-                            "[HARMONY_BENCH]   sib CHUNK L{} (parallel): group_init={:?}  fetch+load={:?}  (k={}, level_n={})",
-                            sl, dt_init, dt_fetch, k_chunk, level_n,
-                        );
-                    }
                     profiles.push(profile);
                 }
                 Ok::<_, PirError>((hint_secondary, chunk_sib_groups, profiles))
@@ -224,7 +204,6 @@ impl HarmonyClient {
             for sl in 0..index_sib_levels {
                 let level_n = nodes.div_ceil(arity);
                 nodes = level_n;
-                let t_init = Instant::now();
                 for g in 0..k_index {
                     let group = new_harmony_group(
                         level_n as u32,
@@ -242,8 +221,6 @@ impl HarmonyClient {
                     })?;
                     self.index_sib_groups.insert((sl, g as u8), group);
                 }
-                let dt_init = t_init.elapsed();
-                let t_fetch = Instant::now();
                 self.fetch_and_load_hints_into(
                     db_info.db_id,
                     10 + sl as u8,
@@ -252,13 +229,6 @@ impl HarmonyClient {
                     None,
                 )
                 .await?;
-                let dt_fetch = t_fetch.elapsed();
-                if std::env::var("HARMONY_BENCH").is_ok() {
-                    eprintln!(
-                        "[HARMONY_BENCH]   sib INDEX L{}: group_init={:?}  fetch+load_hints={:?}  (k={}, level_n={})",
-                        sl, dt_init, dt_fetch, k_index, level_n,
-                    );
-                }
                 log::info!(
                     "[PIR-AUDIT] HarmonyPIR INDEX sib L{}: loaded hints for {} groups (n={})",
                     sl,
@@ -272,7 +242,6 @@ impl HarmonyClient {
             for sl in 0..chunk_sib_levels {
                 let level_n = nodes.div_ceil(arity);
                 nodes = level_n;
-                let t_init = Instant::now();
                 for g in 0..k_chunk {
                     let group = new_harmony_group(
                         level_n as u32,
@@ -292,8 +261,6 @@ impl HarmonyClient {
                     })?;
                     self.chunk_sib_groups.insert((sl, g as u8), group);
                 }
-                let dt_init = t_init.elapsed();
-                let t_fetch = Instant::now();
                 self.fetch_and_load_hints_into(
                     db_info.db_id,
                     20 + sl as u8,
@@ -302,13 +269,6 @@ impl HarmonyClient {
                     None,
                 )
                 .await?;
-                let dt_fetch = t_fetch.elapsed();
-                if std::env::var("HARMONY_BENCH").is_ok() {
-                    eprintln!(
-                        "[HARMONY_BENCH]   sib CHUNK L{}: group_init={:?}  fetch+load_hints={:?}  (k={}, level_n={})",
-                        sl, dt_init, dt_fetch, k_chunk, level_n,
-                    );
-                }
                 log::info!(
                     "[PIR-AUDIT] HarmonyPIR CHUNK sib L{}: loaded hints for {} groups (n={})",
                     sl,

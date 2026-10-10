@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - The `PirBackend` trait, `ServerRole` and `PirClientConfig`: nothing
   implemented or consumed them.
+- `SyncPlanner`: `compute_sync_plan` plans directly and gives the same plans.
 
 ### Added
 

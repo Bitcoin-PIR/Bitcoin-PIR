@@ -47,13 +47,10 @@ impl HarmonyClient {
             return Ok((Vec::new(), Vec::new()));
         }
 
-        let bench = std::env::var("HARMONY_BENCH").is_ok();
-        let t_step_start = Instant::now();
         let (mut results, traces) = self
             .execute_step_unverified(script_hashes, step, db_info)
             .await?;
 
-        let t_merkle_start = Instant::now();
         if db_info.has_bucket_merkle {
             self.run_merkle_verification(&mut results, &traces, db_info)
                 .await?;
@@ -61,18 +58,6 @@ impl HarmonyClient {
             log::info!(
                 "[PIR-AUDIT] HarmonyPIR Merkle verification SKIPPED (db_id={} has no bucket Merkle)",
                 db_info.db_id
-            );
-        }
-        if bench {
-            eprintln!(
-                "[HARMONY_BENCH] db={} Merkle verification: {:?}",
-                db_info.db_id,
-                t_merkle_start.elapsed()
-            );
-            eprintln!(
-                "[HARMONY_BENCH] db={} TOTAL execute_step: {:?}",
-                db_info.db_id,
-                t_step_start.elapsed()
             );
         }
 
@@ -87,21 +72,7 @@ impl HarmonyClient {
         _step: &SyncStep,
         db_info: &DatabaseInfo,
     ) -> PirResult<(Vec<Option<QueryResult>>, Vec<QueryTraces>)> {
-        // Phase-level timing for diagnostics. Guarded by env var so it
-        // only fires when the operator explicitly opts in.
-        let _bench = std::env::var("HARMONY_BENCH").is_ok();
-        let t_step_start = Instant::now();
-        let t_hint_start = Instant::now();
         self.ensure_groups_ready(db_info, None).await?;
-        let t_hint = t_hint_start.elapsed();
-        if _bench {
-            eprintln!(
-                "[HARMONY_BENCH] db={} queries={} ensure_groups_ready: {:?}",
-                db_info.db_id,
-                script_hashes.len(),
-                t_hint
-            );
-        }
 
         log::info!(
             "[PIR-AUDIT] HarmonyPIR execute_step: db_id={}, name={}, height={}, queries={}, has_bucket_merkle={}",
@@ -121,17 +92,9 @@ impl HarmonyClient {
         // two INDEX Merkle items inherit a unique-per-batch
         // `pbc_group`, so `index_max_items_per_group_per_level = 2`
         // independently of the batch's collision pattern.
-        let t_index_start = Instant::now();
         let index_outcomes = self
             .query_index_phase_batched(script_hashes, db_info)
             .await?;
-        let t_index = t_index_start.elapsed();
-        if _bench {
-            eprintln!(
-                "[HARMONY_BENCH] db={} INDEX phase: {:?}",
-                db_info.db_id, t_index
-            );
-        }
 
         // Phase 2: per-scripthash CHUNK + result assembly. Each query
         // fetches/verifies its REAL chunk count — found queries fetch
@@ -146,7 +109,6 @@ impl HarmonyClient {
         // pass (the `chunk_sub_items.is_empty()` skip was removed in
         // merkle_verify.rs). The per-query chunk count is now an
         // admitted leak — mild; ~99% of addresses have 1 chunk.
-        let t_chunk_start = Instant::now();
 
         // Phase 2 PREPROCESS: project each scripthash's INDEX outcome into
         // (real_count, is_whale, has_real_match, real_chunk_ids) up
@@ -218,7 +180,6 @@ impl HarmonyClient {
                     chunk_data.len(),
                 )));
             }
-            let chunk_data_len = chunk_data.len();
             let real_data = chunk_data;
 
             if !has_real_match {
@@ -237,17 +198,6 @@ impl HarmonyClient {
             // [DBG_HEX] Hex-dump the raw chunk bytes the server returned, so
             // we can manually trace the varint parse and confirm the decoder
             // is reading the right bytes. Gated on env to avoid noise.
-            if std::env::var("PIR_DUMP_RAW_CHUNKS").is_ok() {
-                let preview_len = std::cmp::min(real_data.len(), 80);
-                let preview: String = real_data[..preview_len]
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect();
-                eprintln!(
-                    "[DBG_HEX] HarmonyPIR query #{} real_count={} real_data_len={} (raw chunk_data_len={}) bytes[0..{}]={}",
-                    i, real_count, real_data.len(), chunk_data_len, preview_len, preview,
-                );
-            }
 
             let entries = decode_utxo_entries(&real_data)?;
 
@@ -267,24 +217,6 @@ impl HarmonyClient {
                 matched_index_idx: None,
             }));
             traces.push(q_traces);
-        }
-
-        let t_chunk = t_chunk_start.elapsed();
-        if _bench {
-            eprintln!(
-                "[HARMONY_BENCH] db={} CHUNK phase ({} queries): {:?}",
-                db_info.db_id,
-                script_hashes.len(),
-                t_chunk
-            );
-            eprintln!(
-                "[HARMONY_BENCH] db={} TOTAL execute_step_unverified: {:?}  (hint {:?} / index {:?} / chunk {:?})",
-                db_info.db_id,
-                t_step_start.elapsed(),
-                t_hint,
-                t_index,
-                t_chunk,
-            );
         }
 
         Ok((results, traces))
@@ -599,7 +531,6 @@ impl HarmonyClient {
         // Note: `conn.recv()` returns the raw frame INCLUDING the 4-byte
         // length prefix (unlike `conn.roundtrip()`, which strips it).
         // The strict frame decoder below validates and strips that prefix.
-        let t_wire = Instant::now();
         let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
             let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
             let conn1 = self
@@ -638,21 +569,6 @@ impl HarmonyClient {
             let r1 = conn.recv().await?;
             (r0, r1)
         };
-        let dt_wire = t_wire.elapsed();
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            let mode = if self.query_conn_secondary.is_some() {
-                "parallel-2-socket"
-            } else {
-                "pipelined-1-socket"
-            };
-            eprintln!(
-                "[HARMONY_BENCH]   INDEX pair (round_tags={}/{}, {}): wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_index={})",
-                round_tag_h0, round_tag_h1, mode, dt_wire,
-                request_h0_bytes, request_h1_bytes,
-                response_h0.len(), response_h1.len(),
-                k_index,
-            );
-        }
         // Record both wire rounds in the leakage profile separately —
         // wire-observable shape is unchanged from the sequential path.
         // `response_bytes` is the raw frame length (length-prefix
@@ -828,7 +744,6 @@ impl HarmonyClient {
         // Single-socket fallback: send both requests then recv both
         // (unchanged from pre-pool behaviour, kept identical so the
         // pool-size=1 code path is bit-for-bit equivalent).
-        let t_wire = Instant::now();
         let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
             // Disjoint borrows on different `Option` fields → safe to
             // hold both `&mut` simultaneously.
@@ -869,21 +784,6 @@ impl HarmonyClient {
             let r1 = conn.recv().await?;
             (r0, r1)
         };
-        let dt_wire = t_wire.elapsed();
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            let mode = if self.query_conn_secondary.is_some() {
-                "parallel-2-socket"
-            } else {
-                "pipelined-1-socket"
-            };
-            eprintln!(
-                "[HARMONY_BENCH]   CHUNK pair (round_ids={}/{}, {}): wire RTT {:?}  (req {}B+{}B resp {}B+{}B, k_chunk={})",
-                round_id_h0, round_id_h1, mode, dt_wire,
-                request_h0_bytes, request_h1_bytes,
-                response_h0.len(), response_h1.len(),
-                k_chunk,
-            );
-        }
         // Record both wire rounds in the leakage profile separately —
         // wire-observable shape is unchanged from the sequential path.
         self.record_round(RoundProfile {
@@ -919,7 +819,6 @@ impl HarmonyClient {
         )?;
 
         // Decode only real groups, via the pair API.
-        let t_decode = Instant::now();
         let mut out_h0 = HashMap::new();
         let mut out_h1 = HashMap::new();
         for g in 0..k_chunk {
@@ -942,14 +841,6 @@ impl HarmonyClient {
                 })?;
             out_h0.insert(g, answer_h0);
             out_h1.insert(g, answer_h1);
-        }
-        let dt_decode = t_decode.elapsed();
-        if std::env::var("HARMONY_BENCH").is_ok() {
-            eprintln!(
-                "[HARMONY_BENCH]   CHUNK pair decode: {:?}  ({} real groups × 2)",
-                dt_decode,
-                out_h0.len(),
-            );
         }
 
         Ok((out_h0, out_h1))

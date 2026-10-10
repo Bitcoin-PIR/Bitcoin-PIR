@@ -9,7 +9,7 @@
 
 use crate::error::{PirError, PirResult};
 use crate::types::{DatabaseCatalog, DatabaseInfo, DatabaseKind, QueryResult, UtxoEntry};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Maximum number of delta steps in a chain before falling back to full snapshot.
 pub const MAX_DELTA_CHAIN_LENGTH: usize = 5;
@@ -157,36 +157,10 @@ pub fn require_sync_base(
 ///
 /// * `catalog` - Database catalog from server
 /// * `last_height` - Last synced height, or `None` for fresh sync
-///
-/// # Returns
-///
-/// A sync plan with steps to execute.
-///
-/// # Performance
-///
-/// The internal delta adjacency map is built once per call and shared
-/// between the incremental BFS and the fallback fresh-sync chain
-/// (previously each path rebuilt its own copy — see the
-/// `compute_sync_plan/*/incremental_6step_fallback` Criterion benches
-/// for the before/after delta).
-///
-/// The at-tip fast path (`last_height == catalog.latest_tip()`) skips
-/// the adjacency-map build entirely — this is the dominant case for
-/// polling dashboards that wake up, find nothing new, and sleep.
-///
-/// Callers that compute many plans against the same catalog (multi-account
-/// wallets, polling dashboards) should construct a [`SyncPlanner`] once
-/// and call [`SyncPlanner::plan`] per query — the `SyncPlanner` keeps the
-/// adjacency map cached across plan computations, paying the build cost
-/// once instead of per-call.
 pub fn compute_sync_plan(
     catalog: &DatabaseCatalog,
     last_height: Option<u32>,
 ) -> PirResult<SyncPlan> {
-    // Fast path: catalog already at-tip. Skip the adjacency-map build
-    // entirely — this is the dominant case for polling clients. We
-    // re-do the cheap checks here that `SyncPlanner::plan` does, so
-    // we never pay for `SyncPlanner::new` on the no-work path.
     let latest_tip = catalog
         .latest_tip()
         .ok_or_else(|| PirError::InvalidCatalog("empty catalog".into()))?;
@@ -195,282 +169,67 @@ pub fn compute_sync_plan(
         return Ok(SyncPlan::empty(last));
     }
 
-    // Slow path: build the planner and dispatch into it. We've already
-    // computed `latest_tip`, but `SyncPlanner::new` re-derives it from
-    // the catalog — that's a single `iter().map().max()` pass over the
-    // databases, dwarfed by the adjacency-map build. Not worth a
-    // second constructor variant just to skip it.
-    SyncPlanner::new(catalog)?.plan(last_height)
-}
-
-/// Reusable sync planner that pins a catalog and caches its delta
-/// adjacency map.
-///
-/// Construct once per catalog snapshot, then call [`plan`](Self::plan)
-/// any number of times — each call reuses the cached
-/// `base_height → deltas` adjacency map and only re-runs the BFS / step
-/// translation. This is the preferred API when computing plans against
-/// the same catalog repeatedly:
-///
-/// - **Multi-account wallets** computing one sync plan per `last_height`
-///   they track.
-/// - **Polling dashboards** that fetch the catalog once per refresh
-///   cycle but plan against several baselines.
-/// - **Test harnesses** that exercise dozens of `last_height` values
-///   against a fixture catalog.
-///
-/// For one-shot use, the free function [`compute_sync_plan`] internally
-/// constructs a `SyncPlanner` and discards it after one [`plan`](Self::plan)
-/// call — semantically equivalent, slightly less efficient because the
-/// adjacency map is rebuilt.
-///
-/// # Lifetime
-///
-/// The planner borrows the catalog (`'a` matches the catalog reference's
-/// lifetime). To outlive a borrow, clone the catalog first:
-///
-/// ```ignore
-/// let catalog: DatabaseCatalog = client.fetch_catalog().await?;
-/// let planner = SyncPlanner::new(&catalog)?;          // borrows `catalog`
-/// let plan_a = planner.plan(Some(last_a))?;
-/// let plan_b = planner.plan(Some(last_b))?;
-/// ```
-///
-/// # Errors
-///
-/// [`SyncPlanner::new`] returns [`PirError::InvalidCatalog`] for an empty
-/// catalog (no databases to sync from).
-pub struct SyncPlanner<'a> {
-    catalog: &'a DatabaseCatalog,
-    latest_tip: u32,
-    /// `base_height → list of deltas starting at that height`. Built
-    /// once at construction time and reused across every [`plan`](Self::plan)
-    /// call. Always cheap to build (one linear scan over `catalog.deltas()`),
-    /// so eagerly computing it in `new` keeps the per-plan path purely
-    /// algorithmic.
-    by_base: HashMap<u32, Vec<&'a DatabaseInfo>>,
-    /// Cached `best_full_snapshot()` — used by the fresh-sync path. `None`
-    /// only when the catalog has no full snapshots, in which case any
-    /// fresh-sync request fails fast.
-    best_full: Option<&'a DatabaseInfo>,
-}
-
-impl<'a> SyncPlanner<'a> {
-    /// Create a new planner pinned to `catalog`.
-    ///
-    /// The delta adjacency map and best-full-snapshot lookup are
-    /// pre-computed; subsequent [`plan`](Self::plan) calls skip both.
-    pub fn new(catalog: &'a DatabaseCatalog) -> PirResult<Self> {
-        let latest_tip = catalog
-            .latest_tip()
-            .ok_or_else(|| PirError::InvalidCatalog("empty catalog".into()))?;
-
-        let mut by_base: HashMap<u32, Vec<&'a DatabaseInfo>> = HashMap::new();
-        for db in catalog.deltas() {
-            by_base.entry(db.base_height()).or_default().push(db);
-        }
-
-        let best_full = catalog.best_full_snapshot();
-
-        Ok(Self {
-            catalog,
-            latest_tip,
-            by_base,
-            best_full,
-        })
+    let mut by_base: HashMap<u32, Vec<&DatabaseInfo>> = HashMap::new();
+    for db in catalog.deltas() {
+        by_base.entry(db.base_height()).or_default().push(db);
     }
 
-    /// Returns the catalog this planner is pinned to.
-    pub fn catalog(&self) -> &'a DatabaseCatalog {
-        self.catalog
-    }
-
-    /// Returns the latest tip height of the pinned catalog (memoised).
-    pub fn latest_tip(&self) -> u32 {
-        self.latest_tip
-    }
-
-    /// Compute a sync plan from `last_height` to the pinned catalog's
-    /// tip. See [`compute_sync_plan`] for full algorithm + arg semantics.
-    pub fn plan(&self, last_height: Option<u32>) -> PirResult<SyncPlan> {
-        let last = last_height.unwrap_or(0);
-
-        // Already at tip?
-        if last > 0 && last >= self.latest_tip {
-            return Ok(SyncPlan::empty(last));
-        }
-
-        // Fresh sync: start from best full snapshot.
-        if last == 0 {
-            return self.fresh_sync_plan();
-        }
-
-        // Incremental sync: try delta chain first. The BFS bounds the
-        // returned chain at `MAX_DELTA_CHAIN_LENGTH` internally; an
-        // `Some(chain)` here is always usable as-is.
-        if let Some(chain) = self.find_delta_chain(last, self.latest_tip) {
-            let steps: Vec<SyncStep> = chain.iter().map(|db| SyncStep::from_db_info(db)).collect();
+    if last > 0 {
+        if let Some(chain) = find_delta_chain(&by_base, last, latest_tip) {
             return Ok(SyncPlan {
-                steps,
+                steps: chain.into_iter().map(SyncStep::from_db_info).collect(),
                 is_fresh_sync: false,
-                target_height: self.latest_tip,
+                target_height: latest_tip,
             });
         }
-
-        // Fall back to fresh sync (chain too long or missing entirely).
-        self.fresh_sync_plan()
     }
 
-    /// Compute a fresh sync plan starting from the cached best full
-    /// snapshot. Reuses the adjacency map cached on `self`.
-    fn fresh_sync_plan(&self) -> PirResult<SyncPlan> {
-        let best_full = self
-            .best_full
-            .ok_or_else(|| PirError::NoSyncPath("no full snapshot available".into()))?;
-
-        let mut steps = vec![SyncStep::from_db_info(best_full)];
-
-        // Chain deltas from the snapshot to the tip.
-        if best_full.height < self.latest_tip {
-            if let Some(chain) = self.find_delta_chain(best_full.height, self.latest_tip) {
-                for db in &chain {
-                    steps.push(SyncStep::from_db_info(db));
-                }
-            }
-            // If no delta chain exists, we just return the snapshot —
-            // the tip might be the snapshot height in this case.
-        }
-
-        let target_height = steps
-            .last()
-            .map(|s| s.tip_height)
-            .unwrap_or(best_full.height);
-        Ok(SyncPlan {
-            steps,
-            is_fresh_sync: true,
-            target_height,
-        })
+    // Fresh sync, or no usable chain: the best full snapshot plus a delta
+    // chain from it to the tip when one exists.
+    let best_full = catalog
+        .best_full_snapshot()
+        .ok_or_else(|| PirError::NoSyncPath("no full snapshot available".into()))?;
+    let mut steps = vec![SyncStep::from_db_info(best_full)];
+    if let Some(chain) = find_delta_chain(&by_base, best_full.height, latest_tip) {
+        steps.extend(chain.into_iter().map(SyncStep::from_db_info));
     }
-
-    /// Find the shortest delta chain from `start_height` to `end_height`
-    /// using BFS over the cached `by_base` adjacency map.
-    ///
-    /// Returns `None` if no chain exists within
-    /// [`MAX_DELTA_CHAIN_LENGTH`] hops. The returned chain length is
-    /// guaranteed to be `<= MAX_DELTA_CHAIN_LENGTH`.
-    ///
-    /// # Implementation notes
-    ///
-    /// Two micro-optimisations vs. the original implementation:
-    ///
-    /// 1. **Parent-pointer BFS instead of cloning the path Vec on every
-    ///    edge.** The original `find_delta_chain` cloned `Vec<&DatabaseInfo>`
-    ///    into the queue payload for each enqueued neighbour, giving
-    ///    `O(depth × edges_explored)` allocator pressure on the inner
-    ///    loop. We instead store `(parent_idx, &DatabaseInfo)` records
-    ///    in a flat `nodes` Vec and walk back from the goal node to the
-    ///    root once a match is found — `O(depth)` allocations total.
-    ///
-    /// 2. **Tighter depth bound.** The original guard
-    ///    `path.len() >= MAX_DELTA_CHAIN_LENGTH + 1` lets BFS explore
-    ///    chains one hop deeper than the caller will accept; the caller
-    ///    then rejects them. We bound the inner exploration at
-    ///    `MAX_DELTA_CHAIN_LENGTH` directly so over-long chains are
-    ///    pruned at enqueue rather than after computation.
-    ///
-    /// The tip-equality check inside the loop body of the original
-    /// (`if height >= end_height { return Some(path); }`) was unreachable
-    /// because the only way to enqueue a height was through the
-    /// `delta.height >= end_height` early-return below — that branch
-    /// already returns the chain before enqueuing. We drop it.
-    fn find_delta_chain(
-        &self,
-        start_height: u32,
-        end_height: u32,
-    ) -> Option<Vec<&'a DatabaseInfo>> {
-        if start_height >= end_height {
-            return Some(Vec::new());
-        }
-
-        // Flat node arena. The root node (index 0) is the synthetic
-        // start anchor with `parent = None` and `delta = None`; every
-        // other node carries a real `&DatabaseInfo` and a parent index
-        // pointing back toward the root.
-        let mut nodes: Vec<BfsNode<'a>> = Vec::with_capacity(16);
-        nodes.push(BfsNode {
-            parent: None,
-            delta: None,
-            depth: 0,
-        });
-
-        // Frontier: (node_idx, height_at_node).
-        let mut queue: VecDeque<(usize, u32)> = VecDeque::new();
-        let mut visited: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        queue.push_back((0, start_height));
-        visited.insert(start_height);
-
-        while let Some((parent_idx, height)) = queue.pop_front() {
-            let depth = nodes[parent_idx].depth;
-            if depth >= MAX_DELTA_CHAIN_LENGTH {
-                // Cannot extend further without exceeding the cap.
-                continue;
-            }
-
-            let Some(deltas) = self.by_base.get(&height) else {
-                continue;
-            };
-
-            for delta in deltas {
-                if !visited.insert(delta.height) {
-                    continue;
-                }
-                let new_idx = nodes.len();
-                nodes.push(BfsNode {
-                    parent: Some(parent_idx),
-                    delta: Some(*delta),
-                    depth: depth + 1,
-                });
-                if delta.height >= end_height {
-                    return Some(reconstruct_chain(&nodes, new_idx));
-                }
-                queue.push_back((new_idx, delta.height));
-            }
-        }
-
-        None
-    }
+    let target_height = steps[steps.len() - 1].tip_height;
+    Ok(SyncPlan {
+        steps,
+        is_fresh_sync: true,
+        target_height,
+    })
 }
 
-/// One node in the parent-pointer BFS arena used by
-/// [`SyncPlanner::find_delta_chain`]. Module-private — only the BFS
-/// driver and the [`reconstruct_chain`] helper construct or read it.
-struct BfsNode<'a> {
-    /// Index of the parent node in the arena (`None` for the root).
-    parent: Option<usize>,
-    /// Delta this node represents (`None` for the synthetic root).
-    delta: Option<&'a DatabaseInfo>,
-    /// Depth of this node from the root (root = 0, first delta = 1, …).
-    /// Stored explicitly so the depth bound check at enqueue time
-    /// doesn't need a parent-pointer walk per-frontier-pop.
-    depth: usize,
-}
-
-/// Walk the parent-pointer arena from `goal_idx` back to the root,
-/// emitting the `&DatabaseInfo` chain in source-order (root → goal).
-fn reconstruct_chain<'a>(nodes: &[BfsNode<'a>], goal_idx: usize) -> Vec<&'a DatabaseInfo> {
-    // Most chains land at 1-5 entries; pre-size accordingly so the
-    // reverse below is the only allocation.
-    let mut path: Vec<&'a DatabaseInfo> = Vec::with_capacity(MAX_DELTA_CHAIN_LENGTH);
-    let mut cur = Some(goal_idx);
-    while let Some(idx) = cur {
-        let node = &nodes[idx];
-        if let Some(d) = node.delta {
-            path.push(d);
-        }
-        cur = node.parent;
+/// The shortest delta chain (BFS) from `start` to `end`, at most
+/// [`MAX_DELTA_CHAIN_LENGTH`] steps long, if any.
+fn find_delta_chain<'a>(
+    by_base: &HashMap<u32, Vec<&'a DatabaseInfo>>,
+    start: u32,
+    end: u32,
+) -> Option<Vec<&'a DatabaseInfo>> {
+    if start >= end {
+        return Some(Vec::new());
     }
-    path.reverse();
-    path
+    let mut queue = VecDeque::from([(start, Vec::new())]);
+    let mut visited = HashSet::from([start]);
+    while let Some((height, path)) = queue.pop_front() {
+        if path.len() >= MAX_DELTA_CHAIN_LENGTH {
+            continue;
+        }
+        for &delta in by_base.get(&height).into_iter().flatten() {
+            if !visited.insert(delta.height) {
+                continue;
+            }
+            let mut next = path.clone();
+            next.push(delta);
+            if delta.height >= end {
+                return Some(next);
+            }
+            queue.push_back((delta.height, next));
+        }
+    }
+    None
 }
 
 // ─── Delta Merging ──────────────────────────────────────────────────────────
@@ -561,32 +320,7 @@ pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
 
 /// Read a varint from the buffer, returning (value, bytes_consumed).
 fn read_varint(buf: &[u8]) -> PirResult<(u64, usize)> {
-    if buf.is_empty() {
-        return Err(PirError::Decode("empty varint".into()));
-    }
-
-    let mut value: u64 = 0;
-    let mut shift = 0;
-    let mut pos = 0;
-
-    loop {
-        if pos >= buf.len() {
-            return Err(PirError::Decode("truncated varint".into()));
-        }
-        let byte = buf[pos];
-        pos += 1;
-
-        value |= ((byte & 0x7F) as u64) << shift;
-        if byte & 0x80 == 0 {
-            break;
-        }
-        shift += 7;
-        if shift > 63 {
-            return Err(PirError::Decode("varint overflow".into()));
-        }
-    }
-
-    Ok((value, pos))
+    pir_core::codec::try_read_varint(buf).map_err(|e| PirError::Decode(format!("varint: {e:?}")))
 }
 
 /// Merge delta data into a snapshot result.
@@ -863,7 +597,7 @@ mod tests {
         assert!(plan.steps[0].is_full());
     }
 
-    // ─── SyncPlanner / multi-hop BFS tests ───────────────────────────────
+    // ─── Multi-hop BFS tests ─────────────────────────────────────────────
     //
     // The original test surface only covered 1-entry catalogs (full
     // snapshot only). These exercise the BFS, the in-bound + over-bound
@@ -960,43 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sync_planner_reuse_across_multiple_plans() {
-        // Construct ONE planner; ask for several plans against it. All
-        // should match the equivalent free-function call.
-        let catalog = build_chained_catalog(1_000_000, 4_000, 4);
-        let planner = SyncPlanner::new(&catalog).unwrap();
-
-        // at-tip
-        assert!(planner.plan(Some(1_016_000)).unwrap().is_empty());
-        // 1-step
-        let p1 = planner.plan(Some(1_012_000)).unwrap();
-        assert_eq!(p1.steps.len(), 1);
-        assert!(!p1.is_fresh_sync);
-        // full chain (4 deltas)
-        let p4 = planner.plan(Some(1_000_000)).unwrap();
-        assert_eq!(p4.steps.len(), 4);
-        assert!(!p4.is_fresh_sync);
-        // fresh sync
-        let pf = planner.plan(None).unwrap();
-        assert!(pf.is_fresh_sync);
-        assert_eq!(pf.target_height, 1_016_000);
-
-        // Same planner reused — adjacency map should not be rebuilt.
-        // (We can't observe rebuild count directly without more
-        // plumbing; the behavioural equivalence above + the bench's
-        // "incremental_6step_fallback" speedup is the visible signal.)
-        assert_eq!(planner.latest_tip(), 1_016_000);
-        assert!(std::ptr::eq(planner.catalog(), &catalog));
-    }
-
-    #[test]
-    fn test_sync_planner_empty_catalog_errors() {
-        let catalog = DatabaseCatalog::new();
-        assert!(SyncPlanner::new(&catalog).is_err());
-    }
-
-    #[test]
-    fn test_sync_planner_no_full_snapshot_fresh_sync_errors() {
+    fn test_compute_sync_plan_no_full_snapshot() {
         // Catalog with deltas but no full snapshot. Fresh sync must
         // surface NoSyncPath.
         let mut catalog = DatabaseCatalog::new();
@@ -1018,11 +716,10 @@ mod tests {
             anchor_kind: 0,
             anchor_bytes: Vec::new(),
         });
-        let planner = SyncPlanner::new(&catalog).unwrap();
         // last_height = None → fresh sync → NoSyncPath
-        assert!(planner.plan(None).is_err());
+        assert!(compute_sync_plan(&catalog, None).is_err());
         // last_height matches a delta base → incremental works
-        let p = planner.plan(Some(100)).unwrap();
+        let p = compute_sync_plan(&catalog, Some(100)).unwrap();
         assert!(!p.is_fresh_sync);
         assert_eq!(p.steps.len(), 1);
     }
