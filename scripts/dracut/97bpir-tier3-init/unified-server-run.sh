@@ -5,14 +5,8 @@
 # starts this; runit restarts on exit (1s default backoff).
 #
 # Main flags:
-#   --port 8091
-#   --role secondary   (DPF queries + HarmonyPIR query phase, no OnionPIR)
-#   --serve-queries    (pir2 is queries-only per the production topology
-#                       — see memory: project_pir1_hint_pir2_query_split.md.
-#                       No --serve-hints, no --pool-size: hints come from
-#                       pir1/Hetzner instead. Required by the startup
-#                       validation in unified_server::main since 2026-05-13;
-#                       without it the binary exits code 2 → runit crash-loop.)
+#   --port 8091 --role secondary --serve-queries --oram-only
+#                       (Direct ORAM only; no DPF, HarmonyPIR or OnionPIR)
 #   --config /home/pir/data/databases.toml   (loaded from rootfs via
 #                                             bpir-tier3-init's bind mount)
 #   --direct-oram-db 0=... / 1=...
@@ -20,7 +14,6 @@
 #                       startup from proof-bound direct inputs. The input/proof
 #                       paths and ORAM runtime parameters are baked into this
 #                       measured UKI run script.
-#   --admin-pubkey-hex <op key>   (auth for REQ_ADMIN_DB_UPLOAD etc.)
 #
 # Runs as root — Tier 3 initramfs has no /etc/passwd, so dropping
 # privs to a `pir` user via chpst -u would need an `/etc/passwd`
@@ -690,7 +683,6 @@ exec "$UNIFIED_SERVER" \
     --direct-oram-encrypted \
     --direct-oram-key-hex "$ORAM_PAGE_KEY_HEX" \
     --direct-oram-auth-store \
-    --admin-pubkey-hex 87d454db85266e10e55ed8b68417de9d79ceb1d5d944bae831a7877627efdad3 \
     --vcek-dir /home/pir/data/vcek \
     --access oram=best-effort:2 \
     --free-threads 2 \

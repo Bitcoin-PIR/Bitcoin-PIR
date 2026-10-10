@@ -224,7 +224,6 @@ direct oram:   --direct-oram-db ID=DIR  --direct-oram-trusted-state-db ID=DIR
                --direct-oram-drain-per-access N  --direct-oram-access-budget N
                --direct-oram-cache-levels N  --direct-oram-encrypted  --direct-oram-key-hex HEX
                --direct-oram-state-key-hex HEX  --direct-oram-auth-store
-ignored:       --admin-pubkey-hex HEX (the measured ORAM run script still passes it)
 ";
 
 /// `--help`/`-h` and `--version`/`-V` as the only argument print and exit 0
@@ -333,11 +332,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                 if let Some(path) = args.get(i + 1) {
                     config_path = Some(PathBuf::from(path));
                 }
-                i += 1;
-            }
-            // Accepted and ignored: the measured ORAM run script still
-            // passes it, from before the admin upload path was removed.
-            "--admin-pubkey-hex" => {
                 i += 1;
             }
             "--vcek-dir" => {
