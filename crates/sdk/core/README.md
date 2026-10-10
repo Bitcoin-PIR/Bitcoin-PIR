@@ -32,8 +32,6 @@ the server cannot tell which address a wallet is querying.
 - **Client trait**: [`PirClient`] — common async interface (`connect`, `sync`,
   `query_batch`, `fetch_catalog`, `compute_sync_plan`) implemented by all three
   backend clients.
-- **Backend trait**: [`PirBackend`] — server-side hook for handling PIR
-  requests.
 - **Sync planning**: [`compute_sync_plan`] — BFS delta-chain discovery (max 5
   steps) and optimal path selection between published databases.
 - **Delta merging**: [`merge_delta`], [`merge_delta_batch`] — applies delta
@@ -224,7 +222,6 @@ dual licensed as above, without any additional terms or conditions.
 [`PirError`]: https://docs.rs/pir-sdk/latest/pir_sdk/enum.PirError.html
 [`ErrorKind`]: https://docs.rs/pir-sdk/latest/pir_sdk/enum.ErrorKind.html
 [`PirClient`]: https://docs.rs/pir-sdk/latest/pir_sdk/trait.PirClient.html
-[`PirBackend`]: https://docs.rs/pir-sdk/latest/pir_sdk/trait.PirBackend.html
 [`PirMetrics`]: https://docs.rs/pir-sdk/latest/pir_sdk/trait.PirMetrics.html
 [`AtomicMetrics`]: https://docs.rs/pir-sdk/latest/pir_sdk/struct.AtomicMetrics.html
 [`compute_sync_plan`]: https://docs.rs/pir-sdk/latest/pir_sdk/fn.compute_sync_plan.html

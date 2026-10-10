@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::transport::mock::MockTransport;
+use pir_sdk::DatabaseKind;
 
 const BASE: u32 = 940_611;
 const TIP: u32 = 948_454;

@@ -505,8 +505,10 @@ pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
     let (num_spent, consumed) = read_varint(&raw[pos..])?;
     pos += consumed;
 
-    // Read spent outpoints: [32B txid][varint vout]
-    let mut spent = Vec::with_capacity(num_spent as usize);
+    // Read spent outpoints: [32B txid][varint vout]. The counts come from
+    // the server, so the allocation is bounded by what the bytes can hold
+    // (at least 33 bytes per spent entry, 34 per new UTXO).
+    let mut spent = Vec::with_capacity((num_spent as usize).min(raw.len() / 33));
     for _ in 0..num_spent {
         if pos + 32 > raw.len() {
             return Err(PirError::Decode("truncated spent txid".into()));
@@ -529,7 +531,7 @@ pub fn decode_delta_data(raw: &[u8]) -> PirResult<DeltaData> {
     pos += consumed;
 
     // Read new UTXOs: [32B txid][varint vout][varint amount]
-    let mut new_utxos = Vec::with_capacity(num_new as usize);
+    let mut new_utxos = Vec::with_capacity((num_new as usize).min(raw.len() / 34));
     for _ in 0..num_new {
         if pos + 32 > raw.len() {
             return Err(PirError::Decode("truncated new UTXO txid".into()));
@@ -721,6 +723,14 @@ pub fn merge_delta_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_delta_data_rejects_a_hostile_count_without_allocating_it() {
+        // num_spent = u64::MAX (10-byte varint), then nothing.
+        let mut raw = vec![0xff; 9];
+        raw.push(0x01);
+        assert!(decode_delta_data(&raw).is_err());
+    }
 
     fn make_entry(txid_byte: u8, vout: u32, amount: u64) -> UtxoEntry {
         let mut txid = [0u8; 32];

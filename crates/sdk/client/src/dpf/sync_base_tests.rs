@@ -5,6 +5,7 @@ use super::*;
 use pir_core::params::{
     CHUNK_SLOTS_PER_BIN, CHUNK_SLOT_SIZE, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE,
 };
+use pir_sdk::DatabaseKind;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 

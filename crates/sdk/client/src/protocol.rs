@@ -88,34 +88,6 @@ pub(crate) fn encode_request(variant: u8, payload: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Parse the v2 trailing fields (index/chunk cuckoo master seed + chain
-/// anchor) from a `RESP_INFO` / `RESP_HARMONY_INFO` response body.
-///
-/// `resp` includes the leading RESP byte at index 0; the legacy fields
-/// occupy `[1..19]` and the v2 tail (if present) begins at offset 19:
-/// `[8B index_master_seed][8B chunk_master_seed][1B anchor_kind][0/36/72B anchor]`.
-/// Returns `(0, 0, 0, [])` when the tail is absent (pre-ext server).
-pub(crate) fn parse_info_v2_tail(resp: &[u8]) -> (u64, u64, u8, Vec<u8>) {
-    if resp.len() < 35 {
-        return (0, 0, 0, Vec::new());
-    }
-    let ims = u64::from_le_bytes(resp[19..27].try_into().unwrap());
-    let cms = u64::from_le_bytes(resp[27..35].try_into().unwrap());
-    if resp.len() < 36 {
-        return (ims, cms, 0, Vec::new());
-    }
-    let kind = resp[35];
-    let n = match kind {
-        1 => 36usize,
-        2 => 72usize,
-        _ => 0usize,
-    };
-    if n == 0 || resp.len() < 36 + n {
-        return (ims, cms, if n == 0 { 0 } else { kind }, Vec::new());
-    }
-    (ims, cms, kind, resp[36..36 + n].to_vec())
-}
-
 // ─── Catalog decoding ───────────────────────────────────────────────────────
 
 /// Decode a `DatabaseCatalog` from the body of a `RESP_DB_CATALOG` message.

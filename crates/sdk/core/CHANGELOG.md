@@ -9,12 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- `QueryResult::empty`, `with_entries`, and `Default` now start with
-  `merkle_verified = false`. Serde omits the public mutable field when
-  serializing and always resets it to `false` when deserializing, even when
-  input claims otherwise. The flag is legacy diagnostic metadata, not a
-  cryptographic release authority; release-sensitive clients use an opaque
-  verified-result type.
+- `QueryResult::empty`, `with_entries`, and `Default` start with
+  `merkle_verified = false`; serde reads and writes the field (`false` when
+  absent).
+- `decode_delta_data` bounds its allocations by the input length instead of
+  the server-supplied entry counts, so a hostile count is a decode error
+  rather than an abort.
+
+### Removed
+
+- The `PirBackend` trait, `ServerRole` and `PirClientConfig`: nothing
+  implemented or consumed them.
 
 ### Added
 

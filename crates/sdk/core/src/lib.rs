@@ -1,13 +1,9 @@
-//! PIR SDK: Core types, traits, and abstractions for Private Information Retrieval.
+//! PIR SDK: core types and traits for Private Information Retrieval clients.
 //!
-//! This crate provides the foundational building blocks for both PIR servers and clients.
-//! It defines:
-//!
-//! - **Types**: Common data structures like `UtxoEntry`, `DatabaseInfo`, `SyncPlan`
-//! - **Error**: A unified error type for all PIR operations
-//! - **Backend trait**: Server-side interface for handling PIR requests
-//! - **Client trait**: Client-side interface for querying PIR servers
-//! - **Sync**: Delta synchronization planning and merging
+//! - **Types**: common data structures like `UtxoEntry`, `DatabaseInfo`, `SyncPlan`
+//! - **Error**: a unified error type for all PIR operations
+//! - **Client trait**: the interface every backend client implements
+//! - **Sync**: delta synchronization planning and merging
 //!
 //! # Architecture
 //!
@@ -19,24 +15,9 @@
 //! All backends share the same two-level (INDEX + CHUNK) cuckoo table structure
 //! and support chained delta synchronization (snapshot A -> delta A->B -> delta B->C -> ...).
 //!
-//! # Example
-//!
-//! ```ignore
-//! use pir_sdk::{PirClientBuilder, ScriptHash};
-//!
-//! // Create a DPF client (two servers)
-//! let mut client = PirClientBuilder::dpf("ws://server0:8091", "ws://server1:8092").build();
-//!
-//! // Connect and sync
-//! client.connect().await?;
-//! let result = client.sync(&[script_hash], None).await?;
-//!
-//! for entry in result.entries {
-//!     println!("UTXO: {}:{} = {} sats", hex::encode(entry.txid), entry.vout, entry.amount_sats);
-//! }
-//! ```
+//! The backend clients (`DpfClient`, `HarmonyClient`, `OnionClient`,
+//! `OramClient`) live in `pir-sdk-client`.
 
-pub mod backend;
 pub mod client;
 pub mod error;
 pub mod leakage;
@@ -45,10 +26,8 @@ pub mod sync;
 pub mod types;
 
 // Re-export main types at crate root
-pub use backend::PirBackend;
 pub use client::{
-    ConnectionState, NoProgress, PirClient, PirClientConfig, PrintProgress, StateListener,
-    SyncProgress,
+    ConnectionState, NoProgress, PirClient, PrintProgress, StateListener, SyncProgress,
 };
 pub use error::{ErrorKind, PirError, PirResult};
 pub use leakage::{

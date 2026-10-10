@@ -254,35 +254,12 @@ impl PirClient for HarmonyClient {
             return Err(PirError::NotConnected);
         }
 
-        // Prefer `REQ_GET_DB_CATALOG`: it carries real `height` and
-        // `has_bucket_merkle` fields and reports every database the server
-        // is serving (fresh + deltas), so `SyncResult::synced_height` is
-        // accurate and cache-by-height works correctly. Fall back to the
-        // legacy `REQ_HARMONY_GET_INFO` only for servers that don't support
-        // the newer request (empty reply, unknown variant byte, or
-        // `RESP_ERROR`).
-        if let Some(catalog) = self.try_fetch_db_catalog().await? {
-            log::info!(
-                "[PIR-AUDIT] HarmonyClient fetched DatabaseCatalog via REQ_GET_DB_CATALOG: \
-                 {} database(s), latest_tip={:?}",
-                catalog.databases.len(),
-                catalog.latest_tip()
-            );
-            self.verified_roots.reconcile_catalog(&catalog);
-            self.verified_tree_tops
-                .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());
-            self.catalog = Some(catalog.clone());
-            return Ok(catalog);
-        }
-
-        log::warn!(
-            "[PIR-AUDIT] HarmonyClient server did not respond to REQ_GET_DB_CATALOG; \
-             falling back to legacy REQ_HARMONY_GET_INFO (height will be 0, Merkle off)"
+        let catalog = self.fetch_db_catalog().await?;
+        log::info!(
+            "[PIR-AUDIT] HarmonyClient fetched DatabaseCatalog: {} database(s), latest_tip={:?}",
+            catalog.databases.len(),
+            catalog.latest_tip()
         );
-        let info = self.fetch_legacy_info().await?;
-        let catalog = DatabaseCatalog {
-            databases: vec![info],
-        };
         self.verified_roots.reconcile_catalog(&catalog);
         self.verified_tree_tops
             .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());

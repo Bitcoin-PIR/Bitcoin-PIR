@@ -21,8 +21,8 @@ use async_trait::async_trait;
 use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, BucketRef,
-    ConnectionState, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant, LeakageRecorder,
-    NoProgress, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
+    ConnectionState, DatabaseCatalog, DatabaseInfo, Instant, LeakageRecorder, NoProgress,
+    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
     RoundProfile, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
     UtxoEntry,
 };
@@ -709,76 +709,6 @@ impl DpfClient {
         self.fire_connect(&self.server0_url);
         self.fire_connect(&self.server1_url);
         self.notify_state(ConnectionState::Connected);
-    }
-
-    /// Fetch server info and build catalog entry for legacy servers.
-    async fn fetch_legacy_info(&mut self) -> PirResult<DatabaseInfo> {
-        let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
-
-        // REQ_GET_INFO = 0x01
-        let request = encode_request(0x01, &[]);
-        let request_bytes = request.len() as u64;
-        let response = conn0.roundtrip(&request).await?;
-        // `roundtrip` strips the 4-byte length prefix on success, so the
-        // observable response payload size on the wire is `response.len() + 4`
-        // — matches what `request.len()` reports (which still includes the
-        // outgoing 4-byte prefix).
-        let response_bytes = (response.len() as u64).saturating_add(4);
-        self.record_round(RoundProfile {
-            kind: RoundKind::Info,
-            server_id: 0,
-            db_id: None,
-            request_bytes,
-            response_bytes,
-            items: Vec::new(),
-        });
-
-        if response.is_empty() || response[0] != 0x01 {
-            return Err(PirError::Protocol("invalid info response".into()));
-        }
-
-        // Parse: [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k][8B tag_seed]
-        if response.len() < 19 {
-            return Err(PirError::Protocol("info response too short".into()));
-        }
-
-        let index_bins = u32::from_le_bytes(response[1..5].try_into().unwrap());
-        let chunk_bins = u32::from_le_bytes(response[5..9].try_into().unwrap());
-        let index_k = response[9];
-        let chunk_k = response[10];
-        let tag_seed = u64::from_le_bytes(response[11..19].try_into().unwrap());
-        // v2 tail: index/chunk master seed + chain anchor.
-        let (index_master_seed, chunk_master_seed, anchor_kind, anchor_bytes) =
-            crate::protocol::parse_info_v2_tail(&response);
-
-        let db_info = DatabaseInfo {
-            db_id: 0,
-            kind: DatabaseKind::Full,
-            name: "main".into(),
-            height: 0,
-            index_bins,
-            chunk_bins,
-            index_k,
-            chunk_k,
-            tag_seed,
-            dpf_n_index: pir_core::params::compute_dpf_n(index_bins as usize),
-            dpf_n_chunk: pir_core::params::compute_dpf_n(chunk_bins as usize),
-            has_bucket_merkle: false,
-            index_master_seed,
-            chunk_master_seed,
-            anchor_kind,
-            anchor_bytes,
-        };
-        // Reject geometry that would wedge the PBC planners (k < 3 →
-        // infinite rejection-sampling loop) or panic on bin hashing
-        // (0 bins) — see protocol::validate_db_geometry.
-        crate::protocol::validate_db_geometry(&db_info)?;
-        // Refuse to proceed if the server's seeds don't match the chain
-        // anchor it claims (no-op for legacy DBs).
-        db_info.verify_anchor_seeds().map_err(|e| {
-            PirError::Protocol(format!("chain-anchor seed verification failed: {}", e))
-        })?;
-        Ok(db_info)
     }
 
     /// Execute a single query step for a batch of script hashes.
@@ -2162,21 +2092,12 @@ impl PirClient for DpfClient {
             return Err(PirError::Protocol("empty catalog response".into()));
         }
 
-        // Check if server supports catalog (RESP_DB_CATALOG)
-        if response[0] == RESP_DB_CATALOG {
-            let catalog = decode_catalog(&response[1..])?;
-            self.verified_roots.reconcile_catalog(&catalog);
-            self.verified_tree_tops
-                .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());
-            self.catalog = Some(catalog.clone());
-            return Ok(catalog);
+        if response[0] != RESP_DB_CATALOG {
+            return Err(PirError::Protocol(
+                "unexpected database catalog response".into(),
+            ));
         }
-
-        // Fall back to legacy single-database info
-        let info = self.fetch_legacy_info().await?;
-        let catalog = DatabaseCatalog {
-            databases: vec![info],
-        };
+        let catalog = decode_catalog(&response[1..])?;
         self.verified_roots.reconcile_catalog(&catalog);
         self.verified_tree_tops
             .retain(|db_id, _| self.verified_roots.get(*db_id).is_some());
@@ -3005,6 +2926,7 @@ mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
     use pir_db_attest::BuildKind;
+    use pir_sdk::DatabaseKind;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -3764,90 +3686,6 @@ mod tests {
         });
 
         assert!(rec.is_empty());
-    }
-
-    /// Driving a real `fetch_legacy_info` through `MockTransport`
-    /// emits exactly one `Info` round on server 0. Proves the wiring
-    /// at the actual emission site (not just the helper).
-    #[tokio::test]
-    async fn leakage_recorder_captures_info_round_end_to_end() {
-        use pir_sdk::BufferingLeakageRecorder;
-
-        let rec = Arc::new(BufferingLeakageRecorder::new());
-        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
-        client.set_leakage_recorder(Some(rec.clone()));
-
-        let mut mock0 = MockTransport::new("wss://mock-0");
-        // Valid REQ_GET_INFO response: [4B len=19][1B variant=0x01]
-        // [4B index_bins][4B chunk_bins][1B index_k][1B chunk_k]
-        // [8B tag_seed] — total wire frame is 23 bytes.
-        let mut info_resp = Vec::with_capacity(23);
-        info_resp.extend_from_slice(&19u32.to_le_bytes()); // length prefix
-        info_resp.push(0x01); // variant
-        info_resp.extend_from_slice(&1024u32.to_le_bytes()); // index_bins
-        info_resp.extend_from_slice(&2048u32.to_le_bytes()); // chunk_bins
-        info_resp.push(75); // index_k
-        info_resp.push(80); // chunk_k
-        info_resp.extend_from_slice(&0u64.to_le_bytes()); // tag_seed
-        assert_eq!(info_resp.len(), 23);
-        mock0.enqueue_response(info_resp);
-
-        client.connect_with_transport(
-            Box::new(mock0),
-            Box::new(MockTransport::new("wss://mock-1")),
-        );
-        let _info = client.fetch_legacy_info().await.unwrap();
-
-        let snap = rec.snapshot();
-        assert_eq!(snap.len(), 1, "expected exactly one Info round");
-        let r = &snap[0];
-        assert!(matches!(r.kind, RoundKind::Info));
-        assert_eq!(r.server_id, 0);
-        assert_eq!(r.db_id, None);
-        // request: REQ_GET_INFO is `[4B len=1][1B 0x01]` = 5 bytes.
-        assert_eq!(r.request_bytes, 5);
-        // response: full wire frame is 23 bytes (length prefix + payload).
-        // `roundtrip` strips the prefix so the client sees 19 bytes;
-        // recording adds 4 back to match what a wire-level observer sees.
-        assert_eq!(r.response_bytes, 23);
-        assert!(r.items.is_empty());
-    }
-
-    /// Leakage and metrics recorders are independent — installing both
-    /// causes both to fire on the same query, neither blocks the other.
-    #[tokio::test]
-    async fn leakage_and_metrics_recorders_are_independent() {
-        use pir_sdk::{AtomicMetrics, BufferingLeakageRecorder};
-
-        let leakage = Arc::new(BufferingLeakageRecorder::new());
-        let metrics = Arc::new(AtomicMetrics::new());
-        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
-        client.set_leakage_recorder(Some(leakage.clone()));
-        client.set_metrics_recorder(Some(metrics.clone()));
-
-        let mut mock0 = MockTransport::new("wss://mock-0");
-        let mut info_resp = Vec::with_capacity(23);
-        info_resp.extend_from_slice(&19u32.to_le_bytes());
-        info_resp.push(0x01);
-        info_resp.extend_from_slice(&1024u32.to_le_bytes());
-        info_resp.extend_from_slice(&2048u32.to_le_bytes());
-        info_resp.push(75);
-        info_resp.push(80);
-        info_resp.extend_from_slice(&0u64.to_le_bytes());
-        mock0.enqueue_response(info_resp);
-
-        client.connect_with_transport(
-            Box::new(mock0),
-            Box::new(MockTransport::new("wss://mock-1")),
-        );
-        let _info = client.fetch_legacy_info().await.unwrap();
-
-        // Leakage saw the structured round.
-        assert_eq!(leakage.len(), 1);
-        // Metrics saw the byte counts via the transport.
-        let snap = metrics.snapshot();
-        assert!(snap.bytes_sent > 0);
-        assert!(snap.bytes_received > 0);
     }
 
     // ─── Malicious-server robustness (C2/C3, docs/history/CODE_REVIEW_2026-06.md) ──
