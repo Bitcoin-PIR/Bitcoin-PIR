@@ -298,7 +298,6 @@ dependencies = [
  "pir-core",
  "pir-db-attest",
  "pir-identity",
- "pir-runtime-core",
  "pir-sdk-client",
  "sha2",
  "tempfile",

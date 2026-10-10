@@ -316,9 +316,7 @@ never from a live server or from the proof printing itself.
 7. Auth — stage both hosts without activating. VPSBG:
    Flow F + `scripts/stage_vpsbg_tier3_generation.sh` (candidate
    catalog only). Keep `path` = V2 `server-db`, `proof_dir` = locked
-   V1 sidecars, `proof_v2_dir` = complete V2 output. Do not use
-   `bpir-admin upload --no-activate` for attested evidence (it
-   rewrites `MANIFEST.toml`).
+   V1 sidecars, `proof_v2_dir` = complete V2 output.
 8. Auth — activate in a fail-closed window (rotation §5): Flow F
    `open`, atomic `databases.toml` replace, Hetzner restart, `close`
    with the known-good **runtime** image id.

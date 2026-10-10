@@ -3,9 +3,9 @@
 //! Subcommands:
 //! - `api-key new` — mint an operator API key for the server's
 //!   `--api-key-file` (docs/CREDITS.md "API keys").
-//! - `keygen` — generate an Ed25519 keypair (admin key, server identity
-//!   or operator key). Writes the 32-byte seed to a file (mode 0600) and
-//!   prints the public key as 64-char hex.
+//! - `keygen` — generate an Ed25519 keypair (server identity or operator
+//!   key). Writes the 32-byte seed to a file (mode 0600) and prints the
+//!   public key as 64-char hex.
 //! - `sign-identity` — the operator signs a server's IdentityCert.
 //! - `attest` — exercise REQ_ATTEST against a server, verify the
 //!   REPORT_DATA binding, optionally cross-check the binary hash,
@@ -13,14 +13,12 @@
 //! - `channel-test` — end-to-end smoke test of the encrypted channel:
 //!   attest → handshake → encrypted ping/pong + get_info. Use post-deploy
 //!   to confirm the cloudflared-blind path actually works.
-//! - `upload` — authenticate, build a manifest, stream a DB directory
-//!   to the server's staging area, finalize, optionally activate.
 //! - `db-proof verify` / `verify-live` — verify attested-builder evidence,
 //!   root bundle, artifact manifests, and SEV-SNP REPORT_DATA binding for
 //!   a local proof directory or a live server's proof.
 //!
 //! Wire protocol surfaces consumed by this tool live in
-//! `pir-sdk-client::{attest, admin}` and are tested independently.
+//! `pir-sdk-client::attest` and are tested independently.
 //! This crate only orchestrates them.
 
 use clap::{Parser, Subcommand};
@@ -31,7 +29,6 @@ mod channel_test;
 mod db_proof;
 mod keygen;
 mod sign_identity;
-mod upload;
 
 #[derive(Parser, Debug)]
 #[command(name = "bpir-admin", about = "BitcoinPIR operator CLI", version)]
@@ -46,8 +43,7 @@ enum Command {
     /// (docs/CREDITS.md "API keys").
     #[command(name = "api-key")]
     ApiKey(api_key::ApiKeyArgs),
-    /// Generate an Ed25519 keypair: admin key, server identity, or
-    /// operator key.
+    /// Generate an Ed25519 keypair: server identity or operator key.
     Keygen(keygen::KeygenArgs),
     /// Operator signs an IdentityCert for a server, OFFLINE on the
     /// operator's workstation. Output is deployed to the server at
@@ -61,8 +57,6 @@ enum Command {
     /// cloudflared-blind path works.
     #[command(name = "channel-test")]
     ChannelTest(channel_test::ChannelTestArgs),
-    /// Upload a DB directory: auth → BEGIN → CHUNK* → FINALIZE → ACTIVATE.
-    Upload(upload::UploadArgs),
     /// Verify attested-builder database build proof artifacts.
     #[command(name = "db-proof")]
     DbProof(db_proof::DbProofArgs),
@@ -77,7 +71,6 @@ async fn main() {
         Command::SignIdentity(args) => ("sign-identity", sign_identity::run(args)),
         Command::Attest(args) => ("attest", attest::run(args).await),
         Command::ChannelTest(args) => ("channel-test", channel_test::run(args).await),
-        Command::Upload(args) => ("upload", upload::run(args).await),
         Command::DbProof(args) => ("db-proof", db_proof::run(args).await),
     };
     if let Err(e) = result {

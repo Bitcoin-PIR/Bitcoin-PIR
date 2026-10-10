@@ -28,5 +28,4 @@ zeroize = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
-pir-runtime-core = { path = "../../crates/protocol/runtime" }
 tempfile = "3"

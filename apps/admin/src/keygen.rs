@@ -1,9 +1,8 @@
 //! `bpir-admin keygen` — generate an Ed25519 keypair.
 //!
 //! Writes the 32-byte secret seed to a file (mode 0600) and prints the
-//! public key as 64-char hex: for the server's `--admin-pubkey-hex`, a
-//! server identity (`--identity-key-path`; the operator signs its pubkey
-//! with `sign-identity`), or an operator key.
+//! public key as 64-char hex: for a server identity (`--identity-key-path`;
+//! the operator signs its pubkey with `sign-identity`) or an operator key.
 
 use clap::Args;
 use ed25519_dalek::SigningKey;
@@ -100,7 +99,7 @@ pub fn read_secret_key(path: &Path) -> Result<SigningKey, String> {
     Ok(key)
 }
 
-pub(crate) fn default_keyfile_path() -> PathBuf {
+fn default_keyfile_path() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(xdg).join("bpir-admin").join("admin.key");
     }
