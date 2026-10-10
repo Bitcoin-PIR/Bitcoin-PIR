@@ -73,6 +73,7 @@ BitcoinPIR/
 │   └── directory/     Nostr service-directory codec (provider discovery)
 ├── apps/
 │   ├── server/        Production server and diagnostic binaries
+│   ├── directory-relay/  Directory-only Nostr relay (provider discovery)
 │   └── admin/         Operator CLI
 ├── tools/
 │   └── db-builder/    Database generation pipeline

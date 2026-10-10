@@ -1,0 +1,49 @@
+# BitcoinPIR directory-only relay v1 configuration (pir1 shape).
+#
+# This file contains no signing key. Render DIRECTORY_PUBLISHER_PUBKEY_HEX as
+# the dedicated non-zero x-only public key printed by
+# `bpir-admin directory-artifact keygen`, then install the rendered file as
+# /etc/bitcoinpir/directory-relay/config.toml, owned by the service user and
+# mode 0400 or 0600 (the relay refuses group- or world-readable configs).
+#
+# Both listeners are loopback-only by construction. The public lane (REQ/CLOSE)
+# is published through the Cloudflare tunnel as wss://directory.bitcoinpir.org;
+# the publisher lane (EVENT) is never exposed: operators publish on this host or
+# through an SSH port-forward with `bpir-admin directory-artifact publish
+# --loopback-publisher --relay ws://127.0.0.1:8097`.
+
+profile = "bitcoinpir-directory-relay-v1"
+public_listen = "127.0.0.1:8096"
+publisher_listen = "127.0.0.1:8097"
+database = "/var/lib/bitcoinpir-directory-relay/relay.sqlite3"
+directory_pubkey_hex = "DIRECTORY_PUBLISHER_PUBKEY_HEX"
+
+# Relay abuse/capacity limits, not an access policy. Public reads and signed
+# writes have exact lane reservations whose sums equal every global cap, so
+# neither lane can occupy the other's connection, operation, rate, or egress
+# allocation. The per-connection egress budget intentionally does not let the
+# count and event-size maxima be saturated together.
+max_connections = 52
+max_public_connections = 48
+max_publisher_connections = 4
+max_in_flight_operations = 8
+max_public_in_flight_operations = 6
+max_publisher_in_flight_operations = 2
+max_operations_per_second = 64
+max_public_operations_per_second = 48
+max_publisher_operations_per_second = 16
+max_egress_bytes_per_second = 16777216
+max_public_egress_bytes_per_second = 12582912
+max_publisher_egress_bytes_per_second = 4194304
+max_egress_bytes_per_connection = 67108864
+
+# max_archive_bytes counts immutable event_json BLOB bytes, not SQLite/WAL/index
+# disk usage. Filesystem quota and free-space monitoring remain the operator's.
+max_archive_events = 100000
+max_archive_bytes = 268435456
+
+handshake_timeout_seconds = 10
+idle_timeout_seconds = 60
+connection_timeout_seconds = 300
+operation_timeout_seconds = 10
+egress_timeout_seconds = 5

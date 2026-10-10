@@ -81,6 +81,10 @@ deploy/systemd/*
 !deploy/systemd/pir-primary.service
 !deploy/systemd/pir-secondary.service
 !deploy/systemd/pir-vpsbg.service
+!deploy/systemd/bpir-directory-relay.service
+!deploy/directory-relay/
+deploy/directory-relay/*
+!deploy/directory-relay/config.toml.example
 
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any

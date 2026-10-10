@@ -12,7 +12,8 @@ not listed below is local-only by construction.
 | `installimage.conf` | Hetzner installimage config for the pir1 host (partitioning/RAID; no credentials) |
 | `known_hosts` | Pinned SSH public host keys for the Hetzner host (65.21.91.217) — the host-key-swap defense used by the ops runbooks |
 | `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (server 26939, 212.73.134.61; stock-rootfs windows only) |
-| `systemd/*.service` | The four host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
+| `systemd/*.service` | The host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`, `bpir-directory-relay` (pir1 directory relay). Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
+| `directory-relay/config.toml.example` | Directory relay configuration template (loopback listeners, lane limits, directory public key placeholder); rendered on pir1 per `docs/runbooks/directory-relay.md` |
 
 These files are *facts about the deployment*, not activation levers: editing
 them here changes nothing on a host. Applying a unit change to a host is a
