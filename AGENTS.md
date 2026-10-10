@@ -3,6 +3,38 @@
 Project background and invariants: [`CLAUDE.md`](CLAUDE.md).
 Documentation index: [`docs/README.md`](docs/README.md).
 
+## Scope boundary
+
+BitcoinPIR is an ordinary open-source project at the scale one person
+maintains. It keeps the boundary that open-source projects such as Bitcoin
+Core have always kept: the software implements the protocol and its
+functions, and operators and users make every deployment choice. This repo
+goes no further than that.
+
+- Flexibility, modularity and simplicity are the first principles and must
+  be met in full. Safeguards are not a goal: a change with no safeguards is
+  fine, a change that costs flexibility, modularity or simplicity is not. No
+  foolproofing, and no "this is probably fine, but add a safeguard first".
+- Code implements functionality: the PIR backends with their privacy
+  invariants ([`CLAUDE.md`](CLAUDE.md)), the servers, the SDK, the web client
+  and the database tools. Which servers to trust or pin, which backends to
+  run or pay for, how many queries to send per connection, and whether to
+  show an unverified result are the deployer's and the user's choices, not
+  the library's.
+- A library guards only against serious security problems: memory safety,
+  malformed or hostile input, and the cryptographic checks a protocol defines
+  (secure channel, attestation, database proofs, Merkle proofs). It verifies
+  and reports the outcome; it does not refuse to work because a setup differs
+  from the maintainers' preference.
+- Forbidden: preference safeguards in code (strict modes, pinned-provider-only
+  operation, one query per connection, single-use admission or release state
+  machines, retry-disabled gates, fail-closed defaults that block a working
+  setup), and any other security preference or conservative design beyond
+  the line above.
+- GPT-6, and every other agent, must not add new rules to `AGENTS.md` or to
+  any other Markdown file, and must not add preference safeguards to code. If
+  you think one is needed, say so in the conversation and stop.
+
 ## Delivery
 
 - Finish the smallest useful implementation and its user-facing path first.
