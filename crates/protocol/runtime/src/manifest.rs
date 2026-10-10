@@ -38,7 +38,7 @@
 use pir_core::merkle::{sha256, Hash256, HASH_SIZE};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::io::Read;
@@ -199,9 +199,6 @@ pub enum ManifestError {
     MissingFile {
         path: String,
     },
-    UnexpectedFile {
-        path: String,
-    },
     InvalidDirectOram(String),
 }
 
@@ -233,11 +230,6 @@ impl fmt::Display for ManifestError {
             Self::MissingFile { path } => {
                 write!(f, "manifest references {} but file is not present", path)
             }
-            Self::UnexpectedFile { path } => write!(
-                f,
-                "{} is present in the DB dir but not listed in MANIFEST.toml",
-                path
-            ),
             Self::InvalidDirectOram(message) => {
                 write!(f, "invalid [direct_oram] manifest section: {message}")
             }
@@ -301,20 +293,14 @@ impl DbManifest {
         Ok((manifest, sha256(raw)))
     }
 
-    /// Verify every listed file matches its expected SHA-256, and that no
-    /// unlisted regular file is present in the directory tree except a
-    /// narrowly named bucket-Merkle sibling table whose Direct-ORAM manifest
-    /// lists and hash-verifies all of its commitments.
+    /// Verify every listed file exists and matches its expected SHA-256.
     ///
-    /// Files ending in `_cuckoo.bin` are the large cuckoo table mmap files
-    /// (several GB each). Reading them into memory just to SHA-256 them at
-    /// startup adds ~50s of delay. They are still checked for existence
-    /// (and must appear in the manifest to pass the stray-file gate), but
-    /// the content hash is skipped — the table bytes are already covered by
-    /// the SEV-SNP MEASUREMENT (which signs the binary + cmdline + rootfs
-    /// that loaded them).
+    /// Files ending in `_cuckoo.bin` are the multi-GB cuckoo table mmap
+    /// files; hashing them would add about 50 s to startup, so only their
+    /// presence is checked. Clients verify the bins they read against the
+    /// bucket-Merkle roots, which the manifest hash-binds.
     pub fn verify_dir_contents(&self, base_dir: &Path) -> Result<(), ManifestError> {
-        // Phase 1 — every listed file must exist. Non-cuckoo files also hash-match.
+        // Every listed file must exist; non-cuckoo files must also hash-match.
         for (rel, expected_hex) in &self.files {
             let full = base_dir.join(rel);
             if !full.exists() {
@@ -344,79 +330,8 @@ impl DbManifest {
                 });
             }
         }
-
-        // Phase 2 — nothing in the dir is unaccounted for.
-        let mut found = HashSet::new();
-        walk(base_dir, base_dir, &mut found).map_err(|err| ManifestError::Io {
-            path: base_dir.display().to_string(),
-            err,
-        })?;
-        let listed: HashSet<&str> = self.files.keys().map(String::as_str).collect();
-        for path in &found {
-            if path == MANIFEST_FILENAME {
-                continue;
-            }
-            if !listed.contains(path.as_str()) && !self.allows_unlisted_bucket_merkle_sibling(path)
-            {
-                return Err(ManifestError::UnexpectedFile { path: path.clone() });
-            }
-        }
         Ok(())
     }
-
-    /// Bucket-Merkle sibling rows are proof material rather than trusted DB
-    /// contents. A malicious row can only make client verification fail: the
-    /// runtime validates its shape and clients fold it into the manifest-bound
-    /// tree-top/root before releasing a result. Keep this exception exact and
-    /// unavailable unless all three commitment artifacts are manifest-bound.
-    fn allows_unlisted_bucket_merkle_sibling(&self, path: &str) -> bool {
-        const COMMITMENTS: [&str; 3] = [
-            "merkle_bucket_root.bin",
-            "merkle_bucket_roots.bin",
-            "merkle_bucket_tree_tops.bin",
-        ];
-        if self.direct_oram.is_none()
-            || !COMMITMENTS
-                .iter()
-                .all(|name| self.files.contains_key(*name))
-        {
-            return false;
-        }
-        let Some(level) = path
-            .strip_prefix("merkle_bucket_index_sib_L")
-            .or_else(|| path.strip_prefix("merkle_bucket_chunk_sib_L"))
-            .and_then(|rest| rest.strip_suffix(".bin"))
-        else {
-            return false;
-        };
-        !level.is_empty()
-            && level.bytes().all(|byte| byte.is_ascii_digit())
-            && level
-                .parse::<u32>()
-                .is_ok_and(|parsed| parsed.to_string() == level)
-    }
-}
-
-fn walk(root: &Path, dir: &Path, out: &mut HashSet<String>) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let ft = entry.file_type()?;
-        if ft.is_dir() {
-            walk(root, &path, out)?;
-        } else if ft.is_file() {
-            let rel = path
-                .strip_prefix(root)
-                .expect("dir is descendant of root by construction");
-            // Forward-slash separators so manifests are cross-platform.
-            let s = rel.to_string_lossy().replace('\\', "/");
-            out.insert(s);
-        }
-        // Symlinks/sockets/etc. are intentionally ignored — they shouldn't
-        // exist inside a DB dir, and adding them to the manifest would
-        // require resolving them deterministically (a separate decision).
-    }
-    Ok(())
 }
 
 /// Files ending in `_cuckoo.bin` are the large cuckoo table mmap files.
@@ -491,22 +406,6 @@ mod tests {
             ));
         }
         fs::write(dir.join(MANIFEST_FILENAME), s).unwrap();
-    }
-
-    fn write_direct_oram_manifest_for(dir: &Path, files: &[(&str, &[u8])]) {
-        write_manifest_for(dir, files);
-        let manifest_path = dir.join(MANIFEST_FILENAME);
-        let mut manifest = fs::read_to_string(&manifest_path).unwrap();
-        manifest.push_str(
-            "\n[direct_oram]\nversion = 1\n\
-             index_sha256 = \"1111111111111111111111111111111111111111111111111111111111111111\"\n\
-             index_bytes = 25\nindex_records = 1\n\
-             chunk_sha256 = \"2222222222222222222222222222222222222222222222222222222222222222\"\n\
-             chunk_bytes = 40\nchunk_records = 1\n\
-             index_slots_per_bin = 4\nindex_hash_fns = 2\n\
-             index_load_factor_ppb = 200000000\nindex_seed = 7\n",
-        );
-        fs::write(manifest_path, manifest).unwrap();
     }
 
     #[test]
@@ -592,105 +491,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_unlisted_file() {
-        let dir = tempfile::tempdir().unwrap();
-        write_files(dir.path(), &[("a.bin", b"hello"), ("strays.bin", b"oops")]);
-        write_manifest_for(dir.path(), &[("a.bin", b"hello")]);
-        let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::UnexpectedFile { .. }),
-            "got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn accepts_unlisted_bucket_merkle_siblings_bound_by_manifest_commitments() {
-        let dir = tempfile::tempdir().unwrap();
-        let committed: &[(&str, &[u8])] = &[
-            ("merkle_bucket_root.bin", b"root"),
-            ("merkle_bucket_roots.bin", b"ordered-roots"),
-            ("merkle_bucket_tree_tops.bin", b"tree-tops"),
-        ];
-        write_files(dir.path(), committed);
-        write_files(
-            dir.path(),
-            &[
-                ("merkle_bucket_index_sib_L0.bin", b"index-proof-rows"),
-                ("merkle_bucket_chunk_sib_L1.bin", b"chunk-proof-rows"),
-            ],
-        );
-        write_direct_oram_manifest_for(dir.path(), committed);
-
-        DbManifest::load_and_verify(dir.path()).unwrap().unwrap();
-    }
-
-    #[test]
-    fn rejects_unlisted_bucket_merkle_sibling_without_direct_oram_or_all_commitments() {
-        let all_commitments: &[(&str, &[u8])] = &[
-            ("merkle_bucket_root.bin", b"root"),
-            ("merkle_bucket_roots.bin", b"ordered-roots"),
-            ("merkle_bucket_tree_tops.bin", b"tree-tops"),
-        ];
-        let ordinary = tempfile::tempdir().unwrap();
-        write_files(ordinary.path(), all_commitments);
-        write_files(
-            ordinary.path(),
-            &[("merkle_bucket_index_sib_L0.bin", b"index-proof-rows")],
-        );
-        write_manifest_for(ordinary.path(), all_commitments);
-        assert!(matches!(
-            DbManifest::load_and_verify(ordinary.path()).unwrap_err(),
-            ManifestError::UnexpectedFile { .. }
-        ));
-
-        let dir = tempfile::tempdir().unwrap();
-        let committed: &[(&str, &[u8])] = &[
-            ("merkle_bucket_root.bin", b"root"),
-            ("merkle_bucket_roots.bin", b"ordered-roots"),
-        ];
-        write_files(dir.path(), committed);
-        write_files(
-            dir.path(),
-            &[("merkle_bucket_index_sib_L0.bin", b"index-proof-rows")],
-        );
-        write_direct_oram_manifest_for(dir.path(), committed);
-
-        let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::UnexpectedFile { .. }),
-            "got {:?}",
-            err
-        );
-    }
-
-    #[test]
-    fn rejects_noncanonical_or_nested_unlisted_bucket_merkle_siblings() {
-        let committed: &[(&str, &[u8])] = &[
-            ("merkle_bucket_root.bin", b"root"),
-            ("merkle_bucket_roots.bin", b"ordered-roots"),
-            ("merkle_bucket_tree_tops.bin", b"tree-tops"),
-        ];
-        for unexpected in [
-            "merkle_bucket_index_sib_L00.bin",
-            "merkle_bucket_chunk_sib_Lx.bin",
-            "nested/merkle_bucket_index_sib_L0.bin",
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            write_files(dir.path(), committed);
-            write_files(dir.path(), &[(unexpected, b"proof-rows")]);
-            write_direct_oram_manifest_for(dir.path(), committed);
-
-            let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-            assert!(
-                matches!(err, ManifestError::UnexpectedFile { .. }),
-                "{unexpected}: got {:?}",
-                err
-            );
-        }
-    }
-
-    #[test]
     fn rejects_unsupported_version() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -722,14 +522,6 @@ mod tests {
             "got {:?}",
             err
         );
-    }
-
-    #[test]
-    fn manifest_itself_is_excluded_from_unlisted_check() {
-        let dir = tempfile::tempdir().unwrap();
-        write_files(dir.path(), &[("a.bin", b"hello")]);
-        write_manifest_for(dir.path(), &[("a.bin", b"hello")]);
-        DbManifest::load_and_verify(dir.path()).unwrap().unwrap();
     }
 
     #[test]
@@ -787,23 +579,6 @@ mod tests {
         fs::write(dir.path().join(MANIFEST_FILENAME), lines.join("\n")).unwrap();
         // Should succeed — cuckoo table hash is skipped (wrong hash ignored).
         DbManifest::load_and_verify(dir.path()).unwrap().unwrap();
-    }
-
-    #[test]
-    fn cuckoo_table_still_must_be_listed_in_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        write_files(
-            dir.path(),
-            &[("batch_pir_cuckoo.bin", b"data"), ("index.bin", b"small")],
-        );
-        // Only list index.bin — stray cuckoo file should be caught.
-        write_manifest_for(dir.path(), &[("index.bin", b"small")]);
-        let err = DbManifest::load_and_verify(dir.path()).unwrap_err();
-        assert!(
-            matches!(err, ManifestError::UnexpectedFile { .. }),
-            "got {:?}",
-            err
-        );
     }
 
     #[test]

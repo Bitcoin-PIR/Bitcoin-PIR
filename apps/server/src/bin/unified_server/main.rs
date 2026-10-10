@@ -1,10 +1,6 @@
-//! Unified PIR WebSocket server — serves all 3 protocols from one process.
-//!
-//! Roles:
-//!   --role primary   (default): DPF + OnionPIR + HarmonyPIR (hint + query)
-//!   --role secondary:           DPF only (2nd server for 2-server DPF protocol)
-//!
-//! Uses pir-core's MappedDatabase for table loading instead of legacy CuckooTablePair.
+//! Unified PIR WebSocket server: DPF, OnionPIR, HarmonyPIR and Direct ORAM
+//! from one process. `--serve-hints` / `--serve-queries` pick the request
+//! set; `--role primary` also loads OnionPIR.
 //!
 //! Usage: `unified_server --help` prints the flag reference (`cli::USAGE_V1`);
 //! `unified_server --version` prints the crate version, git revision, and
@@ -42,14 +38,11 @@ use runtime::hint_pool;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase, ServerState};
 
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::Zeroize;
-
-#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-use std::sync::atomic::Ordering;
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
@@ -60,39 +53,14 @@ async fn main() {
         return;
     }
     let args = parse_args();
-    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-    {
-        UNSAFE_DEBUG_QUERY_LOGGING.store(args.unsafe_debug_query_logging, Ordering::Relaxed);
-        if args.unsafe_debug_query_logging {
-            eprintln!(
-                "!!! UNSAFE DEBUG QUERY LOGGING ENABLED: logs may expose peer IPs, client IDs, request timing, database/group selections and byte sizes; never enable in production !!!"
-            );
-        }
-    }
+    #[cfg(feature = "test-only-unsafe-query-logging")]
+    eprintln!(
+        "!!! test-only-unsafe-query-logging build: logs expose peer IPs, client IDs, request timing, database/group selections and byte sizes !!!"
+    );
     let role_name = match args.role {
         ServerRole::Primary => "primary",
         ServerRole::Secondary => "secondary",
     };
-
-    // ── Mode validation ────────────────────────────────────────────────
-    // The server's accepted-opcode set is gated by two independent flags:
-    //   --serve-hints   → REQ_HARMONY_HINTS / REQ_HARMONY_HINTS_V2
-    //   --serve-queries → all PIR query opcodes (DPF batches, OnionPIR
-    //                      queries, HarmonyPIR query phase, Merkle siblings,
-    //                      tree-tops, batched index/chunk)
-    // At least one must be enabled, else the server has no useful role.
-    // Run-mode logged below; configure on each unit file (see
-    // `deploy/systemd/pir-primary.service` and
-    // `deploy/systemd/pir-secondary.service`).
-    if !args.serve_hints && !args.serve_queries {
-        eprintln!(
-            "ERROR: must enable at least one of --serve-hints / --serve-queries.\n  \
-             Hint-only deployment (HarmonyPIR V2 pool):  --serve-hints --pool-size N [--pool-db-id ID | --harmony-pool-db ID=DIR ...]\n  \
-             Query-only deployment (DPF / OnionPIR / HarmonyPIR query): --serve-queries\n  \
-             Both (legacy single-host or pir1 Hetzner topology):       --serve-hints --serve-queries"
-        );
-        std::process::exit(2);
-    }
 
     if args.oram_only {
         cli::validate_oram_only_cli_v1(&args).unwrap_or_else(|error| fatal_cli(error));
@@ -114,31 +82,10 @@ async fn main() {
         println!("  Config:   {}", config_path.display());
     } else {
         println!("  Data dir: {}", args.data_dir.display());
-        for (path, height) in &args.checkpoints {
-            println!("  Checkpoint: {} (height={})", path.display(), height);
-        }
-        for (path, base, tip) in &args.deltas {
-            println!("  Delta:      {} ({}→{})", path.display(), base, tip);
-        }
     }
     println!();
 
     let total_start = Instant::now();
-
-    // A database explicitly configured for Direct ORAM may contain optional
-    // bucket-Merkle artifacts for the mmap backend without the sibling tables
-    // that backend requires. Only these exact DB ids may suppress that unused
-    // backend; the Direct ORAM image is still opened and manifest-bound before
-    // the listener starts. Builds without ORAM support never take this path.
-    #[cfg(feature = "cuckoo-oram")]
-    let direct_oram_db_ids: BTreeSet<u8> = args
-        .direct_oram_dir
-        .iter()
-        .map(|_| 0u8)
-        .chain(args.direct_oram_dbs.iter().map(|(db_id, _)| *db_id))
-        .collect();
-    #[cfg(not(feature = "cuckoo-oram"))]
-    let direct_oram_db_ids = BTreeSet::<u8>::new();
 
     // ── Load databases ─────────────────────────────────────────────────
     let mut all_databases: Vec<MappedDatabase> = Vec::new();
@@ -170,12 +117,6 @@ async fn main() {
                 chunk_params: CHUNK_PARAMS,
             };
             let mut db = if args.oram_only {
-                if !direct_oram_db_ids.contains(&(i as u8)) {
-                    fatal_cli(format!(
-                        "--oram-only: database {} ({}) has no --direct-oram-db",
-                        i, db_cfg.name
-                    ));
-                }
                 let proof_v2_dir = db_cfg.proof_v2_dir.as_ref().unwrap_or_else(|| {
                     fatal_cli(format!(
                         "--oram-only: database {} ({}) has no proof_v2_dir",
@@ -185,7 +126,7 @@ async fn main() {
                 io::load_oram_only_database_v1(i as u8, proof_v2_dir, descriptor)
                     .unwrap_or_else(|error| fatal_cli(error))
             } else {
-                load_runtime_database_v1(i as u8, &db_path, descriptor, &direct_oram_db_ids)
+                load_runtime_database_v1(&db_path, descriptor)
             };
             if let Some(proof_dir) = db_cfg.proof_dir.as_ref() {
                 db.db_proof = Some(
@@ -240,10 +181,7 @@ async fn main() {
             all_databases.push(db);
         }
     } else {
-        // Legacy CLI mode: --data-dir + --checkpoint + --delta
-
         let main_db = load_runtime_database_v1(
-            0,
             &args.data_dir,
             DatabaseDescriptor {
                 name: "main".to_string(),
@@ -253,85 +191,14 @@ async fn main() {
                 index_params: INDEX_PARAMS,
                 chunk_params: CHUNK_PARAMS,
             },
-            &direct_oram_db_ids,
         );
-
         db_paths.push((0u8, "main".to_string(), args.data_dir.clone()));
         all_databases.push(main_db);
-
-        for (path, height) in &args.checkpoints {
-            let name = format!("checkpoint_{}", height);
-            let db_id = all_databases.len() as u8;
-            let db = load_runtime_database_v1(
-                db_id,
-                path,
-                DatabaseDescriptor {
-                    name: name.clone(),
-                    db_type: DatabaseType::Full,
-                    base_height: 0,
-                    height: *height,
-                    index_params: INDEX_PARAMS,
-                    chunk_params: CHUNK_PARAMS,
-                },
-                &direct_oram_db_ids,
-            );
-            println!(
-                "[Checkpoint:{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
-                height,
-                db.index.bins_per_table,
-                db.chunk.bins_per_table,
-                params::compute_dpf_n(db.index.bins_per_table),
-                params::compute_dpf_n(db.chunk.bins_per_table)
-            );
-            db_paths.push((all_databases.len() as u8, name, path.clone()));
-            all_databases.push(db);
-        }
-
-        for (path, base, tip) in &args.deltas {
-            let name = format!("delta_{}_{}", base, tip);
-            let db_id = all_databases.len() as u8;
-            let db = load_runtime_database_v1(
-                db_id,
-                path,
-                DatabaseDescriptor {
-                    name: name.clone(),
-                    db_type: DatabaseType::Delta,
-                    base_height: *base,
-                    height: *tip,
-                    index_params: INDEX_PARAMS,
-                    chunk_params: CHUNK_PARAMS,
-                },
-                &direct_oram_db_ids,
-            );
-            println!(
-                "[Delta:{}→{}] INDEX bins={}, CHUNK bins={}, dpf_n_index={}, dpf_n_chunk={}",
-                base,
-                tip,
-                db.index.bins_per_table,
-                db.chunk.bins_per_table,
-                params::compute_dpf_n(db.index.bins_per_table),
-                params::compute_dpf_n(db.chunk.bins_per_table)
-            );
-            db_paths.push((all_databases.len() as u8, name, path.clone()));
-            all_databases.push(db);
-        }
     }
-
-    let main_db = &all_databases[0];
-    let _index_k = main_db.index.params.k;
-    let _chunk_k = main_db.chunk.params.k;
 
     #[cfg(not(feature = "cuckoo-oram"))]
     {
         let _ = (
-            args.cuckoo_oram_pack,
-            args.cuckoo_oram_drain_per_access,
-            args.cuckoo_oram_encrypted,
-            args.cuckoo_oram_key_hex.as_ref(),
-            args.cuckoo_oram_state_key_hex.as_ref(),
-            args.cuckoo_oram_cache_levels,
-            args.cuckoo_oram_auth_store,
-            args.cuckoo_oram_no_save,
             args.direct_oram_drain_per_access,
             args.direct_oram_access_budget,
             args.direct_oram_encrypted,
@@ -339,278 +206,83 @@ async fn main() {
             args.direct_oram_state_key_hex.as_ref(),
             args.direct_oram_cache_levels,
             args.direct_oram_auth_store,
-            args.direct_oram_no_save,
             args.direct_oram_trusted_state_dbs.as_slice(),
         );
-        if args.cuckoo_oram_dir.is_some()
-            || !args.cuckoo_oram_dbs.is_empty()
-            || args.direct_oram_dir.is_some()
-            || !args.direct_oram_dbs.is_empty()
-            || !args.direct_oram_trusted_state_dbs.is_empty()
-        {
+        if !args.direct_oram_dbs.is_empty() || !args.direct_oram_trusted_state_dbs.is_empty() {
             eprintln!(
-                "ERROR: ORAM flags require building unified_server with --features cuckoo-oram \
-                 (legacy alias: --features harmony-oram)"
+                "ERROR: Direct ORAM flags require building unified_server with --features cuckoo-oram"
             );
             std::process::exit(2);
         }
     }
 
     #[cfg(feature = "cuckoo-oram")]
-    let cuckoo_oram = {
-        let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
-        if let Some(oram_dir) = args.cuckoo_oram_dir.as_ref() {
-            requested.insert(0, oram_dir.clone());
-        }
-        for (db_id, oram_dir) in &args.cuckoo_oram_dbs {
-            if requested.insert(*db_id, oram_dir.clone()).is_some() {
-                eprintln!(
-                    "ERROR: duplicate Cuckoo ORAM configuration for db_id={}",
-                    db_id
-                );
-                std::process::exit(2);
-            }
-        }
-
-        if requested.is_empty() {
-            println!("  Cuckoo ORAM: disabled (use --cuckoo-oram-db <db_id>=<dir> to enable)");
-            HashMap::new()
-        } else {
-            let mut opened = HashMap::new();
-            for (db_id, oram_dir) in requested {
-                let Some((_, db_label, db_path)) = db_paths
-                    .iter()
-                    .find(|(candidate, _, _)| *candidate == db_id)
-                else {
-                    eprintln!(
-                        "ERROR: Cuckoo ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
-                        db_id,
-                        db_paths.iter().map(|(id, _, _)| *id).collect::<Vec<_>>()
-                    );
-                    std::process::exit(2);
-                };
-
-                println!(
-                    "  Cuckoo ORAM: enabled for db_id={} name={}, dir={}, pack={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
-                    db_id,
-                    db_label,
-                    oram_dir.display(),
-                    args.cuckoo_oram_pack,
-                    args.cuckoo_oram_drain_per_access,
-                    args.cuckoo_oram_encrypted,
-                    args.cuckoo_oram_cache_levels,
-                    args.cuckoo_oram_auth_store,
-                );
-                let tables = CuckooOramTables::open(
-                    db_path,
-                    &oram_dir,
-                    args.cuckoo_oram_pack,
-                    args.cuckoo_oram_drain_per_access,
-                    args.cuckoo_oram_encrypted,
-                    args.cuckoo_oram_key_hex.as_deref(),
-                    args.cuckoo_oram_state_key_hex.as_deref(),
-                    args.cuckoo_oram_cache_levels,
-                    args.cuckoo_oram_auth_store,
-                    !args.cuckoo_oram_no_save,
-                )
-                .unwrap_or_else(|e| {
-                    panic!(
-                        "failed to open Cuckoo ORAM for db_id={} ({}): {}",
-                        db_id, db_label, e
-                    )
-                });
-                opened.insert(db_id, tables);
-            }
-
-            let mmap_fallbacks: Vec<String> = db_paths
-                .iter()
-                .filter(|(db_id, _, _)| !opened.contains_key(db_id))
-                .map(|(db_id, label, _)| format!("{}:{}", db_id, label))
-                .collect();
-            if !mmap_fallbacks.is_empty() {
-                eprintln!(
-                    "  Cuckoo ORAM: WARNING — DB(s) without ORAM config remain mmap-backed for Harmony queries: {}",
-                    mmap_fallbacks.join(", ")
-                );
-            }
-            opened
-        }
-    };
-
-    #[cfg(feature = "cuckoo-oram")]
     let direct_oram = {
-        let mut requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
-        let mut trusted_state_requested: BTreeMap<u8, PathBuf> = BTreeMap::new();
-        if let Some(oram_dir) = args.direct_oram_dir.as_ref() {
-            requested.insert(0, oram_dir.clone());
-        }
+        let trusted_state_dirs: BTreeMap<u8, PathBuf> =
+            args.direct_oram_trusted_state_dbs.iter().cloned().collect();
+        let mut opened = HashMap::new();
         for (db_id, oram_dir) in &args.direct_oram_dbs {
-            if requested.insert(*db_id, oram_dir.clone()).is_some() {
-                eprintln!(
-                    "ERROR: duplicate Direct ORAM configuration for db_id={}",
-                    db_id
-                );
-                std::process::exit(2);
+            let db_id = *db_id;
+            let Some((_, db_label, _)) = db_paths.iter().find(|(id, _, _)| *id == db_id) else {
+                fatal_cli(format!(
+                    "Direct ORAM configured for unknown db_id={db_id} (loaded db_ids: {:?})",
+                    db_paths.iter().map(|(id, _, _)| *id).collect::<Vec<_>>()
+                ));
+            };
+            // Unencrypted or unauthenticated pages, or controller state kept
+            // with the pages, would let the host learn which blocks a query reads.
+            if !args.direct_oram_encrypted || !args.direct_oram_auth_store {
+                fatal_cli(format!(
+                    "Direct ORAM for db_id={db_id} needs --direct-oram-encrypted and --direct-oram-auth-store"
+                ));
             }
-        }
-        for (db_id, trusted_state_dir) in &args.direct_oram_trusted_state_dbs {
-            if trusted_state_requested
-                .insert(*db_id, trusted_state_dir.clone())
-                .is_some()
-            {
-                eprintln!(
-                    "ERROR: duplicate Direct ORAM trusted-state configuration for db_id={}",
-                    db_id
-                );
-                std::process::exit(2);
-            }
-        }
-        for db_id in trusted_state_requested.keys() {
-            if !requested.contains_key(db_id) {
-                eprintln!(
-                    "ERROR: Direct ORAM trusted-state configured without an image directory for db_id={}",
-                    db_id
-                );
-                std::process::exit(2);
-            }
-        }
-
-        if requested.is_empty() {
-            println!("  Direct ORAM: disabled (use --direct-oram-db <db_id>=<dir> to enable)");
-            HashMap::new()
-        } else {
-            let mut opened = HashMap::new();
-            for (db_id, oram_dir) in requested {
-                let trusted_state_dir = trusted_state_requested.remove(&db_id);
-                let Some((_, db_label, _db_path)) = db_paths
-                    .iter()
-                    .find(|(candidate, _, _)| *candidate == db_id)
-                else {
-                    eprintln!(
-                        "ERROR: Direct ORAM configured for unknown db_id={} (loaded db_ids: {:?})",
-                        db_id,
-                        db_paths.iter().map(|(id, _, _)| *id).collect::<Vec<_>>()
-                    );
-                    std::process::exit(2);
-                };
-                let database = all_databases.get(db_id as usize).unwrap_or_else(|| {
-                    panic!("loaded DB vector is missing configured db_id={db_id}")
-                });
-                if !args.direct_oram_auth_store {
-                    eprintln!(
-                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-auth-store",
-                        db_id
-                    );
-                    std::process::exit(2);
-                }
-                if !args.direct_oram_encrypted {
-                    eprintln!(
-                        "ERROR: production Direct ORAM for db_id={} requires --direct-oram-encrypted so the host cannot track plaintext block relocation",
-                        db_id
-                    );
-                    std::process::exit(2);
-                }
-                if args.direct_oram_no_save {
-                    eprintln!(
-                        "ERROR: production Direct ORAM for db_id={} rejects --direct-oram-no-save because mutable controller/auth state must commit",
-                        db_id
-                    );
-                    std::process::exit(2);
-                }
-                if trusted_state_dir.is_none() {
-                    eprintln!(
-                        "ERROR: production Direct ORAM for db_id={} requires a separate --direct-oram-trusted-state-db",
-                        db_id
-                    );
-                    std::process::exit(2);
-                }
-                let trusted_state_dir = trusted_state_dir
-                    .as_deref()
-                    .expect("production Direct ORAM checked trusted-state directory");
-                if !args.direct_oram_allow_trusted_state_outside_run_dev {
-                    let trusted_state_dir = std::fs::canonicalize(trusted_state_dir)
-                        .unwrap_or_else(|error| {
-                            panic!(
-                                "failed to resolve Direct ORAM trusted-state directory for db_id={} ({}): {}",
-                                db_id,
-                                trusted_state_dir.display(),
-                                error
-                            )
-                        });
-                    if !trusted_state_dir.starts_with("/run/bitcoinpir-oram-state") {
-                        eprintln!(
-                            "ERROR: production Direct ORAM for db_id={} requires trusted state under measured /run/bitcoinpir-oram-state; got {}",
-                            db_id,
-                            trusted_state_dir.display()
-                        );
-                        std::process::exit(2);
-                    }
-                    let bulk_dir = std::fs::canonicalize(&oram_dir).unwrap_or_else(|error| {
-                        panic!(
-                            "failed to resolve Direct ORAM bulk directory for db_id={} ({}): {}",
-                            db_id,
-                            oram_dir.display(),
-                            error
-                        )
-                    });
-                    if bulk_dir.starts_with(&trusted_state_dir)
-                        || trusted_state_dir.starts_with(&bulk_dir)
-                    {
-                        eprintln!(
-                            "ERROR: production Direct ORAM for db_id={} requires disjoint bulk and trusted-state directories",
-                            db_id
-                        );
-                        std::process::exit(2);
-                    }
-                } else {
-                    eprintln!(
-                        "WARNING: Direct ORAM trusted state outside measured /run explicitly allowed for development/testing (db_id={})",
-                        db_id
-                    );
-                }
-
-                println!(
-                    "  Direct ORAM: enabled for db_id={} name={}, dir={}, trusted_state_dir={}, access_budget={}, drain_per_access={}, encrypted={}, cache_levels={}, auth_store={}",
-                    db_id,
-                    db_label,
-                    oram_dir.display(),
-                    trusted_state_dir.display(),
-                    args.direct_oram_access_budget,
-                    args.direct_oram_drain_per_access,
-                    args.direct_oram_encrypted,
-                    args.direct_oram_cache_levels,
-                    args.direct_oram_auth_store,
-                );
-                let tables = DirectOramTables::open_with_trusted_state(
-                    &oram_dir,
-                    Some(trusted_state_dir),
-                    args.direct_oram_drain_per_access,
-                    args.direct_oram_access_budget,
-                    args.direct_oram_encrypted,
-                    args.direct_oram_key_hex.as_deref(),
-                    args.direct_oram_state_key_hex.as_deref(),
-                    args.direct_oram_cache_levels,
-                    args.direct_oram_auth_store,
-                    !args.direct_oram_no_save,
+            let Some(trusted_state_dir) = trusted_state_dirs.get(&db_id) else {
+                fatal_cli(format!(
+                    "Direct ORAM for db_id={db_id} needs --direct-oram-trusted-state-db {db_id}=<dir>"
+                ));
+            };
+            println!(
+                "  Direct ORAM: enabled for db_id={} name={}, dir={}, trusted_state_dir={}, access_budget={}, drain_per_access={}, cache_levels={}",
+                db_id,
+                db_label,
+                oram_dir.display(),
+                trusted_state_dir.display(),
+                args.direct_oram_access_budget,
+                args.direct_oram_drain_per_access,
+                args.direct_oram_cache_levels,
+            );
+            let tables = DirectOramTables::open_with_trusted_state(
+                oram_dir,
+                Some(trusted_state_dir),
+                args.direct_oram_drain_per_access,
+                args.direct_oram_access_budget,
+                args.direct_oram_encrypted,
+                args.direct_oram_key_hex.as_deref(),
+                args.direct_oram_state_key_hex.as_deref(),
+                args.direct_oram_cache_levels,
+                args.direct_oram_auth_store,
+                true,
+            )
+            .unwrap_or_else(|e| {
+                panic!(
+                    "failed to open Direct ORAM for db_id={} ({}): {}",
+                    db_id, db_label, e
                 )
-                .unwrap_or_else(|e| {
+            });
+            tables
+                .validate_dataset_binding(&all_databases[db_id as usize])
+                .unwrap_or_else(|error| {
                     panic!(
-                        "failed to open Direct ORAM for db_id={} ({}): {}",
-                        db_id, db_label, e
+                        "failed to bind Direct ORAM to verified DB for db_id={} ({}): {}",
+                        db_id, db_label, error
                     )
                 });
-                tables
-                    .validate_dataset_binding(database)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "failed to bind Direct ORAM to verified DB for db_id={} ({}): {}",
-                            db_id, db_label, error
-                        )
-                    });
-                opened.insert(db_id, tables);
-            }
-            opened
+            opened.insert(db_id, tables);
         }
+        if opened.is_empty() {
+            println!("  Direct ORAM: disabled (use --direct-oram-db <db_id>=<dir> to enable)");
+        }
+        opened
     };
 
     let (onionpir_txs, onionpir_infos, onionpir_merkle_per_db) =
@@ -767,7 +439,6 @@ async fn main() {
     };
 
     // ── Assemble ServerState ────────────────────────────────────────────
-    let _num_databases = all_databases.len();
     let state = ServerState {
         databases: all_databases,
         server_static_pub: channel_pubkey,
@@ -777,52 +448,23 @@ async fn main() {
         announcement_bundle,
     };
 
-    let admin_config = match args.admin_pubkey_hex.as_deref() {
-        None => None,
-        Some(hex) => match pir_runtime_core::admin::AdminConfig::from_hex(hex) {
-            Ok(c) => {
-                println!("  Admin auth: enabled (pubkey={})", &hex[..16]);
-                Some(c)
-            }
-            Err(e) => panic!("invalid --admin-pubkey-hex: {}", e),
-        },
-    };
-
-    // data_root = directory of databases.toml (where DB subdirs live)
-    // when --config is given; otherwise fall back to --data-dir.
-    let data_root = match args.config_path.as_ref() {
-        Some(p) => p
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".")),
-        None => args.data_dir.clone(),
-    };
-    println!("  Data root: {}", data_root.display());
-
-    // ── Initialize HarmonyPIR V2 hint pool (if enabled) ──────────────────
+    // ── Initialize the HarmonyPIR V2 hint pool for database 0 (if enabled) ──
     let mut hint_pools = BTreeMap::new();
-    for binding in &args.harmony_pool_bindings {
+    if args.pool_size > 0 {
         let pool_config = hint_pool::HintPoolConfig {
             pool_size: args.pool_size,
             // Advertise exactly the backend compiled into this runtime:
             // FastPRP with the feature, HMR12 otherwise.
             prp_backend: hint_pool::default_prp_backend(),
-            pool_dir: binding.pool_dir.clone(),
+            pool_dir: args.pool_dir.clone(),
         };
-        let pool_db = state.get_db(binding.db_id).unwrap_or_else(|| {
-            panic!(
-                "HarmonyPIR hint pool database db_id {} must be loaded",
-                binding.db_id
-            )
-        });
         let backend_name = match pool_config.prp_backend {
             harmonypir::remote::PRP_HMR12 => "HMR12",
             harmonypir::remote::PRP_FASTPRP => "FastPRP",
             _ => "unknown",
         };
         println!(
-            "  HarmonyPIR V2 hint pool: db_id={}, size={}, backend={}, dir={}",
-            binding.db_id,
+            "  HarmonyPIR V2 hint pool: db_id=0, size={}, backend={}, dir={}",
             pool_config.pool_size,
             backend_name,
             pool_config
@@ -831,20 +473,10 @@ async fn main() {
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| "memory-only".into())
         );
-        let pool =
-            hint_pool::HintPool::new(pool_config, binding.db_id, pool_db).unwrap_or_else(|e| {
-                panic!(
-                    "HarmonyPIR hint pool init failed for db {}: {e}",
-                    binding.db_id
-                )
-            });
-        let previous = hint_pools.insert(binding.db_id, pool);
-        debug_assert!(
-            previous.is_none(),
-            "pool bindings were normalized as unique"
-        );
-    }
-    if hint_pools.is_empty() {
+        let pool = hint_pool::HintPool::new(pool_config, 0, &state.databases[0])
+            .unwrap_or_else(|e| panic!("HarmonyPIR hint pool init failed: {e}"));
+        hint_pools.insert(0u8, pool);
+    } else {
         println!("  HarmonyPIR V2 hint pool: disabled (use --pool-size to enable)");
     }
 
@@ -934,12 +566,8 @@ async fn main() {
         onionpir_txs,
         onionpir_infos,
         onionpir_merkle: onionpir_merkle_per_db,
-        admin_config,
-        data_root,
         channel_keypair,
         hint_pools,
-        #[cfg(feature = "cuckoo-oram")]
-        cuckoo_oram,
         #[cfg(feature = "cuckoo-oram")]
         direct_oram,
         v2_half_pending: Arc::new(tokio::sync::Mutex::new(HashMap::new())),

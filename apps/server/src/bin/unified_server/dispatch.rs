@@ -41,7 +41,6 @@ pub(crate) async fn handle_variant<S>(
     role_name: &str,
     client_id: u64,
     peer: std::net::SocketAddr,
-    admin_state: &mut pir_runtime_core::admin::AdminConnectionState,
     gas_balance: &mut crate::credit_gate::GasBalanceV1,
     client_supports_chunks: bool,
     free_pool: Option<Arc<rayon::ThreadPool>>,
@@ -182,120 +181,6 @@ pub(crate) async fn handle_variant<S>(
                                     Response::Error(format!("malformed REQ_API_KEY: {error}"))
                                 }
                             }
-                        };
-                        let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                    }
-                    REQ_ADMIN_AUTH_CHALLENGE => {
-                        match server.admin_config {
-                            None => {
-                                let resp = Response::Error("admin auth disabled (server started without --admin-pubkey-hex)".into());
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                            Some(_) => {
-                                let nonce = admin_state.issue_challenge();
-                                let resp = Response::AdminAuthChallenge(
-                                    pir_runtime_core::protocol::AdminAuthChallenge { nonce },
-                                );
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            }
-                        }
-                    }
-                    REQ_ADMIN_AUTH_RESPONSE => {
-                        let cfg = match server.admin_config.as_ref() {
-                            Some(c) => c,
-                            None => {
-                                let resp = Response::Error("admin auth disabled".into());
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                                return;
-                            }
-                        };
-                        let signature = if let Ok(Request::AdminAuthResponse { signature }) = Request::decode(payload) {
-                            signature
-                        } else {
-                            let resp = Response::Error("malformed REQ_ADMIN_AUTH_RESPONSE".into());
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            return;
-                        };
-                        let result = match admin_state.verify_response(&signature, cfg) {
-                            Ok(()) => {
-                                println!("admin authenticated");
-                                pir_runtime_core::protocol::AdminAuthResult { ok: true, msg: "ok".into() }
-                            }
-                            Err(e) => {
-                                eprintln!("admin auth failed: {}", e);
-                                pir_runtime_core::protocol::AdminAuthResult { ok: false, msg: e.to_string() }
-                            }
-                        };
-                        let _ = send_resp(sink, channel_session.as_mut(), Response::AdminAuthResponse(result).encode()).await;
-                    }
-                    REQ_ADMIN_DB_UPLOAD_BEGIN | REQ_ADMIN_DB_UPLOAD_CHUNK
-                    | REQ_ADMIN_DB_UPLOAD_FINALIZE | REQ_ADMIN_DB_ACTIVATE => {
-                        if !admin_state.authenticated {
-                            let resp = Response::Error("not authenticated; complete REQ_ADMIN_AUTH_* first".into());
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                            return;
-                        }
-                        let req = match Request::decode(payload) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                let resp = Response::Error(format!("decode admin request: {}", e));
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                                return;
-                            }
-                        };
-                        let resp = match req {
-                            Request::AdminDbUploadBegin { name, manifest_toml } => {
-                                let r = match admin_state.begin_upload(name.clone(), manifest_toml, &server.data_root) {
-                                    Ok(()) => {
-                                        println!("admin upload BEGIN {:?}", name);
-                                        pir_runtime_core::protocol::AdminAck { ok: true, msg: "ok".into() }
-                                    }
-                                    Err(e) => {
-                                        eprintln!("admin upload BEGIN failed: {}", e);
-                                        pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() }
-                                    }
-                                };
-                                Response::AdminDbUploadBegin(r)
-                            }
-                            Request::AdminDbUploadChunk { name, file_path, offset, data } => {
-                                let r = match admin_state.write_chunk(&name, &file_path, offset, &data) {
-                                    Ok(()) => pir_runtime_core::protocol::AdminAck { ok: true, msg: "ok".into() },
-                                    Err(e) => pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() },
-                                };
-                                Response::AdminDbUploadChunk(r)
-                            }
-                            Request::AdminDbUploadFinalize { name } => {
-                                let r = match admin_state.finalize_upload(&name) {
-                                    Ok(root) => pir_runtime_core::protocol::AdminFinalizeResult {
-                                        ok: true,
-                                        msg: "verified".into(),
-                                        manifest_root: root,
-                                    },
-                                    Err(e) => pir_runtime_core::protocol::AdminFinalizeResult {
-                                        ok: false,
-                                        msg: e.to_string(),
-                                        manifest_root: [0u8; 32],
-                                    },
-                                };
-                                Response::AdminDbUploadFinalize(r)
-                            }
-                            Request::AdminDbActivate { name, target_path } => {
-                                let r = match admin_state.activate(&name, &target_path, &server.data_root) {
-                                    Ok(()) => {
-                                        println!(
-                                            "admin ACTIVATE {:?} → {:?} (restart server to load)",
-                                            name, target_path
-                                        );
-                                        pir_runtime_core::protocol::AdminAck {
-                                            ok: true,
-                                            msg: "activated; restart server to load".into(),
-                                        }
-                                    }
-                                    Err(e) => pir_runtime_core::protocol::AdminAck { ok: false, msg: e.to_string() },
-                                };
-                                Response::AdminDbActivate(r)
-                            }
-                            _ => unreachable!("variant byte already filtered"),
                         };
                         let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
                     }
@@ -503,18 +388,9 @@ pub(crate) async fn handle_variant<S>(
                     }
 
                     // ── HarmonyPIR ────────────────────────────────────────
-                    // Both roles respond to ALL HarmonyPIR ops. The
-                    // role flag controls only OnionPIR loading at startup
-                    // (and `--disable-onion` overrides even that). The
-                    // CLIENT decides which server to send hint requests
-                    // vs query requests to — the protocol's two-server
-                    // non-collusion guarantee comes from picking
-                    // independent endpoints, not from server-side dispatch
-                    // gating. This decoupling lets operators allocate
-                    // workload (hint is ~6× CPU of query per Hetzner
-                    // production stats) to whichever endpoint has the
-                    // matching hardware capacity, without re-rolling the
-                    // role flag and the systemd unit.
+                    // Hint requests reach here only with `--serve-hints`,
+                    // query requests only with `--serve-queries` (the gate
+                    // in `serve.rs`); the role does not matter.
                     REQ_HARMONY_GET_INFO => {
                         let _ = send_resp(
                             sink,

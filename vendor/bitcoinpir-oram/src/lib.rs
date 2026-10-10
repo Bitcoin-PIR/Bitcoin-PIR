@@ -9,7 +9,6 @@ pub mod aead;
 pub mod block;
 pub mod circuit;
 pub mod ct;
-pub mod cuckoo;
 pub mod direct;
 pub mod embedded_tree;
 pub mod error;
@@ -25,11 +24,6 @@ pub use block::OramBlock;
 pub use circuit::{
     circuit_meta_page_bytes, circuit_payload_page_bytes, CircuitEvictionSchedule, CircuitMetaSlot,
     CircuitOram, TrustedBlockSource,
-};
-pub use cuckoo::{
-    locate_packed_cuckoo_bin, CircuitCuckooBinRead, CircuitCuckooBinReader, CuckooLevel,
-    CuckooOramEstimate, CuckooOramSizing, CuckooPackedBlockReader, CuckooTableInfo,
-    PackedCuckooBinLocation,
 };
 pub use direct::{
     direct_index_candidate_bins, locate_packed_direct_item, read_verified_source,

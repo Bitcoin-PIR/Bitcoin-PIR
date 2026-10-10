@@ -15,7 +15,7 @@ use zeroize::Zeroizing;
 
 /// Request variants that carry a query, refused on a host started without
 /// `--serve-queries`. Everything else (info, ping, attest, handshake,
-/// announce, catalog, DB proofs, HarmonyPIR hints, credits, admin) is served
+/// announce, catalog, DB proofs, HarmonyPIR hints, credits) is served
 /// by every role.
 pub(crate) fn is_query_bearing_variant(variant: u8) -> bool {
     use runtime::onionpir::{
@@ -75,8 +75,6 @@ pub(crate) async fn serve_connections(
         "  OnionPIR: {}",
         if server.has_any_onionpir() {
             "enabled"
-        } else if args.disable_onion {
-            "disabled (--disable-onion)"
         } else if args.role == ServerRole::Secondary {
             "disabled (secondary role never loads OnionPIR)"
         } else {
@@ -141,10 +139,6 @@ pub(crate) async fn serve_connections(
             let (sink, mut ws_stream) = ws.split();
             // Response bytes are counted per request for the gas meter.
             let mut sink = crate::credit_meter::CountingSink::new(sink);
-
-            // Per-connection admin auth state. Lives until the connection
-            // drops; disconnecting is logging out.
-            let mut admin_state = pir_runtime_core::admin::AdminConnectionState::default();
 
             // Per-connection encrypted-channel session. `None` until the
             // client sends REQ_HANDSHAKE; `Some` after we've derived the
@@ -370,7 +364,7 @@ pub(crate) async fn serve_connections(
                 // Mode gate: reject hint or query requests this server isn't
                 // configured for (`--serve-hints` / `--serve-queries` flags).
                 // Whitelisted opcodes (info / ping / attest / handshake /
-                // credential / admin / db-catalog) always pass —
+                // credential / db-catalog) always pass —
                 // they don't expose hint or query content, only metadata
                 // needed for clients to discover the server's capabilities.
                 if !server.serve_hints {
@@ -446,7 +440,6 @@ pub(crate) async fn serve_connections(
                     &role_name,
                     client_id,
                     peer,
-                    &mut admin_state,
                     &mut gas_balance,
                     client_supports_chunks,
                     free_lane.as_ref().map(|ticket| ticket.pool()),

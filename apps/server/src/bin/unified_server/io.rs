@@ -1,7 +1,6 @@
 use futures_util::SinkExt;
 use runtime::protocol::*;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase};
-use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -459,14 +458,8 @@ pub(crate) fn load_oram_only_database_v1(
 }
 
 pub(crate) fn load_runtime_database_v1(
-    db_id: u8,
     base_dir: &Path,
     descriptor: DatabaseDescriptor,
-    direct_oram_db_ids: &BTreeSet<u8>,
 ) -> MappedDatabase {
-    if direct_oram_db_ids.contains(&db_id) {
-        MappedDatabase::load_for_direct_oram(base_dir, descriptor)
-    } else {
-        MappedDatabase::load(base_dir, descriptor)
-    }
+    MappedDatabase::load(base_dir, descriptor)
 }

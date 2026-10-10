@@ -26,7 +26,7 @@ crates instead:
 | `hash`    | `splitmix64`, `compute_tag`, `derive_groups_{2,3}`, `derive_int_groups_{2,3}`, `derive_cuckoo_key`. |
 | `cuckoo`  | `cuckoo_hash`, `cuckoo_hash_int`, `cuckoo_place`, `build_int_keyed_table`. |
 | `pbc`     | `pbc_plan_rounds` — plans PIR query rounds covering a group set. |
-| `merkle`  | SHA-256 wrapper, N-ary parent hash, leaf hash, walk helpers, `compute_tree_top_cache`. |
+| `merkle`  | SHA-256, bin leaf hash, N-ary parent hash, `MerkleTreeN`.            |
 | `codec`   | Varint reader, UTXO data decoder.                                |
 | `params`  | Compile-time constants (K=75 INDEX, K_CHUNK=80 CHUNK, etc.).     |
 
