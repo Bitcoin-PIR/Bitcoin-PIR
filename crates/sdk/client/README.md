@@ -184,7 +184,7 @@ All three clients verify Merkle proofs inline during `sync` and
 ```rust,ignore
 if let Some(Some(q)) = result.results.first() {
     if !q.merkle_verified {
-        // proofs failed (entries are empty) or the database has no Merkle data
+        // proofs failed or the database has no Merkle data: entries are unverified
     }
 }
 ```

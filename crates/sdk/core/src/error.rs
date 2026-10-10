@@ -25,9 +25,10 @@
 //! # Per-query Merkle failures vs batch-level Merkle failures
 //!
 //! The native clients **do not** raise `MerkleVerificationFailed` when a
-//! single query's Merkle proof is rejected — instead they coerce that
-//! query to [`QueryResult::merkle_failed()`](crate::types::QueryResult::merkle_failed)
-//! so the caller sees "this specific result is untrusted" without
+//! single query's Merkle proof is rejected — instead that query's result
+//! reports `merkle_verified = false` (a not-found query becomes
+//! [`QueryResult::merkle_failed()`](crate::types::QueryResult::merkle_failed))
+//! so the caller sees "this specific result is unverified" without
 //! aborting the rest of the batch. `MerkleVerificationFailed` is for
 //! pipeline-level failures (e.g. the server refuses to serve tree-tops
 //! despite advertising `has_bucket_merkle = true`).
@@ -188,9 +189,9 @@ pub enum PirError {
 
     /// Merkle verification failed at the batch/pipeline level.
     ///
-    /// Per-query Merkle failures are coerced to
-    /// [`crate::types::QueryResult::merkle_failed`] and do **not**
-    /// raise this error. This variant fires only when the pipeline
+    /// Per-query Merkle failures set the result's `merkle_verified =
+    /// false` (see [`crate::types::QueryResult::merkle_failed`]) and do
+    /// **not** raise this error. This variant fires only when the pipeline
     /// itself fails — e.g. the server advertised `has_bucket_merkle =
     /// true` in the catalog but its tree-tops response came back as
     /// `RESP_ERROR`, or the caller explicitly asked for a batch-level
@@ -363,8 +364,8 @@ impl PirError {
 
     /// Returns true if Merkle verification failed at the pipeline
     /// level. Per-query Merkle failures are **not** surfaced this way
-    /// — they coerce the result to
-    /// [`QueryResult::merkle_failed`](crate::types::QueryResult::merkle_failed)
+    /// — they set the result's `merkle_verified = false` (see
+    /// [`QueryResult::merkle_failed`](crate::types::QueryResult::merkle_failed))
     /// so the rest of the batch can succeed.
     pub fn is_verification_failure(&self) -> bool {
         matches!(self.kind(), ErrorKind::MerkleVerificationFailed)

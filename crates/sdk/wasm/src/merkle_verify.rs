@@ -263,7 +263,7 @@ pub fn bucket_merkle_parent_n(children_flat: &[u8]) -> Vec<u8> {
 /// too short, out-of-range group, missing tree-top, etc.) returns `false`
 /// rather than erroring — it's a verification failure, not a programming
 /// bug, and the caller must already handle "some items failed" as a normal
-/// outcome (the native client coerces failures to `QueryResult::merkle_failed()`).
+/// outcome (the native client marks failed results `merkle_verified = false`).
 ///
 /// See `pir-sdk-client::merkle_verify::verify_sibling_levels` for the
 /// reference implementation this tracks; the two functions must stay in sync.

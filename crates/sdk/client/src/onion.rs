@@ -1053,9 +1053,9 @@ impl OnionClient {
                     Some(QueryResult {
                         entries: Vec::new(),
                         is_whale: true,
-                        // Optimistic default — `run_merkle_verification`
-                        // flips this to `false` if the INDEX proof fails.
-                        merkle_verified: true,
+                        // `run_merkle_verification` sets this when the
+                        // INDEX proof passes.
+                        merkle_verified: false,
                         raw_chunk_data: None,
                         // OnionPIR inspector state isn't part of Session 2
                         // scope (DPF-only). Kept empty so the struct shape
@@ -1083,10 +1083,9 @@ impl OnionClient {
                     Some(QueryResult {
                         entries,
                         is_whale: false,
-                        // Optimistic default — `run_merkle_verification`
-                        // flips this to `false` (and empties `entries`) if
-                        // INDEX or DATA proofs fail for this query.
-                        merkle_verified: true,
+                        // `run_merkle_verification` sets this when the
+                        // INDEX and DATA proofs pass.
+                        merkle_verified: false,
                         raw_chunk_data: if db_info.kind.is_delta() {
                             Some(raw)
                         } else {
@@ -1103,13 +1102,10 @@ impl OnionClient {
             results.push(qr);
         }
 
-        // Per-bin Merkle verification — same semantics as DpfClient: on any
-        // leaf failing verification the corresponding result is coerced to
-        // None so callers can't distinguish server lies from genuine absence.
-        //
-        // Only runs if the server exposed an `onionpir_merkle` section for
-        // this DB (otherwise it's a silent skip, matching
-        // `has_bucket_merkle=false` for DPF/Harmony).
+        // Per-bin Merkle verification, same semantics as DpfClient. Only runs
+        // if the server exposed an `onionpir_merkle` section for this DB;
+        // otherwise results stay `merkle_verified = false`, matching
+        // `has_bucket_merkle=false` for DPF/Harmony.
         if self.onion_merkle.contains_key(&db_info.db_id) {
             self.run_merkle_verification(
                 &mut results,
@@ -1135,8 +1131,10 @@ impl OnionClient {
     /// during `query_index_level` / `query_chunk_level`.
     ///
     /// A query passes iff ALL of its INDEX leaves and (if found) DATA leaves
-    /// verify to the respective sub-tree roots. On any failure, that query's
-    /// result is set to `None` so untrusted data never reaches the caller.
+    /// verify to the respective sub-tree roots. A passing result gets
+    /// `merkle_verified = true`; a failing one keeps its entries with
+    /// `merkle_verified = false`, and a failing not-found query becomes
+    /// `Some(QueryResult::merkle_failed())`.
     #[cfg(feature = "onion")]
     #[tracing::instrument(level = "debug", skip_all, fields(backend = "onion", db_id = db_info.db_id))]
     async fn run_merkle_verification(
@@ -1259,18 +1257,19 @@ impl OnionClient {
             }
             if per_query_ok[qi] {
                 log::info!("[PIR-AUDIT] OnionPIR Merkle PASSED for query #{}", qi);
-                // merkle_verified is already true by construction above.
+                if let Some(result) = results[qi].as_mut() {
+                    result.merkle_verified = true;
+                }
             } else {
                 log::warn!(
-                    "[PIR-AUDIT] OnionPIR Merkle FAILED for query #{}: \
-                     emitting QueryResult {{ merkle_verified: false, entries: [] }} (untrusted)",
+                    "[PIR-AUDIT] OnionPIR Merkle FAILED for query #{}: result kept with merkle_verified = false",
                     qi
                 );
-                // Surface the failure as a distinct signal from "not found"
-                // (the old behaviour collapsed both to `None`). Entries are
-                // wiped so downstream callers cannot accidentally trust
-                // unverified data even if they ignore `merkle_verified`.
-                results[qi] = Some(QueryResult::merkle_failed());
+                // The result keeps its entries; a not-found query becomes an
+                // empty unverified result, distinct from a verified absence.
+                results[qi]
+                    .get_or_insert_with(QueryResult::merkle_failed)
+                    .merkle_verified = false;
             }
         }
 

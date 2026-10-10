@@ -301,8 +301,9 @@ impl DatabaseCatalog {
 /// Result of a single PIR query for one script hash.
 ///
 /// `merkle_verified` is true when the query's per-bucket Merkle proofs were
-/// checked and passed. A result whose proofs fail carries no entries (see
-/// [`QueryResult::merkle_failed`]).
+/// checked and passed. A result whose proofs fail keeps its entries with
+/// `merkle_verified = false`; a not-found query whose absence proof fails is
+/// [`QueryResult::merkle_failed`].
 ///
 /// A `None` in `SyncResult::results` still means "not found" — if the
 /// database has Merkle commitments, absence is proved by the symmetric
@@ -381,11 +382,11 @@ impl QueryResult {
         }
     }
 
-    /// Build a result representing a FAILED Merkle verification.
+    /// A not-found query whose absence proof FAILED Merkle verification.
     ///
     /// Entries are empty and `merkle_verified` is `false`. Emitted by the
-    /// per-backend `run_merkle_verification` paths when sibling proofs
-    /// don't reconcile against the server-published root.
+    /// per-backend `run_merkle_verification` paths, so the failure stays
+    /// distinct from a verified absence (`None`).
     pub fn merkle_failed() -> Self {
         Self {
             entries: Vec::new(),

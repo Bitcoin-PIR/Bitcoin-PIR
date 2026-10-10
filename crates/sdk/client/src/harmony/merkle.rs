@@ -297,10 +297,9 @@ impl HarmonyClient {
     /// Build `BucketMerkleItem`s from collected query traces and verify them
     /// in one padded batch via HarmonyPIR sibling queries.
     ///
-    /// Mirrors `dpf.rs::run_merkle_verification`: on any bin failing
-    /// verification, the corresponding query is coerced to
-    /// `Some(QueryResult::merkle_failed())` to signal an unverified
-    /// (untrusted) result.
+    /// Mirrors `dpf.rs::run_merkle_verification`: a query whose bins fail
+    /// verification keeps its result with `merkle_verified = false`; a
+    /// not-found query becomes `Some(QueryResult::merkle_failed())`.
     ///
     /// Implementation is a thin shim over the helpers that also power the
     /// crate-internal membership stage: items come from per-query
@@ -357,15 +356,15 @@ impl HarmonyClient {
                 }
                 Some(false) => {
                     log::warn!(
-                        "[PIR-AUDIT] HarmonyPIR Merkle FAILED for query #{}: \
-                         emitting QueryResult {{ merkle_verified: false, entries: [] }} (untrusted)",
+                        "[PIR-AUDIT] HarmonyPIR Merkle FAILED for query #{}: result kept with merkle_verified = false",
                         qi
                     );
-                    // Surface the failure as a distinct signal from "not found"
-                    // (the old behaviour collapsed both to `None`). Entries are
-                    // wiped so downstream callers cannot accidentally trust
-                    // unverified data even if they ignore `merkle_verified`.
-                    results[qi] = Some(QueryResult::merkle_failed());
+                    // The result keeps its entries; a not-found query becomes
+                    // an empty unverified result, distinct from a verified
+                    // absence (`None`).
+                    results[qi]
+                        .get_or_insert_with(QueryResult::merkle_failed)
+                        .merkle_verified = false;
                 }
             }
         }

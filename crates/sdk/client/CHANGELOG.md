@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `load_hints_bytes` and `has_hints_for`.
 - `OnionClient` re-registers its keys and retries a batch once when the
   server has evicted them, instead of failing.
+- A result whose Merkle proofs fail keeps its entries with
+  `merkle_verified = false` (DPF, HarmonyPIR, OnionPIR). Only a not-found
+  query whose absence proof fails becomes `QueryResult::merkle_failed()`.
+- `OnionClient` results start unverified and are marked verified when their
+  proofs pass, so a database without an `onionpir_merkle` section now
+  reports `merkle_verified = false` (it reported `true` without checking).
 
 ### Removed
 
