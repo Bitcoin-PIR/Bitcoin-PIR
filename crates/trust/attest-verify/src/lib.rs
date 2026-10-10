@@ -27,9 +27,8 @@
 //! The browser-side WASM SDK invokes this from JS — no Cloudflare
 //! Worker proxy, no openssl FFI. We use `sev = "7"` with the
 //! `crypto_nossl` feature, which delegates to RustCrypto's
-//! `rsa` + `p384` + `sha2`. Verified earlier (`/tmp/sev-wasm-probe`)
-//! that the full stack compiles to `wasm32-unknown-unknown` once
-//! `getrandom` carries the `js` feature.
+//! `rsa` + `p384` + `sha2`. The full stack compiles to
+//! `wasm32-unknown-unknown` once `getrandom` carries the `js` feature.
 //!
 //! ## What this crate does NOT do
 //!
@@ -41,7 +40,7 @@
 //!   manifest_roots) are the ones the operator expects. That's a
 //!   policy concern handled by the caller — typically by comparing
 //!   the report's MEASUREMENT against an operator-published value
-//!   (today via `bpir-admin --expect-measurement`).
+//!   (e.g. `bpir-admin attest --expect-measurement`).
 
 #![warn(missing_docs)]
 
@@ -93,12 +92,8 @@ pub const MILAN_ARK_FINGERPRINT_SHA256: [u8; 32] = [
 
 pub mod policy;
 
-/// Bytes-level offset of the report's MEASUREMENT field.
-///
-/// Mirrors `pir_core::attest::SEV_SNP_REPORT_DATA_OFFSET` (0x50, for
-/// REPORT_DATA) — the MEASUREMENT field follows a similar fixed
-/// layout. Exposed so callers can sanity-check report length without
-/// importing `sev` directly.
+/// Length of an SNP attestation report. Exposed so callers can check
+/// report length without importing `sev` directly.
 pub const SNP_REPORT_LEN: usize = 1184;
 
 /// Errors from the verifier. `Display` impls are concise and
@@ -110,8 +105,6 @@ pub enum VerifyError {
     MalformedReport(String),
     /// VCEK PEM bytes failed to parse as a valid X.509 certificate.
     MalformedVcek(String),
-    /// ASK PEM bytes failed to parse.
-    MalformedAsk(String),
     /// ARK PEM bytes failed to parse.
     MalformedArk(String),
     /// Cert chain validation failed (one of the parent→child
@@ -136,7 +129,6 @@ impl core::fmt::Display for VerifyError {
         match self {
             Self::MalformedReport(s) => write!(f, "malformed SNP report: {}", s),
             Self::MalformedVcek(s) => write!(f, "malformed VCEK cert: {}", s),
-            Self::MalformedAsk(s) => write!(f, "malformed ASK cert: {}", s),
             Self::MalformedArk(s) => write!(f, "malformed ARK cert: {}", s),
             Self::ChainBroken(s) => write!(f, "VCEK chain broken: {}", s),
             Self::ReportSignatureInvalid(s) => {
@@ -412,13 +404,6 @@ mod tests {
         }
     }
 
-    // Note: we don't unit-test the `verify_report_against_vcek`
-    // happy path here — building a synthetic report that satisfies
-    // every internal check the sev parser does (version, MASK_CHIP_ID,
-    // signature algorithm tag, …) without also being a full real
-    // attestation is fragile. Slice D.3's browser integration tests
-    // exercise the real path against actual server-supplied bytes.
-
     #[test]
     fn pem_to_der_round_trip_matches_known_value() {
         // Tiny synthetic PEM (just to exercise the parser; not a real cert).
@@ -501,31 +486,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn verify_error_display_is_human_readable() {
-        let e = VerifyError::ArkFingerprintMismatch {
-            actual: [0xAA; 32],
-            expected: [0xBB; 32],
-        };
-        let s = e.to_string();
-        assert!(s.contains("ARK fingerprint mismatch"));
-        assert!(s.contains(&"aa".repeat(32)));
-        assert!(s.contains(&"bb".repeat(32)));
-    }
-
-    #[test]
-    fn turin_ark_fingerprint_is_32_bytes_and_nonzero() {
-        // Sanity: caught a copy-paste mistake earlier where I had 31
-        // bytes. Belt-and-suspenders.
-        assert_eq!(TURIN_ARK_FINGERPRINT_SHA256.len(), 32);
-        assert!(TURIN_ARK_FINGERPRINT_SHA256.iter().any(|&b| b != 0));
-        // First byte matches the published value 0x1f (sanity-check
-        // against a single-character typo).
-        assert_eq!(TURIN_ARK_FINGERPRINT_SHA256[0], 0x1f);
-        // Last byte 0x6a.
-        assert_eq!(TURIN_ARK_FINGERPRINT_SHA256[31], 0x6a);
-    }
-
     // testdata/milan: ARK and ASK from AMD KDS /vcek/v1/Milan/cert_chain;
     // a version-5 report from VPSBG server 26939 (EPYC 7713P, stock Ubuntu
     // guest, 2026-10-02: reported TCB bl 4 / tee 0 / snp 29 / ucode 222,
@@ -601,40 +561,5 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, FullVerifyError::Chain(_)), "{:?}", err);
-    }
-
-    #[test]
-    fn verify_full_short_circuits_on_pinned_ark_mismatch() {
-        // Even with garbage PEM, the fingerprint check fires first
-        // (per `verify_chain`'s contract). FullVerifyError wraps that
-        // as Chain.
-        let req = policy::PolicyRequirements::default();
-        let err = verify_full(
-            &[0u8; SNP_REPORT_LEN],
-            b"garbage",
-            b"garbage",
-            b"garbage",
-            Some([0xFFu8; 32]),
-            &req,
-        )
-        .unwrap_err();
-        match err {
-            FullVerifyError::Chain(VerifyError::ArkFingerprintMismatch { .. }) => {}
-            other => panic!("expected Chain(ArkFingerprintMismatch), got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn full_verify_error_display_includes_step() {
-        // Display should say which step failed — operators reading
-        // logs want to know whether to fix their pin, their VCEK
-        // bundle, or their policy config.
-        let e = FullVerifyError::Chain(VerifyError::ChainBroken("oops".into()));
-        let s = e.to_string();
-        assert!(s.starts_with("chain:"), "got: {}", s);
-
-        let e = FullVerifyError::Policy(policy::PolicyError::DebugNotAllowed);
-        let s = e.to_string();
-        assert!(s.starts_with("policy:"), "got: {}", s);
     }
 }

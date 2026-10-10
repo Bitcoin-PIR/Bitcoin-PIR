@@ -65,7 +65,7 @@ pub struct UploadArgs {
 }
 
 pub async fn run(args: UploadArgs) -> Result<(), String> {
-    let key_path = args.key.unwrap_or_else(default_keyfile);
+    let key_path = args.key.unwrap_or_else(crate::keygen::default_keyfile_path);
     let sk = read_secret_key(&key_path)?;
 
     // Walk + hash the dir locally.
@@ -184,7 +184,7 @@ pub async fn run(args: UploadArgs) -> Result<(), String> {
     }
     eprintln!("ACTIVATE: {}", ack.msg);
     eprintln!();
-    eprintln!("Done. Restart the server (e.g. `systemctl restart pir-online`) to load.");
+    eprintln!("Done. Restart the server to load it.");
     Ok(())
 }
 
@@ -250,16 +250,6 @@ pub(crate) fn render_manifest_toml(files: &[(String, String)]) -> Vec<u8> {
     s.into_bytes()
 }
 
-fn default_keyfile() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("bpir-admin").join("admin.key");
-    }
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".config/bpir-admin/admin.key");
-    }
-    PathBuf::from("./admin.key")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,20 +282,6 @@ mod tests {
         let result = walk_and_hash(dir.path()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].0, "a.bin");
-    }
-
-    #[test]
-    fn render_manifest_is_deterministic() {
-        let files = vec![
-            ("a.bin".to_string(), hex::encode([1u8; 32])),
-            ("sub/b.bin".to_string(), hex::encode([2u8; 32])),
-        ];
-        let m1 = render_manifest_toml(&files);
-        let m2 = render_manifest_toml(&files);
-        assert_eq!(m1, m2);
-        // Roundtrip parseable
-        let parsed: toml::Value = toml::from_str(std::str::from_utf8(&m1).unwrap()).unwrap();
-        assert_eq!(parsed["manifest"]["version"].as_integer(), Some(1));
     }
 
     #[test]

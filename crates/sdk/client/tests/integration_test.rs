@@ -445,8 +445,8 @@ mod onion_tests {
 // "announce not configured". Point it at a locally-booted server:
 //
 //   # operator workflow (once):
-//   bpir-admin generate-identity --purpose server   --out /tmp/s.key   # -> SERVER_PUB (stdout)
-//   bpir-admin generate-identity --purpose operator --out /tmp/op.key  # -> OPERATOR_PUB (stdout)
+//   bpir-admin keygen --out /tmp/s.key   # -> SERVER_PUB (stdout)
+//   bpir-admin keygen --out /tmp/op.key  # -> OPERATOR_PUB (stdout)
 //   bpir-admin sign-identity --operator-key-path /tmp/op.key --server-id pir-test \
 //       --identity-pubkey-hex <SERVER_PUB> --valid-until <unix-ts> --out /tmp/s.cert
 //   # boot (any local checkpoint works — announce is independent of the DB):

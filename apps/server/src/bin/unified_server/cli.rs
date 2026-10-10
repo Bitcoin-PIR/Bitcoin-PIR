@@ -151,7 +151,7 @@ pub(crate) struct CliArgs {
     /// seed). Combined with `--identity-cert-path` to build the
     /// REQ_ANNOUNCE bundle. If either is missing or fails to load,
     /// REQ_ANNOUNCE is disabled but the rest of the protocol runs
-    /// normally. Generate one with `bpir-admin generate-identity`.
+    /// normally. Generate one with `bpir-admin keygen`.
     pub(crate) identity_key_path: Option<PathBuf>,
     /// Path to the operator-signed IdentityCert (raw bytes produced by
     /// `bpir-admin sign-identity`, encoded per

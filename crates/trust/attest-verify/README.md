@@ -10,6 +10,5 @@ to wasm32. Uses RustCrypto's `sev = "7"` crate with `crypto_nossl`.
 Used by `pir-sdk-wasm` to give the browser a fully trustless
 attestation check — no proxy to AMD's KDS endpoint, no Cloudflare
 Worker, no fetched-at-runtime root cert. The unified_server bundles
-the VCEK (and optionally ASK) in its AttestResult; the verifier
-checks the chain against an operator-pinned ARK fingerprint baked
-into the WASM bundle.
+ARK, ASK and VCEK in its attest response; the verifier checks the
+chain against an operator-pinned ARK fingerprint.

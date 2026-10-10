@@ -272,8 +272,8 @@ short maintenance window and accept temporary fail-closed queries:
 
    `verify-live` fetches the v1 database-proof opcode only. It covers
    DPF/Harmony compatibility. It does not certify Onion v2 or ORAM v2.
-   Those stay on the local `db-proof verify` / `verify-proof-directory`
-   path and the browser/WASM check after Flow C.
+   Those stay on the local `db-proof verify` path and the browser/WASM
+   check after Flow C.
 
 5. Confirm runtime pin and operator identity on Hetzner, and runtime pin,
    operator identity, SEV-SNP measurement, AMD certificate chain, and secure

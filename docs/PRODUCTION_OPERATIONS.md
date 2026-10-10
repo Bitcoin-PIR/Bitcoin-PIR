@@ -282,7 +282,7 @@ Do not copy them into prose.
 | Family | Serves | Pin / lock | Verifier an agent may run |
 | --- | --- | --- | --- |
 | DB proof v1 | DPF + Harmony live opcode | `PRODUCTION_DB_PROOF_PINS` | `verify-live` (v1 opcode only). Roots are already in the V2 evidence; the UKI does not emit a second v1 sidecar |
-| Onion v2 | pir1 OnionPIR | `PRODUCTION_ONION_DB_PROOF_V2_PINS` | local `db-proof verify` / `verify-proof-directory`; **not** `verify-live` |
+| Onion v2 | pir1 OnionPIR | `PRODUCTION_ONION_DB_PROOF_V2_PINS` | local `db-proof verify`; **not** `verify-live` |
 | ORAM v2 | pir2 Direct ORAM | `PRODUCTION_ORAM_DB_PROOF_V2_PINS` | same local v2 verifiers; **not** `verify-live` |
 | Builder SNP | attested-builder run | ORAM source manifests under `web/public/proofs/oram-source/` | `pir-attested-builder verify-build-evidence` |
 | Runtime SNP | serving pir2 UKI | `PIR2_TIER3_PIN` | Flow E step 6; `bpir-admin attest` |
@@ -308,8 +308,8 @@ never from a live server or from the proof printing itself.
    (`server-db/`, `oram-direct-inputs/`, V2 evidence, manifests,
    `build-summary.txt`). `latest/` exists only after the V2
    `full_build` gate. Then `close` to the recorded **runtime** image.
-4. Local — `bpir-admin db-proof verify` with explicit `--expect-*`.
-   For typed Onion/ORAM layout also run `verify-proof-directory`.
+4. Local — `bpir-admin db-proof verify` with explicit `--expect-*`; it
+   also prints the typed Onion layout.
    Direct ORAM reconstruct: 3 min without a stage → stop; 15 min hard
    stop. Missing progress is a failed build, not a reason to delete
    Core snapshots.

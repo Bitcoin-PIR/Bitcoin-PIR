@@ -4,14 +4,9 @@
 //! It does not build databases, fetch SEV-SNP reports, or talk to servers.
 
 use sha2::{Digest, Sha256};
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 
-pub use rootbundle::{
-    BuildKind, BuildParamsV1, BundleError, BundleSignature, ChainAnchor, NamedRoot,
-    RootBundlePayload, SignedRootBundle,
-};
+pub use rootbundle::{BuildKind, ChainAnchor, NamedRoot, RootBundlePayload};
 
 pub const EVIDENCE_V1_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v1\0";
 pub const EVIDENCE_V2_DOMAIN: &[u8] = b"BitcoinPIR/attested-builder/build-evidence/v2\0";
@@ -454,10 +449,6 @@ impl BuildEvidence {
         Ok(evidence)
     }
 
-    pub fn evidence_digest(&self) -> Result<[u8; 32]> {
-        evidence_digest(self.version, &self.encode()?)
-    }
-
     pub fn evidence_file_sha256(&self) -> Result<[u8; 32]> {
         Ok(sha256_bytes(&self.encode()?))
     }
@@ -763,33 +754,6 @@ fn byte_to_build_kind(b: u8) -> Result<BuildKind> {
 
 fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
-}
-
-fn sha256_file(path: impl AsRef<Path>) -> Result<([u8; 32], u64)> {
-    let path = path.as_ref();
-    let mut file = File::open(path).map_err(|source| DbAttestError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let mut h = Sha256::new();
-    let mut buf = [0u8; 1024 * 1024];
-    let mut bytes = 0u64;
-    loop {
-        let n = file.read(&mut buf).map_err(|source| DbAttestError::Io {
-            path: path.display().to_string(),
-            source,
-        })?;
-        if n == 0 {
-            break;
-        }
-        bytes += n as u64;
-        h.update(&buf[..n]);
-    }
-    Ok((h.finalize().into(), bytes))
-}
-
-pub fn sha256_file_32(path: impl AsRef<Path>) -> Result<[u8; 32]> {
-    sha256_file(path).map(|(h, _)| h)
 }
 
 fn read_file(path: impl AsRef<Path>) -> Result<Vec<u8>> {
