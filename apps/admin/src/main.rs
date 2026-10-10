@@ -233,6 +233,7 @@ mod cli_tests {
             "db-proof",
             "pir2-sealed-release",
             "pir2-sealed-receipt-verify",
+            "directory-artifact",
         ] {
             assert!(help.contains(subcommand), "missing {subcommand} from help");
         }
@@ -241,7 +242,6 @@ mod cli_tests {
             "service-keygen",
             "service-store-init",
             "payment-artifact",
-            "directory-artifact",
             "lightning-staging",
             "mainnet-lightning-v1",
         ] {
