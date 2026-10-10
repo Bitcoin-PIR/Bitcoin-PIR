@@ -11,7 +11,7 @@ const htmlFiles = readdirSync(distUrl)
   .filter((name) => name.endsWith('.html'))
   .sort();
 const expectedInlineCounts = new Map([
-  ['index.html', 2],
+  ['index.html', 1],
   ['reproduce.html', 1],
 ]);
 if (htmlFiles.join(',') !== [...expectedInlineCounts.keys()].sort().join(',')) {
