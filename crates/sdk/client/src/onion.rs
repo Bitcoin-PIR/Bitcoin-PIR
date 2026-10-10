@@ -61,9 +61,10 @@ use crate::transport::PirTransport;
 use crate::verified_roots::{RootPolicy, VerifiedRootState};
 use async_trait::async_trait;
 use pir_sdk::{
-    compute_sync_plan, merge_delta_batch, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant,
-    LeakageRecorder, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult,
-    RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult, SyncStep,
+    compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, DatabaseCatalog,
+    DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
+    PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult,
+    SyncStep,
 };
 use std::sync::Arc;
 
@@ -2067,6 +2068,7 @@ impl PirClient for OnionClient {
         script_hashes: &[ScriptHash],
         last_height: Option<u32>,
     ) -> PirResult<SyncResult> {
+        require_fresh_sync(last_height)?;
         if !self.is_connected() {
             self.connect().await?;
         }
@@ -2085,6 +2087,7 @@ impl PirClient for OnionClient {
         plan: &SyncPlan,
         cached_results: Option<&[Option<QueryResult>]>,
     ) -> PirResult<SyncResult> {
+        require_sync_base(plan, script_hashes.len(), cached_results)?;
         if plan.is_empty() {
             return Ok(SyncResult {
                 results: cached_results
@@ -4338,3 +4341,6 @@ mod tests {
         assert!(snap.bytes_received > 0);
     }
 }
+
+#[cfg(test)]
+mod sync_base_tests;

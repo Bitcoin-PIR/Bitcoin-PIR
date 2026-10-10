@@ -141,7 +141,7 @@ dispatch on cause without matching every variant:
 | `Other`                      | Untagged / legacy variants                            | No                   |
 
 ```rust,ignore
-match client.sync(&hashes, Some(h)).await {
+match client.sync(&hashes, None).await {
     Err(e) if e.is_transient_network() => retry_with_backoff().await,
     Err(e) if e.is_session_lost()      => reconnect_and_retry().await,
     Err(e) if e.is_protocol_skew()     => return Err(e), // upgrade needed

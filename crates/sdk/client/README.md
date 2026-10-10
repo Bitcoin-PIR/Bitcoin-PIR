@@ -26,8 +26,8 @@ of compatible servers runs at <https://www.bitcoinpir.org/>.
   `web_sys::WebSocket` on `wasm32-unknown-unknown` (via a `PirTransport`
   abstraction).
 - **Automatic sync planning** — BFS delta-chain discovery (max 5 hops)
-  between snapshot + delta databases; `sync(script_hashes, last_height)`
-  is one call.
+  between snapshot + delta databases; `sync(script_hashes, None)` is one
+  call, and `sync_with_plan` resumes from a previous sync's results.
 - **Per-bucket Merkle verification** — each UTXO lookup can be paired with a
   batched Merkle proof that ties results to a published root. DPF, Harmony, and
   Onion all implement verification; padding invariants (K=75 INDEX / K_CHUNK=80
@@ -105,7 +105,7 @@ client.connect().await?;
 
 // First call downloads hints; subsequent calls reuse them until query budget
 // is exhausted (see `min_queries_remaining()`).
-let result = client.sync(&script_hashes, last_height).await?;
+let result = client.sync(&script_hashes, None).await?;
 ```
 
 Enable `fastprp` or `alf` features for faster PRP backends:
@@ -133,16 +133,23 @@ build for `wasm32-unknown-unknown`.
 
 ## Delta sync
 
-After an initial sync, pass the returned `synced_height` to skip work on
-subsequent calls:
+After an initial sync, plan from the returned `synced_height` and pass the
+returned `results` to skip work on subsequent calls:
 
 ```rust,ignore
 // First sync — full snapshot + any deltas.
 let r0 = client.sync(&hashes, None).await?;
 
 // Later — only query the delta chain since `r0.synced_height`.
-let r1 = client.sync(&hashes, Some(r0.synced_height)).await?;
+let catalog = client.fetch_catalog().await?;
+let plan = client.compute_sync_plan(&catalog, Some(r0.synced_height))?;
+let r1 = client.sync_with_plan(&hashes, &plan, Some(&r0.results)).await?;
 ```
+
+A delta chain only carries changes (new UTXOs and spent outpoints), so it is
+applied to `r0.results`; without them it is rejected with
+`PirError::InvalidState` before anything is sent. `sync` keeps no results
+between calls, so it only does full syncs and rejects `Some(height)`.
 
 The `compute_sync_plan` BFS picks a shortest delta chain (≤5 hops) or falls
 back to a fresh snapshot if the chain is too long.

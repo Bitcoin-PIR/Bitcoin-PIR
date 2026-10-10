@@ -87,7 +87,7 @@ await client.connect();
 // 5. Sync a set of script hashes to tip. Input is a packed
 //    Uint8Array of 20*N bytes (HASH160 per script hash).
 const packed = new Uint8Array(scriptHashes.flat());
-const syncResult = await client.sync(packed /* , lastHeight */);
+const syncResult = await client.sync(packed, null);
 
 for (let i = 0; i < syncResult.resultCount; i++) {
   const result = syncResult.getResult(i);
@@ -115,14 +115,16 @@ Client methods (both `Dpf` and `Harmony`):
 
 - `connect()` / `disconnect()` / `isConnected`
 - `fetchCatalog(): Promise<WasmDatabaseCatalog>`
-- `sync(scriptHashes, lastHeight?): Promise<WasmSyncResult>`
+- `sync(scriptHashes, null): Promise<WasmSyncResult>` — full sync (snapshot +
+  deltas). A height is rejected: the client keeps no previous results to
+  apply a delta chain to
 - `queryBatch(scriptHashes, dbId): Promise<WasmQueryResult[]>`
 - `queryBatchVerified(scriptHashes, dbId)` — all-or-nothing inspector query;
   native code binds outputs to the exact input order and finishes Merkle
   verification before any result handle is exposed
 - `serverUrls(): [string, string]`
 - `onStateChange(cb)` — push `ConnectionState` transitions to JS
-- `syncWithProgress(scriptHashes, lastHeight?, onEvent)` — progress events
+- `syncWithProgress(scriptHashes, null, onEvent)` — progress events
 - `setMetricsRecorder(metrics)` / `clearMetricsRecorder()`
 
 `WasmHarmonyClient` additionally has:

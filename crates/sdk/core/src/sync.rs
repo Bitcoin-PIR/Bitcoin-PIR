@@ -96,6 +96,49 @@ impl SyncPlan {
     }
 }
 
+/// Check that `PirClient::sync` was asked for a full sync.
+///
+/// `sync` keeps no results between calls, so it has nothing to apply a delta
+/// chain to. A non-zero `last_height` is rejected before any network I/O;
+/// resuming from a previous sync goes through `sync_with_plan` with that
+/// sync's results.
+pub fn require_fresh_sync(last_height: Option<u32>) -> PirResult<()> {
+    match last_height {
+        Some(height) if height > 0 => Err(PirError::InvalidState(format!(
+            "sync() keeps no previous results, so it cannot resume from height {height}: \
+             pass last_height = None for a full sync, or call sync_with_plan with the \
+             previous sync's results"
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// Check that `plan` can run on top of `base`.
+///
+/// A fresh plan starts from a full snapshot and ignores `base`. Any other
+/// plan (a delta chain, or the empty plan at the tip) only describes what
+/// changed since the previous sync, so it needs that sync's results, one per
+/// script hash in the same order. Merging onto a missing base would report
+/// every unchanged address as absent and lose every spend.
+pub fn require_sync_base(
+    plan: &SyncPlan,
+    num_script_hashes: usize,
+    base: Option<&[Option<QueryResult>]>,
+) -> PirResult<()> {
+    match base {
+        Some(base) if base.len() != num_script_hashes => Err(PirError::InvalidState(format!(
+            "sync base has {} results for {num_script_hashes} script hashes",
+            base.len()
+        ))),
+        None if !plan.is_fresh_sync => Err(PirError::InvalidState(
+            "this sync plan only applies changes since the previous sync: pass that \
+             sync's results to sync_with_plan, or plan a full sync with last_height = None"
+                .into(),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Compute an optimal sync plan from `last_height` to the catalog tip.
 ///
 /// # Algorithm

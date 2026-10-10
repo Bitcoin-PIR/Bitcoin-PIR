@@ -1,12 +1,14 @@
 //! Delta synchronization example.
 //!
 //! Demonstrates how to efficiently sync by only querying changes since
-//! the last known height, using delta databases when available.
+//! the last known height, using delta databases when available. A delta plan
+//! only carries changes, so the second sync passes the first sync's results
+//! to `sync_with_plan` as the base.
 //!
 //! Usage:
 //!   cargo run -p pir-sdk-client --example delta_sync
 
-use pir_sdk::{QueryResult, UtxoEntry};
+use pir_sdk::QueryResult;
 use pir_sdk_client::{DpfClient, PirClient, ScriptHash};
 use std::collections::HashMap;
 
@@ -14,6 +16,8 @@ use std::collections::HashMap;
 struct WalletState {
     /// Last synced height
     last_height: Option<u32>,
+    /// Results of the last sync, one per address: the base for the next one
+    results: Vec<Option<QueryResult>>,
     /// Cached balances per script hash
     balances: HashMap<ScriptHash, u64>,
 }
@@ -22,6 +26,7 @@ impl WalletState {
     fn new() -> Self {
         Self {
             last_height: None,
+            results: Vec::new(),
             balances: HashMap::new(),
         }
     }
@@ -93,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let result = client.sync(&addresses, wallet.last_height).await?;
+    let result = client.sync(&addresses, None).await?;
 
     println!();
     println!("First sync complete! Height: {}", result.synced_height);
@@ -105,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         wallet.update(*addr, balance, result.synced_height);
         println!("  Address {}: {} sats", hex::encode(&addr[0..4]), balance);
     }
+    wallet.results = result.results;
 
     // === Second Sync (Delta) ===
     println!();
@@ -132,18 +138,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
 
-        // Use sync_with_plan to pass cached results for delta merging
-        let cached: Vec<_> = addresses
-            .iter()
-            .map(|addr| {
-                wallet.balances.get(addr).map(|&balance| {
-                    QueryResult::with_entries(vec![UtxoEntry::new([0; 32], 0, balance)])
-                })
-            })
-            .collect();
-
+        // A delta plan only carries changes: apply it to the previous
+        // sync's results (its spends remove their real outpoints).
         let result = client
-            .sync_with_plan(&addresses, &plan, Some(&cached))
+            .sync_with_plan(&addresses, &plan, Some(&wallet.results))
             .await?;
 
         println!();
@@ -172,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 diff_str
             );
         }
+        wallet.results = result.results;
     }
 
     // === Summary ===

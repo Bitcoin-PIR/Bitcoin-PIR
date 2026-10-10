@@ -59,8 +59,8 @@ pub use metrics::{
     AtomicMetrics, AtomicMetricsSnapshot, Duration, Instant, NoopMetrics, PirMetrics,
 };
 pub use sync::{
-    compute_sync_plan, decode_delta_data, merge_delta, merge_delta_batch, DeltaData, SyncPlan,
-    SyncPlanner, SyncStep, MAX_DELTA_CHAIN_LENGTH,
+    compute_sync_plan, decode_delta_data, merge_delta, merge_delta_batch, require_fresh_sync,
+    require_sync_base, DeltaData, SyncPlan, SyncPlanner, SyncStep, MAX_DELTA_CHAIN_LENGTH,
 };
 pub use types::*;
 

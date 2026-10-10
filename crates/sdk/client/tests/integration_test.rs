@@ -652,14 +652,32 @@ async fn test_dpf_client_sync_with_cached_height() {
         .await
         .expect("live DPF admission failed (delta)");
 
-    // Second sync with cached height (should use delta if available)
+    // Second sync resumes from the first one's results: only the delta
+    // chain since `height` is queried (nothing at the tip).
+    let catalog = match client.cached_catalog() {
+        Some(catalog) => catalog.clone(),
+        None => client.fetch_catalog().await.expect("fetch_catalog failed"),
+    };
+    let plan = client
+        .compute_sync_plan(&catalog, Some(height))
+        .expect("compute_sync_plan failed");
     let result2 = client
-        .sync(&script_hashes, Some(height))
+        .sync_with_plan(&script_hashes, &plan, Some(&result1.results))
         .await
         .expect("sync failed");
 
     // Height should be >= previous
     assert!(result2.synced_height >= height);
+    if plan.is_empty() {
+        // Nothing changed, so the first sync's results come back as they were.
+        let entries = |r: &SyncResult| -> Vec<Option<Vec<_>>> {
+            r.results
+                .iter()
+                .map(|q| q.as_ref().map(|q| q.entries.clone()))
+                .collect()
+        };
+        assert_eq!(entries(&result2), entries(&result1));
+    }
 
     client.disconnect().await.unwrap();
 }
@@ -742,8 +760,14 @@ async fn test_dpf_strict_production_canary() {
             });
     }
 
+    // A delta plan runs on the previous results; their content does not
+    // matter here because the missing db 1 root stops the sync first.
+    let delta_plan = client
+        .compute_sync_plan(&catalog, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+        .expect("strict DPF delta plan failed");
+    let previous: Vec<Option<QueryResult>> = vec![None; probes.len()];
     let missing_delta_root = client
-        .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+        .sync_with_plan(&probes, &delta_plan, Some(&previous))
         .await
         .expect_err("strict DPF delta sync must fail before db 1 proof installation");
     assert_missing_verified_root(missing_delta_root, "DPF", 1);
@@ -908,8 +932,14 @@ async fn test_harmony_strict_production_canary() {
             });
     }
 
+    // A delta plan runs on the previous results; their content does not
+    // matter here because the missing db 1 root stops the sync first.
+    let delta_plan = client
+        .compute_sync_plan(&catalog, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+        .expect("strict HarmonyPIR delta plan failed");
+    let previous: Vec<Option<QueryResult>> = vec![None; probes.len()];
     let missing_delta_root = client
-        .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+        .sync_with_plan(&probes, &delta_plan, Some(&previous))
         .await
         .expect_err("strict HarmonyPIR delta sync must fail before db 1 proof installation");
     assert_missing_verified_root(missing_delta_root, "HarmonyPIR", 1);
@@ -1125,8 +1155,14 @@ mod onion_tests {
                 });
         }
 
+        // A delta plan runs on the previous results; their content does not
+        // matter here because the missing db 1 root stops the sync first.
+        let delta_plan = client
+            .compute_sync_plan(&catalog, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+            .expect("strict OnionPIR delta plan failed");
+        let previous: Vec<Option<QueryResult>> = vec![None; probes.len()];
         let missing_delta_root = client
-            .sync(&probes, Some(PRODUCTION_DATABASE_PINS[1].from_height))
+            .sync_with_plan(&probes, &delta_plan, Some(&previous))
             .await
             .expect_err("strict OnionPIR delta sync must fail before db 1 proof installation");
         assert_missing_verified_root(missing_delta_root, "OnionPIR", 1);

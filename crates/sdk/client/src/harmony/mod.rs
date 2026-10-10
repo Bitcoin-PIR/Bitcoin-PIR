@@ -53,10 +53,11 @@ pub(crate) use pir_core::params::{
     INDEX_CUCKOO_NUM_HASHES, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, NUM_HASHES, TAG_SIZE,
 };
 pub(crate) use pir_sdk::{
-    compute_sync_plan, merge_delta_batch, BucketRef, ConnectionState, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
-    PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, StateListener,
-    SyncPlan, SyncProgress, SyncResult, SyncStep, UtxoEntry,
+    compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, BucketRef,
+    ConnectionState, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant, LeakageRecorder,
+    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
+    RoundProfile, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
+    UtxoEntry,
 };
 pub(crate) use std::collections::HashMap;
 pub(crate) use std::path::PathBuf;
