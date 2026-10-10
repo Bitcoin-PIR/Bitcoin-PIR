@@ -15,6 +15,8 @@ goes no further than that.
   be met in full. Safeguards are not a goal: a change with no safeguards is
   fine, a change that costs flexibility, modularity or simplicity is not. No
   foolproofing, and no "this is probably fine, but add a safeguard first".
+- Less code is better. Code that is not needed to implement a function is
+  deleted, and so is every test that can be deleted.
 - Code implements functionality: the PIR backends with their privacy
   invariants ([`CLAUDE.md`](CLAUDE.md)), the servers, the SDK, the web client
   and the database tools. Which servers to trust or pin, which backends to
