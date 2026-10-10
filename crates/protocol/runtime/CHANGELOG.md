@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > **Pre-publish note.** This crate depends on the `libdpf` git dependency,
 > which must land on crates.io before `pir-runtime-core` itself can be
-> published. See [`PUBLISHING.md`](../PUBLISHING.md) Blocker 1 for the
+> published. See [`PUBLISHING.md`](../../../PUBLISHING.md) Blocker 1 for the
 > refactoring sketch.
 
 ## [Unreleased]

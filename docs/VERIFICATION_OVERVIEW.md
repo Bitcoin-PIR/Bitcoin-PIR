@@ -1,9 +1,7 @@
-# BitcoinPIR Leakage Verification — Final State (2026-04-29)
+# BitcoinPIR Leakage Verification
 
-This is the consolidated, source-of-truth document for what's verified
-about Bitcoin PIR's wire-shape privacy. Written when the multi-session
-verification effort wrapped, with future contributors and an upcoming
-educational-website session in mind.
+This is the source-of-truth document for what's verified about Bitcoin
+PIR's wire-shape privacy.
 
 ## TL;DR
 
@@ -73,8 +71,7 @@ by unit tests in `pir-core` (`params.rs`).
    (The 4 `pad_chunk_ids_to_m` harnesses were deleted in Phase 4 /
    WS-A together with the M=16 pad they covered — see the CHUNK
    Merkle Item-Count trade-off below.)
-   Each harness verifies in seconds; run one at a time per
-   `feedback_kani_style.md`.
+   Each harness verifies in seconds; run one at a time.
 
 3. **Implementation-vs-spec correspondence (empirical)**. The
    spec's per-section ops (`info_segment`, `index_segment`,
@@ -82,12 +79,12 @@ by unit tests in `pir-core` (`params.rs`).
    per-section structure of `crates/sdk/client/src/{dpf,harmony,onion}.rs::execute_step`.
    This correspondence is not proved formally (would require
    extracting Rust → EasyCrypt code, currently out of scope) but
-   is checked at every commit by:
-   - 30+ integration tests against live Hetzner servers
-     (`crates/sdk/client/tests/leakage_integration_test.rs`).
-   - 138 vitest unit tests in `web/src/__tests__/`.
-   - Cross-language equivalence test (`onion_leakage_diff.test.ts`)
-     comparing Rust reference output byte-for-byte to TS
+   is checked by:
+   - the live integration tests (scheduled)
+     (`crates/sdk/client/tests/leakage_integration_test.rs`);
+   - the vitest unit tests in `web/src/__tests__/`;
+   - the cross-language equivalence test (`onion_leakage_diff.test.ts`,
+     run by hand) comparing Rust reference output byte-for-byte to the TS
      standalone implementation.
 
 ### Cited from the underlying primitives' papers
@@ -109,8 +106,9 @@ primitive; not pursued here.
 
 ## The four privacy invariants
 
-All four are documented as MANDATORY in `CLAUDE.md` and enforced by
-integration tests + Kani harnesses + the EasyCrypt simulator argument.
+`CLAUDE.md` lists them as privacy invariants (together with HarmonyPIR's
+request-count symmetry). The integration tests and the EasyCrypt simulator
+argument cover them; the Kani harnesses are run by hand.
 
 ### Invariant 1: Merkle INDEX Item-Count Symmetry
 
@@ -119,8 +117,8 @@ items regardless of outcome (found at h=0, found at h=1, not-found,
 whale). Pre-closure: a found-at-h=0 query could emit 1 item; the
 asymmetry leaked the cuckoo position.
 
-- Spec: `crates/protocol/core/src/params.rs:154` (`INDEX_CUCKOO_NUM_HASHES`).
-- Doc: `CLAUDE.md` § "Merkle INDEX Item-Count Symmetry".
+- Spec: `crates/protocol/core/src/params.rs` (`INDEX_CUCKOO_NUM_HASHES`).
+- Doc: `CLAUDE.md` (privacy invariants).
 - Code: `crates/sdk/client/src/{dpf,harmony,onion}.rs::items_from_trace`
   (each scripthash contributes both probed positions to the trace
   unconditionally).
@@ -131,7 +129,7 @@ Every query (found / not-found / whale) emits at least one
 K_CHUNK-padded CHUNK PIR round. Pre-closure: not-found and whale
 skipped CHUNK rounds, exposing presence.
 
-- Doc: `CLAUDE.md` § "CHUNK Round-Presence Symmetry".
+- Doc: `CLAUDE.md` (privacy invariants).
 - Code: `crates/sdk/client/src/{dpf,harmony}.rs::query_chunk_level`
   (forces a dummy round when `chunk_ids` is empty);
   `crates/sdk/client/src/onion.rs::query_chunk_level` and
@@ -153,7 +151,7 @@ group (`max_items_per_group = 4`); post-closure the planner spreads
 them so `max_items_per_group = 2` regardless of input.
 
 - Spec: [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) axis 1.
-- Doc: `CLAUDE.md` § "INDEX Merkle Group-Symmetry".
+- Doc: `CLAUDE.md` (privacy invariants).
 - Helper: `crates/sdk/client/src/dpf.rs::plan_index_pbc_rounds` +
   `build_index_alphas_batched` (3 Kani harnesses).
 - Closure commits: `606fddb` (DPF), `632cfd2` (Harmony). OnionPIR
@@ -183,7 +181,7 @@ query emits the same ChunkMerkleSiblings + DATA tree-top traffic as a
 found query.
 
 - Spec: [`Leakage.ec`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/Leakage.ec) axis 2 (re-opened, admitted).
-- Doc: `CLAUDE.md` § "CHUNK Merkle Item-Count — Documented Trade-off".
+- Doc: `CLAUDE.md` (privacy invariants).
 - History: closed by `565ea47` (DPF), `08ec736` (Harmony), `f915a65`
   (OnionPIR), `eb5128c` (standalone TS); re-opened in Phase 4 — the
   `pad_chunk_ids_to_m` / `CHUNK_MERKLE_ITEMS_PER_QUERY` /
@@ -198,10 +196,10 @@ gates the next at commit / PR / release time.
 | Layer | What it pins | Cost |
 |---|---|---|
 | EasyCrypt simulator-property (39 lemmas) | Wire-shape factors through `L(q)`. Per-query AND multi-query, including the generated contract-binding lemmas. | One-time + `make check` (~30s) |
-| Kani harnesses (18+) | Pure-helper invariants exhaustively under bounded models. | Run one at a time, ≤15s each |
-| Rust unit tests (151) | Per-helper correctness on concrete inputs. | <10s, every PR via `pir-sdk-integration.yml` |
-| Rust integration tests (live Hetzner, ~30) | End-to-end byte-shape against the production server. | 30-300s per test, daily cron + PR |
-| TypeScript unit tests (138 vitest) | TS port helper correctness; corpus-shape validation. | <1s, every PR via `web-build.yml` |
+| Kani harnesses | Pure-helper invariants exhaustively under bounded models. | By hand, one at a time, ≤15s each |
+| Rust unit tests | Per-helper correctness on concrete inputs. | <10s, every PR (`rust-ci.yml` core lane) |
+| Rust integration tests (live) | End-to-end byte-shape against the production servers. | 30-300s per test, scheduled (`pir-sdk-integration.yml`) |
+| TypeScript unit tests (vitest) | TS port helper correctness. | <1s, every PR via `web-build.yml` |
 | Cross-language live diff | Rust reference ≡ TS standalone, byte-for-byte against Hetzner. | ~60s, manual `RUN_LIVE_DIFF=1` before releases |
 
 ## Empirical witnesses — the byte-identity claim
@@ -223,22 +221,6 @@ Encoded in:
 
 Each uses `assert_profiles_equivalent` — the strictest comparator
 in the test framework. All three pass.
-
-## Pre-closure → post-closure deltas (for context)
-
-| Backend | Pre-closure FOUND vs NOT-FOUND | Post-closure FOUND vs NOT-FOUND |
-|---|---|---|
-| DPF | 23 rounds / 17 rounds; ChunkMerkleSiblings 6 vs 0 | 23 rounds (byte-identical); 6 vs 6 |
-| HarmonyPIR | (no per-query test pre-closure) | 23 rounds; 3 vs 3 |
-| OnionPIR | 9 rounds / 7 rounds; ChunkMerkleSiblings 1 vs 0 | 9 rounds; 1 vs 1 |
-
-Multi-query (curated colliding scripthash batches):
-
-| Backend | Pre-closure (collision drives `index_max`) | Post-closure |
-|---|---|---|
-| DPF | A=B=33 / C=21 rounds; IndexMerkleSiblings 24 / 12 | A=B=C=19; IndexMerkleSiblings 12 |
-| HarmonyPIR | A=B=28 / C=22 rounds; IndexMerkleSiblings 12 / 6 | A=B=C=20; IndexMerkleSiblings 6 |
-| OnionPIR | collision closure n/a (no fixed-`[0]` coupling) | A=B=C=10; IndexMerkleSiblings 2 (per-group Merkle, Phase 3) |
 
 ## Key files & commits
 
@@ -270,29 +252,9 @@ Multi-query (curated colliding scripthash batches):
 - [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — full file map and proof status.
 
 ### Docs
-- `CLAUDE.md` — project memory, with all four invariant sections.
+- `CLAUDE.md` — project rules, including the privacy invariants.
 - `docs/VERIFICATION_OVERVIEW.md` — this file.
 - [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — EasyCrypt verification recipe.
-
-### Notable commits (newest first)
-- `f087685` — CI release-readiness gate (wasm-pack + tsc + vitest).
-- `3488a90` — TypeScript hygiene (3 pre-existing tsc errors fixed).
-- `eb5128c` — chunk_max closure for standalone TS OnionPirWebClient.
-- `f915a65` — chunk_max closure for OnionPIR + spec/CLAUDE.md update.
-- `08ec736` — chunk_max closure for HarmonyPIR.
-- `565ea47` — chunk_max closure for DPF (helper + 4 Kani harnesses).
-- `632cfd2` — index_max closure for HarmonyPIR.
-- `606fddb` — index_max closure for DPF.
-- `dfe3508` — multi-query simulator-property test for OnionPIR
-  (structural-triviality argument).
-- `6eda18a` — multi-query simulator-property test for DPF + HarmonyPIR
-  (curated colliding scripthashes).
-- `691afc4` — closed the 2 remaining EasyCrypt admits.
-- `af2e5c9` — initial EasyCrypt body fleshout, 12/14 lemmas.
-- `0909bb0` — L-spec amendment (3 admitted axes + 4 explicit
-  non-claims).
-- `3ab3f1a` — multi-query EasyCrypt closure (5 new lemmas).
-- `140c87f` — EasyCrypt per-backend Protocol split.
 
 ## For the next contributor
 
@@ -302,9 +264,8 @@ If you're picking this up cold:
    self-contained explanation of the verification approach.
 2. Clone `protocol-proofs` and run `make check` at its root to confirm the
    spec typechecks (one-time install via opam; ~30s on a warm cache).
-3. Run `cargo test -p pir-sdk-client --lib` to confirm 151
-   unit tests pass.
-4. Run `cd web && npm test` to confirm 138 vitest tests pass.
+3. Run `cargo test -p pir-sdk-client --lib` (unit tests).
+4. Run `cd web && npm test` (vitest).
 5. (Optional) Run `cargo test -p pir-sdk-client --test
    leakage_integration_test -- --ignored --test-threads=1` against
    live Hetzner — takes ~10 minutes total.
@@ -317,7 +278,7 @@ Adding a new privacy axis to the leakage record:
    lemma `L_eq_query_X` in `Theorem.ec`.
 3. If the axis is non-trivial, add an integration test that
    empirically witnesses what it captures.
-4. Update `CLAUDE.md`'s "What the Server Learns" section.
+4. Update the privacy notes in `CLAUDE.md`.
 
 Closing an admitted axis:
 
@@ -329,46 +290,4 @@ Closing an admitted axis:
 4. Update `Leakage.ec` axis prose to flip from "admitted" to
    "constant post-closure" (don't remove the axis — keep it for
    spec stability across DB/batch parameters).
-5. Update `CLAUDE.md` to add a new "MANDATORY for Privacy"
-   invariant section.
-
-## For the educational website
-
-The website lives at `~/bitcoin-pir/website/` (Astro + MDX). It has
-a `CONTENT-AUDIT.md` style requiring every factual claim to cite
-`file:line` in the upstream codebase. When writing verification
-content, useful claim families:
-
-- **Privacy invariants** (4 of them) — cite from this file's
-  "The four privacy invariants" section, which itself cites
-  `CLAUDE.md` and source files.
-- **Empirical witnesses** — the byte-identity table above; each
-  row maps to an integration test path you can `file:line`-cite.
-- **Verification layers** — the test-pyramid table above; each
-  layer maps to a tooling story (Kani for helpers, EasyCrypt for
-  spec, Hetzner for end-to-end).
-- **Honest scope split** — what's mechanized vs cited; the
-  one-paragraph "ideal-primitive hypothesis" explanation.
-
-Suggested narrative shape for a single "How we verify privacy" page:
-
-1. **The threat model in one sentence** — what an adversary
-   *actually* sees on the wire (round counts, byte sizes, item
-   vectors), not what they have to break to attack.
-2. **The leakage record** — show `L(q)` as a small struct with
-   four labelled fields. The point: these four are *all* the wire
-   reveals, post-closure.
-3. **The byte-identity demo** — visual showing two queries (one
-   found, one not-found) producing literally the same wire
-   transcript. Cite the byte-identity test.
-4. **What's mechanized** — three layers: pure helpers (Kani),
-   spec proof (EasyCrypt), end-to-end (Hetzner integration tests).
-5. **What's cited** — the primitive-layer hypothesis. Be honest;
-   don't oversell.
-6. **Why this matters for users** — practical implication: a
-   server that wants to fingerprint a wallet can't do it via wire
-   shape, even with adversarial scripthash patterns.
-
-Don't claim full cryptographic verification. Don't claim
-zero-leakage. Do claim "every wire-observable axis is either
-structurally constant or in the leakage record by design".
+5. Add the invariant to `CLAUDE.md`'s privacy invariants.

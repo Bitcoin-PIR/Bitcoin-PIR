@@ -201,9 +201,6 @@ preferring fewer / shorter delta chains over fresh re-syncs.
 |---------|:-------:|------------------------------------------------------------|
 | `serde` | off     | Derives `Serialize`/`Deserialize` on the public types.     |
 
-See [`FEATURES.md`](../../../FEATURES.md) at the workspace root for a full
-feature-flag matrix covering every publishable crate.
-
 ## License
 
 Licensed under either of

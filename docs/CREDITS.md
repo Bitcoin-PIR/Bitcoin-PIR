@@ -40,7 +40,7 @@ parameters (`GasParams::PRODUCTION_2026_09`: `credit_sat` 10,
 | HarmonyPIR later lookup, one new connection (46 MB of query responses) | 46,300 | 1 | 10 |
 | DPF single address, both servers | 26,045 | 1 + 1 | 20 |
 | DPF batch of 75 addresses, both servers (estimate) | 37,710 | 1 + 1 | 20 |
-| Direct ORAM single address (pir2, estimate) | 2,070 | 1 | 10 |
+| Direct ORAM single address (ORAM host, estimate) | 2,070 | 1 | 10 |
 
 HarmonyPIR query responses carry the T−1 cells of every group (4–15 MB
 per frame, 46 MB per lookup), so on the query server egress, not work, is
@@ -183,8 +183,9 @@ verification data of a backend it runs free.
 
 Examples:
 
-- Reference deployment (since 2026-10-02): DPF and HarmonyPIR free when
-  idle, OnionPIR paid, Direct ORAM paused (no TEE host). pir1:
+- Reference deployment: DPF and HarmonyPIR free when idle, OnionPIR paid,
+  Direct ORAM free on the VPSBG host (`--access oram=best-effort:2
+  --free-threads 2`, no issuer). pir1:
   `--require-credits --access dpf=best-effort:2 --access
   harmony=best-effort:1:1500000 --free-threads 2`, so HarmonyPIR hints
   are free up to 1.5M gas (about ten fresh clients) per hour; the pir2
@@ -357,70 +358,3 @@ the anonymity set, and the possibility of an issuer that tags a user with
 a private key: clients compare the issuer key and epoch against
 `/v2/info` and the SDK's pinned values. Query contents were never visible
 to anyone; PIR hides them regardless of payment.
-
-## Rollout
-
-Each step was reversible on its own. Steps marked Human are key
-generation or funds and are never run by an agent; the others are
-operator campaigns routed through
-[Production operations](PRODUCTION_OPERATIONS.md). The migration period
-(credits accepted but not required, session grants still on sale) was
-skipped on 2026-09-15 by operator decision: the only user's grant had
-expired, so nothing needed the overlap.
-
-1. Done 2026-09-12 — issuer (pir1, [runbook](runbooks/issuer-and-mint.md)
-   "Credits (v2)"): Human ran `bpir-issuer arc-seed`; the binary was
-   upgraded to a `main` revision with `/v2/`; `[gas]`, `operator_pubkeys`,
-   `[arc]` added; `GET /v2/info` checked.
-2. Done 2026-09-12 — pir1 (Flow D): `unified_server` rebuilt from `main`,
-   `--credit-issuer-url https://issuer.bitcoinpir.org` added to the unit;
-   the startup log showed `Credits: issuer=… accepted, not charged` and the
-   issuer parameters. Web (Flow C): the page with the wallet deployed
-   together with the new `PIR1_PIN`.
-3. Done 2026-09-15 — pir1 switched: `--require-credits` in the unit
-   (startup log `Credits: … required for metered frames`); a query without
-   credits is refused at its first metered frame. Done 2026-09-18 — the
-   issuer stopped selling session grants (`offers` empty, `/v1/grants`
-   answers `unknown offer`; grants already issued keep their credits until
-   they expire, at most 30 days).
-4. Done 2026-09-23 — pir2: the r9 sealed campaign
-   (`scripts/pir2-sealed-campaign.sh`, source `9c70bb6e`) put image 321 live
-   with `--credit-issuer-url`, `--credit-issuer-pubkey`, `--require-credits`
-   and the access policy (DPF and Direct ORAM best-effort, HarmonyPIR
-   paid); pins in #347, release record
-   `docs/data-retention/production-release-image-321.env`.
-5. Done 2026-09-23 — end-to-end purchase on production: one 100-credit
-   pack bought in the browser over Lightning (Human paid the invoice), then
-   DPF, HarmonyPIR and OnionPIR queries against pir1, all verified. The
-   issuer logged the credential issuance and one `redeemed` line per
-   presentation; `bpir-issuer settlement` booked 14 credits (DPF 1,
-   HarmonyPIR hint set 3, OnionPIR 10) to pir1, matching the page's
-   balance. It found two bugs, both fixed and deployed the same day: the
-   issuer opened Cashu wallets only for `/v1` offer units, so with grant
-   sales closed `/v2/credentials` refused a paid token (issuer #5; the
-   refused token was never swapped and the purchase resumed), and the
-   OnionPIR web client sent its tree-top preflight around the credited
-   channel (#337). A client presents credits only when the server
-   requires them, so this check needed step 3.
-6. Done 2026-09-23 — `0x0b` retired (no grant was outstanding: sales
-   closed, the last issued grant expired): the opcode, the grant gate and
-   its flags, the clients' grant presentation, and the web grant UI are
-   gone (#345), and the issuer dropped `/v1` (issuer #6). The issuer key
-   the servers pin stays, renamed `--credit-issuer-pubkey`: it verifies
-   redeem answers. Live on pir1 (#346), the issuer, and pir2 image 321.
-
-## Status
-
-| Step | Where | State |
-| --- | --- | --- |
-| Gas model, parameters, meter, issuer contract types | `crates/trust/pir-credit` | done |
-| `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`, gas table and hourly meter in `unified_server`, `GET_INFO_JSON` "gas" | this repository | done (the opcode answers "credits not enabled" until an issuer is configured) |
-| Issuer client, per-connection balance, `--credit-issuer-url` / `--require-credits` | `unified_server` | done; both flags live on pir1 |
-| `/v2/redeem` for Cashu tokens, `/v2/info`, settlement ledger | `Bitcoin-PIR/issuer` | done, live |
-| ARC issuance and verification (`/v2/credentials`, ARC items on `/v2/redeem`) | `Bitcoin-PIR/issuer` | done, live |
-| ARC client (`WasmArcCredentialRequest`, `WasmArcCredential`), `presentCredits` on every wasm client, `pir_sdk_client::credits` (presentation, gas card, connection meter), `web/src/credits.ts` (issuer v2 client, credential store, wallet, purchase flow) | `crates/sdk/wasm`, `crates/sdk/client`, `web/` | done (nothing calls it yet) |
-| Metering hooks: the credited transport in the SDK, `enableCredits` on the wasm clients, `creditProvider` in the web adapters and the OnionPIR web client, `"credits"` flags in `GET_INFO_JSON` | `crates/sdk/client`, `crates/sdk/wasm`, `web/`, `apps/server` | done (nothing supplies a provider yet) |
-| Wallet UI: the "Paid access" panel buys credit packs over Lightning (`purchaseCredential`, resumable), shows the balance and each connection's credits state, and hands `CreditWallet.present` to the four adapters as `creditProvider` | `web/index.html`, `web/src/sdk-bridge.ts` | done |
-| Rollout (see above) | `Bitcoin-PIR/issuer`, pir1, pir2 | issuer, pir1 and pir2 (image 321) live; end-to-end purchase verified on all three pir1 backends (2026-09-23) |
-| Access policy: per-backend `free` / `paid` / `best-effort` (`--access`, `--free-threads`, `--free-queue-wait-ms`), published in `GET_INFO_JSON`, followed by the Rust SDK, the wasm clients and the web clients | `crates/trust/pir-credit` (`access`), `unified_server` (`access_gate`), `crates/sdk/client`, `web/` | done; live on pir1 (DPF best-effort) and pir2 image 321 (DPF and Direct ORAM best-effort) since 2026-09-23 |
-| Retire `0x0b` | protocol registry, `unified_server`, clients, `Bitcoin-PIR/issuer` `/v1` | done; live on pir1, the issuer and pir2 image 321 (2026-09-23) |

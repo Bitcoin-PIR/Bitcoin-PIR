@@ -1,9 +1,7 @@
 [workspace]
 resolver = "2"
 # One PIR service. Paid access is credits (crates/trust/pir-credit), verified
-# at the issuer; the issuer itself lives in a separate repository. The
-# Payment V1 crates, the ARC/Cashu verifiers, the payment-issuer app, and the
-# v1 session grants were deleted in 2026-09.
+# at the issuer; the issuer itself lives in a separate repository.
 members = [
     "crates/protocol/core",
     "crates/protocol/channel",
@@ -25,8 +23,7 @@ exclude = ["vendor/bitcoinpir-oram"]
 opt-level = 3
 lto = "thin"
 # codegen-units = 1 + incremental = false make the build deterministic at
-# the cost of slower release compilations (sub-task 2 of
-# docs/history/PHASE3_SLICE3_REPRO_PLAN.md). The unified_server binary baked into
+# the cost of slower release compilations. The unified_server binary baked into
 # the Tier 3 UKI uses this profile, so its bytes — and therefore the
 # resulting MEASUREMENT — must be reproducible across operators.
 codegen-units = 1

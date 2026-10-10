@@ -14,7 +14,6 @@ status subcommand for the rest.
 | Database and root rotation (DPF / Harmony / Onion v2 / ORAM proofs) | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
 | Producer (attested-builder) UKI | [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md); producer *scope* is that repo's README |
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
-| Direct ORAM diagnosis | [Direct ORAM debug](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md) |
 | Development and PR checks | [Testing](TESTING.md) |
 
 ## Technical references
@@ -26,8 +25,6 @@ status subcommand for the rest.
   (opcode `0x0b`) are retired. The issuer (payment side) is
   [Bitcoin-PIR/issuer](https://github.com/Bitcoin-PIR/issuer); running it
   and the mint on pir1 is [Issuer and mint](runbooks/issuer-and-mint.md).
-  The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live
-  only in git history.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md); the
   EasyCrypt proof lives in
   [Bitcoin-PIR/protocol-proofs](https://github.com/Bitcoin-PIR/protocol-proofs).

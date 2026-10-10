@@ -64,6 +64,11 @@ Before the real build, report its expected duration, a 15-minute hard stop,
 and the progress signals: runtime binary, dracut initrd, inventory gates,
 `ukify`, SHA-256, and dual archive.
 
+Runtime behaviour baked into the image: runit's `finish` hook records each
+start time and the consecutive-failure count under `/run`; after three
+short-lived failures in a row it runs `sv down unified_server` and leaves a
+reason/status file. It never reboots the machine or deletes data.
+
 ## 3. Build-host choice
 
 Hetzner may build the candidate only when its exact kernel/modules and build

@@ -64,7 +64,7 @@ secret; `keygen` and `pubkey` print only the public key.
   [Credits and gas](../CREDITS.md).
 - Pricing input: each server prints one `[hint-pool db=N] last 3600s:
   generated=K wall_mean_s=… wall_max_s=…` line per hour (journal of
-  `pir-primary` on pir1; the measured guest's console log on pir2) — the
+  `pir-primary` on pir1) — the
   wall seconds per generated hint set for capacity planning and the hint
   price. It is an aggregate on the hour boundary; no per-entry timing is
   logged in production builds.
@@ -222,59 +222,14 @@ wallet; `bpir-issuer settlement` and `balance` do not include it. Invoice
 creation is limited per client address and globally (`[x402]`), and the
 guard limits it again.
 
-## Rename cutover (cashier → issuer, 2026-09)
-
-The service was named *cashier* until 2026-09-28; pir1 still runs
-`bpir-cashier.service` as user `bpir-cashier` from `/opt/bitcoinpir/cashier`
-until this cutover is done. Nothing about keys or pins changes: the issuer
-key file, the ARC seed, the wallet, and the servers' `--credit-issuer-pubkey`
-stay as they are. Order:
-
-1. **Human (Cloudflare dashboard):** on the pir1 tunnel add the public
-   hostname `issuer.bitcoinpir.org` → `http://localhost:8095`, identical to
-   `cashier.bitcoinpir.org`. Keep the old hostname: pir2 image 321 bakes
-   `PIR2_CREDIT_ISSUER_URL=https://cashier.bitcoinpir.org` into its UKI, so
-   the alias lives until the next Tier 3 campaign ships the new value.
-2. Build the renamed binary from the merged `Bitcoin-PIR/issuer` revision
-   (the checkout moves with the repository; GitHub redirects the old URL):
-
-   ```sh
-   sudo -u pir -H bash -c 'mv /home/pir/src/cashier /home/pir/src/issuer && cd /home/pir/src/issuer && git remote set-url origin https://github.com/Bitcoin-PIR/issuer.git && git fetch origin && git checkout --detach <rev> && cargo build --locked --release'
-   ```
-
-3. Rename the account and move the directories; contents and ownership
-   (uid 971) are unchanged, only names move:
-
-   ```sh
-   systemctl stop bpir-cashier
-   usermod -l bpir-issuer bpir-cashier && groupmod -n bpir-issuer bpir-cashier
-   mv /etc/bitcoinpir/cashier /etc/bitcoinpir/issuer
-   mv /var/lib/bitcoinpir-cashier /var/lib/bitcoinpir-issuer
-   mv /opt/bitcoinpir/cashier /opt/bitcoinpir/issuer
-   ```
-
-4. Install the binary content-addressed as in "Upgrade the issuer", install
-   `deploy/bpir-issuer.service` from the issuer repository, then
-   `systemctl disable --now bpir-cashier; systemctl daemon-reload;
-   systemctl enable --now bpir-issuer`. The old unit file is kept as a
-   backup next to the new one. Expected downtime: the build (minutes) runs
-   before the stop; the stop-to-start window is seconds.
-5. Verify `curl https://issuer.bitcoinpir.org/v2/info` and the old hostname
-   both answer with `"service": "bitcoinpir-issuer"` and the unchanged
-   `issuer_pubkey`, then run `bpir-issuer balance` and `settlement` against
-   the moved state.
-6. Only now merge the main-repository rename PR (it points
-   `PRODUCTION_ISSUER_URL` at the new hostname), deploy Pages, and re-vendor
-   the playground.
-
 ## Rotate the issuer key
 
 1. `bpir-issuer keygen --out /etc/bitcoinpir/issuer/grant.key.new`
    (Human), then `bpir-issuer pubkey` into a new `grant.pub`.
-2. Pin the new public key on every server **before** switching the
-   issuer (`--credit-issuer-pubkey` is repeatable, so both keys verify
-   during the overlap; pir2 needs a new image with the new
-   `PIR2_CREDIT_ISSUER_PUBKEY_HEX`).
+2. Pin the new public key on every server (pir1's unit, the pir2
+   MacBook's plist) **before** switching the issuer
+   (`--credit-issuer-pubkey` is repeatable, so both keys verify during the
+   overlap).
 3. Move the new key into place and restart the issuer; a server that pins
    only the old key refuses its redeem answers until it is re-pinned.
 

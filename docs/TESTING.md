@@ -8,9 +8,7 @@ Pick your checks by *change class*, not by a single default command. The
 matrix below maps what you touched to the minimum local checks and to the CI
 that will actually run on your PR (the workflows are path-filtered).
 
-Payment V1 (signed policy, clearing, PoW, the admission gate) and the
-ARC/Cashu verifiers are deleted, and so are the v1 session grants (opcode
-0x0b). Paid queries present credits ([Credits](CREDITS.md)); each server
+Paid queries present credits ([Credits](CREDITS.md)); each server
 publishes which backends are free, paid, or best-effort.
 
 ## Change-class → required checks

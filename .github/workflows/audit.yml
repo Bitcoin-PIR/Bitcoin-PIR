@@ -1,8 +1,7 @@
 name: Security audit
 
-# RustSec advisory scan (review finding I7). `cargo audit` parses the
-# workspace Cargo.lock — the authoritative, fully-pinned dependency set
-# (docs/BUILD_REPRODUCIBILITY.md) — and reports any crate version with a
+# RustSec advisory scan. `cargo audit` parses the workspace Cargo.lock —
+# the authoritative, fully-pinned dependency set — and reports any crate version with a
 # known RustSec advisory (vulnerabilities, unmaintained / yanked crates).
 #
 # This job is advisory-only by design — do NOT add it to the branch-

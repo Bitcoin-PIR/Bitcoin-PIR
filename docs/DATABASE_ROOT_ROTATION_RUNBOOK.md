@@ -7,16 +7,13 @@ never the runtime UKI in Flow E.
 
 Use this runbook whenever production moves to a new full snapshot, adds or
 replaces a delta, or rebuilds an existing height with different database
-roots. It covers the proof, server catalog, production pins, and strict v2
-OnionPIR / ORAM proof pins as one release unit. DPF/HarmonyPIR retain their
-v1 proof compatibility surface; strict OnionPIR does not use a v1
-layout-pin fallback. Pin-family names and verifier scope are in
+roots. It covers the proof, server catalog, production pins, and v2
+OnionPIR / ORAM proof pins as one release unit. DPF/HarmonyPIR keep their v1
+proofs; OnionPIR uses only v2. Pin-family names and verifier scope are in
 Production operations H.0.
 
-The safety rule is simple: a client may be temporarily unavailable during a
-rotation, but it must never fall back to an unverified root. A proof/pin or
-catalog mismatch is an expected fail-closed state while the two sides are
-being switched.
+While the two sides are being switched, clients report a proof/pin or catalog
+mismatch; that is expected.
 
 ## Prospective producer boundary (decision 4A)
 
@@ -73,8 +70,7 @@ authorize a build, VPSBG boot, database mutation or deployment.
   the verified `onion_super_root`.
 - `server-info.super_root` is diagnostic only. It must never be copied into a
   trusted-root store.
-- Production remains strict throughout the rotation. Do not enable
-  `Advisory`, weaken runtime/operator pins, skip the proof, or accept an
+- Do not weaken runtime/operator pins, skip the proof, or accept an
   unpinned layout to restore availability.
 - Keep the prior complete generation and configuration until the rollback
   window closes. Never overwrite the known-good directories in place.
@@ -136,16 +132,14 @@ For a delta, also pass `--expect-from-height` and
 as a deployment warning.
 
 Before copying anything to production, exercise a local catalog containing the
-entire proposed sync plan and the exact proposed `server-db` trees. In
-`RequireVerified` mode, test fresh and delta sync with DPF, HarmonyPIR, and
+entire proposed sync plan and the exact proposed `server-db` trees. With the
+proofs installed, test fresh and delta sync with DPF, HarmonyPIR, and
 OnionPIR. Include a found address, an absent address, and a whale fixture;
 every result must finish Merkle verification before sync state is committed.
 
 When Direct ORAM is included, its release-time acceptance must reconstruct
 from the exact retained producer inputs and bind the same manifest root before
-activation. Use the progress stages and timing in
-[`ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md`](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md): stop
-after three minutes without stage progress, target ten minutes and use a
+activation. Stop after three minutes without stage progress, target ten minutes and use a
 fifteen-minute hard stop unless a reviewed release procedure is narrower. Keep
 that bounded acceptance with the release record; do not turn the large
 database/ORAM reconstruction into a routine CI job.
@@ -157,7 +151,7 @@ In the same change set, update `web/src/attest-pin.ts`:
 1. Add or replace the `DatabaseProofPin` for every affected database in
    `PRODUCTION_DB_PROOF_PINS`. Copy values from the independently accepted
    proof record, not from a live server response.
-2. For strict OnionPIR, update the matching entry in
+2. For OnionPIR, update the matching entry in
    `PRODUCTION_ONION_DB_PROOF_V2_PINS`. Confirm the complete typed layout,
    packed-entry counts, table sizes, slot sizes, arity, and Merkle geometry
    against the independently accepted v2 proof. Do not recreate the removed
@@ -166,16 +160,12 @@ In the same change set, update `web/src/attest-pin.ts`:
    table shares layout and Merkle roots with the Onion v2 pins and
    independently binds the native full-build producer. Do not collapse
    Onion and ORAM builder identities into one table.
-4. Update the duplicate `PRODUCTION_DATABASE_PINS` in
-   `crates/sdk/client/tests/integration_test.rs`. The scheduled native canary must
-   fail on an unreviewed rotation; keep these values synchronized with the
-   independently reviewed web pins.
-5. Update proof artifacts under `web/public/proofs/` and any public block links
+4. Update proof artifacts under `web/public/proofs/` and any public block links
    or reproducibility manifests for the new endpoints.
 
 Run the Rust/WASM/web tests that cover proof parsing, full-field pin matching,
 typed installation, tree-top preflight, layout mismatch, found/absent/whale
-verification, and disconnect cleanup. Strict OnionPIR is v2-only: do not add
+verification, and disconnect cleanup. OnionPIR is v2-only: do not add
 v1 layout pins or a silent v2-to-v1 fallback. DPF/HarmonyPIR v1 proof
 compatibility remains covered by their separate database-proof pins.
 
@@ -244,10 +234,10 @@ new `unified_server` binary or UKI. A proof-schema or wire-protocol change does;
 in that case, validate and deploy the compatible binary/UKI as a separate gate
 before following the activation steps below.
 
-## 5. Activate in a fail-closed maintenance window
+## 5. Activate in a maintenance window
 
 There is no single atomic switch across both hosts and GitHub Pages. Use a
-short maintenance window and accept temporary fail-closed queries:
+short maintenance window; clients report mismatches meanwhile:
 
 1. Stop or drain the Hetzner services through their normal supervisor. On
    VPSBG, use Flow F in [Production operations](PRODUCTION_OPERATIONS.md)
@@ -283,9 +273,9 @@ short maintenance window and accept temporary fail-closed queries:
    Wait for that exact commit's `deploy-web.yml` run to complete
    successfully. A push to `main` does not publish.
 
-Activating the servers before the new web pins makes old clients reject the
-new proof; deploying the pins first makes new clients reject old servers.
-Either ordering is safe but temporarily unavailable. Do not bridge that gap by
+Activating the servers before the new web pins makes old clients report the
+new proof as a pin mismatch; deploying the pins first makes new clients report
+old servers. Either ordering is safe. Do not bridge that gap by
 accepting both generations without an explicit verified multi-generation
 design.
 
@@ -330,9 +320,8 @@ Rollback the generation as a unit:
    both catalogs agree.
 4. Redeploy the prior known-good frontend proof pins with Flow C and wait
    for Pages.
-5. Repeat the strict browser acceptance checks above.
+5. Repeat the browser acceptance checks above.
 
 If only one host fails after activation, do not leave a mixed fleet serving.
 Restore both to the last generation proven on both hosts, then investigate
-offline. A frontend/server mismatch during rollback should remain
-fail-closed; never use `Advisory` as a rollback mechanism.
+offline.

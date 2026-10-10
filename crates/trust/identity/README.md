@@ -15,6 +15,4 @@ SEV-SNP hosts. The crate contains only canonical encoding and cryptographic
 sign/verify logic; filesystem, network, and operator tooling live elsewhere in
 the BitcoinPIR workspace.
 
-See the module documentation in `src/lib.rs` and
-[`docs/history/OPERATOR_IDENTITY.md`](../../../docs/history/OPERATOR_IDENTITY.md) for the protocol and
-deployment model.
+See the module documentation in `src/lib.rs` for the protocol.
