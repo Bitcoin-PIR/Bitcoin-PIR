@@ -162,18 +162,6 @@ impl WasmStandaloneSecureChannelV1 {
         );
         Ok(prefix_payload(&opened))
     }
-
-    /// Non-secret exporter used by service authorization transcript binding.
-    #[wasm_bindgen(js_name = serviceAuthorizationExporterV1)]
-    pub fn service_authorization_exporter_v1(&self) -> Result<Uint8Array, JsError> {
-        let session = self
-            .session
-            .as_ref()
-            .ok_or_else(|| JsError::new("secure channel is not established"))?;
-        Ok(Uint8Array::from(
-            &session.service_authorization_exporter_v1()[..],
-        ))
-    }
 }
 
 fn encode_frame(opcode: u8, body: &[u8]) -> Vec<u8> {

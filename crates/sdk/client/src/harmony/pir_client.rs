@@ -312,18 +312,8 @@ impl PirClient for HarmonyClient {
         script_hashes: &[ScriptHash],
         last_height: Option<u32>,
     ) -> PirResult<SyncResult> {
-        require_fresh_sync(last_height)?;
-        if !self.is_connected() {
-            self.connect().await?;
-        }
-
-        let catalog = match &self.catalog {
-            Some(c) => c.clone(),
-            None => self.fetch_catalog().await?,
-        };
-
-        let plan = self.compute_sync_plan(&catalog, last_height)?;
-        self.sync_with_plan(script_hashes, &plan, None).await
+        self.sync_with_progress(script_hashes, last_height, &NoProgress)
+            .await
     }
 
     #[tracing::instrument(
@@ -343,65 +333,8 @@ impl PirClient for HarmonyClient {
         plan: &SyncPlan,
         cached_results: Option<&[Option<QueryResult>]>,
     ) -> PirResult<SyncResult> {
-        require_sync_base(plan, script_hashes.len(), cached_results)?;
-        if plan.is_empty() {
-            return Ok(SyncResult {
-                results: cached_results
-                    .map(|r| r.to_vec())
-                    .unwrap_or_else(|| vec![None; script_hashes.len()]),
-                synced_height: plan.target_height,
-                was_fresh_sync: false,
-            });
-        }
-
-        self.verified_roots.require_plan(plan)?;
-
-        let catalog = self
-            .catalog
-            .clone()
-            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-        let mut merged: Vec<Option<QueryResult>> = cached_results
-            .map(|r| r.to_vec())
-            .unwrap_or_else(|| vec![None; script_hashes.len()]);
-
-        for step in &plan.steps {
-            let db = catalog
-                .get(step.db_id)
-                .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                .clone();
-            self.preflight_bucket_tree_tops(&db).await?;
-        }
-
-        for (step_idx, step) in plan.steps.iter().enumerate() {
-            log::info!(
-                "[{}/{}] HarmonyPIR querying {} (db_id={}, height={})",
-                step_idx + 1,
-                plan.steps.len(),
-                step.name,
-                step.db_id,
-                step.tip_height
-            );
-
-            let db_info = catalog
-                .get(step.db_id)
-                .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                .clone();
-
-            let step_results = self.execute_step(script_hashes, step, &db_info).await?;
-
-            if step.is_full() {
-                merged = step_results;
-            } else {
-                merged = merge_delta_batch(&merged, &step_results)?;
-            }
-        }
-
-        Ok(SyncResult {
-            results: merged,
-            synced_height: plan.target_height,
-            was_fresh_sync: plan.is_fresh_sync,
-        })
+        self.run_sync_plan(script_hashes, plan, cached_results, &NoProgress)
+            .await
     }
 
     #[tracing::instrument(

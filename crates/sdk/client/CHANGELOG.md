@@ -14,6 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   operator-issued API key over the encrypted channel, after which the server
   serves that connection unmetered (docs/CREDITS.md "API keys").
 
+### Removed
+
+- Unused APIs: `announce::announce_bound`, `PirTransport::service_authorization_exporter_v1`,
+  `db_proof::verify_database_proof_response` (v1), `OnionClient::verify_database_proof`
+  (v1), and `OramClient::{root_policy, set_root_policy}`, whose policy nothing read.
+- The dead single-query DPF and HarmonyPIR paths (`query_single`, `query_index_level`,
+  `run_index_round`, `query_chunk_level`). `sync`, `sync_with_plan` and
+  `sync_with_progress` now share one plan runner.
+
 ### Security
 
 - Removed the public DPF/Harmony raw-inspector and membership-only split

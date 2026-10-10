@@ -141,8 +141,6 @@ pub(crate) const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 // `REQ_GET_DB_CATALOG` / `RESP_DB_CATALOG` / `RESP_ERROR` come from
 // `crate::protocol` — shared with `DpfClient` and `OnionClient`.
 
-/// PRP backends used on the HarmonyPIR wire.
-pub use harmonypir::remote::{PRP_FASTPRP, PRP_HMR12};
 // PRP_ALF (= 2) was removed 2026-05-12: ALF panicked on domain<65536
 // (sibling Merkle tables hit this), causing pir-vpsbg crash loops.
 
@@ -504,27 +502,4 @@ pub(crate) fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
         });
     }
     Ok(entries)
-}
-
-/// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
-/// Avoids pulling in the `hex` crate for one audit-log string; mirrors the
-/// helper in `dpf.rs` so both clients log query traces identically.
-#[allow(dead_code)]
-pub(crate) fn format_hash_short(h: &[u8]) -> String {
-    if h.len() <= 8 {
-        let mut s = String::with_capacity(h.len() * 2);
-        for b in h {
-            s.push_str(&format!("{:02x}", b));
-        }
-        return s;
-    }
-    let mut s = String::with_capacity(22);
-    for b in &h[..4] {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s.push_str("..");
-    for b in &h[h.len() - 4..] {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
 }

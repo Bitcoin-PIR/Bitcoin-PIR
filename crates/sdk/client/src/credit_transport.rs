@@ -180,11 +180,7 @@ enum Outstanding {
     /// A metered frame, with its kind for attributing the response.
     Metered { op: MeteredOp, frames_seen: u32 },
     /// A best-effort frame sent unpaid: served free, or refused as busy.
-    FreeLane {
-        op: MeteredOp,
-        db_id: u8,
-        frames_seen: u32,
-    },
+    FreeLane { frames_seen: u32 },
     /// A frame the server does not charge.
     Free { frames_seen: u32 },
 }
@@ -374,11 +370,7 @@ impl CreditedTransport {
             Access::BestEffort { .. } if self.balance < admission_signed => {
                 // Mirrors the server: an uncovered frame goes to the free
                 // lane and leaves the balance alone.
-                Ok(Outstanding::FreeLane {
-                    op,
-                    db_id,
-                    frames_seen: 0,
-                })
+                Ok(Outstanding::FreeLane { frames_seen: 0 })
             }
             Access::BestEffort { .. } => {
                 // Credits already on the connection cover it: the server
@@ -592,10 +584,6 @@ impl PirTransport for CreditedTransport {
 
     fn url(&self) -> &str {
         self.inner.url()
-    }
-
-    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
-        self.inner.service_authorization_exporter_v1()
     }
 
     fn set_metrics_recorder(

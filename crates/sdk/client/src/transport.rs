@@ -111,14 +111,6 @@ pub trait PirTransport: Send + Sync {
     /// an in-memory mock.
     fn url(&self) -> &str;
 
-    /// Export the service-authorization binding for an authenticated secure
-    /// channel. Raw WebSocket transports deliberately return `None`; callers
-    /// MUST fail closed instead of sending service policy or capability
-    /// messages before the channel upgrade.
-    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
-        None
-    }
-
     /// Install a metrics recorder. The transport fires per-frame
     /// [`on_bytes_sent`](PirMetrics::on_bytes_sent) /
     /// [`on_bytes_received`](PirMetrics::on_bytes_received) callbacks
@@ -174,10 +166,6 @@ impl<T: PirTransport + ?Sized> PirTransport for Box<T> {
 
     fn url(&self) -> &str {
         (**self).url()
-    }
-
-    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
-        (**self).service_authorization_exporter_v1()
     }
 
     fn set_metrics_recorder(

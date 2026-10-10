@@ -37,7 +37,6 @@ use pir_sdk_client::attest::{AttestVerification, SevStatus};
 #[cfg(target_arch = "wasm32")]
 use pir_sdk_client::HintProgress;
 use pir_sdk_client::{
-    verify_database_proof_response as verify_database_proof_response_payload,
     verify_database_proof_v2_response as verify_database_proof_v2_response_payload,
     DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, RootPolicy, VerifiedDatabaseRoots,
     PRP_FASTPRP, PRP_HMR12,
@@ -1112,44 +1111,6 @@ impl WasmDatabaseProof {
     pub fn to_json(&self) -> JsValue {
         to_js_object(&database_proof_json(&self.inner))
     }
-}
-
-/// Verify a complete, length-prefixed `RESP_DB_PROOF` frame without owning a
-/// WebSocket or PIR client.
-///
-/// This is the authoritative verifier for transports that remain in
-/// JavaScript, notably the standalone OnionPIR browser client.  `responseFrame`
-/// must be exactly one record in the shape returned by that client's
-/// `ManagedWebSocket.sendRaw`: `[u32 payload_len LE][opcode][body...]`.
-/// The outer length, response opcode, requested database ID, catalog anchors,
-/// attested-builder proof, and supplied policy pins are all checked before an
-/// opaque [`WasmDatabaseProof`] is returned.
-///
-/// The function is stateless and does not install roots.  JavaScript must
-/// compare every exposed field with its production pin and then explicitly
-/// transfer the same handle into its OnionPIR session root store.
-#[wasm_bindgen(js_name = verifyDatabaseProofResponse)]
-pub fn verify_database_proof_response(
-    response_frame: &[u8],
-    catalog: &WasmDatabaseCatalog,
-    expected_db_id: u8,
-    expected_params_hash_hex: Option<String>,
-    allowed_builder_binary_sha256_hex: Option<String>,
-    allowed_builder_git_commit: Option<String>,
-) -> Result<WasmDatabaseProof, JsError> {
-    let response_payload =
-        database_proof_payload_from_frame(response_frame).map_err(|e| JsError::new(&e))?;
-    let db_info = catalog.inner().get(expected_db_id).ok_or_else(|| {
-        JsError::new(&format!("database {} not found in catalog", expected_db_id))
-    })?;
-    let policy = database_proof_policy(
-        expected_params_hash_hex,
-        allowed_builder_binary_sha256_hex,
-        allowed_builder_git_commit,
-    )?;
-    let roots = verify_database_proof_response_payload(db_info, response_payload, &policy)
-        .map_err(err_to_js)?;
-    Ok(WasmDatabaseProof { inner: roots })
 }
 
 /// Strict OnionPIR verifier. It accepts only the v2 opcode/bundle/evidence
@@ -2887,16 +2848,6 @@ impl WasmOramClient {
             .await
             .map_err(err_to_js)?;
         Ok(WasmDatabaseProof { inner: roots })
-    }
-
-    /// Require proof-root installation before ORAM query/admission.
-    #[wasm_bindgen(js_name = setRequireVerifiedDatabaseRoots)]
-    pub fn set_require_verified_database_roots(&mut self, require_verified: bool) {
-        self.inner.set_root_policy(if require_verified {
-            RootPolicy::RequireVerified
-        } else {
-            RootPolicy::Advisory
-        });
     }
 
     /// Install a proof only after JavaScript has checked production pins.

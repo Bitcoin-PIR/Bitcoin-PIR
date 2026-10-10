@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::transport::mock::MockTransport;
 use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, Hash256, ZERO_HASH};
 use pir_db_attest::BuildKind;
 use std::collections::VecDeque;
