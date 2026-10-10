@@ -268,11 +268,12 @@ mod tests {
     #[test]
     fn decode_catalog_single_entry() {
         // 1 num_dbs + entry(1 db_id + 1 db_type + 1 name_len + 4 name + 29 fixed)
-        let mut buf = Vec::new();
-        buf.push(1u8); // num_dbs
-        buf.push(0u8); // db_id
-        buf.push(0u8); // db_type (full)
-        buf.push(4u8); // name_len
+        let mut buf = vec![
+            1u8, // num_dbs
+            0u8, // db_id
+            0u8, // db_type (full)
+            4u8, // name_len
+        ];
         buf.extend_from_slice(b"main");
         buf.extend_from_slice(&0u32.to_le_bytes()); // base_height
         buf.extend_from_slice(&900_000u32.to_le_bytes()); // height
@@ -314,11 +315,12 @@ mod tests {
         index_k: u8,
         chunk_k: u8,
     ) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.push(1u8); // num_dbs
-        buf.push(0u8); // db_id
-        buf.push(0u8); // db_type (full)
-        buf.push(4u8); // name_len
+        let mut buf = vec![
+            1u8, // num_dbs
+            0u8, // db_id
+            0u8, // db_type (full)
+            4u8, // name_len
+        ];
         buf.extend_from_slice(b"main");
         buf.extend_from_slice(&0u32.to_le_bytes()); // base_height
         buf.extend_from_slice(&900_000u32.to_le_bytes()); // height

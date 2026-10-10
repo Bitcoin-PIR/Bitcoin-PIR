@@ -2,6 +2,11 @@ use super::*;
 
 // ─── Merkle verification traces ─────────────────────────────────────────────
 
+/// One query's INDEX-phase outcome: the matched entry
+/// (`start_chunk_id`, `num_chunks`, `is_whale`), the probed bins, and which
+/// of them matched.
+pub(crate) type IndexOutcome = (Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>);
+
 /// Record of one INDEX cuckoo bin we checked during a query.
 ///
 /// Mirrors `dpf.rs::IndexBinTrace`: populated for every cuckoo position probed

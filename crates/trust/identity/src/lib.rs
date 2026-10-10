@@ -369,6 +369,7 @@ pub struct ChannelManifest {
 impl ChannelManifest {
     pub const CURRENT_VERSION: u8 = 1;
 
+    #[allow(clippy::too_many_arguments)]
     pub fn signing_preimage(
         version: u8,
         identity_pubkey: &[u8; ED25519_PUBKEY_LEN],

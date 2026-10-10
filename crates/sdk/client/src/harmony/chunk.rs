@@ -195,8 +195,7 @@ impl HarmonyClient {
         // Reassemble per-scripthash output, preserving slot order so
         // `decode_utxo_entries` reads bytes in the correct sequence.
         let mut output = Vec::with_capacity(n);
-        for sh_idx in 0..n {
-            let cids = &per_query_chunks[sh_idx];
+        for (sh_idx, cids) in per_query_chunks.iter().enumerate() {
             let mut data = Vec::with_capacity(cids.len() * pir_core::params::CHUNK_SIZE);
             let mut bins = Vec::with_capacity(cids.len());
             for slot in 0..cids.len() {
