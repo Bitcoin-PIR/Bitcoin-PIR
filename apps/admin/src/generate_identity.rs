@@ -52,22 +52,15 @@ pub struct GenerateIdentityArgs {
     pub purpose: IdentityPurpose,
 }
 
-pub fn run(args: GenerateIdentityArgs) -> Result<crate::keygen::SecretWriteCompletionV1, String> {
+pub fn run(args: GenerateIdentityArgs) -> Result<(), String> {
     let out = args.out.unwrap_or_else(|| default_path_for(args.purpose));
-    crate::keygen::prepare_secret_key_parent(&out)?;
 
     let mut seed = [0u8; 32];
-    if let Err(error) = getrandom::getrandom(&mut seed) {
-        seed.zeroize();
-        return Err(format!("getrandom: {error}"));
-    }
-    let sk = SigningKey::from_bytes(&seed);
-    let pk = sk.verifying_key();
-    let pk_hex = hex::encode(pk.to_bytes());
-
-    let write_result = crate::keygen::write_secret_key_unix_with_force(&out, &seed, args.force);
+    getrandom::getrandom(&mut seed).map_err(|error| format!("getrandom: {error}"))?;
+    let pk_hex = hex::encode(SigningKey::from_bytes(&seed).verifying_key().to_bytes());
+    let write_result = crate::keygen::write_secret_key(&out, &seed, args.force);
     seed.zeroize();
-    let completion = write_result?;
+    write_result?;
 
     eprintln!(
         "wrote secret key (32 bytes, mode 0600) to {}",
@@ -101,7 +94,7 @@ pub fn run(args: GenerateIdentityArgs) -> Result<crate::keygen::SecretWriteCompl
             eprintln!("    --valid-until <unix-seconds> --out <cert path>");
         }
     }
-    Ok(completion)
+    Ok(())
 }
 
 fn default_path_for(purpose: IdentityPurpose) -> PathBuf {
@@ -118,10 +111,10 @@ fn default_path_for(purpose: IdentityPurpose) -> PathBuf {
     }
 }
 
-#[cfg(all(test, unix, any(target_os = "linux", target_os = "macos")))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keygen::private_tempdir_v1 as tempdir;
+    use tempfile::tempdir;
 
     #[test]
     fn generate_identity_writes_32_byte_seed() {

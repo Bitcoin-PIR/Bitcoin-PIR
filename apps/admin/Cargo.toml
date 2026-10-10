@@ -31,11 +31,9 @@ getrandom = "0.2"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-rustix = { version = "1", features = ["fs", "net", "process"] }
 zeroize = "1"
 sha2 = "0.10"
-tempfile = "3"
 
 [dev-dependencies]
-rustix = { version = "1", features = ["thread"] }
+tempfile = "3"
 toml = "0.8"
