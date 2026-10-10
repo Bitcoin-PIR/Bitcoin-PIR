@@ -26,8 +26,7 @@ V2 pipelines for both snapshots and deltas.
 typed Direct ORAM inputs/manifest, BuildEvidence V2 and SNP report as one
 output. The runner verifies the evidence and refuses to publish `latest` or an
 eligibility claim unless it observes V2, `evidence_mode=full_build`, and no
-predecessor hashes. `MODE=reattest-existing-v2` remains a proof migration tool
-only and is ineligible for production TEE-ORAM.
+predecessor hashes.
 
 ## Build the producer UKI
 
@@ -77,49 +76,6 @@ sudo ATTESTED_BUILDER_REPO=/home/pir/bitcoin-pir/attested-builder \
   ./scripts/build_uki_attested_builder_tier3.sh
 ```
 
-## Provision v2 re-attestation inputs
-
-This mode scans db 0 and db 1 in sequence. It validates the retained cuckoo,
-bin-hash, Merkle, preprocessed INDEX/NTT, and sibling images; binds their exact
-hashes into each v2 payload; obtains a new SNP report; and verifies the result
-inside the guest. It does not rebuild either database.
-
-```bash
-sudo mkdir -p /home/pir/data/attested-builder-runs
-sudo tee /home/pir/data/attested-builder/config.env >/dev/null <<'CONFIG'
-MODE=reattest-existing-v2
-RUN_ID=db-proof-v2-948454
-V2_JOB_COUNT=2
-V2_DB0_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/mainnet_948454_sev_snp
-V2_DB0_ARTIFACT_DIR=/home/pir/data/checkpoints/948454_deterministic
-V2_DB0_OUT_DIR=/home/pir/data/attestations/mainnet_948454_v2_sev_snp
-V2_DB1_PREDECESSOR_PROOF_DIR=/home/pir/data/attestations/delta_940611_948454_sev_snp
-V2_DB1_ARTIFACT_DIR=/home/pir/data/deltas/940611_948454_canonical_20260615
-V2_DB1_OUT_DIR=/home/pir/data/attestations/delta_940611_948454_v2_sev_snp
-CONFIG
-```
-
-All configured paths must be under `/home/pir/data`. Output directories must
-not already exist. Set `V2_JOB_COUNT=1` and use the db0 variables when
-intentionally running or retrying only one database.
-
-Successful outputs are written to the two configured output directories, with
-convenience links at:
-
-```text
-/home/pir/data/attested-builder-runs/v2-db0-latest
-/home/pir/data/attested-builder-runs/v2-db1-latest
-```
-
-Each directory includes `build-evidence.bin`, the SNP report and report data,
-`root-bundle-payload.bin`, `build-evidence.verify.txt`, and `SHA256SUMS`.
-
-The status file deliberately reports `direct_oram_eligible=no`. Re-attestation
-cannot legally add `[direct_oram]` after the predecessor artifacts have been
-built: doing so after BuildEvidence or quote creation would invalidate the
-commitment. These outputs may continue to serve non-ORAM proof use cases, but
-production TEE-ORAM must reject them.
-
 ## Provision a native full-build V2 generation
 
 Use the snapshot mode for a new full database:
@@ -167,40 +123,17 @@ RUN_ID=delta_<from-height>_<to-height>_sev_snp
 MIN_FREE_KB=50000000
 ```
 
-The baked runner accepts only those two native build modes or the separately
-ineligible re-attestation mode. For a native build it exports
+For a native build the baked runner exports
 `ROOTS_ONLY=0`, `STAGE_SERVER_DB=1`, `RUN_ONION_FFI=1`, and V2 evidence/quote
 settings before invoking the measured snapshot or delta pipeline. The producer
 must finish the server database, Direct inputs and exact typed manifest before
 creating BuildEvidence and the SNP report.
 
-### Native producer acceptance gate
-
-Do not remove the runner's final version/mode gate merely because the typed
-manifest is present. The pinned external producer now supplies the native
-full-build V2 path, and producer review requires that it:
-
-- creates canonical BuildParamsV2 and the v2 root payload inside the measured
-  full snapshot or delta pipeline;
-- emits BuildEvidence v2 with `evidence_mode=full_build` and no predecessor
-  evidence/report hashes;
-- stages and hashes the final typed server manifest before evidence;
-- regenerates and validates the contents of both database and all-artifacts
-  manifest sidecars after all payload/manifest changes;
-- derives v2 `REPORT_DATA` and emits the raw SNP report; and
-- has migration tests showing that v1 and `reattest_existing` remain rejected
-  while a golden full-build-v2 artifact is accepted.
-
-The measured runner enforces the output/evidence properties at runtime;
-producer migration tests are review evidence, not an in-guest runtime
-assertion. The release/public-proof workflow separately retains and pins the
-matching AMD ARK/ASK/VCEK certificate chain; those certificates are not native
-builder output.
-
-Changing BitcoinPIR's wrapper alone cannot satisfy this contract, and a future
-producer commit requires its own review and UKI identity update.
-The measured strict `oramctl` rebuild also rejects anything other than
-predecessor-free full-build-v2 evidence as a defense-in-depth gate.
+The measured runner refuses to publish `latest` unless the evidence is V2 with
+`evidence_mode=full_build` and no predecessor hashes, and the measured
+`oramctl` rebuild rejects anything else as well. The AMD ARK/ASK/VCEK chain is
+retained and pinned by the release workflow; it is not builder output. A new
+producer commit needs its own review and UKI identity update.
 
 This mode retains the complete server database and build intermediates. The
 staged `server-db` normally uses hard links because it is under the same

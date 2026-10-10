@@ -137,8 +137,7 @@ bytes.
 4. Verify the relevant raw snapshot or Direct input hash before starting a
    builder.
 5. Reproduce in none/local mode with the retained Direct inputs before testing
-   a new UKI. Use the timing and stop limits in
-   [`ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md`](ORAM_DIRECT_TEE_DEBUG_RUNBOOK.md).
+   a new UKI.
 6. Build or switch a production UKI only after a separate preflight and explicit
    authorization.
 

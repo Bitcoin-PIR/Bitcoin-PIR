@@ -16,7 +16,7 @@ resolved first. Each blocker is listed below with a suggested fix.
 | `pir-channel`                     | crates.io  | 🟢 Packageable (registry dependencies only).              |
 | `pir-identity`                    | crates.io  | 🟢 Packageable (registry dependencies only).              |
 | `pir-attest-verify`               | crates.io  | 🟢 Packageable (registry dependencies only).              |
-| `pir-runtime-core`                | crates.io  | 🟡 Blocked — git deps on `libdpf` and `arc`.               |
+| `pir-runtime-core`                | crates.io  | 🟡 Blocked — git dep on `libdpf`.                          |
 | `pir-sdk-client`                  | crates.io  | 🟡 Blocked — git deps and unpublished internal path deps. |
 | `pir-sdk-wasm` (as a crate)       | crates.io  | 🟡 Blocked — direct and transitive non-registry deps.     |
 | `pir-sdk-wasm` (as npm package)   | npm        | 🟢 Packageable (wasm-pack bundles all Rust deps).         |
@@ -33,7 +33,6 @@ The affected packages currently contain these non-registry dependencies:
 ```toml
 # crates/protocol/runtime/Cargo.toml
 libdpf = { git = "...", rev = "..." }
-arc = { git = "...", rev = "..." }
 
 # crates/sdk/client/Cargo.toml
 libdpf = { git = "...", rev = "..." }
@@ -79,37 +78,6 @@ registry `version` fallback.
    checks the file set but does not prove that the packaged dependency
    graph can be resolved from crates.io.
 
-## Blocker 2 — `pir-sdk-server` depends on internal binary crates (RESOLVED)
-
-> `pir-sdk-server` itself was removed in 2026-09 (it had no consumers);
-> `pir-runtime-core` remains the publishable server-side library.
-
-### Resolution
-
-Extracted the shared server runtime primitives into a new publishable
-library crate `pir-runtime-core` (≈2 kLOC: `protocol` wire format,
-`table` mmap'd cuckoo reader, `eval` DPF evaluation, `handler` request
-dispatch). Both `pir-sdk-server` and the workspace-internal `apps/server/`
-binary crate now depend on `pir-runtime-core` instead of maintaining
-parallel copies. `pir-sdk-server` dropped its unused `build` dep and
-the `publish = false` gate.
-
-The extraction itself is complete. `pir-sdk-server` is now blocked
-only transitively by `pir-runtime-core`, whose remaining registry
-incompatibilities are the git-only `libdpf` and `arc` dependencies.
-After both have registry versions, the server-side publish order is:
-
-```
-pir-core + pir-channel + pir-identity → pir-sdk → pir-runtime-core
-```
-
-🔒 PIR invariants preserved. The extraction is a pure code move; the
-wire format, slot layout, DPF evaluation, and request-dispatch
-semantics are byte-identical. K=75 INDEX / K_CHUNK=80 CHUNK /
-25-MERKLE padding continues to be enforced in `pir-sdk-client`, and
-`pir-runtime-core` is the server-side counterpart that answers padded
-queries uniformly.
-
 ## Publish order
 
 Once the blockers above are cleared, publish in this order to respect
@@ -122,7 +90,7 @@ the dependency graph:
 4. `rootbundle` and `pir-db-attest`, if they remain separate crates rather
    than being folded into publishable parents.
 5. `pir-runtime-core` (depends on `pir-core`, `pir-channel`,
-   `pir-identity`, `libdpf`, and `arc`).
+   `pir-identity`, and `libdpf`).
 6. `pir-sdk-client` after its dependency graph is available from
    crates.io.
 7. `pir-sdk-wasm` as a crate (depends on `pir-sdk-client`,
@@ -220,26 +188,3 @@ resolves. Yanking is reversible: `cargo yank --vers <version>
 
 For npm, `npm unpublish <pkg>@<version>` works for 72 hours after
 publish. Past that, use `npm deprecate` with a migration message.
-
-## Preserving PIR invariants across releases
-
-🔒 Every release must preserve the **Merkle INDEX item-count
-symmetry** invariant and the K=75 INDEX / K_CHUNK=80 CHUNK /
-25-MERKLE padding. Before tagging a release, re-read the
-"CRITICAL SECURITY REQUIREMENTS" section of the root `CLAUDE.md`
-and confirm that no change in the release window has touched:
-
-- `pir-sdk-client::dpf::query_batch` / `harmony::query_single` /
-  `onion::query_index_level` symmetric-probe paths.
-- `pir-sdk-client::merkle_verify::verify_bucket_merkle_batch_generic`
-  K-padded sibling-batch driver.
-- `pir-sdk-client::onion_merkle::verify_onion_merkle_batch`
-  K-padded FHE sibling-batch driver.
-- `pir-sdk-wasm::client::WasmDpfClient` /
-  `WasmHarmonyClient::sync` / `query_batch` — they're thin shims;
-  a change in the native client does not reach through them, but a
-  change in the WASM layer can bypass them.
-
-If any of those files appear in `git log --oneline v<prev>..HEAD`,
-make a note in the release PR explaining how the invariants are
-preserved.

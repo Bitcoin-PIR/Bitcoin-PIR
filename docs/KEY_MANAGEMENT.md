@@ -13,9 +13,6 @@ Both are git-ignored (see `.gitignore`) and must never be committed.
 | `pir2-operator.key` | pir2 provider-operator Ed25519 seed |
 | `vpsbg-ssh.key` | SSH Ed25519 key for the VPSBG Ubuntu host |
 
-Key files of the retired Payment V1 roles (policy, clearing, issuer, BAT,
-quote, redeem) may still exist locally; nothing in the repository reads them.
-
 `.keys/pir2-ceremony/` holds the artifacts of the retired sealed-identity
 release (AMD certs, `release.bin`, `credentials.envelope.bin`,
 `identity.cert`, `startup.env`). Nothing in the repository reads them; keep

@@ -32,7 +32,7 @@ understand the system by reading this page.
 | Term | Constant | Size | Layout |
 |------|----------|------|--------|
 | **index record** | `INDEX_RECORD_SIZE` | 25B | 20B script_hash + 4B start_chunk_id + 1B num_chunks. Intermediate file format. |
-| **index slot** | `INDEX_SLOT_SIZE` | 17B | 8B tag + 4B start_chunk_id + 1B num_chunks + 4B tree_loc. Cuckoo table format. |
+| **index slot** | `INDEX_SLOT_SIZE` | 13B | 8B tag + 4B start_chunk_id + 1B num_chunks. Cuckoo table format. |
 | **chunk slot** | `CHUNK_SLOT_SIZE` | 44B | 4B chunk_id + 40B data. |
 | **chunk** | `CHUNK_SIZE` | 40B | One UTXO data segment. |
 | **PIR entry** | (OnionPIR) | varies | One FHE plaintext element = one cuckoo bin = `slots_per_bin * slot_size` bytes. |

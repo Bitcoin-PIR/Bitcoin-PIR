@@ -81,7 +81,7 @@ stop and report.
 | Tier 3 **runtime** UKI (`build_uki_tier3.sh`) | 5–15 min | 15 min | dracut, inventory, `ukify`, archive |
 | Attested-builder **producer** UKI | 5–15 min | 15 min | archive `.efi` + `.meta` |
 | Native full-build V2 snapshot/delta | hours; no wall-clock is written here | no progress for 3 min → stop | `build-summary.txt`, then `latest/` only after the V2 gate |
-| Direct ORAM release reconstruct | target 10 min | 15 min (3 min without a stage) | ORAM debug runbook stages |
+| Direct ORAM release reconstruct | target 10 min | 15 min (3 min without a stage) | build stages in `status.json` |
 | VPSBG `images` / `upload` | seconds / a few min | 10 min upload | `image_id=` lines |
 | VPSBG `switch` / `close` attachment | seconds; starting is separate | 15 min | `boot_mode=measured`, expected image id; read `running` separately |
 | Data-disk `open` | 2–10 min | 15 min | `boot_mode=stock`, then `stock rootfs reachable over SSH` |
@@ -95,14 +95,13 @@ stop and report.
 | B | Source / PR; no production mutation | [Testing](TESTING.md) |
 | C | Publish the browser client to GitHub Pages | Flow C below |
 | D | Change the pir1 Hetzner binary or unit | Flow D below |
-| E | Build, upload, switch, or roll back the **runtime** pir2 UKI | [UKI build](runbooks/uki-build.md) then [VPSBG image](runbooks/vpsbg-image.md) |
+| E | Build, upload, switch, or roll back the Direct ORAM host's **runtime** UKI | [UKI build](runbooks/uki-build.md) then [VPSBG image](runbooks/vpsbg-image.md) |
 | F | Edit `/home/pir/data/` on VPSBG | [Key management](KEY_MANAGEMENT.md) |
 | H | Produce or rotate DPF / Harmony / Onion v2 / ORAM proofs | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
 | I | Rebuild, restart, or re-pin the pir2 MacBook node (no TEE) | Flow I below |
 
 Payment issuer deploy, mainnet Lightning, key generation, funds, and
-image deletion are **not** flows. The retired Payment V1 material lives
-only in git history.
+image deletion are **not** flows.
 
 ## A. Diagnose — Read
 
@@ -172,9 +171,9 @@ script; pin SSH against [`deploy/known_hosts`](../deploy/known_hosts).
    the tunnel itself is broken. Build 2–5 min, hard stop 15 min.
    `unified_server --version` prints the crate version, git revision,
    and binary sha256 of an installed binary without starting a server;
-   `--help` prints the flag reference. To avoid the gap in which strict
-   clients reject pir1, first deploy `PIR1_PIN` with the running build as
-   `transitionBinarySha256Hex` (as in Flow I), then drop it afterwards.
+   `--help` prints the flag reference. So that clients do not report a pir1
+   binary mismatch meanwhile, first deploy `PIR1_PIN` with the running build
+   as `transitionBinarySha256Hex` (as in Flow I), then drop it afterwards.
 3. Read — `scripts/production-status.sh` and confirm `:8091` /
    `pir-primary` are active. Do not treat `pir-secondary` as the
    public peer. This step is systemd/SSH health only; it does not
@@ -184,7 +183,7 @@ script; pin SSH against [`deploy/known_hosts`](../deploy/known_hosts).
 Database swaps on pir1 stay inside Flow H. Do not restart during a
 partial database write.
 
-## E. pir2 **runtime** UKI and measured boot — Local then Auth
+## E. Direct ORAM host **runtime** UKI and measured boot — Local then Auth
 
 This flow builds and switches the **serving** UKI
 (`scripts/build_uki_tier3.sh`). The attested-builder **producer** UKI
@@ -245,7 +244,7 @@ One generation is **one** `server-db` tree plus its evidence. DPF and
 Harmony share INDEX/CHUNK + `bucket_super_root` with that V2 evidence.
 Live DPF/Harmony clients still fetch the **v1** opcode from `proof_dir`
 (retained mixed-provenance sidecars on the current lineage). OnionPIR
-(pir1) and Direct ORAM (pir2) consume the same tree's Onion half plus
+(pir1) and Direct ORAM (the VPSBG host) consume the same tree's Onion half plus
 **v2** `proof_v2_dir`. The producer UKI does not emit a parallel v1
 sidecar. Do not pair a serving tree from one run with a proof directory
 from another.
@@ -276,9 +275,9 @@ Do not copy them into prose.
 | --- | --- | --- | --- |
 | DB proof v1 | DPF + Harmony live opcode | `PRODUCTION_DB_PROOF_PINS` | `verify-live` (v1 opcode only). Roots are already in the V2 evidence; the UKI does not emit a second v1 sidecar |
 | Onion v2 | pir1 OnionPIR | `PRODUCTION_ONION_DB_PROOF_V2_PINS` | local `db-proof verify`; **not** `verify-live` |
-| ORAM v2 | pir2 Direct ORAM | `PRODUCTION_ORAM_DB_PROOF_V2_PINS` | same local v2 verifiers; **not** `verify-live` |
+| ORAM v2 | Direct ORAM host | `PRODUCTION_ORAM_DB_PROOF_V2_PINS` | same local v2 verifiers; **not** `verify-live` |
 | Builder SNP | attested-builder run | ORAM source manifests under `web/public/proofs/oram-source/` | `pir-attested-builder verify-build-evidence` |
-| Runtime SNP | serving pir2 UKI | `PIR2_TIER3_PIN` | Flow E step 6; `bpir-admin attest` |
+| Runtime SNP | serving Direct ORAM UKI | `PIR2_TIER3_PIN` | Flow E step 6; `bpir-admin attest` |
 | pir1 binary | serving pir1 | `PIR1_PIN` | browser after Flow C; Flow D step 3 is host health only |
 | BHTM / trust-chain | height + block hash + MuHash | `web/public/proofs/trust-chain/` | browser tests; UKI consumes `BHTM_FROM_LEAF_PROOF` |
 
@@ -333,8 +332,8 @@ do not leave a mixed fleet.
 
 ## I. pir2 MacBook node — Local then Auth
 
-The node has no TEE: strict clients admit it by `PIR2_MACBOOK_PIN` plus
-its operator-signed identity. Bring-up, data layout, and the launchd unit
+The node has no TEE: clients check it against `PIR2_MACBOOK_PIN` and its
+operator-signed identity. Bring-up, data layout, and the launchd unit
 are the [MacBook node runbook](runbooks/pir2-macbook-replacement.md). The
 work runs on the MacBook; this repository's hosts have no SSH to it.
 
@@ -345,7 +344,7 @@ work runs on the MacBook; this repository's hosts have no SSH to it.
 3. Auth — Flow B, then Flow C: a PR that sets
    `PIR2_MACBOOK_PIN.binarySha256Hex` to the new `shasum -a 256
    unified_server` and `transitionBinarySha256Hex` to the build the node
-   runs now. After the deploy, strict clients accept both builds.
+   runs now. After the deploy, clients accept both builds.
 4. Auth (MacBook) — switch the node with the runbook's switch procedure
    (after step 9), whenever the operator gets to it. The procedure waits
    for launchd to unregister the old service and rolls back on its own if
@@ -395,5 +394,4 @@ the same way as an upgrade, through a new transition.
 
 Paid access (credits verified at the issuer, outside the measured image) is
 described in [`CREDITS.md`](CREDITS.md) and operated per
-[Issuer and mint](runbooks/issuer-and-mint.md); the retired Payment V1
-material lives only in git history.
+[Issuer and mint](runbooks/issuer-and-mint.md).

@@ -108,11 +108,8 @@ client.connect().await?;
 let result = client.sync(&script_hashes, None).await?;
 ```
 
-Enable `fastprp` or `alf` features for faster PRP backends:
-
-```toml
-pir-sdk-client = { version = "0.1", features = ["fastprp"] }
-```
+The FastPRP backend (`fastprp`, on by default) matches the production hint
+servers.
 
 ### OnionPIR (single-server, FHE)
 
@@ -125,11 +122,9 @@ client.connect().await?;                    // registers Galois + GSW keys
 let result = client.sync(&hashes, None).await?;
 ```
 
-OnionPIR requires the `onion` feature, which pulls in the
-[`onionpir` crate](https://github.com/Bitcoin-PIR/OnionPIRv2-fork) and
-Microsoft SEAL (C++). See [`FEATURES.md`](../../../FEATURES.md) for the toolchain
-requirements — **not compatible with `wasm32` targets** because SEAL does not
-build for `wasm32-unknown-unknown`.
+OnionPIR requires the `onion` feature, which builds the C++ engine of the
+[`onionpir` crate](https://github.com/Bitcoin-PIR/OnionPIRv2-fork) (a C++
+toolchain and cmake) — **not compatible with `wasm32` targets**.
 
 ## Delta sync
 
@@ -271,12 +266,8 @@ cargo test -p pir-sdk-client --features onion --lib
 
 | Feature    | Default | What it enables                                              |
 |------------|:-------:|--------------------------------------------------------------|
-| `onion`    | off     | OnionPIR backend via the upstream `onionpir` crate (needs SEAL) |
-| `fastprp`  | off     | FastPRP backend for HarmonyPIR (faster per-element)          |
-| `alf`      | off     | ALF PRP backend for HarmonyPIR (fastest, native tweaks)      |
-
-See [`FEATURES.md`](../../../FEATURES.md) at the workspace root for the
-full matrix, build-time costs, and compatibility notes.
+| `onion`    | off     | OnionPIR backend via the `onionpir` crate (C++ engine)        |
+| `fastprp`  | on      | FastPRP backend for HarmonyPIR, as production hint servers use |
 
 ## License
 

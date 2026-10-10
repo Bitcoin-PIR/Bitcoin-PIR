@@ -1,28 +1,14 @@
-# pir2 replacement on a MacBook (no TEE), 2026-10
+# pir2 on a MacBook (no TEE)
 
-pir2 (VPSBG SEV-SNP, `wss://weikeng2.bitcoinpir.org`) is deactivated on
-2026-10-02 around 05:32 UTC. A MacBook takes over its two serving roles,
-**DPF server 1** and the **HarmonyPIR query server**, without a TEE, at
-`wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`. Direct ORAM pauses (it needs a TEE).
-OnionPIR runs on pir1 and is not affected.
+Since 2026-10-02, pir2's two serving roles, **DPF server 1** and the
+**HarmonyPIR query server**, run on a MacBook without a TEE at
+`wss://bitcoin-pir-weikeng-laptop.chenweikeng.com`. OnionPIR runs on pir1;
+Direct ORAM runs on the separate VPSBG TEE host. Flow I in
+[Production operations](../PRODUCTION_OPERATIONS.md) uses steps 4 and 9 to
+rebuild and switch the node.
 
-## Who does what
-
-| Party | Does |
-|---|---|
-| MacBook session (this runbook) | everything on the MacBook |
-| Mac Studio session "VPS服务器配置优化" | holds the pir2 operator key and pir1 root SSH: grants read-only rsync on pir1, signs the identity certificate, ships the website switch (Flow C) |
-| The user | Cloudflare tunnel, `sudo` steps, relays messages between the two sessions if Remote Control messaging is not set up |
-
-Hard rules:
-
-- Never put a secret in git or chat: the tunnel token and the server
-  identity key stay on the MacBook.
-- Touch pir1 only through the read-only rsync key from step 2.
-- Do not edit web pins; the Mac Studio session does that.
-- Stop and report on any hash mismatch or startup failure. Do not "fix"
-  data by hand.
-- Do not run the leakage test suite on the MacBook.
+The tunnel token and the server identity key stay on the MacBook; touch
+pir1 only through the read-only rsync key from step 2.
 
 ## 0. Preflight (report the output)
 
@@ -61,8 +47,8 @@ ssh-keygen -t ed25519 -f ~/.ssh/bpir_pir1_ro -N '' -C pir2-macbook-ro
 cat ~/.ssh/bpir_pir1_ro.pub
 ```
 
-Send the public key line to the Mac Studio session. It installs it on
-pir1 restricted to `rrsync -ro /home/pir/data` (read-only, nothing else).
+The operator (pir1 root SSH) installs the public key on pir1 restricted
+to `rrsync -ro /home/pir/data` (read-only, nothing else).
 Remote paths below are therefore relative to `/home/pir/data`. Test:
 
 ```sh
@@ -100,7 +86,6 @@ toolchain in `rust-toolchain.toml` installs itself.
 
 ```sh
 cd "$REPO"
-git switch ops/pir2-macbook-replacement
 cargo build --locked --release -p runtime --bin unified_server
 cargo build --locked --release -p bpir-admin
 cargo build --locked --release -p pir-sdk-client --example simple_query
@@ -109,9 +94,6 @@ SHA=$(shasum -a 256 target/release/unified_server | cut -d' ' -f1)
 mkdir -p "$NODE/bin/$SHA" && cp target/release/unified_server "$NODE/bin/$SHA/"
 echo "$SHA"                                # report this: it becomes the web pin
 ```
-
-This branch carries the fix that makes macOS report a real binary hash;
-without it strict web clients reject the node.
 
 ## 5. Verify the copied data
 
@@ -311,13 +293,5 @@ SH=de2e69f96b7e622f6ad39609b6d8554b37e8aba3
   --server0 wss://weikeng1.bitcoinpir.org --server1 wss://bitcoin-pir-weikeng-laptop.chenweikeng.com "$SH"
 ```
 
-DPF is free on a best-effort basis on both servers, so the DPF query
-needs no credits. HarmonyPIR is paid; it is checked from the website
-after the switch.
-
-## 12. Report to the Mac Studio session
-
-`$SHA`, server id `pir2-macbook-v1`, the public URL, the outputs of step
-11, RAM/CPU from step 0, startup time and peak memory from step 8. The
-Mac Studio session then switches the website's second-server slot to
-this node (non-TEE pin, ORAM paused) through Flow C.
+DPF and HarmonyPIR are free on a best-effort basis on this node, so the
+DPF query needs no credits.
