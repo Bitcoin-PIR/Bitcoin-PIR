@@ -2,9 +2,6 @@ use super::*;
 
 // ─── Wire protocol constants ────────────────────────────────────────────────
 
-pub(crate) const REQ_HARMONY_GET_INFO: u8 = 0x40;
-pub(crate) const RESP_HARMONY_INFO: u8 = 0x40;
-
 pub(crate) const REQ_HARMONY_HINTS: u8 = 0x41;
 pub(crate) const RESP_HARMONY_HINTS: u8 = 0x41;
 

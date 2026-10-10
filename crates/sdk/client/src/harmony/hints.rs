@@ -1,19 +1,9 @@
 use super::*;
 
 impl HarmonyClient {
-    /// Try to fetch the full `DatabaseCatalog` via `REQ_GET_DB_CATALOG`.
-    ///
-    /// Returns `Ok(Some(catalog))` on success, `Ok(None)` if the server
-    /// replied with a shape the catalog decoder can't understand (e.g. a
-    /// legacy hint server that doesn't implement `REQ_GET_DB_CATALOG` and
-    /// echoes back some other variant byte, or a `RESP_ERROR`). A
-    /// legitimate transport/I/O failure still bubbles up as `Err`.
-    ///
-    /// Both Harmony roles (hint + query) answer `REQ_GET_DB_CATALOG` —
-    /// the match arm in `unified_server.rs` runs before any role check
-    /// — so we can use whichever connection is convenient. We use
-    /// `hint_conn` for consistency with `fetch_legacy_info`.
-    pub(crate) async fn try_fetch_db_catalog(&mut self) -> PirResult<Option<DatabaseCatalog>> {
+    /// Fetch the `DatabaseCatalog` via `REQ_GET_DB_CATALOG`. Both Harmony
+    /// roles answer it; this uses `hint_conn`.
+    pub(crate) async fn fetch_db_catalog(&mut self) -> PirResult<DatabaseCatalog> {
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
         let request = encode_request(REQ_GET_DB_CATALOG, &[]);
         let request_bytes = request.len() as u64;
@@ -29,83 +19,16 @@ impl HarmonyClient {
             items: Vec::new(),
         });
 
-        if response.is_empty() {
-            return Ok(None);
+        if let Some(message) = decode_error_response_message(&response, "Harmony database catalog")?
+        {
+            return Err(PirError::ServerError(message.to_owned()));
         }
-        if decode_error_response_message(&response, "Harmony database catalog")?.is_some() {
-            // Server explicitly doesn't support catalog — fall back to legacy.
-            return Ok(None);
+        if response.first() != Some(&RESP_DB_CATALOG) {
+            return Err(PirError::Protocol(
+                "unexpected database catalog response".into(),
+            ));
         }
-        if response[0] != RESP_DB_CATALOG {
-            // Any unexpected variant byte — treat as unsupported rather
-            // than a hard protocol error so the legacy fallback can run.
-            return Ok(None);
-        }
-        let catalog = decode_catalog(&response[1..])?;
-        Ok(Some(catalog))
-    }
-
-    /// Fetch server info (legacy single-database path).
-    ///
-    /// `REQ_HARMONY_GET_INFO` predates `DatabaseCatalog` and returns a
-    /// `ServerInfo` shape with no `height` or `has_bucket_merkle` fields.
-    /// The catalog this synthesises therefore has `height = 0` and
-    /// `has_bucket_merkle = false`, which is fine for servers that don't
-    /// publish bucket Merkle roots but is strictly worse than the
-    /// `REQ_GET_DB_CATALOG` path — callers that cache by height won't work
-    /// against a legacy-only server.
-    pub(crate) async fn fetch_legacy_info(&mut self) -> PirResult<DatabaseInfo> {
-        let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-
-        let request = encode_request(REQ_HARMONY_GET_INFO, &[]);
-        let request_bytes = request.len() as u64;
-        let response = conn.roundtrip(&request).await?;
-        self.record_round(RoundProfile {
-            kind: RoundKind::Info,
-            server_id: 1,
-            db_id: None,
-            request_bytes,
-            response_bytes: (response.len() as u64).saturating_add(4),
-            items: Vec::new(),
-        });
-
-        if response.is_empty() || response[0] != RESP_HARMONY_INFO {
-            return Err(PirError::Protocol("invalid harmony info response".into()));
-        }
-        if response.len() < 19 {
-            return Err(PirError::Protocol("harmony info response too short".into()));
-        }
-
-        let index_bins = u32::from_le_bytes(response[1..5].try_into().unwrap());
-        let chunk_bins = u32::from_le_bytes(response[5..9].try_into().unwrap());
-        let index_k = response[9];
-        let chunk_k = response[10];
-        let tag_seed = u64::from_le_bytes(response[11..19].try_into().unwrap());
-        let (index_master_seed, chunk_master_seed, anchor_kind, anchor_bytes) =
-            crate::protocol::parse_info_v2_tail(&response);
-
-        let db_info = DatabaseInfo {
-            db_id: 0,
-            kind: DatabaseKind::Full,
-            name: "main".into(),
-            height: 0,
-            index_bins,
-            chunk_bins,
-            index_k,
-            chunk_k,
-            tag_seed,
-            dpf_n_index: pir_core::params::compute_dpf_n(index_bins as usize),
-            dpf_n_chunk: pir_core::params::compute_dpf_n(chunk_bins as usize),
-            has_bucket_merkle: false,
-            index_master_seed,
-            chunk_master_seed,
-            anchor_kind,
-            anchor_bytes,
-        };
-        db_info.verify_anchor_seeds().map_err(|e| {
-            PirError::Protocol(format!("chain-anchor seed verification failed: {}", e))
-        })?;
-        Ok(db_info)
+        decode_catalog(&response[1..])
     }
 
     /// Ensure the per-group `HarmonyGroup` instances exist for `db_info`

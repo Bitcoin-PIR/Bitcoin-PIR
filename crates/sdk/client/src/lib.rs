@@ -108,6 +108,5 @@ pub use wasm_transport::WasmWebSocketTransport;
 // Re-export SDK types
 pub use pir_sdk::{
     compute_sync_plan, merge_delta, merge_delta_batch, DatabaseCatalog, DatabaseInfo,
-    PirBackendType, PirClient, PirClientConfig, PirError, PirResult, QueryResult, ScriptHash,
-    SyncPlan, SyncResult,
+    PirBackendType, PirClient, PirError, PirResult, QueryResult, ScriptHash, SyncPlan, SyncResult,
 };

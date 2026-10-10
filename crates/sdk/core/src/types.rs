@@ -459,16 +459,3 @@ impl PirBackendType {
         }
     }
 }
-
-/// Server role in a multi-server PIR setup.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ServerRole {
-    /// Primary server (server 0 in DPF, hint server in HarmonyPIR).
-    #[default]
-    Primary,
-    /// Secondary server (server 1 in DPF, query server in HarmonyPIR).
-    Secondary,
-    /// Standalone server (OnionPIR).
-    Standalone,
-}

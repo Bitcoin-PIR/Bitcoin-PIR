@@ -61,9 +61,8 @@ use crate::verified_roots::VerifiedRootState;
 use async_trait::async_trait;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, DatabaseCatalog,
-    DatabaseInfo, DatabaseKind, Instant, LeakageRecorder, PirBackendType, PirClient, PirError,
-    PirMetrics, PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult,
-    SyncStep,
+    DatabaseInfo, Instant, LeakageRecorder, PirBackendType, PirClient, PirError, PirMetrics,
+    PirResult, QueryResult, RoundKind, RoundProfile, ScriptHash, SyncPlan, SyncResult, SyncStep,
 };
 use std::sync::Arc;
 
@@ -956,14 +955,11 @@ impl OnionClient {
             self.onion_merkle = parse_onion_merkle_per_db(&json);
         }
 
-        // Best-effort standard catalog fetch for heights/names and proof
-        // verification. Advisory Onion queries retain the JSON-only fallback,
-        // but strict proof verification requires this exact, unmodified
-        // catalog and never substitutes OnionPIR geometry.
-        let dpf_catalog = self.try_fetch_dpf_catalog().await.ok();
-        self.proof_catalog = dpf_catalog.clone();
-
-        let catalog = build_catalog(&json, &self.onion_params, dpf_catalog.as_ref());
+        // The standard catalog supplies heights, names, seeds and anchors;
+        // proof verification uses it unmodified.
+        let dpf_catalog = self.try_fetch_dpf_catalog().await?;
+        let catalog = build_catalog(&json, &self.onion_params, &dpf_catalog);
+        self.proof_catalog = Some(dpf_catalog);
         self.catalog = Some(catalog);
         self.info_json = Some(json);
         Ok(())
@@ -2765,7 +2761,7 @@ fn extract_json_object_array<'a>(json: &'a str, key: &str) -> Option<Vec<&'a str
 fn build_catalog(
     json: &str,
     onion_params: &std::collections::HashMap<u8, OnionDbParams>,
-    dpf: Option<&DatabaseCatalog>,
+    dc: &DatabaseCatalog,
 ) -> DatabaseCatalog {
     // Index OnionPIR-level params (index_bins, chunk_bins, index_k, chunk_k,
     // tag_seed) by db_id. Falls back to top-level fields if per-DB missing.
@@ -2774,11 +2770,9 @@ fn build_catalog(
     let top_index_k = json_u64(json, "index_k").unwrap_or(75) as u8;
     let top_chunk_k = json_u64(json, "chunk_k").unwrap_or(80) as u8;
     let top_tag_seed = json_u64(json, "tag_seed").unwrap_or(0);
-    let top_opi = extract_json_object(json, "onionpir");
 
-    // Prefer DPF-catalog heights when available.
-    if let Some(dc) = dpf {
-        let mut dbs = Vec::with_capacity(dc.databases.len());
+    let mut dbs = Vec::with_capacity(dc.databases.len());
+    {
         for d in &dc.databases {
             if !onion_params.contains_key(&d.db_id) {
                 // Skip DBs that don't have OnionPIR data on this server.
@@ -2817,54 +2811,7 @@ fn build_catalog(
                 anchor_bytes: d.anchor_bytes.clone(),
             });
         }
-        if !dbs.is_empty() {
-            return DatabaseCatalog { databases: dbs };
-        }
     }
-
-    // Fallback: synthesize from OnionPIR JSON alone.
-    let mut dbs = Vec::new();
-    let mut ids: Vec<u8> = onion_params.keys().copied().collect();
-    ids.sort();
-    for id in ids {
-        let (bins_idx, bins_chunk, index_k, chunk_k, tag_seed) = onion_level_params(
-            json,
-            id,
-            top_index_bins,
-            top_chunk_bins,
-            top_index_k,
-            top_chunk_k,
-            top_tag_seed,
-        );
-        dbs.push(DatabaseInfo {
-            db_id: id,
-            kind: DatabaseKind::Full,
-            name: if id == 0 {
-                "main".into()
-            } else {
-                format!("db{}", id)
-            },
-            height: 0,
-            index_bins: bins_idx,
-            chunk_bins: bins_chunk,
-            index_k,
-            chunk_k,
-            tag_seed,
-            dpf_n_index: pir_core::params::compute_dpf_n(bins_idx as usize),
-            dpf_n_chunk: pir_core::params::compute_dpf_n(bins_chunk as usize),
-            has_bucket_merkle: false,
-            // JSON-only fallback (no server catalog) — no wire master seed
-            // or anchor available. Queries on this degraded path require a
-            // real catalog; left zero/none here.
-            index_master_seed: 0,
-            chunk_master_seed: 0,
-            anchor_kind: 0,
-            anchor_bytes: Vec::new(),
-        });
-    }
-
-    // Silence unused-warning when DPF branch didn't run but we built from JSON only.
-    let _ = top_opi;
 
     DatabaseCatalog { databases: dbs }
 }
@@ -3126,6 +3073,7 @@ mod kani_harnesses {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pir_sdk::DatabaseKind;
 
     fn proof_test_db(index_bins: u32, chunk_bins: u32, height: u32) -> DatabaseInfo {
         DatabaseInfo {
@@ -3324,10 +3272,13 @@ mod tests {
     }
 
     #[test]
-    fn test_build_catalog_from_json_only() {
+    fn test_build_catalog_takes_onion_geometry_from_json() {
         let j = r#"{"onionpir":{"total_packed_entries":1000,"index_bins_per_table":100,"chunk_bins_per_table":200,"tag_seed":"0xdeadbeef","index_k":75,"chunk_k":80,"index_slots_per_bin":256,"index_slot_size":15,"chunk_slots_per_bin":1,"chunk_slot_size":3840}}"#;
         let params = parse_onion_params_per_db(j);
-        let catalog = build_catalog(j, &params, None);
+        let standard = DatabaseCatalog {
+            databases: vec![proof_test_db(1, 2, 948_454)],
+        };
+        let catalog = build_catalog(j, &params, &standard);
         assert_eq!(catalog.databases.len(), 1);
         let db = &catalog.databases[0];
         assert_eq!(db.db_id, 0);

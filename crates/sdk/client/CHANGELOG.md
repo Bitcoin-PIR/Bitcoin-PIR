@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
+- The fallbacks for servers without `REQ_GET_DB_CATALOG`: DPF's
+  `REQ_GET_INFO`, HarmonyPIR's `REQ_HARMONY_GET_INFO` and OnionPIR's
+  JSON-only catalog (which had zero seeds and could not query). A server
+  that does not answer the catalog request is now an error.
 - The staged per-server connect API: `DpfClient::{set_server_url,
   connect_server, disconnect_server, is_server_connected,
   fetch_catalog_from_server, verify_database_proof_from_server,
