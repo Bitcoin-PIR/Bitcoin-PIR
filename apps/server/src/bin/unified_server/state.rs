@@ -1,5 +1,5 @@
 use crate::cli::ServerRole;
-use crate::harmony_hints::{harmony_batch_response, harmony_query_response};
+use crate::harmony_hints::harmony_batch_response;
 use crate::onion::{OnionPirInfo, OnionPirMerkleInfo, PirCommand};
 #[cfg(feature = "cuckoo-oram")]
 use crate::oram::{
@@ -699,14 +699,6 @@ impl UnifiedServerData {
             total_dpf,
             total_fetch,
         )
-    }
-
-    pub(crate) fn handle_harmony_query(&self, query: &HarmonyQuery) -> Response {
-        let db = match self.state.get_db(query.db_id) {
-            Some(d) => d,
-            None => return Response::Error(format!("unknown db_id {}", query.db_id)),
-        };
-        harmony_query_response(db, query)
     }
 
     pub(crate) fn handle_harmony_batch_query(&self, query: &HarmonyBatchQuery) -> Response {

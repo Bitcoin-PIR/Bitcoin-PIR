@@ -369,8 +369,6 @@ pub(crate) const MAX_CHUNK_FRAMES: usize = MAX_REASSEMBLED.div_ceil(CHUNK_SIZE);
 ///
 /// Sized below 1 MiB so the message survives the Cloudflare WebSocket
 /// proxy (~1 MB ceiling — see docs/history/PIR1_REGISTER_KEYS_TRUNCATION.md).
-/// Mirrors `HINT_BATCH_BYTES` in
-/// `apps/server/src/bin/harmonypir_hint_server.rs`.
 pub(crate) const HINT_BATCH_BYTES: usize = 768 * 1024;
 
 pub(crate) fn read_exact_secret_v1<const N: usize>(

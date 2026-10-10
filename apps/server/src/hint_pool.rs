@@ -58,16 +58,6 @@ pub struct HintPoolConfig {
     pub pool_dir: Option<PathBuf>,
 }
 
-impl Default for HintPoolConfig {
-    fn default() -> Self {
-        Self {
-            pool_size: 8,
-            prp_backend: default_prp_backend(),
-            pool_dir: None,
-        }
-    }
-}
-
 /// Select the fastest backend that is actually compiled into this binary.
 /// A no-default-features build must advertise HMR12, not FastPRP backed by an
 /// HMR12 computation.

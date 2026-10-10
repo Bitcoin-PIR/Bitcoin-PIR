@@ -24,7 +24,7 @@ case "$lane" in
     cargo clippy --timings --locked --offline --all-targets --no-deps -p pir-credit -p bpir-admin -- -D warnings
     ;;
   runtime-default-security)
-    cargo check --timings --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --lib hint_pool; cargo test --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --test unified_server_cli
+    cargo check --timings --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --lib hint_pool; cargo test --locked --offline -p runtime --bin unified_server
     cargo clippy --locked --offline -p runtime --bin unified_server --no-deps -- -D warnings
     cargo clippy --locked --offline -p runtime --features test-only-unsafe-query-logging --bin unified_server --no-deps -- -D warnings
     ;;

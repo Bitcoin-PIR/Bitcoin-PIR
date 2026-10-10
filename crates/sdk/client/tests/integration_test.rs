@@ -1374,9 +1374,8 @@ fn test_sync_plan_stale_height() {
 // ─────────────────────────────────────────────────────────────────────────
 // REQ_ANNOUNCE — operator-signed identity, end-to-end through unified_server.
 //
-// This is the only test that drives the *production* dispatch arm for
-// REQ_ANNOUNCE (the binary re-implements dispatch inline rather than going
-// through pir-runtime-core's stateless RequestHandler). It connects, sends
+// This is the only test that drives the production dispatch arm for
+// REQ_ANNOUNCE. It connects, sends
 // REQ_ANNOUNCE, parses the bundle, runs the in-bundle chain check, then
 // operator-pubkey pinning (accept the right key, reject a wrong one).
 //

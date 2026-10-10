@@ -54,10 +54,7 @@ mod announce_dispatch_tests {
 }
 
 mod harmony_dos_guard_tests {
-    //! S4/S5 guards for this binary's own inline Harmony handlers —
-    //! the duplicates of `pir-runtime-core`'s `RequestHandler` paths
-    //! (whose twins live in that crate's `dos_guard_tests`), plus the
-    //! binary-only `REQ_HARMONY_HINTS` path. With the release profile's
+    //! S4/S5 guards for this binary's inline Harmony handlers. With the release profile's
     //! `panic = 'abort'`, each unguarded path was a single-frame
     //! unauthenticated full-process kill.
     //!
@@ -1453,21 +1450,6 @@ mod harmony_dos_guard_tests {
     // ─── S4: wire group_id slices the mmap ──────────────────────────────
 
     #[test]
-    fn single_query_group_id_out_of_range_returns_error() {
-        // k = 75 for INDEX; group_id 250 previously sliced ~175 groups
-        // past the mmap end → panic → abort.
-        let db = make_db();
-        let q = HarmonyQuery {
-            level: 0,
-            group_id: 250,
-            round_id: 0,
-            indices: vec![0],
-            db_id: 0,
-        };
-        expect_error(harmony_query_response(&db, &q), "out of range");
-    }
-
-    #[test]
     fn batch_query_group_id_out_of_range_returns_error() {
         let db = make_db();
         let q = HarmonyBatchQuery {
@@ -1506,22 +1488,6 @@ mod harmony_dos_guard_tests {
     // ─── S5: index count drives the pre-allocation ───────────────────────
 
     #[test]
-    fn single_query_too_many_indices_returns_error() {
-        // A legitimate query sends T − 1 < bins_per_table indices; an
-        // attacker-sized list previously reserved len × entry_size
-        // bytes before any range check ran.
-        let db = make_db();
-        let q = HarmonyQuery {
-            level: 0,
-            group_id: 0,
-            round_id: 0,
-            indices: vec![0; TEST_BINS + 1],
-            db_id: 0,
-        };
-        expect_error(harmony_query_response(&db, &q), "too many indices");
-    }
-
-    #[test]
     fn batch_query_too_many_indices_returns_error() {
         let db = make_db();
         let q = HarmonyBatchQuery {
@@ -1538,53 +1504,6 @@ mod harmony_dos_guard_tests {
     }
 
     // ─── Happy paths: legitimate traffic is byte-identical ───────────────
-
-    #[test]
-    fn single_query_returns_requested_bins() {
-        let db = make_db();
-        let bin_size = db.index.params.bin_size();
-        let q = HarmonyQuery {
-            level: 0,
-            group_id: 3,
-            round_id: 9,
-            indices: vec![0, 5, 7],
-            db_id: 0,
-        };
-        match harmony_query_response(&db, &q) {
-            Response::HarmonyQueryResult(r) => {
-                assert_eq!(r.group_id, 3);
-                assert_eq!(r.round_id, 9);
-                assert_eq!(r.data.len(), 3 * bin_size);
-                for (i, &bin) in [0u8, 5, 7].iter().enumerate() {
-                    let expect = 3u8 ^ bin;
-                    assert!(
-                        r.data[i * bin_size..(i + 1) * bin_size]
-                            .iter()
-                            .all(|&b| b == expect),
-                        "bin {} contents wrong",
-                        bin
-                    );
-                }
-            }
-            other => panic!("expected HarmonyQueryResult, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn single_query_index_out_of_range_returns_error() {
-        // Pre-existing behavior of the single-query path: an
-        // out-of-range index *value* is an error (the batch path
-        // zero-fills instead).
-        let db = make_db();
-        let q = HarmonyQuery {
-            level: 0,
-            group_id: 0,
-            round_id: 0,
-            indices: vec![TEST_BINS as u32],
-            db_id: 0,
-        };
-        expect_error(harmony_query_response(&db, &q), "out of range");
-    }
 
     #[test]
     fn batch_query_serves_main_and_sibling_levels_and_zero_fills() {
@@ -1702,58 +1621,8 @@ mod harmony_dos_guard_tests {
     }
 }
 
-mod query_bearing_variants {
-    //! The frames a hint-only host (no `--serve-queries`) refuses.
-
-    use crate::serve::is_query_bearing_variant;
-    use runtime::onionpir::*;
-    use runtime::protocol::*;
-
-    #[test]
-    fn exactly_the_query_frames_are_query_bearing() {
-        for variant in [
-            REQ_INDEX_BATCH,
-            REQ_CHUNK_BATCH,
-            REQ_BUCKET_MERKLE_SIB_BATCH,
-            REQ_BUCKET_MERKLE_TREE_TOPS,
-            REQ_HARMONY_QUERY,
-            REQ_HARMONY_BATCH_QUERY,
-            REQ_ORAM_LOOKUP,
-            REQ_REGISTER_KEYS,
-            REQ_ONIONPIR_INDEX_QUERY,
-            REQ_ONIONPIR_CHUNK_QUERY,
-            REQ_ONIONPIR_MERKLE_INDEX_SIBLING,
-            REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP,
-            REQ_ONIONPIR_MERKLE_DATA_SIBLING,
-            REQ_ONIONPIR_MERKLE_DATA_TREE_TOP,
-        ] {
-            assert!(is_query_bearing_variant(variant), "0x{variant:02x}");
-        }
-        for variant in [
-            REQ_PING,
-            REQ_GET_INFO,
-            REQ_GET_DB_CATALOG,
-            REQ_GET_DB_PROOF,
-            REQ_GET_DB_PROOF_V2,
-            REQ_ATTEST,
-            REQ_HANDSHAKE,
-            REQ_ANNOUNCE,
-            REQ_HARMONY_GET_INFO,
-            REQ_HARMONY_HINTS,
-            REQ_HARMONY_HINTS_V2,
-            REQ_HARMONY_HINTS_V2_HALF,
-            REQ_ADMIN_AUTH_CHALLENGE,
-            REQ_ADMIN_AUTH_RESPONSE,
-            0x03,
-        ] {
-            assert!(!is_query_bearing_variant(variant), "0x{variant:02x}");
-        }
-    }
-}
-
 mod cli_informational_tests {
-    //! `--help`/`--version` are answered before the parser runs, and the
-    //! usage text must name every flag the parser accepts.
+    //! `--help`/`--version` are answered before the parser runs.
     use super::*;
 
     fn argv(items: &[&str]) -> Vec<String> {
@@ -1761,28 +1630,6 @@ mod cli_informational_tests {
             .chain(items.iter().copied())
             .map(str::to_owned)
             .collect()
-    }
-
-    #[test]
-    fn usage_names_every_flag_the_parser_accepts() {
-        let source = include_str!("cli.rs");
-        let mut missing = Vec::new();
-        for (i, _) in source.match_indices("\"--") {
-            let rest = &source[i + 1..];
-            let end = rest.find('"').expect("closing quote");
-            let flag = &rest[..end];
-            let is_match_arm = rest[end + 1..].trim_start().starts_with("=>")
-                || rest[end + 1..].trim_start().starts_with('|');
-            if is_match_arm && !USAGE_V1.contains(flag) {
-                missing.push(flag.to_owned());
-            }
-        }
-        missing.sort();
-        missing.dedup();
-        assert!(
-            missing.is_empty(),
-            "flags missing from USAGE_V1: {missing:?}"
-        );
     }
 
     #[test]

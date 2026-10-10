@@ -25,7 +25,6 @@ pub const REQ_BUCKET_MERKLE_TREE_TOPS: u8 = 0x34;
 
 pub const REQ_HARMONY_GET_INFO: u8 = 0x40;
 pub const REQ_HARMONY_HINTS: u8 = 0x41;
-pub const REQ_HARMONY_QUERY: u8 = 0x42;
 pub const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
 /// V2 hint request: server generates the PRP key (client does not send one).
 pub const REQ_HARMONY_HINTS_V2: u8 = 0x44;
@@ -240,7 +239,6 @@ pub const RESP_ERROR: u8 = 0xFF;
 
 pub const RESP_HARMONY_INFO: u8 = 0x40;
 pub const RESP_HARMONY_HINTS: u8 = 0x41;
-pub const RESP_HARMONY_QUERY: u8 = 0x42;
 pub const RESP_HARMONY_BATCH_QUERY: u8 = 0x43;
 /// Key preamble sent before per-group hint frames in V2 protocol.
 pub const RESP_HARMONY_HINTS_KEY: u8 = 0x44;
@@ -323,29 +321,6 @@ pub struct HarmonyHintRequestV2Half {
     pub side: u8,
     /// Database ID (0 = main UTXO, 1+ = delta databases).
     pub db_id: u8,
-}
-
-/// HarmonyPIR query: client sends T indices for one group to Query Server.
-///
-/// Wire: [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE indices]
-///       [optional trailing 1B db_id, only when non-zero — backward compatible]
-#[derive(Clone, Debug)]
-pub struct HarmonyQuery {
-    pub level: u8,
-    pub group_id: u8,
-    pub round_id: u16,
-    pub indices: Vec<u32>,
-    /// Database ID (0 = main UTXO, 1+ = delta databases).
-    /// Defaults to 0 for backward compatibility.
-    pub db_id: u8,
-}
-
-/// HarmonyPIR query result: server returns T entries for one group.
-#[derive(Clone, Debug)]
-pub struct HarmonyQueryResult {
-    pub group_id: u8,
-    pub round_id: u16,
-    pub data: Vec<u8>,
 }
 
 /// HarmonyPIR batch query: client sends queries for multiple groups in one message.
@@ -546,7 +521,6 @@ pub enum Request {
     HarmonyHints(HarmonyHintRequest),
     HarmonyHintsV2(HarmonyHintRequestV2),
     HarmonyHintsV2Half(HarmonyHintRequestV2Half),
-    HarmonyQuery(HarmonyQuery),
     HarmonyBatchQuery(HarmonyBatchQuery),
     OramLookup(OramLookupRequest),
     /// Operator-signed identity announce. Body is empty — the server
@@ -768,7 +742,6 @@ pub enum Response {
     BucketMerkleSibBatch(BatchResult),
     Error(String),
     HarmonyInfo(ServerInfo),
-    HarmonyQueryResult(HarmonyQueryResult),
     HarmonyBatchResult(HarmonyBatchResult),
     OramLookupResult(OramLookupResult),
     /// Credits accepted: `gas_added` gas bought, `gas_balance` the
@@ -896,20 +869,6 @@ impl Request {
                 payload.push(h.side);
                 if h.db_id != 0 {
                     payload.push(h.db_id);
-                }
-            }
-            Request::HarmonyQuery(q) => {
-                payload.push(REQ_HARMONY_QUERY);
-                payload.push(q.level);
-                payload.push(q.group_id);
-                payload.extend_from_slice(&q.round_id.to_le_bytes());
-                payload.extend_from_slice(&(q.indices.len() as u32).to_le_bytes());
-                for idx in &q.indices {
-                    payload.extend_from_slice(&idx.to_le_bytes());
-                }
-                // Trailing db_id byte: only appended when non-zero for backward compatibility.
-                if q.db_id != 0 {
-                    payload.push(q.db_id);
                 }
             }
             Request::HarmonyBatchQuery(q) => {
@@ -1100,10 +1059,6 @@ impl Request {
                 let h = decode_harmony_hint_request_v2_half(&data[1..])?;
                 Ok(Request::HarmonyHintsV2Half(h))
             }
-            REQ_HARMONY_QUERY => {
-                let q = decode_harmony_query(&data[1..])?;
-                Ok(Request::HarmonyQuery(q))
-            }
             REQ_HARMONY_BATCH_QUERY => {
                 let q = decode_harmony_batch_query(&data[1..])?;
                 Ok(Request::HarmonyBatchQuery(q))
@@ -1261,12 +1216,6 @@ impl Response {
                 payload.extend_from_slice(&info.index_master_seed.to_le_bytes());
                 payload.extend_from_slice(&info.chunk_master_seed.to_le_bytes());
                 encode_anchor_ext(&mut payload, &info.anchor);
-            }
-            Response::HarmonyQueryResult(r) => {
-                payload.push(RESP_HARMONY_QUERY);
-                payload.push(r.group_id);
-                payload.extend_from_slice(&r.round_id.to_le_bytes());
-                payload.extend_from_slice(&r.data);
             }
             Response::HarmonyBatchResult(r) => {
                 payload.push(RESP_HARMONY_BATCH_QUERY);
@@ -1492,19 +1441,6 @@ impl Response {
                     index_master_seed,
                     chunk_master_seed,
                     anchor,
-                }))
-            }
-            RESP_HARMONY_QUERY => {
-                if data.len() < 4 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "harmony query result too short",
-                    ));
-                }
-                Ok(Response::HarmonyQueryResult(HarmonyQueryResult {
-                    group_id: data[1],
-                    round_id: u16::from_le_bytes(data[2..4].try_into().unwrap()),
-                    data: data[4..].to_vec(),
                 }))
             }
             RESP_HARMONY_BATCH_QUERY => {
@@ -2704,46 +2640,6 @@ fn decode_admin_ack_payload(data: &[u8]) -> io::Result<(bool, String)> {
     ))
 }
 
-fn decode_harmony_query(data: &[u8]) -> io::Result<HarmonyQuery> {
-    // [1B level][1B group_id][2B round_id][4B count][count × 4B u32 LE]
-    // [optional trailing 1B db_id, only when non-zero — backward compatible]
-    if data.len() < 8 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "harmony query too short",
-        ));
-    }
-    let level = data[0];
-    let group_id = data[1];
-    let round_id = u16::from_le_bytes(data[2..4].try_into().unwrap());
-    let count = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let expected = 8 + count * 4;
-    if data.len() < expected {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "truncated harmony query indices",
-        ));
-    }
-    let mut indices = Vec::with_capacity(count);
-    for i in 0..count {
-        let off = 8 + i * 4;
-        indices.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()));
-    }
-    // Read trailing db_id if present (backward compatible: old clients don't send it).
-    let db_id = if expected < data.len() {
-        data[expected]
-    } else {
-        0
-    };
-    Ok(HarmonyQuery {
-        level,
-        group_id,
-        round_id,
-        indices,
-        db_id,
-    })
-}
-
 #[cfg(test)]
 mod attest_wire_tests {
     use super::*;
@@ -2822,13 +2718,6 @@ mod attest_wire_tests {
             Request::decode(&redundant_zero_db).unwrap_err().kind(),
             io::ErrorKind::InvalidData
         );
-    }
-
-    #[test]
-    fn retired_residency_opcode_is_rejected() {
-        let err = Request::decode(&[0x04]).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert!(err.to_string().contains("unknown request variant: 0x04"));
     }
 
     #[test]
@@ -3284,30 +3173,6 @@ mod attest_wire_tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
-    #[test]
-    fn announce_handler_returns_bundle_when_configured() {
-        use crate::handler::RequestHandler;
-        let bundle_bytes = vec![1u8, 2, 3, 4, 5];
-        let handler =
-            RequestHandler::new(vec![]).with_announcement_bundle(Some(bundle_bytes.clone()));
-        let resp = handler.handle_request(&Request::Announce);
-        match resp {
-            Response::Announce(bytes) => assert_eq!(bytes, bundle_bytes),
-            other => panic!("expected Announce, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn announce_handler_returns_error_when_unconfigured() {
-        use crate::handler::RequestHandler;
-        let handler = RequestHandler::new(vec![]); // announcement_bundle = None
-        let resp = handler.handle_request(&Request::Announce);
-        match resp {
-            Response::Error(msg) => assert!(msg.contains("announce not configured")),
-            other => panic!("expected Error, got {:?}", other),
-        }
-    }
-
     // ─── Batch-query DoS guards (S1–S3) ─────────────────────────────────
 
     fn valid_key_bytes(n: u8) -> Vec<u8> {
@@ -3432,7 +3297,6 @@ mod attest_wire_tests {
 
     #[test]
     fn announce_end_to_end_with_pir_identity() {
-        use crate::handler::RequestHandler;
         use ed25519_dalek::SigningKey;
         // Build a real bundle the SDK client will parse.
         let op_sk = SigningKey::from_bytes(&[0x11u8; 32]);
@@ -3455,12 +3319,9 @@ mod attest_wire_tests {
         );
         let bundle = pir_identity::AnnouncementBundle { cert, manifest };
         let encoded_bundle = bundle.encode();
-        let handler =
-            RequestHandler::new(vec![]).with_announcement_bundle(Some(encoded_bundle.clone()));
 
         // Server-side: produce the RESP_ANNOUNCE wire bytes.
-        let resp = handler.handle_request(&Request::Announce);
-        let wire = resp.encode();
+        let wire = Response::Announce(encoded_bundle.clone()).encode();
 
         // Client-side: decode the same wire. Bundle bytes round-trip.
         let parsed = Response::decode(&wire[4..]).unwrap();

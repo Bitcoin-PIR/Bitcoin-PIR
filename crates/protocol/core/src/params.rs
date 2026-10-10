@@ -135,26 +135,8 @@ pub const CHUNK_PARAMS: TableParams = TableParams {
 /// Path to the UTXO chunks index file (intermediate).
 pub const INDEX_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_index_nodust.bin";
 
-/// Path to the serialized INDEX-level Batch PIR cuckoo tables (server).
-pub const CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/batch_pir_cuckoo.bin";
-
 /// Path to the CHUNK-level cuckoo tables (server).
 pub const CHUNK_CUCKOO_FILE: &str = "/Volumes/Bitcoin/data/chunk_pir_cuckoo.bin";
-
-/// Path to the UTXO chunks data file (intermediate).
-pub const CHUNKS_DATA_FILE: &str = "/Volumes/Bitcoin/data/intermediate/utxo_chunks_nodust.bin";
-
-/// Path to the batch PIR results (intermediate/test output).
-pub const BATCH_PIR_RESULTS_FILE: &str = "/Volumes/Bitcoin/data/intermediate/batch_pir_results.bin";
-
-/// Path to the chunk PIR execution plan (intermediate).
-pub const CHUNK_PIR_PLAN_FILE: &str = "/Volumes/Bitcoin/data/intermediate/chunk_pir_plan.bin";
-
-/// Magic number for plan files.
-pub const PLAN_MAGIC: u64 = 0xBA7C_01A0_0000_0001;
-
-/// Number of rounds to batch together for server processing.
-pub const ROUNDS_PER_BATCH: usize = 5;
 
 /// Number of consecutive 40-byte chunks grouped into one PIR query unit.
 pub const CHUNKS_PER_UNIT: usize = 1;
@@ -186,7 +168,6 @@ pub const CHUNK_MASTER_SEED: u64 = CHUNK_PARAMS.master_seed;
 pub const CHUNK_SLOTS_PER_BIN: usize = CHUNK_PARAMS.slots_per_bin;
 pub const CHUNK_CUCKOO_NUM_HASHES: usize = CHUNK_PARAMS.cuckoo_num_hashes;
 pub const CHUNK_MAGIC: u64 = CHUNK_PARAMS.magic;
-pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;
 
 // NOTE: `CHUNK_MERKLE_ITEMS_PER_QUERY` (the M=16 chunk-Merkle item-count
 // pad) was removed in retired PLAN_MERKLE_CODING.md Phase 4 / WS-A. A query now

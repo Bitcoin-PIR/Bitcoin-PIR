@@ -126,10 +126,10 @@ pub(crate) struct CliArgs {
     /// Whether this server accepts HarmonyPIR hint requests
     /// (`REQ_HARMONY_HINTS` / `REQ_HARMONY_HINTS_V2`). Default `false`;
     /// must be explicitly enabled via `--serve-hints`. Combined with
-    /// `--serve-queries` to pin the role: pir1 (Hetzner, no-SEV) runs
-    /// `--serve-hints --serve-queries` (HarmonyPIR hint pool + DPF
-    /// server-0 + OnionPIR); pir2 (VPSBG, SEV-SNP Tier 3) runs
-    /// `--serve-queries` only (DPF server-1 + HarmonyPIR query phase).
+    /// `--serve-queries` to pin the role: pir1 runs `--serve-hints
+    /// --serve-queries` (HarmonyPIR hint pool + DPF server-0 + OnionPIR);
+    /// pir2 runs `--serve-queries` only (DPF server-1 + HarmonyPIR query
+    /// phase).
     /// Misconfiguration (client hits the wrong role) becomes a
     /// wire-level rejection instead of silently falling through to
     /// the legacy V1-on-demand path or producing confusing errors.

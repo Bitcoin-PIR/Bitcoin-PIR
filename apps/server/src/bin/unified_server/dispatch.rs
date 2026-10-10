@@ -62,8 +62,6 @@ pub(crate) async fn handle_variant<S>(
                     0x03 /* REQ_GET_INFO_JSON */ => {
                         let _ = send_resp(sink, channel_session.as_mut(), server.encode_info_json_response(0x03)).await;
                     }
-                    // 0x33 was REQ_ONIONPIR_GET_INFO (binary ServerInfoV2), now removed.
-                    // All clients should use 0x03 (JSON) instead.
                     REQ_GET_DB_CATALOG => {
                         let _ = send_resp(sink, channel_session.as_mut(), Response::DbCatalog(server.build_catalog()).encode()).await;
                     }
@@ -965,19 +963,6 @@ pub(crate) async fn handle_variant<S>(
                             "[harmony-hint-v2-half] db={} side={} {} groups served from pool ({} WS batches) in {:.2?}",
                             db_id, side_name, sent, batches, elapsed,
                         );
-                    }
-                    REQ_HARMONY_QUERY => {
-                        if let Ok(Request::HarmonyQuery(q)) = Request::decode(payload) {
-                            // Validate db_id before dispatching to a worker.
-                            if server.state.get_db(q.db_id).is_none() {
-                                let resp = Response::Error(format!("unknown db_id {}", q.db_id));
-                                let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                                return;
-                            }
-                            let s = Arc::clone(&server);
-                            let resp = spawn_heavy(&free_pool, move || s.handle_harmony_query(&q)).await.unwrap();
-                            let _ = send_resp(sink, channel_session.as_mut(), resp.encode()).await;
-                        }
                     }
                     REQ_HARMONY_BATCH_QUERY => {
                         if let Ok(Request::HarmonyBatchQuery(q)) = Request::decode(payload) {

@@ -7,8 +7,6 @@
 //!   - `bin/unified_server/` — the production server, which owns its own
 //!     `PirServer` setup via consolidated `onion_index_all.bin` mmap +
 //!     shared NTT store, and only uses this module for wire formats.
-//!   - `bin/onionpir_client.rs` — the CLI client, which uses the same wire
-//!     formats + the `REQ_*`/`RESP_*` variant constants.
 //!
 //! The older `GroupServers::load` / `populate_server` helper that built
 //! one `PirServer` per PBC group from a cuckoo table file was removed

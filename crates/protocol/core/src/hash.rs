@@ -131,24 +131,6 @@ pub fn hash_int_for_group(id: u32, nonce: u64) -> u64 {
     splitmix64((id as u64).wrapping_add(nonce.wrapping_mul(GOLDEN_RATIO)))
 }
 
-/// Derive `num_hashes` distinct PBC group indices for an integer ID.
-pub fn derive_int_groups(id: u32, k: usize, num_hashes: usize) -> Vec<usize> {
-    let mut groups = Vec::with_capacity(num_hashes);
-    let mut nonce: u64 = 0;
-
-    while groups.len() < num_hashes {
-        let h = hash_int_for_group(id, nonce);
-        let group = (h % k as u64) as usize;
-        nonce += 1;
-
-        if !groups.contains(&group) {
-            groups.push(group);
-        }
-    }
-
-    groups
-}
-
 /// Derive exactly 3 PBC group indices for an integer ID (common case).
 pub fn derive_int_groups_3(id: u32, k: usize) -> [usize; 3] {
     let mut groups = [0usize; 3];
@@ -236,19 +218,6 @@ pub fn read_cuckoo_header(
         0
     };
     (bins_per_table, tag_seed)
-}
-
-/// Read bins_per_table and tag_seed from an INDEX-level cuckoo header.
-///
-/// Convenience wrapper using INDEX_PARAMS defaults.
-pub fn read_index_cuckoo_header(data: &[u8]) -> (usize, u64) {
-    use crate::params::INDEX_PARAMS;
-    read_cuckoo_header(
-        data,
-        INDEX_PARAMS.magic,
-        INDEX_PARAMS.header_size,
-        INDEX_PARAMS.has_tag_seed,
-    )
 }
 
 /// Read bins_per_table from a CHUNK-level cuckoo header.

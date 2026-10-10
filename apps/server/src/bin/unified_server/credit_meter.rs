@@ -109,7 +109,6 @@ pub(crate) fn metered_op_for_frame(variant: u8, payload: &[u8]) -> Option<(Meter
         | REQ_HARMONY_HINTS
         | REQ_HARMONY_HINTS_V2
         | REQ_HARMONY_HINTS_V2_HALF
-        | REQ_HARMONY_QUERY
         | REQ_HARMONY_BATCH_QUERY
         | REQ_ORAM_LOOKUP => match Request::decode(payload).ok()? {
             Request::IndexBatch(q) => Some((MeteredOp::DpfIndexRound, q.db_id)),
@@ -123,13 +122,6 @@ pub(crate) fn metered_op_for_frame(variant: u8, payload: &[u8]) -> Option<(Meter
             }
             Request::HarmonyHintsV2(h) => Some((MeteredOp::HarmonyPoolEntry, h.db_id)),
             Request::HarmonyHintsV2Half(h) => Some((MeteredOp::HarmonyContinuation, h.db_id)),
-            Request::HarmonyQuery(q) => Some((
-                MeteredOp::HarmonyQuery {
-                    level: q.level,
-                    sub_queries: 1,
-                },
-                q.db_id,
-            )),
             Request::HarmonyBatchQuery(q) => Some((
                 MeteredOp::HarmonyQuery {
                     level: q.level,
@@ -634,24 +626,6 @@ mod tests {
             metered_op_for_frame(REQ_HARMONY_HINTS, &hints[4..]),
             Some((MeteredOp::HarmonyHintSet { level: 21 }, 0))
         );
-        let query = Request::HarmonyQuery(HarmonyQuery {
-            level: 1,
-            group_id: 4,
-            round_id: 0,
-            indices: vec![1, 2, 3],
-            db_id: 1,
-        })
-        .encode();
-        assert_eq!(
-            metered_op_for_frame(REQ_HARMONY_QUERY, &query[4..]),
-            Some((
-                MeteredOp::HarmonyQuery {
-                    level: 1,
-                    sub_queries: 1
-                },
-                1
-            ))
-        );
         let oram = Request::OramLookup(OramLookupRequest {
             db_id: 1,
             script_hashes: vec![[0u8; 20]],
@@ -808,14 +782,6 @@ mod tests {
                 db_id: 0,
             })
             .encode(),
-            Request::HarmonyQuery(HarmonyQuery {
-                level: 0,
-                group_id: 3,
-                round_id: 2,
-                indices: vec![1, 2, 3, 4],
-                db_id: 1,
-            })
-            .encode(),
             Request::HarmonyBatchQuery(HarmonyBatchQuery {
                 level: 11,
                 round_id: 0,
@@ -882,7 +848,7 @@ mod tests {
             }
             .encode(),
         );
-        assert!(frames.len() >= 20);
+        assert!(frames.len() >= 19);
         for frame in &frames {
             let variant = frame[4];
             let server = metered_op_for_frame(variant, &frame[4..]);
@@ -894,7 +860,7 @@ mod tests {
                 .iter()
                 .filter(|frame| classify_frame(frame).is_some())
                 .count(),
-            20
+            19
         );
     }
 

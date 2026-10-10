@@ -4,41 +4,12 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
-# Workspace-internal binary crate (reference PIR servers + CLI clients).
-# Not a library — not published to crates.io.
+# The PIR server (`unified_server`). Not published to crates.io.
 publish = false
-
-# NOTE: the legacy `server` bin (single-DB DPF/Harmony reference server) was
-# removed — superseded by `unified_server`, which all production systemd
-# services and scripts/start_pir_servers.sh launch.
 
 [[bin]]
 name = "unified_server"
 path = "src/bin/unified_server/main.rs"
-
-[[bin]]
-name = "client"
-path = "src/bin/client.rs"
-test = false
-
-[[bin]]
-name = "onionpir_client"
-path = "src/bin/onionpir_client.rs"
-test = false
-
-# NOTE: `harmonypir_hint_server` (standalone HarmonyPIR hint server) was
-# removed — superseded by `unified_server --serve-hints`.
-
-[[bin]]
-name = "harmonypir_gen_hints"
-path = "src/bin/harmonypir_gen_hints.rs"
-test = false
-
-# NOTE: the stale HarmonyPIR e2e/trace harnesses (harmonypir_index_to_chunk_e2e,
-# harmonypir_full_e2e, harmonypir_batch_e2e, harmonypir_batch_trace) were
-# removed — they were never migrated through the chain-derived-seed work
-# (called the pre-parameterization derive_*_cuckoo_key signatures) and are
-# superseded by the pir-sdk-client integration suite.
 
 [features]
 default = ["fastprp"]
@@ -69,7 +40,6 @@ ed25519-dalek = "2"
 hex = "0.4"
 zeroize = "1"
 libc = "0.2"
-build = { path = "../../tools/db-builder" }
 libdpf = { git = "https://github.com/weikengchen/libdpf.git", rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110" }
 onionpir = { git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git", rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b" }
 harmonypir = { git = "https://github.com/Bitcoin-PIR/harmonypir.git", rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39", default-features = false }
@@ -86,9 +56,4 @@ bitcoinpir-oram = { path = "../../vendor/bitcoinpir-oram", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
-pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
-rand_chacha = "0.3"
-clap = { version = "4", features = ["derive"] }
-k256 = { version = "0.13", features = ["arithmetic"] }
-sha2 = "0.10"

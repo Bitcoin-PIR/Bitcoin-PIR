@@ -7,9 +7,8 @@
 //! role is deliberately thin: publishable server primitives are re-exported
 //! from `pir-runtime-core`, while deployment-only glue stays here.
 
-pub use pir_runtime_core::{db_proof, eval, handler, protocol, table};
+pub use pir_runtime_core::{db_proof, eval, protocol, table};
 
 pub mod config;
-pub mod harmony_state;
 pub mod hint_pool;
 pub mod onionpir;
