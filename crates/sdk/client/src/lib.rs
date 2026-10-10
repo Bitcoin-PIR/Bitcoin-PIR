@@ -60,7 +60,6 @@
 // `wasm32-unknown-unknown`. On wasm32 the equivalent role is played by
 // [`wasm_transport::WasmWebSocketTransport`], which wraps `web_sys::WebSocket`
 // and bridges its callback-driven API to `async/.await` via an mpsc channel.
-pub mod admin;
 pub mod announce;
 pub mod attest;
 pub mod channel;

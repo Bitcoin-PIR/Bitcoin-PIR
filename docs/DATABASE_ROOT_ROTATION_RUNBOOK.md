@@ -221,14 +221,6 @@ a separate file without replacing the active `databases.toml`. Then
 active config until the activation window. Do not use the VPSBG portal
 as the primary path, and do not build a provisioner UKI.
 
-The authenticated `bpir-admin upload --no-activate` path may stage an ordinary
-database directory while Tier 3 is running, but it is not a substitute for the
-maintenance boot and config swap: it cannot edit `databases.toml`, and the
-current uploader generates a new `MANIFEST.toml`. Do not use it for an
-attested-builder generation or proof bundle whose original manifest bytes are
-part of the evidence. Preserve and hash-copy those artifacts through the
-maintenance path instead.
-
 Do not point either active server at the new generation until all of the
 following are ready:
 
