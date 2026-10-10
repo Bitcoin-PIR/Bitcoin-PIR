@@ -107,38 +107,3 @@ export function findChunkInResult(
 }
 
 // ─── Merkle sibling group scanning ──────────────────────────────────────────
-
-/**
- * Scan a Merkle sibling result (cuckoo bin) for a matching group ID.
- *
- * Slot layout: [4B groupId LE][arity × 32B child hashes]
- *
- * @param data        - Raw bin bytes (slotsPerBin × slotSize)
- * @param groupId     - Group ID to find
- * @param arity       - Number of children per group (e.g. 8)
- * @param slotsPerBin - Number of slots in the bin (e.g. 4)
- * @param slotSize    - Bytes per slot (e.g. 260 = 4 + 8×32)
- * @returns Array of arity child hashes (each 32 bytes), or null if not found
- */
-export function findGroupInSiblingResult(
-  data: Uint8Array,
-  groupId: number,
-  arity: number,
-  slotsPerBin: number,
-  slotSize: number,
-): Uint8Array[] | null {
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  for (let slot = 0; slot < slotsPerBin; slot++) {
-    const off = slot * slotSize;
-    if (off + slotSize > data.length) break;
-    const storedId = dv.getUint32(off, true);
-    if (storedId === groupId) {
-      const children: Uint8Array[] = [];
-      for (let c = 0; c < arity; c++) {
-        children.push(data.slice(off + 4 + c * 32, off + 4 + (c + 1) * 32));
-      }
-      return children;
-    }
-  }
-  return null;
-}

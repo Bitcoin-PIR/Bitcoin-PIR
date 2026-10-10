@@ -13,33 +13,6 @@ export interface BhtmLeafProofStep {
   hash: string;
 }
 
-export interface BhtmLeafProofJson {
-  schema_version: number;
-  proof_type: string;
-  height: number;
-  block_hash_internal: string;
-  block_hash_display: string;
-  muhash: string;
-  core_muhash_internal: string;
-  core_muhash_display: string;
-  leaf_hash: string;
-  leaf_index: number;
-  tree_size: number;
-  tree_root: string;
-  proof: BhtmLeafProofStep[];
-  verified_against_tree_root?: boolean;
-  chunk?: {
-    anchor_height?: number;
-    anchor_block_hash_internal?: string;
-    anchor_block_hash_display?: string;
-    first_block_height?: number;
-    end_height?: number;
-    end_block_hash_internal?: string;
-    end_block_hash_display?: string;
-    end_muhash_core_display?: string;
-  };
-}
-
 export interface VerifiedBhtmLeafProof {
   height: number;
   blockHashInternalHex: string;

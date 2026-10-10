@@ -7,7 +7,7 @@
  */
 
 import {
-  K, K_CHUNK, NUM_HASHES, INDEX_CUCKOO_NUM_HASHES,
+  K_CHUNK, NUM_HASHES, INDEX_CUCKOO_NUM_HASHES,
   CHUNK_MASTER_SEED, MASTER_SEED,
   REQ_ONIONPIR_MERKLE_INDEX_SIBLING, RESP_ONIONPIR_MERKLE_INDEX_SIBLING,
   REQ_ONIONPIR_MERKLE_INDEX_TREE_TOP, RESP_ONIONPIR_MERKLE_INDEX_TREE_TOP,
@@ -22,7 +22,7 @@ import {
   sha256,
 } from './hash.js';
 
-import { cuckooPlace, planRounds } from './pbc.js';
+import { planRounds } from './pbc.js';
 import { decodeUtxoData, DummyRng } from './codec.js';
 import { unpackOnionPlaintext } from './onion-unpack.js';
 import { findEntryInOnionPirIndexResult } from './scan.js';
@@ -79,8 +79,6 @@ const PACKED_ENTRY_SIZE = 3840;
 
 /** Chunk cuckoo: 6 hash functions, group_size=1 */
 const CHUNK_CUCKOO_NUM_HASHES = 6;
-const CHUNK_CUCKOO_MAX_KICKS = 10000;
-const EMPTY = 0xFFFFFFFF;
 
 const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
