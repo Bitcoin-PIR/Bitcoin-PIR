@@ -103,8 +103,8 @@ goes no further than that.
   [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md).
   Classify the ask as one campaign (a named release, or one flow A–I).
   One explicit authorization covers that whole campaign, including the
-  scripted `--apply` commands it needs (`upload` then `switch`, `put`
-  then `close`, Pages dispatch, pin PR). Stop only on failure, a new
+  scripted commands it needs (`upload` then `switch`, `put` then
+  `close`, Pages dispatch, pin PR). Stop only on failure, a new
   campaign, or Human-only work (keys, funds, image delete). Do not
   re-ask between steps of the same campaign.
 - VPSBG measured-boot operations use `scripts/vpsbg-measured-boot.sh` (API),

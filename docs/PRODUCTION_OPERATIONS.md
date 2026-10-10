@@ -16,8 +16,7 @@ scripts/production-status.sh
 That prints pir1 SSH health, a public attest of the pir2 MacBook node
 against `PIR2_MACBOOK_PIN`, and the Direct ORAM TEE host's VPSBG status
 plus an attest against `PIR2_TIER3_PIN` (MEASUREMENT, binary, AMD chain).
-Each mutation script also has `--help` and, where it can change a host,
-`--dry-run`.
+Each script has `--help`.
 
 The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
 and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
@@ -48,9 +47,9 @@ output. Do not copy them into prose.
    image delete) still needs a separate decision. Pin edits and Pages
    dispatch are part of a release campaign when the user authorized that
    release, not a second ask.
-4. When a step prints `PASS` and `NEXT_STEP`, continue if that next step
-   is still in the authorized campaign. Stop on failure, a hard stop
-   with no progress, or a step that belongs to a different campaign.
+4. When a step succeeds, continue if the next step is still in the
+   authorized campaign. Stop on failure, a hard stop with no progress,
+   or a step that belongs to a different campaign.
 
 ### Step types
 
@@ -61,8 +60,8 @@ output. Do not copy them into prose.
 | Auth | Changes a remote host, image, service, Pages site, or identity | Yes for every remaining step of the authorized campaign |
 | Human | Key generation, funds, image delete | Do not start; ask and wait |
 
-`--apply` is still **per command**: `upload` does not switch, `put` does
-not close, `close`/`switch` take the caller-supplied `--image-id`. The
+Each command does one thing: `upload` does not switch, `put` does not
+close, and `close`/`switch` take the caller-supplied `--image-id`. The
 agent issues those commands in campaign order without a new ask between
 them. Recoverable API stalls in the same campaign (for example a 423
 during `open`, then `start`) are in-campaign, not a new authorization.
@@ -74,19 +73,19 @@ stop and report.
 
 | Work | Expected | Hard stop | Progress signal |
 | --- | --- | --- | --- |
-| `production-status.sh` | ~30 s | 20 s per SSH/API call | `PASS production_status` |
+| `production-status.sh` | ~30 s | 20 s per SSH/API call | pir1, pir2 and ORAM host output, exit 0 |
 | Local web check (`tsc` + vitest + `build-web`) | 2–10 min | 15 min | npm scripts exit 0 |
 | PR `web-build.yml` | 10–25 min | 30 min job | wasm-pack, tsc, vitest, `build-web` |
 | Pages `deploy-web.yml` | 20–60 min | 75 min build | `build-web`, then deploy job |
 | pir1 `cargo build --release -p runtime` | 2–5 min | 15 min | compiler output, then systemd active |
-| Tier 3 **runtime** UKI (`build_uki_tier3.sh`) | 5–15 min | 15 min | dracut, inventory, `ukify`, `PASS uki_build` |
+| Tier 3 **runtime** UKI (`build_uki_tier3.sh`) | 5–15 min | 15 min | dracut, inventory, `ukify`, archive |
 | Attested-builder **producer** UKI | 5–15 min | 15 min | archive `.efi` + `.meta` |
 | Native full-build V2 snapshot/delta | hours; no wall-clock is written here | no progress for 3 min → stop | `build-summary.txt`, then `latest/` only after the V2 gate |
 | Direct ORAM release reconstruct | target 10 min | 15 min (3 min without a stage) | ORAM debug runbook stages |
-| VPSBG `images` / `upload` | seconds / a few min | 10 min upload | `PASS action=images\|upload` |
+| VPSBG `images` / `upload` | seconds / a few min | 10 min upload | `image_id=` lines |
 | VPSBG `switch` / `close` attachment | seconds; starting is separate | 15 min | `boot_mode=measured`, expected image id; read `running` separately |
-| Data-disk `open` | 2–10 min | 15 min | `boot_mode=stock`, `ssh_ready=true` |
-| `pir2-post-switch-check.sh` | 5–20 min | 15 min wait + attest | `PASS action=post_switch_check` |
+| Data-disk `open` | 2–10 min | 15 min | `boot_mode=stock`, then `stock rootfs reachable over SSH` |
+| `oram-host-check.sh` | 5–20 min | 15 min wait, then attest + queries | attest, channel-test and ORAM query output |
 
 ## Flow catalog
 
@@ -107,14 +106,14 @@ only in git history.
 
 ## A. Diagnose — Read
 
-1. Read — `scripts/production-status.sh` (`--dry-run` lists paths only).
+1. Read — `scripts/production-status.sh`.
 2. Read — if only the Direct ORAM host matters:
    `scripts/vpsbg-measured-boot.sh status --server-id 26939`.
 3. Read — before a UKI upload:
    `scripts/vpsbg-measured-boot.sh images`.
 4. Stop. `image_id=unavailable` is a valid observation, not a selection.
 
-Success: `PASS production_status` and/or `PASS action=status|images`.
+Success: the commands exit 0.
 
 ## B. Source change and CI — Local
 
@@ -197,21 +196,20 @@ Details: [UKI build](runbooks/uki-build.md),
 `.secrets/vpsbg-api-token`.
 
 1. Read — Flow A. Record the live `image_id` as the rollback target.
-2. Read — `scripts/vpsbg-measured-boot.sh images`. If count is 5/5,
-   stop; deleting an image is Human.
+2. Read — `scripts/vpsbg-measured-boot.sh images`. If VPSBG's image
+   quota (5) is full, stop; deleting an image is Human.
 3. Local — on the approved Linux build host, set every UKI input
-   explicitly and run `scripts/build_uki_tier3.sh --dry-run`, then the
-   live build. Nix and the attested-builder UKI are not this runtime
-   UKI.
-4. Auth — `scripts/vpsbg-measured-boot.sh upload --uki FILE --apply`.
-   Record the returned image id. Do not switch in the same command.
-5. Auth — `switch --server-id ID --image-id NEW --apply` only after
-   a separate authorization. This reboots immediately.
-6. Read — `scripts/pir2-post-switch-check.sh`. It reads pins from
-   `web/src/attest-pin.ts` and must not edit that file. Mismatch is a
-   hard stop.
-7. Auth — rollback is `scripts/vpsbg-measured-boot.sh rollback` with
-   the **previous** image id, then step 6 again.
+   explicitly and run `scripts/build_uki_tier3.sh`. Nix and the
+   attested-builder UKI are not this runtime UKI.
+4. Auth — `scripts/vpsbg-measured-boot.sh upload --uki FILE`.
+   Record the returned image id.
+5. Auth — `switch --server-id ID --image-id NEW` only after a separate
+   authorization. This reboots immediately.
+6. Read — `scripts/oram-host-check.sh`. It attests against the pins in
+   `web/src/attest-pin.ts` (update them for the new image first) and
+   sends one ORAM query per database. Mismatch is a hard stop.
+7. Auth — rollback is `switch` with the **previous** image id, then
+   step 6 again.
 
 A data/proof-only rotation does not need a new UKI (Flow H).
 
@@ -226,14 +224,12 @@ ControlMaster connection (socket under `VPSBG_SSH_CONTROL_DIR`, default
 `/tmp/bpir-vpsbg-ssh-<uid>`), torn down by `open` and `close`. Do not add
 your own `ssh`/`scp` calls beside it during a window.
 
-1. Read — Flow A. The `--image-id` passed to `open` and `close` is
-   the UKI to reattach, usually the current live image.
-2. Auth — `open --server-id 26939 --image-id CURRENT --apply`.
-   Hard stop 15 min: `boot_mode=stock` and SSH.
-3. Auth — `put` (writes), or Read `get` / `ssh`. Remote paths must
-   stay under `/home/pir/data/`.
-4. Auth — `close --server-id 26939 --image-id CURRENT --apply`. Same
-   image id as step 1 unless the user named a different one.
+1. Read — Flow A.
+2. Auth — `open`. It prints `close_image_id`, the live image to
+   reattach. Hard stop 15 min: `boot_mode=stock` and SSH.
+3. Auth — `put` (writes), or Read `get` / `ssh`.
+4. Auth — `close --image-id ID` with the id `open` printed, unless the
+   user named a different one.
 5. Read — confirm the expected image is attached. `close` does not start a
    stopped guest; starting it requires its own explicit authorization. Run
    Flow E step 6 only when the guest should be serving again.
@@ -328,7 +324,7 @@ never from a live server or from the proof printing itself.
    with the known-good **runtime** image id.
 9. Read — `db-proof verify-live` on both hosts covers **v1 /
    DPF+Harmony only**. Onion/ORAM v2 live check is the browser/WASM
-   path after Flow C, or `pir2-post-switch-check.sh` for the runtime
+   path after Flow C, or `oram-host-check.sh` for the runtime
    SNP + ORAM smoke. Do not invent a unified “verify all proofs”
    command.
 10. Auth — publish pins with Flow C.
@@ -387,15 +383,15 @@ the same way as an upgrade, through a new transition.
 
 | Operation | Runbook | Command | Successful handoff |
 | --- | --- | --- | --- |
-| Read pir1, pir2 and ORAM host status | this page, Flow A | `scripts/production-status.sh` | `PASS production_status` |
+| Read pir1, pir2 and ORAM host status | this page, Flow A | `scripts/production-status.sh` | exit 0 |
 | Rebuild or re-pin the pir2 MacBook node | this page, Flow I | runbook step 4, transition pin, switch, then drop the transition | Flow A prints `✓ binary_sha256 matches PIR2_MACBOOK_PIN` |
-| Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | `PASS uki_build` |
+| Build the **runtime** UKI | [UKI build](runbooks/uki-build.md) | `scripts/build_uki_tier3.sh` | archived `.efi` + `.meta` |
 | Build the **producer** UKI | [Attested-builder UKI](ATTESTED_BUILDER_TIER3_UKI.md) | `scripts/build_uki_attested_builder_tier3.sh` | archived `.efi` + `.meta` |
 | Verify a local DB proof | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) | `bpir-admin db-proof verify` | verifier exit 0 |
 | Stage a VPSBG generation | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) | `scripts/stage_vpsbg_tier3_generation.sh` | candidate catalog only |
-| List, upload, switch, or roll back a VPSBG image | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/vpsbg-measured-boot.sh` | `PASS action=...` |
-| Open or close a VPSBG data-disk window | [Key management](KEY_MANAGEMENT.md) | `scripts/vpsbg-data-disk.sh` | `PASS action=open\|put\|get\|ssh\|close` |
-| Check pir2 after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/pir2-post-switch-check.sh` | `PASS action=post_switch_check` |
+| List, upload, switch, or roll back a VPSBG image | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/vpsbg-measured-boot.sh` | exit 0 |
+| Open or close a VPSBG data-disk window | [Key management](KEY_MANAGEMENT.md) | `scripts/vpsbg-data-disk.sh` | exit 0 |
+| Check the Direct ORAM host after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/oram-host-check.sh` | exit 0 |
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
 | Check the issuer and mint on pir1 | [Issuer and mint](runbooks/issuer-and-mint.md) | `curl https://issuer.bitcoinpir.org/v2/info`; `bpir-issuer balance` | both units active, `/v2/info` lists the credit pack |
 

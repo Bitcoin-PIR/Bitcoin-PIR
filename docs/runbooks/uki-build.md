@@ -57,10 +57,7 @@ sudo env \
   BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json \
   OUT=/absolute/unique-release.efi \
   UKI_ARCHIVE_REMOTE=archive-host:/home/pir/uki-archive/tier3 \
-  UKI_ARCHIVE_REMOTE_REQUIRED=1 \
-  scripts/build_uki_tier3.sh --dry-run
-
-# Repeat the exact command without --dry-run after reviewing its inputs.
+  scripts/build_uki_tier3.sh
 ```
 
 Before the real build, report its expected duration, a 15-minute hard stop,
@@ -76,8 +73,8 @@ compression or unrelated dracut modules.
 If those inputs are unavailable, the fallback is Flow F in
 [Production operations](../PRODUCTION_OPERATIONS.md):
 `scripts/vpsbg-data-disk.sh open`, build on the stock root filesystem,
-archive off-host, then `close` with the recorded rollback image if the
-maintenance build fails. The detach body is `{"kernel_image_id":null}`.
+archive off-host, then `close` with the image ID `open` printed if the
+maintenance build fails.
 
 ## 4. Reproducibility and verification
 
@@ -96,6 +93,5 @@ Full cross-host byte reproduction requires the same declared kernel/modules
 and toolchain inputs. A matching binary hash or predicted measurement alone
 does not authorize upload, switch, reboot, or activation.
 
-Successful completion prints `PASS uki_build` and `NEXT_STEP`. Record the EFI,
-SHA-256, metadata and both archive locations, then continue with the
-[VPSBG image runbook](vpsbg-image.md).
+Record the EFI, SHA-256, metadata and both archive locations, then continue
+with the [VPSBG image runbook](vpsbg-image.md).

@@ -34,31 +34,22 @@ to `~/.config/bitcoinpir`. Override with `VPSBG_API_TOKEN_FILE` or
 ## VPSBG file modification procedure
 
 This is Flow F in [Production operations](PRODUCTION_OPERATIONS.md).
-Use [`scripts/vpsbg-data-disk.sh`](../scripts/vpsbg-data-disk.sh). It
-detaches measured boot with `{"kernel_image_id":null}`, stop/starts the
-stock guest, and SSHes with `.keys/vpsbg-ssh.key` plus
-[`deploy/vpsbg_known_hosts`](../deploy/vpsbg_known_hosts). `open` and
-`close` each require an explicit `--image-id` and `--apply`; `put` does
-not call `close`.
+Use [`scripts/vpsbg-data-disk.sh`](../scripts/vpsbg-data-disk.sh). `open`
+prints the live image ID, detaches measured boot with
+`{"kernel_image_id":null}`, and waits until the stock guest answers SSH
+(`.keys/vpsbg-ssh.key` plus
+[`deploy/vpsbg_known_hosts`](../deploy/vpsbg_known_hosts)), nudging it with
+a stop or start when the platform leaves it on the old kernel or powered off.
+`close` reattaches the image you name.
 
 ```sh
-scripts/vpsbg-data-disk.sh open --server-id 26939 --image-id CURRENT --dry-run
-scripts/vpsbg-data-disk.sh open --server-id 26939 --image-id CURRENT --apply
-scripts/vpsbg-data-disk.sh put --local /absolute/file \
-  --remote /home/pir/data/relative/path --apply
-scripts/vpsbg-data-disk.sh close --server-id 26939 --image-id CURRENT --apply
+scripts/vpsbg-data-disk.sh open
+scripts/vpsbg-data-disk.sh put --local /absolute/file --remote /home/pir/data/relative/path
+scripts/vpsbg-data-disk.sh close --image-id IMAGE_ID_PRINTED_BY_OPEN
 ```
 
-`close` reattaches the selected measured-boot image but does not call the
-VPSBG `/start` endpoint. `PASS action=close` therefore proves attachment, not
-that the guest is running. Read back control-plane status; starting a stopped
-guest is a separate explicitly authorized production action.
-
-VPSBG may complete the detach while the immediately following stop request
-returns HTTP 423. After that response, read status before retrying anything. If
-status already reports `boot_mode=stock`, rerun `open` so it waits for stock
-SSH without detaching again. If status still reports measured boot, stop and
-investigate instead of repeating the mutation.
+`close` does not call the VPSBG `/start` endpoint; read back control-plane
+status for the final power state.
 
 Power-state reads race with the platform: a successful `close` reattaches the
 image and VPSBG then auto-starts the guest, but an immediate status snapshot

@@ -29,7 +29,7 @@ control plane and the public `/status.json` of the Direct ORAM host, never
 uses SSH, and defaults to `.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
 build/switch; after `unified_server` owns 8091, its fields are expected
 to be `unavailable`.
-Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
+See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
 
 Before a database or Direct ORAM rebuild, read
 [`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md).
