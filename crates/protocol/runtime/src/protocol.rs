@@ -46,7 +46,7 @@ pub const REQ_HARMONY_HINTS_V2_HALF: u8 = 0x46;
 
 // ─── TEE ORAM request variants ─────────────────────────────────────────────
 
-/// Native TEE + ORAM lookup over the existing INDEX + CHUNK cuckoo tables.
+/// Direct ORAM lookup inside the TEE.
 ///
 /// This request carries plaintext scripthashes and therefore must be sent only
 /// inside the attested encrypted channel (`REQ_HANDSHAKE` first, then an
@@ -161,57 +161,6 @@ pub const REQ_HANDSHAKE: u8 = 0x06;
 // and as defense-in-depth on hosts that do (pir2).
 pub const REQ_ANNOUNCE: u8 = 0x07;
 
-// ─── Admin auth (Slice 3a) ─────────────────────────────────────────────────
-//
-// Challenge/response with ed25519. The server holds the admin's public
-// key (loaded once at startup from a CLI flag or env var, eventually
-// from the UKI cmdline in tier 3). The client holds the matching
-// private key on the operator's laptop.
-//
-//   client → server:  REQ_ADMIN_AUTH_CHALLENGE
-//   server → client:  RESP_ADMIN_AUTH_CHALLENGE { nonce: [u8; 32] }
-//   client signs `b"BPIR-ADMIN-AUTH-V1" || nonce` with their ed25519 sk
-//   client → server:  REQ_ADMIN_AUTH_RESPONSE { signature: [u8; 64] }
-//   server verifies → marks the connection authenticated.
-//
-// Auth state lives per-WebSocket-connection on the server. Disconnecting
-// is logging out. Nothing in the wire protocol persists auth across
-// connections.
-
-pub const REQ_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
-pub const REQ_ADMIN_AUTH_RESPONSE: u8 = 0x81;
-
-/// Domain-separation tag for admin-auth signatures. Must match between
-/// client and server.
-pub const ADMIN_AUTH_DOMAIN_TAG: &[u8] = b"BPIR-ADMIN-AUTH-V1";
-
-// ─── Admin DB upload (Slice 3b) ────────────────────────────────────────────
-//
-// Streaming DB upload over the authenticated admin channel. After
-// `REQ_ADMIN_AUTH_RESPONSE` succeeds, the client runs:
-//
-//   BEGIN { name, manifest_toml }     - server creates /data/.staging/<name>/
-//                                        and writes MANIFEST.toml
-//   CHUNK { name, file_path, offset,  - server appends bytes to the staged
-//           data } × N                  file (one per file × chunk)
-//   FINALIZE { name }                 - server verifies all files against
-//                                        the manifest hashes; returns the
-//                                        manifest_root (sha256 of MANIFEST)
-//   ACTIVATE { name, target_path }    - server atomically renames
-//                                        .staging/<name>/ → <target_path>/
-//                                        (relative to data_root). The
-//                                        operator restarts unified_server
-//                                        to load the new DB (no hot-reload
-//                                        in this slice).
-//
-// All operations require the connection to be authenticated; otherwise
-// the server returns a RESP_ERROR envelope.
-
-pub const REQ_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
-pub const REQ_ADMIN_DB_UPLOAD_CHUNK: u8 = 0x83;
-pub const REQ_ADMIN_DB_UPLOAD_FINALIZE: u8 = 0x84;
-pub const REQ_ADMIN_DB_ACTIVATE: u8 = 0x85;
-
 // ─── Response variants ──────────────────────────────────────────────────────
 
 pub const RESP_PONG: u8 = 0x00;
@@ -222,12 +171,6 @@ pub const RESP_DB_PROOF_V2: u8 = 0x0c;
 pub const RESP_ATTEST: u8 = 0x05;
 pub const RESP_HANDSHAKE: u8 = 0x06;
 pub const RESP_ANNOUNCE: u8 = 0x07;
-pub const RESP_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
-pub const RESP_ADMIN_AUTH_RESPONSE: u8 = 0x81;
-pub const RESP_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
-pub const RESP_ADMIN_DB_UPLOAD_CHUNK: u8 = 0x83;
-pub const RESP_ADMIN_DB_UPLOAD_FINALIZE: u8 = 0x84;
-pub const RESP_ADMIN_DB_ACTIVATE: u8 = 0x85;
 pub const RESP_INDEX_BATCH: u8 = 0x11;
 pub const RESP_CHUNK_BATCH: u8 = 0x21;
 // 0x31 / 0x32 RETIRED (legacy N-ary tree Merkle) — see REQ section above.
@@ -484,36 +427,6 @@ pub enum Request {
         /// Random 32-byte salt for HKDF-SHA256 session-key derivation.
         nonce: [u8; 32],
     },
-    /// Admin auth step 1 — client asks the server for a challenge nonce.
-    AdminAuthChallenge,
-    /// Admin auth step 2 — client returns ed25519 signature over
-    /// `ADMIN_AUTH_DOMAIN_TAG || nonce`.
-    AdminAuthResponse {
-        signature: [u8; 64],
-    },
-    /// Start a new DB upload — server creates `data_root/.staging/<name>/`
-    /// and writes `MANIFEST.toml` from `manifest_toml`.
-    AdminDbUploadBegin {
-        name: String,
-        manifest_toml: Vec<u8>,
-    },
-    /// Append `data` to `staging/<name>/<file_path>` at byte `offset`.
-    AdminDbUploadChunk {
-        name: String,
-        file_path: String,
-        offset: u64,
-        data: Vec<u8>,
-    },
-    /// Verify the staged dir against its manifest. Returns the manifest root.
-    AdminDbUploadFinalize {
-        name: String,
-    },
-    /// Atomic-rename `staging/<name>/` → `data_root/<target_path>/`.
-    /// Operator restarts unified_server to load the new DB.
-    AdminDbActivate {
-        name: String,
-        target_path: String,
-    },
     IndexBatch(BatchQuery),
     ChunkBatch(BatchQuery),
     BucketMerkleSibBatch(BatchQuery),
@@ -607,42 +520,6 @@ pub struct DatabaseCatalog {
     pub databases: Vec<DatabaseCatalogEntry>,
 }
 
-/// Server response to a `REQ_ADMIN_AUTH_CHALLENGE`. The 32-byte
-/// `nonce` is what the client must sign (prefixed by
-/// `ADMIN_AUTH_DOMAIN_TAG`) and return as a `REQ_ADMIN_AUTH_RESPONSE`.
-#[derive(Clone, Debug)]
-pub struct AdminAuthChallenge {
-    pub nonce: [u8; 32],
-}
-
-/// Server response to a `REQ_ADMIN_AUTH_RESPONSE`. `ok = true` means
-/// the connection is now authenticated; subsequent admin requests on
-/// the same connection are accepted. `msg` is a short status string
-/// (e.g. "ok", "no challenge issued", "bad signature").
-#[derive(Clone, Debug)]
-pub struct AdminAuthResult {
-    pub ok: bool,
-    pub msg: String,
-}
-
-/// Generic ack used by BEGIN, CHUNK, ACTIVATE.
-#[derive(Clone, Debug)]
-pub struct AdminAck {
-    pub ok: bool,
-    pub msg: String,
-}
-
-/// Reply to `REQ_ADMIN_DB_UPLOAD_FINALIZE`. On success, `manifest_root`
-/// is the SHA-256 of the staged `MANIFEST.toml` — the same value
-/// `MappedDatabase::load()` would expose if the staging dir were
-/// activated and the server reloaded.
-#[derive(Clone, Debug)]
-pub struct AdminFinalizeResult {
-    pub ok: bool,
-    pub msg: String,
-    pub manifest_root: [u8; 32],
-}
-
 /// Result of an attestation request.
 ///
 /// Wire format (encoded after the `RESP_ATTEST` variant byte):
@@ -731,12 +608,6 @@ pub enum Response {
     /// is opaque to this enum so a future bundle version bump doesn't
     /// require touching the protocol layer.
     Announce(Vec<u8>),
-    AdminAuthChallenge(AdminAuthChallenge),
-    AdminAuthResponse(AdminAuthResult),
-    AdminDbUploadBegin(AdminAck),
-    AdminDbUploadChunk(AdminAck),
-    AdminDbUploadFinalize(AdminFinalizeResult),
-    AdminDbActivate(AdminAck),
     IndexBatch(BatchResult),
     ChunkBatch(BatchResult),
     BucketMerkleSibBatch(BatchResult),
@@ -789,44 +660,6 @@ impl Request {
                 payload.push(REQ_HANDSHAKE);
                 payload.extend_from_slice(client_eph_pub);
                 payload.extend_from_slice(nonce);
-            }
-            Request::AdminAuthChallenge => {
-                payload.push(REQ_ADMIN_AUTH_CHALLENGE);
-            }
-            Request::AdminAuthResponse { signature } => {
-                payload.push(REQ_ADMIN_AUTH_RESPONSE);
-                payload.extend_from_slice(signature);
-            }
-            Request::AdminDbUploadBegin {
-                name,
-                manifest_toml,
-            } => {
-                payload.push(REQ_ADMIN_DB_UPLOAD_BEGIN);
-                encode_lp_string(&mut payload, name);
-                payload.extend_from_slice(&(manifest_toml.len() as u32).to_le_bytes());
-                payload.extend_from_slice(manifest_toml);
-            }
-            Request::AdminDbUploadChunk {
-                name,
-                file_path,
-                offset,
-                data,
-            } => {
-                payload.push(REQ_ADMIN_DB_UPLOAD_CHUNK);
-                encode_lp_string(&mut payload, name);
-                encode_lp_string(&mut payload, file_path);
-                payload.extend_from_slice(&offset.to_le_bytes());
-                payload.extend_from_slice(&(data.len() as u32).to_le_bytes());
-                payload.extend_from_slice(data);
-            }
-            Request::AdminDbUploadFinalize { name } => {
-                payload.push(REQ_ADMIN_DB_UPLOAD_FINALIZE);
-                encode_lp_string(&mut payload, name);
-            }
-            Request::AdminDbActivate { name, target_path } => {
-                payload.push(REQ_ADMIN_DB_ACTIVATE);
-                encode_lp_string(&mut payload, name);
-                encode_lp_string(&mut payload, target_path);
             }
             Request::IndexBatch(q) => {
                 payload.push(REQ_INDEX_BATCH);
@@ -956,83 +789,6 @@ impl Request {
                     nonce,
                 })
             }
-            REQ_ADMIN_AUTH_CHALLENGE => Ok(Request::AdminAuthChallenge),
-            REQ_ADMIN_AUTH_RESPONSE => {
-                if data.len() < 1 + 64 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "admin auth response must carry a 64-byte signature",
-                    ));
-                }
-                let mut signature = [0u8; 64];
-                signature.copy_from_slice(&data[1..65]);
-                Ok(Request::AdminAuthResponse { signature })
-            }
-            REQ_ADMIN_DB_UPLOAD_BEGIN => {
-                let mut pos = 1;
-                let name = decode_lp_string(data, &mut pos)?;
-                if pos + 4 > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing manifest len",
-                    ));
-                }
-                let mlen = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-                pos += 4;
-                if pos + mlen > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "truncated manifest_toml",
-                    ));
-                }
-                let manifest_toml = data[pos..pos + mlen].to_vec();
-                Ok(Request::AdminDbUploadBegin {
-                    name,
-                    manifest_toml,
-                })
-            }
-            REQ_ADMIN_DB_UPLOAD_CHUNK => {
-                let mut pos = 1;
-                let name = decode_lp_string(data, &mut pos)?;
-                let file_path = decode_lp_string(data, &mut pos)?;
-                if pos + 8 > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, "missing offset"));
-                }
-                let offset = u64::from_le_bytes(data[pos..pos + 8].try_into().unwrap());
-                pos += 8;
-                if pos + 4 > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "missing data len",
-                    ));
-                }
-                let dlen = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-                pos += 4;
-                if pos + dlen > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "truncated chunk data",
-                    ));
-                }
-                let data_bytes = data[pos..pos + dlen].to_vec();
-                Ok(Request::AdminDbUploadChunk {
-                    name,
-                    file_path,
-                    offset,
-                    data: data_bytes,
-                })
-            }
-            REQ_ADMIN_DB_UPLOAD_FINALIZE => {
-                let mut pos = 1;
-                let name = decode_lp_string(data, &mut pos)?;
-                Ok(Request::AdminDbUploadFinalize { name })
-            }
-            REQ_ADMIN_DB_ACTIVATE => {
-                let mut pos = 1;
-                let name = decode_lp_string(data, &mut pos)?;
-                let target_path = decode_lp_string(data, &mut pos)?;
-                Ok(Request::AdminDbActivate { name, target_path })
-            }
             REQ_INDEX_BATCH => {
                 // INDEX groups must carry both cuckoo-position keys.
                 let q = decode_batch_query(&data[1..], pir_core::params::INDEX_CUCKOO_NUM_HASHES)?;
@@ -1158,34 +914,6 @@ impl Response {
                 payload.push(RESP_ANNOUNCE);
                 payload.extend_from_slice(&(bundle_bytes.len() as u32).to_le_bytes());
                 payload.extend_from_slice(bundle_bytes);
-            }
-            Response::AdminAuthChallenge(c) => {
-                payload.push(RESP_ADMIN_AUTH_CHALLENGE);
-                payload.extend_from_slice(&c.nonce);
-            }
-            Response::AdminAuthResponse(r) => {
-                payload.push(RESP_ADMIN_AUTH_RESPONSE);
-                encode_admin_ack_payload(&mut payload, r.ok, &r.msg);
-            }
-            Response::AdminDbUploadBegin(a) => {
-                payload.push(RESP_ADMIN_DB_UPLOAD_BEGIN);
-                encode_admin_ack_payload(&mut payload, a.ok, &a.msg);
-            }
-            Response::AdminDbUploadChunk(a) => {
-                payload.push(RESP_ADMIN_DB_UPLOAD_CHUNK);
-                encode_admin_ack_payload(&mut payload, a.ok, &a.msg);
-            }
-            Response::AdminDbUploadFinalize(r) => {
-                payload.push(RESP_ADMIN_DB_UPLOAD_FINALIZE);
-                payload.push(if r.ok { 1 } else { 0 });
-                let mb = r.msg.as_bytes();
-                payload.extend_from_slice(&(mb.len() as u16).to_le_bytes());
-                payload.extend_from_slice(mb);
-                payload.extend_from_slice(&r.manifest_root);
-            }
-            Response::AdminDbActivate(a) => {
-                payload.push(RESP_ADMIN_DB_ACTIVATE);
-                encode_admin_ack_payload(&mut payload, a.ok, &a.msg);
             }
             Response::IndexBatch(r) => {
                 payload.push(RESP_INDEX_BATCH);
@@ -1321,57 +1049,6 @@ impl Response {
                     ));
                 }
                 Ok(Response::Announce(data[5..5 + blen].to_vec()))
-            }
-            RESP_ADMIN_AUTH_CHALLENGE => {
-                if data.len() < 1 + 32 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "admin auth challenge response missing nonce",
-                    ));
-                }
-                let mut nonce = [0u8; 32];
-                nonce.copy_from_slice(&data[1..33]);
-                Ok(Response::AdminAuthChallenge(AdminAuthChallenge { nonce }))
-            }
-            RESP_ADMIN_AUTH_RESPONSE => {
-                let (ok, msg) = decode_admin_ack_payload(&data[1..])?;
-                Ok(Response::AdminAuthResponse(AdminAuthResult { ok, msg }))
-            }
-            RESP_ADMIN_DB_UPLOAD_BEGIN => {
-                let (ok, msg) = decode_admin_ack_payload(&data[1..])?;
-                Ok(Response::AdminDbUploadBegin(AdminAck { ok, msg }))
-            }
-            RESP_ADMIN_DB_UPLOAD_CHUNK => {
-                let (ok, msg) = decode_admin_ack_payload(&data[1..])?;
-                Ok(Response::AdminDbUploadChunk(AdminAck { ok, msg }))
-            }
-            RESP_ADMIN_DB_UPLOAD_FINALIZE => {
-                if data.len() < 1 + 1 + 2 + 32 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "finalize result too short",
-                    ));
-                }
-                let ok = data[1] != 0;
-                let msg_len = u16::from_le_bytes(data[2..4].try_into().unwrap()) as usize;
-                if 4 + msg_len + 32 > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "finalize result truncated",
-                    ));
-                }
-                let msg = String::from_utf8_lossy(&data[4..4 + msg_len]).to_string();
-                let mut manifest_root = [0u8; 32];
-                manifest_root.copy_from_slice(&data[4 + msg_len..4 + msg_len + 32]);
-                Ok(Response::AdminDbUploadFinalize(AdminFinalizeResult {
-                    ok,
-                    msg,
-                    manifest_root,
-                }))
-            }
-            RESP_ADMIN_DB_ACTIVATE => {
-                let (ok, msg) = decode_admin_ack_payload(&data[1..])?;
-                Ok(Response::AdminDbActivate(AdminAck { ok, msg }))
             }
             RESP_INDEX_BATCH => {
                 let r = decode_batch_result(&data[1..])?;
@@ -2418,9 +2095,8 @@ fn encode_attest_result(buf: &mut Vec<u8>, r: &AttestResult) {
     encode_lp_bytes_u32(buf, &r.vcek_pem);
 }
 
-/// Length-prefixed bytes write helper (u32 LE length + body). Mirrors
-/// the existing `encode_lp_string` but without the UTF-8 assumption,
-/// for binary blobs like PEM bytes.
+/// Length-prefixed bytes write helper (u32 LE length + body), for binary
+/// blobs like PEM bytes.
 fn encode_lp_bytes_u32(buf: &mut Vec<u8>, body: &[u8]) {
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
     buf.extend_from_slice(body);
@@ -2578,66 +2254,6 @@ fn decode_lp_bytes_u32_required(
     let out = data[*pos..*pos + len].to_vec();
     *pos += len;
     Ok(out)
-}
-
-// ─── Admin upload encoding helpers ─────────────────────────────────────────
-
-/// Encode a length-prefixed UTF-8 string with a 4-byte LE length.
-fn encode_lp_string(buf: &mut Vec<u8>, s: &str) {
-    let b = s.as_bytes();
-    buf.extend_from_slice(&(b.len() as u32).to_le_bytes());
-    buf.extend_from_slice(b);
-}
-
-/// Decode a `[4B len LE][bytes]` UTF-8 string starting at `*pos`,
-/// advancing `*pos` past it. Lossy UTF-8 conversion.
-fn decode_lp_string(data: &[u8], pos: &mut usize) -> io::Result<String> {
-    if *pos + 4 > data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "missing length-prefixed string len",
-        ));
-    }
-    let len = u32::from_le_bytes(data[*pos..*pos + 4].try_into().unwrap()) as usize;
-    *pos += 4;
-    if *pos + len > data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "truncated length-prefixed string body",
-        ));
-    }
-    let s = String::from_utf8_lossy(&data[*pos..*pos + len]).to_string();
-    *pos += len;
-    Ok(s)
-}
-
-/// Common AdminAck wire body: `[1B ok][2B msg_len LE][msg_bytes]`.
-fn encode_admin_ack_payload(buf: &mut Vec<u8>, ok: bool, msg: &str) {
-    buf.push(if ok { 1 } else { 0 });
-    let mb = msg.as_bytes();
-    buf.extend_from_slice(&(mb.len() as u16).to_le_bytes());
-    buf.extend_from_slice(mb);
-}
-
-fn decode_admin_ack_payload(data: &[u8]) -> io::Result<(bool, String)> {
-    if data.len() < 3 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "admin ack too short",
-        ));
-    }
-    let ok = data[0] != 0;
-    let msg_len = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
-    if 3 + msg_len > data.len() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "admin ack truncated msg",
-        ));
-    }
-    Ok((
-        ok,
-        String::from_utf8_lossy(&data[3..3 + msg_len]).to_string(),
-    ))
 }
 
 #[cfg(test)]

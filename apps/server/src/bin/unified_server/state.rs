@@ -2,10 +2,7 @@ use crate::cli::ServerRole;
 use crate::harmony_hints::harmony_batch_response;
 use crate::onion::{OnionPirInfo, OnionPirMerkleInfo, PirCommand};
 #[cfg(feature = "cuckoo-oram")]
-use crate::oram::{
-    direct_oram_response_padding_bytes, CuckooNativeLookupConfig, CuckooOramTables,
-    DirectOramTables,
-};
+use crate::oram::{direct_oram_response_padding_bytes, DirectOramTables};
 #[cfg(feature = "cuckoo-oram")]
 use crate::unsafe_debug_log;
 use libdpf::DpfKey;
@@ -16,7 +13,6 @@ use runtime::hint_pool;
 use runtime::protocol::*;
 use runtime::table::{DatabaseType, MappedDatabase, MappedSubTable, ServerState};
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -72,14 +68,6 @@ pub(crate) struct UnifiedServerData {
     /// `merkle_onion_*` sibling / root / tree-top files on disk).
     /// Length matches `state.databases.len()`.
     pub(crate) onionpir_merkle: Vec<Option<OnionPirMerkleInfo>>,
-    /// Admin auth config — `Some` when the operator started the server with
-    /// `--admin-pubkey-hex <hex>`. `None` means REQ_ADMIN_* requests fail.
-    pub(crate) admin_config: Option<pir_runtime_core::admin::AdminConfig>,
-    /// Data root for admin DB uploads: the directory `databases.toml`
-    /// lives in (or `data_dir` for legacy invocations). Staging dirs
-    /// land at `<data_root>/.staging/<name>/` and ACTIVATE renames into
-    /// `<data_root>/<target_path>/`.
-    pub(crate) data_root: PathBuf,
     /// Long-lived X25519 keypair for the inner encrypted channel
     /// (cloudflared-blind WSS frames). Generated inside the SEV-SNP
     /// guest at startup; the public half is committed to REPORT_DATA
@@ -91,12 +79,6 @@ pub(crate) struct UnifiedServerData {
     /// Pre-computed HarmonyPIR V2 hint pools indexed by exact database ID.
     /// Empty when `--pool-size=0`.
     pub(crate) hint_pools: BTreeMap<u8, hint_pool::HintPool>,
-    /// Optional legacy ORAM-backed INDEX/CHUNK cuckoo-table access indexed by
-    /// db_id. This is kept only as a compatibility fallback for
-    /// REQ_ORAM_LOOKUP; HarmonyPIR queries stay mmap-backed so ORAM state
-    /// mutation cannot interfere with the ordinary PBC service path.
-    #[cfg(feature = "cuckoo-oram")]
-    pub(crate) cuckoo_oram: HashMap<u8, CuckooOramTables>,
     /// Optional direct-entry ORAM lookup tables indexed by db_id. These bypass
     /// the PBC-expanded cuckoo DB entirely and are used only by REQ_ORAM_LOOKUP.
     #[cfg(feature = "cuckoo-oram")]
@@ -218,6 +200,48 @@ impl UnifiedServerData {
         ));
     }
 
+    /// `,"merkle_bucket":{…}` for a database with bucket Merkle: sibling
+    /// levels, per-group roots, super-root and the tree-tops digest.
+    pub(crate) fn append_bucket_merkle_json(json: &mut String, db: &MappedDatabase) {
+        let (Some(roots), Some(super_root), Some(tops)) = (
+            &db.bucket_merkle_roots,
+            &db.bucket_merkle_root,
+            &db.bucket_merkle_tree_tops,
+        ) else {
+            return;
+        };
+        let hex = |bytes: &[u8]| -> String { bytes.iter().map(|b| format!("{:02x}", b)).collect() };
+        let levels = |sibs: &[MappedSubTable]| -> String {
+            sibs.iter()
+                .map(|sib| {
+                    format!(
+                        r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
+                        params::compute_dpf_n(sib.bins_per_table),
+                        sib.bins_per_table
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let root_list = |groups: std::ops::Range<usize>| -> String {
+            groups
+                .map(|g| format!("\"{}\"", hex(&roots[g * 32..(g + 1) * 32])))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let index_k = db.index.params.k;
+        json.push_str(&format!(
+            r#","merkle_bucket":{{"arity":8,"index_levels":[{}],"chunk_levels":[{}],"index_roots":[{}],"chunk_roots":[{}],"super_root":"{}","tree_tops_hash":"{}","tree_tops_size":{}}}"#,
+            levels(&db.bucket_merkle_index_siblings),
+            levels(&db.bucket_merkle_chunk_siblings),
+            root_list(0..index_k),
+            root_list(index_k..index_k + db.chunk.params.k),
+            hex(super_root),
+            hex(&pir_core::merkle::sha256(tops)),
+            tops.len(),
+        ));
+    }
+
     pub(crate) fn server_info(&self) -> ServerInfo {
         ServerInfo {
             index_bins_per_table: self.main_db().index.bins_per_table as u32,
@@ -270,109 +294,7 @@ impl UnifiedServerData {
             Self::append_onionpir_merkle_json(&mut json, ",\"onionpir_merkle\":", om);
         }
 
-        // Legacy global N-ary tree Merkle ("merkle":{…}) removed — the
-        // per-bucket bin Merkle below ("merkle_bucket":{…}) is the active
-        // scheme. No DB carries N-ary Merkle data anymore.
-
-        // Per-bucket bin Merkle info
-        if self.main_db().has_bucket_merkle() {
-            json.push_str(r#","merkle_bucket":{"arity":8,"#);
-
-            // INDEX sibling levels
-            json.push_str(r#""index_levels":["#);
-            for (i, sib) in self
-                .main_db()
-                .bucket_merkle_index_siblings
-                .iter()
-                .enumerate()
-            {
-                if i > 0 {
-                    json.push(',');
-                }
-                json.push_str(&format!(
-                    r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
-                    params::compute_dpf_n(sib.bins_per_table),
-                    sib.bins_per_table,
-                ));
-            }
-            json.push_str("],");
-
-            // CHUNK sibling levels
-            json.push_str(r#""chunk_levels":["#);
-            for (i, sib) in self
-                .main_db()
-                .bucket_merkle_chunk_siblings
-                .iter()
-                .enumerate()
-            {
-                if i > 0 {
-                    json.push(',');
-                }
-                json.push_str(&format!(
-                    r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
-                    params::compute_dpf_n(sib.bins_per_table),
-                    sib.bins_per_table,
-                ));
-            }
-            json.push_str("],");
-
-            // Per-group roots as hex arrays
-            if let Some(ref roots_data) = self.main_db().bucket_merkle_roots {
-                let index_k = self.main_db().index.params.k;
-                let chunk_k = self.main_db().chunk.params.k;
-
-                json.push_str(r#""index_roots":["#);
-                for g in 0..index_k {
-                    if g > 0 {
-                        json.push(',');
-                    }
-                    let root = &roots_data[g * 32..(g + 1) * 32];
-                    json.push('"');
-                    for b in root {
-                        json.push_str(&format!("{:02x}", b));
-                    }
-                    json.push('"');
-                }
-                json.push_str("],");
-
-                json.push_str(r#""chunk_roots":["#);
-                for g in 0..chunk_k {
-                    if g > 0 {
-                        json.push(',');
-                    }
-                    let root = &roots_data[(index_k + g) * 32..(index_k + g + 1) * 32];
-                    json.push('"');
-                    for b in root {
-                        json.push_str(&format!("{:02x}", b));
-                    }
-                    json.push('"');
-                }
-                json.push_str("],");
-            }
-
-            // Super-root
-            if let Some(ref sr) = self.main_db().bucket_merkle_root {
-                json.push_str(&format!(
-                    r#""super_root":"{}","#,
-                    sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()
-                ));
-            }
-
-            // Tree-tops hash and size
-            if let Some(ref tops) = self.main_db().bucket_merkle_tree_tops {
-                let tops_hash = pir_core::merkle::sha256(tops);
-                json.push_str(&format!(
-                    r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
-                    tops_hash
-                        .iter()
-                        .map(|b| format!("{:02x}", b))
-                        .collect::<String>(),
-                    tops.len()
-                ));
-            }
-
-            json.push('}');
-        }
+        Self::append_bucket_merkle_json(&mut json, self.main_db());
 
         // Per-database info array (Merkle availability + params for each DB)
         if self.state.databases.len() > 1
@@ -407,92 +329,7 @@ impl UnifiedServerData {
                     ));
                 }
 
-                if db.has_bucket_merkle() {
-                    json.push_str(r#","merkle_bucket":{"arity":8,"#);
-
-                    // INDEX sibling levels
-                    json.push_str(r#""index_levels":["#);
-                    for (li, sib) in db.bucket_merkle_index_siblings.iter().enumerate() {
-                        if li > 0 {
-                            json.push(',');
-                        }
-                        json.push_str(&format!(
-                            r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
-                            params::compute_dpf_n(sib.bins_per_table),
-                            sib.bins_per_table,
-                        ));
-                    }
-                    json.push_str("],");
-
-                    // CHUNK sibling levels
-                    json.push_str(r#""chunk_levels":["#);
-                    for (li, sib) in db.bucket_merkle_chunk_siblings.iter().enumerate() {
-                        if li > 0 {
-                            json.push(',');
-                        }
-                        json.push_str(&format!(
-                            r#"{{"dpf_n":{},"bins_per_table":{}}}"#,
-                            params::compute_dpf_n(sib.bins_per_table),
-                            sib.bins_per_table,
-                        ));
-                    }
-                    json.push_str("],");
-
-                    // Per-group roots
-                    if let Some(ref roots_data) = db.bucket_merkle_roots {
-                        let index_k = db.index.params.k;
-                        let chunk_k = db.chunk.params.k;
-
-                        json.push_str(r#""index_roots":["#);
-                        for g in 0..index_k {
-                            if g > 0 {
-                                json.push(',');
-                            }
-                            let root = &roots_data[g * 32..(g + 1) * 32];
-                            json.push('"');
-                            for b in root {
-                                json.push_str(&format!("{:02x}", b));
-                            }
-                            json.push('"');
-                        }
-                        json.push_str("],");
-
-                        json.push_str(r#""chunk_roots":["#);
-                        for g in 0..chunk_k {
-                            if g > 0 {
-                                json.push(',');
-                            }
-                            let root = &roots_data[(index_k + g) * 32..(index_k + g + 1) * 32];
-                            json.push('"');
-                            for b in root {
-                                json.push_str(&format!("{:02x}", b));
-                            }
-                            json.push('"');
-                        }
-                        json.push_str("],");
-                    }
-
-                    if let Some(ref sr) = db.bucket_merkle_root {
-                        json.push_str(&format!(
-                            r#""super_root":"{}","#,
-                            sr.iter().map(|b| format!("{:02x}", b)).collect::<String>()
-                        ));
-                    }
-
-                    if let Some(ref tops) = db.bucket_merkle_tree_tops {
-                        let tops_hash = pir_core::merkle::sha256(tops);
-                        json.push_str(&format!(
-                            r#""tree_tops_hash":"{}","tree_tops_size":{}"#,
-                            tops_hash
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>(),
-                            tops.len()
-                        ));
-                    }
-
-                    json.push('}'); // close merkle_bucket
-                }
+                Self::append_bucket_merkle_json(&mut json, db);
 
                 // Per-DB OnionPIR per-bin Merkle, when this DB has it
                 if let Some(om) = self.onionpir_merkle_for(i as u8) {
@@ -715,80 +552,41 @@ impl UnifiedServerData {
             if self.state.get_db(query.db_id).is_none() {
                 return Response::Error(format!("unknown db_id {}", query.db_id));
             }
-            if let Some(tables) = self.direct_oram.get(&query.db_id) {
-                let t = Instant::now();
-                let lookup = match tables.lookup_batch(&query.script_hashes, &query.slot_present) {
-                    Ok(v) => v,
-                    Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
-                };
-                unsafe_debug_log!(
-                    "[direct-oram-lookup] db={} slots={}, budget={} in {:.2?}",
-                    query.db_id,
-                    query.script_hashes.len(),
-                    tables.access_budget,
-                    t.elapsed(),
-                );
-                let actual_chunk_bytes = lookup.iter().try_fold(0usize, |acc, item| {
-                    acc.checked_add(item.raw_chunk_data.len())
-                        .ok_or_else(|| "direct ORAM response chunk byte count overflow".to_string())
-                });
-                let actual_chunk_bytes = match actual_chunk_bytes {
-                    Ok(bytes) => bytes,
-                    Err(e) => return Response::Error(e),
-                };
-                let trailing_padding_bytes = match direct_oram_response_padding_bytes(
-                    tables.access_budget,
-                    query.script_hashes.len(),
-                    tables.index.hash_fns,
-                    actual_chunk_bytes,
-                ) {
-                    Ok(bytes) => bytes,
-                    Err(e) => return Response::Error(e),
-                };
-                return Response::OramLookupResult(OramLookupResult {
-                    db_id: query.db_id,
-                    items: lookup
-                        .into_iter()
-                        .map(|item| OramLookupItem {
-                            found: item.found,
-                            whale: item.whale,
-                            start_chunk_id: item.start_chunk_id.unwrap_or(0),
-                            num_chunks: item.num_chunks,
-                            raw_chunk_data: item.raw_chunk_data,
-                        })
-                        .collect(),
-                    trailing_padding_bytes,
-                });
-            }
-            let db = self
-                .state
-                .get_db(query.db_id)
-                .expect("unknown db_id checked above");
-            let Some(tables) = self.cuckoo_oram.get(&query.db_id) else {
+            let Some(tables) = self.direct_oram.get(&query.db_id) else {
                 return Response::Error(format!(
-                    "ORAM not configured for db_id {}; start with --direct-oram-db {}=<dir> or --cuckoo-oram-db {}=<dir>",
-                    query.db_id,
+                    "Direct ORAM not configured for db_id {}; start with --direct-oram-db {}=<dir>",
                     query.db_id, query.db_id
                 ));
             };
             let t = Instant::now();
-            if query.present_count() != query.script_hashes.len() {
-                return Response::Error(
-                    "padded empty ORAM slots require --direct-oram-db; legacy cuckoo ORAM fallback does not support explicit empty slots".into(),
-                );
-            }
-            let lookup = match tables
-                .lookup_batch(CuckooNativeLookupConfig::from_db(db), &query.script_hashes)
-            {
+            let lookup = match tables.lookup_batch(&query.script_hashes, &query.slot_present) {
                 Ok(v) => v,
-                Err(e) => return Response::Error(format!("ORAM lookup failed: {}", e)),
+                Err(e) => return Response::Error(format!("Direct ORAM lookup failed: {}", e)),
             };
             unsafe_debug_log!(
-                "[oram-lookup] db={} {} scripthash(es) in {:.2?}",
+                "[direct-oram-lookup] db={} slots={}, budget={} in {:.2?}",
                 query.db_id,
                 query.script_hashes.len(),
+                tables.access_budget,
                 t.elapsed(),
             );
+            let actual_chunk_bytes = lookup.iter().try_fold(0usize, |acc, item| {
+                acc.checked_add(item.raw_chunk_data.len())
+                    .ok_or_else(|| "direct ORAM response chunk byte count overflow".to_string())
+            });
+            let actual_chunk_bytes = match actual_chunk_bytes {
+                Ok(bytes) => bytes,
+                Err(e) => return Response::Error(e),
+            };
+            let trailing_padding_bytes = match direct_oram_response_padding_bytes(
+                tables.access_budget,
+                query.script_hashes.len(),
+                tables.index.hash_fns,
+                actual_chunk_bytes,
+            ) {
+                Ok(bytes) => bytes,
+                Err(e) => return Response::Error(e),
+            };
             Response::OramLookupResult(OramLookupResult {
                 db_id: query.db_id,
                 items: lookup
@@ -801,7 +599,7 @@ impl UnifiedServerData {
                         raw_chunk_data: item.raw_chunk_data,
                     })
                     .collect(),
-                trailing_padding_bytes: 0,
+                trailing_padding_bytes,
             })
         }
         #[cfg(not(feature = "cuckoo-oram"))]

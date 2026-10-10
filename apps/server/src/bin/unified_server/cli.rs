@@ -1,49 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
 
 // ─── CLI ────────────────────────────────────────────────────────────────────
 
-/// Loosely-coupled flag controlling **only OnionPIR loading** at startup.
-///
-/// History: `Primary` and `Secondary` originally bundled three
-/// independent decisions — OnionPIR loading, HarmonyPIR query
-/// dispatch, HarmonyPIR hint dispatch. That bundling pinned operators
-/// into "primary host = full stack, secondary host = hint-only" which
-/// made it awkward to allocate workload to where the hardware fits.
-///
-/// Today the role flag controls only one thing: whether to attempt
-/// loading OnionPIR data files at startup. Both roles handle every
-/// DPF and HarmonyPIR opcode (hint, query, batch query, info). The
-/// CLIENT chooses which endpoint to send hint vs query requests to —
-/// the two-server non-collusion property of HarmonyPIR comes from
-/// picking independent operators/hardware, not from server-side
-/// dispatch gating.
-///
-/// `--disable-onion` overrides the OnionPIR-loading default for a
-/// primary-role instance that doesn't have the data files (e.g., the
-/// VPSBG host, which is OnionPIR-free by design).
-///
-/// (The variant names are kept for back-compat with existing systemd
-/// units and CLI invocations; semantically they could just as well be
-/// `WithOnion`/`NoOnion`.)
+/// Whether to load OnionPIR at startup: `primary` loads each database's
+/// OnionPIR files when they exist, `secondary` never does. Every other request
+/// is gated by `--serve-hints` / `--serve-queries`, not by the role.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum ServerRole {
-    /// Tries to load OnionPIR data at startup unless `--disable-onion`
-    /// is set. Both Hetzner (which has OnionPIR data) and VPSBG (which
-    /// doesn't, hence `--disable-onion`) can run as Primary safely;
-    /// the loader gracefully skips on missing files.
     Primary,
-    /// Skips OnionPIR loading entirely. Useful when the operator
-    /// wants to be explicit about "this server is intentionally
-    /// OnionPIR-free" without relying on file-presence detection.
     Secondary,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HarmonyPoolBinding {
-    pub(crate) db_id: u8,
-    pub(crate) pool_dir: Option<PathBuf>,
 }
 
 pub(crate) struct CliArgs {
@@ -54,39 +20,19 @@ pub(crate) struct CliArgs {
     pub(crate) port: u16,
     pub(crate) data_dir: PathBuf,
     pub(crate) role: ServerRole,
-    /// Path to databases.toml config file (overrides --checkpoint/--delta).
+    /// Path to databases.toml config file (overrides --data-dir).
     pub(crate) config_path: Option<PathBuf>,
-    /// Checkpoint databases: (path, height).
-    pub(crate) checkpoints: Vec<(PathBuf, u32)>,
-    /// Delta databases: (path, base_height, tip_height).
-    pub(crate) deltas: Vec<(PathBuf, u32, u32)>,
-    /// Hex-encoded ed25519 admin pubkey (64 chars). When set, REQ_ADMIN_*
-    /// requests are accepted and gated by challenge/response auth against
-    /// this key. When unset, all REQ_ADMIN_* requests return an error
-    /// envelope.
-    pub(crate) admin_pubkey_hex: Option<String>,
-    /// Skip OnionPIR loading even if files are present and this is a
-    /// primary-role instance. Used on hosts that are intentionally
-    /// OnionPIR-free (e.g., the VPSBG non-collusion partner where
-    /// OnionPIR data is not synced from Hetzner). Primary role
-    /// otherwise auto-loads OnionPIR if files exist.
-    pub(crate) disable_onion: bool,
     /// Directory containing the AMD VCEK chain PEMs. Expected files:
     ///   - cert_chain.pem  (ASK + ARK concatenated, as AMD KDS returns)
     ///   - vcek.pem        (the per-chip VCEK for the current TCB)
     ///
     /// If unset (or files missing), the AttestResult ships empty cert
-    /// fields and the browser-side verifier falls back to V2-binding-
-    /// only mode. Operator's responsibility to refresh after TCB
-    /// changes (kernel update, microcode update) — see
-    /// docs/history/PHASE3_ROADMAP.md.
+    /// fields. Refresh the files after a TCB change.
     pub(crate) vcek_dir: Option<PathBuf>,
-    /// HarmonyPIR V2 hint pool size per configured database (0 = disabled).
+    /// HarmonyPIR V2 hint pool size for database 0 (0 = no pool).
     pub(crate) pool_size: usize,
-    /// Exact immutable database/directory bindings for the V2 hint pools.
-    /// Legacy `--pool-db-id`/`--pool-dir` normalizes to one entry; repeated
-    /// `--harmony-pool-db <db_id>=<dir>` entries enable explicit multi-pool.
-    pub(crate) harmony_pool_bindings: Vec<HarmonyPoolBinding>,
+    /// Where the hint pool persists its entries (memory only when unset).
+    pub(crate) pool_dir: Option<PathBuf>,
     /// The credit issuer's Ed25519 public keys (`--credit-issuer-pubkey
     /// FILE`, repeatable); its `/v2/redeem` answers must verify under one.
     pub(crate) credit_issuer_pubkeys: Vec<PathBuf>,
@@ -120,25 +66,13 @@ pub(crate) struct CliArgs {
     pub(crate) max_connections: usize,
     pub(crate) websocket_handshake_timeout_ms: u64,
     pub(crate) connection_idle_timeout_ms: u64,
-    /// Explicitly enables privacy-dangerous per-connection/per-query logs.
-    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-    pub(crate) unsafe_debug_query_logging: bool,
-    /// Whether this server accepts HarmonyPIR hint requests
-    /// (`REQ_HARMONY_HINTS` / `REQ_HARMONY_HINTS_V2`). Default `false`;
-    /// must be explicitly enabled via `--serve-hints`. Combined with
-    /// `--serve-queries` to pin the role: pir1 runs `--serve-hints
-    /// --serve-queries` (HarmonyPIR hint pool + DPF server-0 + OnionPIR);
-    /// pir2 runs `--serve-queries` only (DPF server-1 + HarmonyPIR query
-    /// phase).
-    /// Misconfiguration (client hits the wrong role) becomes a
-    /// wire-level rejection instead of silently falling through to
-    /// the legacy V1-on-demand path or producing confusing errors.
+    /// Whether this server answers HarmonyPIR hint requests
+    /// (`--serve-hints`). pir1 serves hints and queries; the HarmonyPIR
+    /// query server serves queries only, so it never sees a client's hints.
     pub(crate) serve_hints: bool,
-    /// Whether this server accepts PIR query requests (DPF batches,
-    /// OnionPIR queries, HarmonyPIR query phase, Merkle siblings,
-    /// tree-tops). Default `false`; must be explicitly enabled via
-    /// `--serve-queries`. See `serve_hints` for the deployment
-    /// topology rationale.
+    /// Whether this server answers PIR query requests (`--serve-queries`):
+    /// DPF batches, OnionPIR queries, the HarmonyPIR query phase, Merkle
+    /// siblings and tree-tops.
     pub(crate) serve_queries: bool,
     /// Serve Direct ORAM only (`--oram-only`). Each configured database is
     /// built from its V2 proof (geometry, chain anchor, exact `server-db`
@@ -162,40 +96,12 @@ pub(crate) struct CliArgs {
     /// loaded from `--identity-cert-path`. Required if either of the
     /// identity flags is set.
     pub(crate) identity_server_id: Option<String>,
-    /// Optional Circuit ORAM image directory for the two-level cuckoo tables
-    /// (legacy alias for db_id=0, levels 0/1 only). Built by `oramctl build-circuit`.
-    pub(crate) cuckoo_oram_dir: Option<PathBuf>,
-    /// Optional per-database Circuit ORAM image directories.
-    /// Repeatable as `--cuckoo-oram-db <db_id>=<dir>`.
-    pub(crate) cuckoo_oram_dbs: Vec<(u8, PathBuf)>,
-    /// Consecutive cuckoo bins packed into one ORAM logical block.
-    pub(crate) cuckoo_oram_pack: usize,
-    /// Public deterministic evictions drained after each ORAM bin read.
-    pub(crate) cuckoo_oram_drain_per_access: u64,
-    /// Whether ORAM metadata/payload page files are AEAD wrapped.
-    pub(crate) cuckoo_oram_encrypted: bool,
-    /// 32-byte hex key for encrypted ORAM page files.
-    pub(crate) cuckoo_oram_key_hex: Option<String>,
-    /// 32-byte hex key for encrypted ORAM controller state.
-    pub(crate) cuckoo_oram_state_key_hex: Option<String>,
-    /// Public top-tree levels cached in trusted memory.
-    pub(crate) cuckoo_oram_cache_levels: usize,
-    /// Authenticate disk-backed ORAM page images with split Merkle stores.
-    pub(crate) cuckoo_oram_auth_store: bool,
-    /// Do not persist trusted ORAM state after query responses.
-    pub(crate) cuckoo_oram_no_save: bool,
-    /// Optional direct-entry ORAM image directory for db_id=0.
-    pub(crate) direct_oram_dir: Option<PathBuf>,
     /// Optional per-database direct-entry ORAM image directories.
     /// Repeatable as `--direct-oram-db <db_id>=<dir>`.
     pub(crate) direct_oram_dbs: Vec<(u8, PathBuf)>,
     /// Optional per-database trusted controller/auth state directories.
     /// Repeatable as `--direct-oram-trusted-state-db <db_id>=<dir>`.
     pub(crate) direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)>,
-    /// Development/test-only escape hatch for trusted state outside the
-    /// measured `/run/bitcoinpir-oram-state` tmpfs.
-    #[cfg_attr(not(feature = "cuckoo-oram"), allow(dead_code))]
-    pub(crate) direct_oram_allow_trusted_state_outside_run_dev: bool,
     /// Public deterministic evictions drained after each direct ORAM read.
     pub(crate) direct_oram_drain_per_access: u64,
     /// Fixed direct ORAM access budget per ORAM lookup request.
@@ -210,36 +116,6 @@ pub(crate) struct CliArgs {
     pub(crate) direct_oram_cache_levels: usize,
     /// Authenticate disk-backed direct ORAM page images with split Merkle stores.
     pub(crate) direct_oram_auth_store: bool,
-    /// Do not persist trusted direct ORAM state after query responses.
-    pub(crate) direct_oram_no_save: bool,
-}
-
-pub(crate) fn parse_cuckoo_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
-    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
-        return Err(
-            "--cuckoo-oram-db expects <db_id>=<dir> (legacy alias: --harmony-oram-db)".into(),
-        );
-    };
-    let db_id = db_id_raw
-        .parse::<u8>()
-        .map_err(|e| format!("invalid --cuckoo-oram-db db_id `{}`: {}", db_id_raw, e))?;
-    if dir_raw.is_empty() {
-        return Err("--cuckoo-oram-db requires a non-empty directory".into());
-    }
-    Ok((db_id, PathBuf::from(dir_raw)))
-}
-
-pub(crate) fn parse_harmony_pool_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
-    let Some((db_id_raw, dir_raw)) = spec.split_once('=') else {
-        return Err("--harmony-pool-db expects <db_id>=<dir>".into());
-    };
-    let db_id = db_id_raw
-        .parse::<u8>()
-        .map_err(|e| format!("invalid --harmony-pool-db db_id `{db_id_raw}`: {e}"))?;
-    if dir_raw.is_empty() {
-        return Err("--harmony-pool-db requires a non-empty directory".into());
-    }
-    Ok((db_id, PathBuf::from(dir_raw)))
 }
 
 /// `--oram-only` answers Direct ORAM and nothing else that would read table
@@ -253,67 +129,7 @@ pub(crate) fn validate_oram_only_cli_v1(args: &CliArgs) -> Result<(), String> {
             "--oram-only needs --config: each database's proof_v2_dir supplies its geometry".into(),
         );
     }
-    if !args.serve_queries || args.serve_hints {
-        return Err("--oram-only needs --serve-queries and no --serve-hints".into());
-    }
-    if args.pool_size != 0 || !args.harmony_pool_bindings.is_empty() {
-        return Err("--oram-only serves no HarmonyPIR hint pool".into());
-    }
-    if args.cuckoo_oram_dir.is_some() || !args.cuckoo_oram_dbs.is_empty() {
-        return Err("--oram-only serves Direct ORAM only, not the cuckoo-table ORAM".into());
-    }
-    if args.role != ServerRole::Secondary {
-        return Err("--oram-only needs --role secondary, which never loads OnionPIR".into());
-    }
     Ok(())
-}
-
-pub(crate) fn normalize_harmony_pool_bindings(
-    pool_size: usize,
-    legacy_db_id: u8,
-    legacy_db_id_explicit: bool,
-    legacy_pool_dir: Option<PathBuf>,
-    explicit: Vec<(u8, PathBuf)>,
-) -> Result<Vec<HarmonyPoolBinding>, String> {
-    if explicit.is_empty() {
-        return Ok((pool_size > 0)
-            .then_some(HarmonyPoolBinding {
-                db_id: legacy_db_id,
-                pool_dir: legacy_pool_dir,
-            })
-            .into_iter()
-            .collect());
-    }
-    if pool_size == 0 {
-        return Err("--harmony-pool-db requires --pool-size greater than zero".into());
-    }
-    if legacy_db_id_explicit || legacy_pool_dir.is_some() {
-        return Err("--harmony-pool-db cannot be combined with --pool-db-id or --pool-dir".into());
-    }
-
-    let mut by_database = BTreeMap::new();
-    let mut directories = BTreeSet::new();
-    for (db_id, pool_dir) in explicit {
-        if by_database.contains_key(&db_id) {
-            return Err(format!(
-                "--harmony-pool-db configures database {db_id} more than once"
-            ));
-        }
-        if !directories.insert(pool_dir.clone()) {
-            return Err(format!(
-                "--harmony-pool-db reuses pool directory {}",
-                pool_dir.display()
-            ));
-        }
-        by_database.insert(
-            db_id,
-            HarmonyPoolBinding {
-                db_id,
-                pool_dir: Some(pool_dir),
-            },
-        );
-    }
-    Ok(by_database.into_values().collect())
 }
 
 pub(crate) fn parse_direct_oram_db_arg(spec: &str) -> Result<(u8, PathBuf), String> {
@@ -382,12 +198,10 @@ pub(crate) fn fatal_cli(msg: impl AsRef<str>) -> ! {
     std::process::exit(2);
 }
 
-/// Flag reference printed by `--help`. Every `"--flag"` literal the parser
-/// accepts must appear here (enforced by a unit test), so the text cannot
-/// drift from the parser. Production values come from the reviewed run
-/// scripts and unit files, never from this text.
+/// Flag reference printed by `--help`. Production values come from the
+/// reviewed run scripts and unit files, never from this text.
 pub(crate) const USAGE_V1: &str = "\
-unified_server - BitcoinPIR unified PIR server (DPF, OnionPIR, HarmonyPIR, Direct/Cuckoo ORAM)
+unified_server - BitcoinPIR unified PIR server (DPF, OnionPIR, HarmonyPIR, Direct ORAM)
 
 usage: unified_server [FLAGS]           production flags come from the reviewed run
                                         scripts and unit files (docs/PRODUCTION_OPERATIONS.md)
@@ -397,31 +211,20 @@ usage: unified_server [FLAGS]           production flags come from the reviewed 
 listener:      --bind-address ADDR  --port N  --role primary|secondary  --serve-hints
                --serve-queries  --max-connections N  --connection-idle-timeout-ms MS
                --websocket-handshake-timeout-ms MS
-databases:     --config databases.toml | --data-dir DIR  --checkpoint DIR HEIGHT
-               --delta DIR BASE TIP  --disable-onion  --oram-only
+databases:     --config databases.toml | --data-dir DIR  --oram-only
 attestation:   --vcek-dir DIR  --identity-key-path FILE  --identity-cert-path FILE
                --identity-server-id ID
-admin:         --admin-pubkey-hex HEX
 credits:       --credit-issuer-url URL  --credit-issuer-pubkey FILE  --credit-server-id ID
                --require-credits
 access:        --access BACKEND=free|paid|best-effort[:N[:GAS_PER_HOUR]]  (BACKEND: dpf harmony
                onion oram; repeatable)  --free-threads N  --free-queue-wait-ms MS
                --api-key-file FILE  (`SHA256HEX LABEL` per line; listed keys are unmetered)
-hint pool:     --pool-size N  --pool-db-id ID  --pool-dir DIR  --harmony-pool-db ID=DIR
-direct oram:   --direct-oram-db ID=DIR  --direct-oram-dir DIR  --direct-oram-trusted-state-db ID=DIR
+hint pool:     --pool-size N  --pool-dir DIR
+direct oram:   --direct-oram-db ID=DIR  --direct-oram-trusted-state-db ID=DIR
                --direct-oram-drain-per-access N  --direct-oram-access-budget N
                --direct-oram-cache-levels N  --direct-oram-encrypted  --direct-oram-key-hex HEX
-               --direct-oram-state-key-hex HEX  --direct-oram-auth-store  --direct-oram-no-save
-               --allow-direct-oram-trusted-state-outside-run-dev
-cuckoo oram:   --cuckoo-oram-db ID=DIR  --cuckoo-oram-dir DIR  --cuckoo-oram-drain-per-access N
-               --cuckoo-oram-cache-levels N  --cuckoo-oram-encrypted  --cuckoo-oram-key-hex HEX
-               --cuckoo-oram-state-key-hex HEX  --cuckoo-oram-auth-store  --cuckoo-oram-no-save
-               --cuckoo-oram-pack
-harmony oram:  --harmony-oram-db ID=DIR  --harmony-oram-dir DIR  --harmony-oram-drain-per-access N
-               --harmony-oram-cache-levels N  --harmony-oram-encrypted  --harmony-oram-key-hex HEX
-               --harmony-oram-state-key-hex HEX  --harmony-oram-auth-store  --harmony-oram-no-save
-               --harmony-oram-pack
-development:   --unsafe-debug-query-logging (test-only-unsafe-query-logging builds only)
+               --direct-oram-state-key-hex HEX  --direct-oram-auth-store
+ignored:       --admin-pubkey-hex HEX (the measured ORAM run script still passes it)
 ";
 
 /// `--help`/`-h` and `--version`/`-V` as the only argument print and exit 0
@@ -466,16 +269,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut data_dir = PathBuf::from("/Volumes/Bitcoin/data/checkpoints/940611");
     let mut role = ServerRole::Primary;
     let mut config_path: Option<PathBuf> = None;
-    let mut checkpoints: Vec<(PathBuf, u32)> = Vec::new();
-    let mut deltas: Vec<(PathBuf, u32, u32)> = Vec::new();
-    let mut admin_pubkey_hex: Option<String> = None;
-    let mut disable_onion = false;
     let mut vcek_dir: Option<PathBuf> = None;
     let mut pool_size: usize = 0; // 0 = pool disabled
-    let mut pool_db_id: u8 = 0;
-    let mut pool_db_id_explicit = false;
     let mut pool_dir: Option<PathBuf> = None;
-    let mut harmony_pool_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut credit_issuer_pubkeys: Vec<PathBuf> = Vec::new();
     let mut credit_issuer_url: Option<String> = None;
     let mut credit_server_id: Option<String> = None;
@@ -487,28 +283,14 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
     let mut connection_idle_timeout_ms: u64 = 30_000;
-    #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-    let mut unsafe_debug_query_logging = false;
     let mut serve_hints = false;
     let mut serve_queries = false;
     let mut oram_only = false;
     let mut identity_key_path: Option<PathBuf> = None;
     let mut identity_cert_path: Option<PathBuf> = None;
     let mut identity_server_id: Option<String> = None;
-    let mut cuckoo_oram_dir: Option<PathBuf> = None;
-    let mut cuckoo_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
-    let mut cuckoo_oram_pack: usize = 16;
-    let mut cuckoo_oram_drain_per_access: u64 = 2;
-    let mut cuckoo_oram_encrypted = false;
-    let mut cuckoo_oram_key_hex: Option<String> = None;
-    let mut cuckoo_oram_state_key_hex: Option<String> = None;
-    let mut cuckoo_oram_cache_levels: usize = 0;
-    let mut cuckoo_oram_auth_store = false;
-    let mut cuckoo_oram_no_save = false;
-    let mut direct_oram_dir: Option<PathBuf> = None;
     let mut direct_oram_dbs: Vec<(u8, PathBuf)> = Vec::new();
     let mut direct_oram_trusted_state_dbs: Vec<(u8, PathBuf)> = Vec::new();
-    let mut direct_oram_allow_trusted_state_outside_run_dev = false;
     let mut direct_oram_drain_per_access: u64 = 2;
     let mut direct_oram_access_budget: usize = 75;
     let mut direct_oram_encrypted = false;
@@ -516,7 +298,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut direct_oram_state_key_hex: Option<String> = None;
     let mut direct_oram_cache_levels: usize = 0;
     let mut direct_oram_auth_store = false;
-    let mut direct_oram_no_save = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -554,35 +335,10 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                 }
                 i += 1;
             }
-            "--checkpoint" => {
-                // --checkpoint <path> <height>
-                if let (Some(path), Some(height)) = (
-                    args.get(i + 1),
-                    args.get(i + 2).and_then(|s| s.parse::<u32>().ok()),
-                ) {
-                    checkpoints.push((PathBuf::from(path), height));
-                    i += 2;
-                }
-            }
-            "--delta" => {
-                // --delta <path> <base_height> <tip_height>
-                if let (Some(path), Some(base), Some(tip)) = (
-                    args.get(i + 1),
-                    args.get(i + 2).and_then(|s| s.parse::<u32>().ok()),
-                    args.get(i + 3).and_then(|s| s.parse::<u32>().ok()),
-                ) {
-                    deltas.push((PathBuf::from(path), base, tip));
-                    i += 3;
-                }
-            }
+            // Accepted and ignored: the measured ORAM run script still
+            // passes it, from before the admin upload path was removed.
             "--admin-pubkey-hex" => {
-                if let Some(hex) = args.get(i + 1) {
-                    admin_pubkey_hex = Some(hex.clone());
-                }
                 i += 1;
-            }
-            "--disable-onion" => {
-                disable_onion = true;
             }
             "--vcek-dir" => {
                 if let Some(dir) = args.get(i + 1) {
@@ -594,30 +350,10 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                 pool_size = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
                 i += 1;
             }
-            "--pool-db-id" => {
-                let value = args
-                    .get(i + 1)
-                    .unwrap_or_else(|| fatal_cli("--pool-db-id requires a u8 database ID"));
-                pool_db_id = value.parse::<u8>().unwrap_or_else(|_| {
-                    fatal_cli(format!(
-                        "--pool-db-id must be a u8 database ID, got {value}"
-                    ))
-                });
-                pool_db_id_explicit = true;
-                i += 1;
-            }
             "--pool-dir" => {
                 if let Some(dir) = args.get(i + 1) {
                     pool_dir = Some(PathBuf::from(dir));
                 }
-                i += 1;
-            }
-            "--harmony-pool-db" => {
-                let spec = args
-                    .get(i + 1)
-                    .unwrap_or_else(|| fatal_cli("--harmony-pool-db requires <db_id>=<dir>"));
-                harmony_pool_dbs
-                    .push(parse_harmony_pool_db_arg(spec).unwrap_or_else(|error| fatal_cli(error)));
                 i += 1;
             }
             "--credit-issuer-pubkey" => {
@@ -700,10 +436,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     });
                 i += 1;
             }
-            #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-            "--unsafe-debug-query-logging" => {
-                unsafe_debug_query_logging = true;
-            }
             "--serve-hints" => {
                 serve_hints = true;
             }
@@ -731,61 +463,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                 }
                 i += 1;
             }
-            "--cuckoo-oram-dir" | "--harmony-oram-dir" => {
-                if let Some(p) = args.get(i + 1) {
-                    cuckoo_oram_dir = Some(PathBuf::from(p));
-                }
-                i += 1;
-            }
-            "--cuckoo-oram-db" | "--harmony-oram-db" => {
-                let spec = args.get(i + 1).unwrap_or_else(|| {
-                    fatal_cli("--cuckoo-oram-db requires <db_id>=<dir>");
-                });
-                let parsed = parse_cuckoo_oram_db_arg(spec).unwrap_or_else(|e| fatal_cli(e));
-                cuckoo_oram_dbs.push(parsed);
-                i += 1;
-            }
-            "--cuckoo-oram-pack" | "--harmony-oram-pack" => {
-                cuckoo_oram_pack = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(16);
-                i += 1;
-            }
-            "--cuckoo-oram-drain-per-access" | "--harmony-oram-drain-per-access" => {
-                cuckoo_oram_drain_per_access =
-                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(2);
-                i += 1;
-            }
-            "--cuckoo-oram-encrypted" | "--harmony-oram-encrypted" => {
-                cuckoo_oram_encrypted = true;
-            }
-            "--cuckoo-oram-key-hex" | "--harmony-oram-key-hex" => {
-                if let Some(hex) = args.get(i + 1) {
-                    cuckoo_oram_key_hex = Some(hex.clone());
-                }
-                i += 1;
-            }
-            "--cuckoo-oram-state-key-hex" | "--harmony-oram-state-key-hex" => {
-                if let Some(hex) = args.get(i + 1) {
-                    cuckoo_oram_state_key_hex = Some(hex.clone());
-                }
-                i += 1;
-            }
-            "--cuckoo-oram-cache-levels" | "--harmony-oram-cache-levels" => {
-                cuckoo_oram_cache_levels =
-                    args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-                i += 1;
-            }
-            "--cuckoo-oram-auth-store" | "--harmony-oram-auth-store" => {
-                cuckoo_oram_auth_store = true;
-            }
-            "--cuckoo-oram-no-save" | "--harmony-oram-no-save" => {
-                cuckoo_oram_no_save = true;
-            }
-            "--direct-oram-dir" => {
-                if let Some(p) = args.get(i + 1) {
-                    direct_oram_dir = Some(PathBuf::from(p));
-                }
-                i += 1;
-            }
             "--direct-oram-db" => {
                 let spec = args.get(i + 1).unwrap_or_else(|| {
                     fatal_cli("--direct-oram-db requires <db_id>=<dir>");
@@ -802,9 +479,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
                     parse_direct_oram_trusted_state_db_arg(spec).unwrap_or_else(|e| fatal_cli(e));
                 direct_oram_trusted_state_dbs.push(parsed);
                 i += 1;
-            }
-            "--allow-direct-oram-trusted-state-outside-run-dev" => {
-                direct_oram_allow_trusted_state_outside_run_dev = true;
             }
             "--direct-oram-drain-per-access" => {
                 direct_oram_drain_per_access =
@@ -839,31 +513,10 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
             "--direct-oram-auth-store" => {
                 direct_oram_auth_store = true;
             }
-            "--direct-oram-no-save" => {
-                direct_oram_no_save = true;
-            }
             unknown => fatal_cli(unknown_cli_argument_v1(unknown)),
         }
         i += 1;
     }
-
-    if !(1..=4_096).contains(&max_connections) {
-        fatal_cli("--max-connections must be in 1..=4096");
-    }
-    if !(1_000..=60_000).contains(&websocket_handshake_timeout_ms) {
-        fatal_cli("--websocket-handshake-timeout-ms must be in 1000..=60000");
-    }
-    if !(10_000..=600_000).contains(&connection_idle_timeout_ms) {
-        fatal_cli("--connection-idle-timeout-ms must be in 10000..=600000");
-    }
-    let harmony_pool_bindings = normalize_harmony_pool_bindings(
-        pool_size,
-        pool_db_id,
-        pool_db_id_explicit,
-        pool_dir,
-        harmony_pool_dbs,
-    )
-    .unwrap_or_else(|error| fatal_cli(error));
 
     CliArgs {
         bind_address,
@@ -871,13 +524,9 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         data_dir,
         role,
         config_path,
-        checkpoints,
-        deltas,
-        admin_pubkey_hex,
-        disable_onion,
         vcek_dir,
         pool_size,
-        harmony_pool_bindings,
+        pool_dir,
         credit_issuer_pubkeys,
         credit_issuer_url,
         credit_server_id,
@@ -889,28 +538,14 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         max_connections,
         websocket_handshake_timeout_ms,
         connection_idle_timeout_ms,
-        #[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-        unsafe_debug_query_logging,
         serve_hints,
         serve_queries,
         oram_only,
         identity_key_path,
         identity_cert_path,
         identity_server_id,
-        cuckoo_oram_dir,
-        cuckoo_oram_dbs,
-        cuckoo_oram_pack,
-        cuckoo_oram_drain_per_access,
-        cuckoo_oram_encrypted,
-        cuckoo_oram_key_hex,
-        cuckoo_oram_state_key_hex,
-        cuckoo_oram_cache_levels,
-        cuckoo_oram_auth_store,
-        cuckoo_oram_no_save,
-        direct_oram_dir,
         direct_oram_dbs,
         direct_oram_trusted_state_dbs,
-        direct_oram_allow_trusted_state_outside_run_dev,
         direct_oram_drain_per_access,
         direct_oram_access_budget,
         direct_oram_encrypted,
@@ -918,7 +553,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         direct_oram_state_key_hex,
         direct_oram_cache_levels,
         direct_oram_auth_store,
-        direct_oram_no_save,
     }
 }
 

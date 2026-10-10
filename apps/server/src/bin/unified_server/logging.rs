@@ -1,65 +1,43 @@
-//! Privacy-gated query logging macros. Defined here so sibling modules can
-//! import them.
+//! Query logging macros. Defined here so sibling modules can import them.
+//!
+//! Per-connection/per-query logs expose request identity, shape, database,
+//! byte counts and timing, so they exist only in builds with the
+//! `test-only-unsafe-query-logging` feature. Normal builds compile the call
+//! sites for type checking but contain no output path.
 
-#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-use std::sync::atomic::AtomicBool;
-
-#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
-pub(crate) static UNSAFE_DEBUG_QUERY_LOGGING: AtomicBool = AtomicBool::new(false);
-
-/// Detailed per-connection/per-query logging is a privacy-dangerous local
-/// diagnostic mode. Production/default logging must never depend on request
-/// identity, shape, selected database, byte count, or elapsed time.
-#[cfg(any(test, feature = "test-only-unsafe-query-logging"))]
+#[cfg(feature = "test-only-unsafe-query-logging")]
 macro_rules! unsafe_debug_log {
     ($($arg:tt)*) => {
-        if crate::UNSAFE_DEBUG_QUERY_LOGGING
-            .load(::std::sync::atomic::Ordering::Relaxed)
-        {
-            eprintln!($($arg)*);
-        }
+        eprintln!($($arg)*);
     };
 }
 
-/// Build a query-derived ORAM diagnostic only in an explicitly unsafe local
-/// diagnostic build *and* only when its runtime switch is enabled. In normal
-/// artifacts the formatting expression (including bin/chunk identifiers and
-/// backend error text) is not compiled at all.
-#[cfg(all(
-    feature = "cuckoo-oram",
-    any(test, feature = "test-only-unsafe-query-logging")
-))]
-macro_rules! unsafe_oram_detail {
-    ($($arg:tt)*) => {{
-        if crate::UNSAFE_DEBUG_QUERY_LOGGING
-            .load(::std::sync::atomic::Ordering::Relaxed)
-        {
-            Some(format!($($arg)*))
-        } else {
-            None
-        }
-    }};
-}
-
-#[cfg(all(
-    feature = "cuckoo-oram",
-    not(any(test, feature = "test-only-unsafe-query-logging"))
-))]
-macro_rules! unsafe_oram_detail {
-    ($($arg:tt)*) => {{
-        None::<String>
-    }};
-}
-
-// Keep call sites type-checked and their timing variables non-unused without
-// compiling an output path or runtime switch into normal binaries.
-#[cfg(not(any(test, feature = "test-only-unsafe-query-logging")))]
+#[cfg(not(feature = "test-only-unsafe-query-logging"))]
 macro_rules! unsafe_debug_log {
     ($($arg:tt)*) => {
         if false {
             let _ = format_args!($($arg)*);
         }
     };
+}
+
+/// A query-derived ORAM diagnostic (bin/chunk identifiers, backend error
+/// text), built only in `test-only-unsafe-query-logging` builds.
+#[cfg(all(feature = "cuckoo-oram", feature = "test-only-unsafe-query-logging"))]
+macro_rules! unsafe_oram_detail {
+    ($($arg:tt)*) => {{
+        Some(format!($($arg)*))
+    }};
+}
+
+#[cfg(all(
+    feature = "cuckoo-oram",
+    not(feature = "test-only-unsafe-query-logging")
+))]
+macro_rules! unsafe_oram_detail {
+    ($($arg:tt)*) => {{
+        None::<String>
+    }};
 }
 
 pub(crate) use unsafe_debug_log;

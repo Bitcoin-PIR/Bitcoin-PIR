@@ -1,8 +1,5 @@
-//! TOML-based server configuration for multi-database setups.
-//!
-//! Instead of passing many `--checkpoint` and `--delta` CLI flags, the server
-//! can load a single `databases.toml` file that declares all databases, their
-//! types, heights, and paths.
+//! TOML-based server configuration: `databases.toml` declares every database,
+//! its type, heights, and path.
 
 use serde::Deserialize;
 use std::path::{Path, PathBuf};

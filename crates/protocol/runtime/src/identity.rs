@@ -20,7 +20,7 @@
 //!
 //! ## Filesystem layout (operator policy, not protocol)
 //!
-//! The server takes paths for the key + cert via CLI flags or env vars;
+//! The server takes paths for the key + cert via CLI flags;
 //! contents are byte-blobs only (no JSON / TOML wrapping). The
 //! identity-key file holds the raw 32-byte Ed25519 seed; the cert file
 //! holds the bytes of [`IdentityCert::encode`]. Both files SHOULD be

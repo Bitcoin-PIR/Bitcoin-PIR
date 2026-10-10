@@ -4,7 +4,7 @@
 use crate::manifest::{hex_encode, DbManifest};
 use crate::protocol::DatabaseProofBundle;
 use memmap2::Mmap;
-use pir_core::merkle::{sha256, Hash256};
+use pir_core::merkle::Hash256;
 use pir_core::params::TableParams;
 use std::fs::File;
 use std::path::Path;
@@ -34,8 +34,8 @@ pub struct MappedSubTable {
     /// value — `params.master_seed` is only a sentinel post-Phase-B).
     pub master_seed: u64,
     /// Chain anchor embedded in a Phase-C v2 header, if present. `None`
-    /// for legacy (pre-anchor) databases. Surfaced so the load path can
-    /// self-verify the seeds against it (see `verify_anchor_consistency`).
+    /// for legacy (pre-anchor) databases. Reported to clients, which derive
+    /// the seeds from it.
     pub anchor: Option<pir_core::cuckoo::HeaderAnchor>,
 }
 
@@ -177,53 +177,6 @@ impl MappedSubTable {
         }
         Some(&self.mmap[offset..end])
     }
-
-    /// Self-verify that this table's header seeds were honestly derived
-    /// from its embedded chain anchor (Phase C).
-    ///
-    /// When the file carries a v2 anchor, recompute the expected master
-    /// (and, for INDEX, tag) seed from `(block_hash, height)` and assert
-    /// they equal the on-disk seeds. A mismatch means the database was
-    /// not built at the anchor it claims — a build bug, corruption, or
-    /// tampering — so we **panic and refuse to serve**. A no-op for
-    /// legacy (anchor-less) databases.
-    ///
-    /// Note: this proves internal consistency only. Defeating a *malicious*
-    /// operator (who could fabricate a matching anchor+seed pair) still
-    /// requires the client to check the anchor against an independent view
-    /// of the Bitcoin chain — see docs/history/BUILD_REPRODUCIBILITY.md.
-    pub fn verify_anchor_consistency(
-        &self,
-        label: &str,
-        master_domain: &str,
-        tag_domain: Option<&str>,
-    ) {
-        let Some(anchor) = self.anchor else { return };
-        let header = pir_core::cuckoo::CuckooHeader {
-            bins_per_table: self.bins_per_table,
-            master_seed: self.master_seed,
-            tag_seed: self.tag_seed,
-            anchor: Some(anchor),
-            header_size: 0, // unused by verify_anchor_seeds
-        };
-        match pir_core::cuckoo::verify_anchor_seeds(&header, master_domain, tag_domain) {
-            Ok(()) => {
-                let (kind, height) = match anchor {
-                    pir_core::cuckoo::HeaderAnchor::Snapshot(a) => ("snapshot", a.block_height),
-                    pir_core::cuckoo::HeaderAnchor::Delta(d) => ("delta→", d.to.block_height),
-                };
-                println!(
-                    "    {} anchor verified ({} height {}): on-disk seeds match chain-derived values",
-                    label, kind, height
-                );
-            }
-            Err(e) => panic!(
-                "[anchor] {} seed verification FAILED: {}. Database was not honestly \
-                 built at its embedded chain anchor — refusing to serve.",
-                label, e
-            ),
-        }
-    }
 }
 
 /// Describes a complete PIR database (INDEX + CHUNK + optional Merkle sub-tables).
@@ -288,222 +241,7 @@ pub struct MappedDatabase {
     pub db_proof_v2: Option<DatabaseProofBundle>,
 }
 
-#[allow(clippy::too_many_arguments)]
-fn validate_bucket_merkle_layout(
-    index_bins: usize,
-    chunk_bins: usize,
-    index_k: usize,
-    chunk_k: usize,
-    index_siblings: &[MappedSubTable],
-    chunk_siblings: &[MappedSubTable],
-    tree_tops: Option<&[u8]>,
-    roots: Option<&[u8]>,
-    super_root: Option<&[u8]>,
-) -> Result<bool, String> {
-    let any_present = !index_siblings.is_empty()
-        || !chunk_siblings.is_empty()
-        || tree_tops.is_some()
-        || roots.is_some()
-        || super_root.is_some();
-    if !any_present {
-        return Ok(false);
-    }
-    let tree_tops = tree_tops.ok_or_else(|| {
-        "bucket Merkle artifact set is partial: missing merkle_bucket_tree_tops.bin".to_owned()
-    })?;
-    let roots = roots.ok_or_else(|| {
-        "bucket Merkle artifact set is partial: missing merkle_bucket_roots.bin".to_owned()
-    })?;
-    let super_root = super_root.ok_or_else(|| {
-        "bucket Merkle artifact set is partial: missing merkle_bucket_root.bin".to_owned()
-    })?;
-    let tree_count = index_k
-        .checked_add(chunk_k)
-        .ok_or_else(|| "bucket Merkle tree count overflow".to_owned())?;
-    let expected_roots_len = tree_count
-        .checked_mul(32)
-        .ok_or_else(|| "bucket Merkle root list length overflow".to_owned())?;
-    if roots.len() != expected_roots_len {
-        return Err(format!(
-            "bucket Merkle roots length mismatch: expected {expected_roots_len}, got {}",
-            roots.len()
-        ));
-    }
-    if super_root.len() != 32 {
-        return Err(format!(
-            "bucket Merkle super-root length mismatch: expected 32, got {}",
-            super_root.len()
-        ));
-    }
-    if sha256(roots).as_slice() != super_root {
-        return Err("bucket Merkle super-root does not bind the ordered root list".to_owned());
-    }
-    if tree_tops.len() < 4 {
-        return Err("bucket Merkle tree-tops blob is shorter than its count".to_owned());
-    }
-    let encoded_tree_count =
-        u32::from_le_bytes(tree_tops[..4].try_into().expect("four-byte slice is exact")) as usize;
-    if encoded_tree_count != tree_count {
-        return Err(format!(
-            "bucket Merkle tree count mismatch: expected {tree_count}, got {encoded_tree_count}"
-        ));
-    }
-
-    validate_bucket_merkle_sibling_shapes("INDEX", index_bins, index_k, index_siblings)?;
-    validate_bucket_merkle_sibling_shapes("CHUNK", chunk_bins, chunk_k, chunk_siblings)?;
-
-    let mut offset = 4usize;
-    for tree_index in 0..tree_count {
-        let header_end = offset
-            .checked_add(8)
-            .ok_or_else(|| "bucket Merkle tree-top offset overflow".to_owned())?;
-        if header_end > tree_tops.len() {
-            return Err(format!(
-                "bucket Merkle tree-top {tree_index} has a truncated header"
-            ));
-        }
-        let cache_from_level = tree_tops[offset] as usize;
-        let total_nodes = u32::from_le_bytes(
-            tree_tops[offset + 1..offset + 5]
-                .try_into()
-                .expect("four-byte slice is exact"),
-        ) as usize;
-        let arity = u16::from_le_bytes(
-            tree_tops[offset + 5..offset + 7]
-                .try_into()
-                .expect("two-byte slice is exact"),
-        ) as usize;
-        let level_count = tree_tops[offset + 7] as usize;
-        offset = header_end;
-        if arity != 8 {
-            return Err(format!(
-                "bucket Merkle tree-top {tree_index} has unsupported arity {arity}"
-            ));
-        }
-        if level_count == 0 {
-            return Err(format!(
-                "bucket Merkle tree-top {tree_index} has no cached levels"
-            ));
-        }
-        let (label, bins, expected_cache_levels) = if tree_index < index_k {
-            ("INDEX", index_bins, index_siblings.len())
-        } else {
-            ("CHUNK", chunk_bins, chunk_siblings.len())
-        };
-        if cache_from_level != expected_cache_levels {
-            return Err(format!(
-                "bucket Merkle {label} tree-top {tree_index} starts at level {cache_from_level}, but {expected_cache_levels} sibling tables are loaded"
-            ));
-        }
-        let mut expected_level_nodes = bins;
-        for _ in 0..cache_from_level {
-            expected_level_nodes = expected_level_nodes.div_ceil(arity);
-        }
-        let mut observed_total = 0usize;
-        let mut final_root = None;
-        for level in 0..level_count {
-            let count_end = offset
-                .checked_add(4)
-                .ok_or_else(|| "bucket Merkle level offset overflow".to_owned())?;
-            if count_end > tree_tops.len() {
-                return Err(format!(
-                    "bucket Merkle tree-top {tree_index} level {level} has a truncated count"
-                ));
-            }
-            let nodes = u32::from_le_bytes(
-                tree_tops[offset..count_end]
-                    .try_into()
-                    .expect("four-byte slice is exact"),
-            ) as usize;
-            offset = count_end;
-            if nodes == 0 || nodes != expected_level_nodes {
-                return Err(format!(
-                    "bucket Merkle tree-top {tree_index} level {level} node count mismatch: expected {expected_level_nodes}, got {nodes}"
-                ));
-            }
-            observed_total = observed_total
-                .checked_add(nodes)
-                .ok_or_else(|| "bucket Merkle total node count overflow".to_owned())?;
-            let hash_bytes = nodes
-                .checked_mul(32)
-                .ok_or_else(|| "bucket Merkle level byte length overflow".to_owned())?;
-            let level_end = offset
-                .checked_add(hash_bytes)
-                .ok_or_else(|| "bucket Merkle level end overflow".to_owned())?;
-            if level_end > tree_tops.len() {
-                return Err(format!(
-                    "bucket Merkle tree-top {tree_index} level {level} is truncated"
-                ));
-            }
-            if level + 1 == level_count {
-                if nodes != 1 {
-                    return Err(format!(
-                        "bucket Merkle tree-top {tree_index} does not end in one root"
-                    ));
-                }
-                final_root = Some(&tree_tops[offset..level_end]);
-            }
-            offset = level_end;
-            expected_level_nodes = expected_level_nodes.div_ceil(arity);
-        }
-        if observed_total != total_nodes {
-            return Err(format!(
-                "bucket Merkle tree-top {tree_index} total_nodes mismatch: header {total_nodes}, parsed {observed_total}"
-            ));
-        }
-        let expected_root = &roots[tree_index * 32..(tree_index + 1) * 32];
-        if final_root != Some(expected_root) {
-            return Err(format!(
-                "bucket Merkle tree-top {tree_index} root does not match the ordered root list"
-            ));
-        }
-    }
-    if offset != tree_tops.len() {
-        return Err(format!(
-            "bucket Merkle tree-tops blob has {} trailing bytes",
-            tree_tops.len() - offset
-        ));
-    }
-    Ok(true)
-}
-
-fn validate_bucket_merkle_sibling_shapes(
-    label: &str,
-    bins: usize,
-    k: usize,
-    siblings: &[MappedSubTable],
-) -> Result<(), String> {
-    let mut nodes = bins;
-    for (level, sibling) in siblings.iter().enumerate() {
-        nodes = nodes.div_ceil(8);
-        if sibling.params.k != k
-            || sibling.bins_per_table != nodes
-            || sibling.params.slot_size != 8 * 32
-        {
-            return Err(format!(
-                "bucket Merkle {label} sibling level {level} has an inconsistent table shape"
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn read_optional_bucket_merkle_artifact(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("read {}: {error}", path.display())),
-    }
-}
-
 impl MappedDatabase {
-    /// Load a database from a directory containing cuckoo table files.
-    ///
-    /// Automatically detects and loads Merkle sub-tables if present.
-    pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
-        Self::load_inner(base_dir, descriptor, false)
-    }
-
     /// A database served only through Direct ORAM (`unified_server
     /// --oram-only`). The host holds none of the PIR table files: the
     /// geometry and anchor come from the attested build evidence, the seeds
@@ -575,37 +313,18 @@ impl MappedDatabase {
         })
     }
 
-    /// Load a database that is explicitly backed by production Direct ORAM.
+    /// Load a database from a directory containing cuckoo table files.
     ///
-    /// The Direct ORAM image is bound to the verified `[direct_oram]` manifest
-    /// by the server before it starts listening. Some Direct ORAM build
-    /// products also contain bucket-Merkle files for the mmap query backend,
-    /// but omit the lower sibling tables that backend needs. In that one
-    /// configuration, keep the database and Direct ORAM binding available but
-    /// do not advertise or serve the incomplete bucket-Merkle backend.
-    ///
-    /// Callers must still open and validate the configured Direct ORAM image
-    /// before exposing the database to requests. Ordinary mmap-backed callers
-    /// must use [`Self::load`], which remains fail-closed on every malformed or
-    /// incomplete bucket-Merkle artifact set.
-    pub fn load_for_direct_oram(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
-        Self::load_inner(base_dir, descriptor, true)
-    }
-
-    fn load_inner(
-        base_dir: &Path,
-        descriptor: DatabaseDescriptor,
-        direct_oram_configured: bool,
-    ) -> Self {
+    /// Automatically detects and loads Merkle sub-tables if present.
+    pub fn load(base_dir: &Path, descriptor: DatabaseDescriptor) -> Self {
         println!(
             "[DB:{}] Loading from {}",
             descriptor.name,
             base_dir.display()
         );
 
-        // Verify MANIFEST.toml first if present. Aborts startup on mismatch
-        // — refusing to mmap unaccounted bytes is the safety boundary that
-        // makes the per-DB manifest_root meaningful for attestation.
+        // Verify MANIFEST.toml first if present and abort on a mismatch: the
+        // attested manifest_root must describe the files this server serves.
         let (manifest, manifest_root) = match DbManifest::load_and_verify(base_dir) {
             Ok(Some((m, root))) => {
                 println!(
@@ -638,36 +357,6 @@ impl MappedDatabase {
             &base_dir.join("chunk_pir_cuckoo.bin"),
             descriptor.chunk_params.clone(),
         );
-
-        // Phase C: if the cuckoo files carry a v2 chain anchor, verify their
-        // header seeds were honestly derived from it before serving.
-        // Panics (refuses to serve) on mismatch; no-op for legacy DBs.
-        index.verify_anchor_consistency(
-            "INDEX",
-            pir_core::seeds::domain::INDEX_CUCKOO_MASTER,
-            Some(pir_core::seeds::domain::INDEX_TAG_FINGERPRINT),
-        );
-        chunk.verify_anchor_consistency(
-            "CHUNK",
-            pir_core::seeds::domain::CHUNK_CUCKOO_MASTER,
-            None,
-        );
-        // INDEX and CHUNK are built from the same chain anchor; a mismatch
-        // means a mixed/inconsistent build. Guard against it when both
-        // tables carry anchors.
-        if let (Some(ia), Some(ca)) = (index.anchor, chunk.anchor) {
-            assert_eq!(
-                ia, ca,
-                "[anchor] INDEX and CHUNK cuckoo files were built at different chain anchors \
-                 ({:?} vs {:?}) — refusing to serve a mixed database.",
-                ia, ca
-            );
-        }
-
-        // Legacy global N-ary tree Merkle (merkle_tree_top.bin / merkle_root.bin
-        // / merkle_sibling*_L*.bin, opcodes 0x31/0x32) was removed — superseded
-        // by the per-bucket bin Merkle loaded below. The N-ary builders no
-        // longer exist, so those files are never produced.
 
         // ── Load per-bucket bin Merkle files ──────────────────────────────
         let mut bucket_merkle_index_siblings = Vec::new();
@@ -725,75 +414,30 @@ impl MappedDatabase {
             bucket_merkle_chunk_siblings.push(MappedSubTable::load(&path, params));
         }
 
-        let mut bucket_merkle_tree_tops =
-            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_tree_tops.bin"))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
-                        descriptor.name, error
-                    )
-                });
-        let mut bucket_merkle_roots =
-            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_roots.bin"))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
-                        descriptor.name, error
-                    )
-                });
-        let mut bucket_merkle_root =
-            read_optional_bucket_merkle_artifact(&base_dir.join("merkle_bucket_root.bin"))
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "[DB:{}] bucket Merkle artifact read failed: {}. Refusing to serve.",
-                        descriptor.name, error
-                    )
-                });
-
-        let bucket_merkle_result = validate_bucket_merkle_layout(
-            index.bins_per_table,
-            chunk.bins_per_table,
-            descriptor.index_params.k,
-            descriptor.chunk_params.k,
-            &bucket_merkle_index_siblings,
-            &bucket_merkle_chunk_siblings,
-            bucket_merkle_tree_tops.as_deref(),
-            bucket_merkle_roots.as_deref(),
-            bucket_merkle_root.as_deref(),
-        );
-
-        let direct_manifest_bound = manifest
-            .as_ref()
-            .and_then(|manifest| manifest.direct_oram.as_ref())
-            .is_some();
-        let bucket_merkle_complete = match bucket_merkle_result {
-            Ok(complete) => complete,
-            Err(error) if direct_oram_configured && direct_manifest_bound => {
-                eprintln!(
-                    "[DB:{}] Bucket Merkle unavailable for Direct-ORAM-only use: {}. \
-                     The incomplete mmap proof backend will not be advertised or served.",
-                    descriptor.name, error
-                );
-                bucket_merkle_index_siblings.clear();
-                bucket_merkle_chunk_siblings.clear();
-                bucket_merkle_tree_tops = None;
-                bucket_merkle_roots = None;
-                bucket_merkle_root = None;
-                false
-            }
-            Err(error) => {
-                panic!(
-                    "[DB:{}] incomplete or malformed bucket Merkle artifact set: {}. Refusing to serve.",
-                    descriptor.name, error
-                )
-            }
-        };
-
-        if bucket_merkle_complete {
-            println!("  Bucket Merkle: {} INDEX sib levels, {} CHUNK sib levels, tree-tops={}, super-root={}",
+        // A missing or unreadable file means no bucket Merkle. Clients check
+        // what is served against the attested roots.
+        let read = |name: &str| std::fs::read(base_dir.join(name)).ok();
+        let bucket_merkle_tree_tops = read("merkle_bucket_tree_tops.bin");
+        let bucket_merkle_roots = read("merkle_bucket_roots.bin");
+        let bucket_merkle_root = read("merkle_bucket_root.bin");
+        // Requests slice one 32-byte root per group out of this list.
+        if let Some(roots) = &bucket_merkle_roots {
+            let expected = (descriptor.index_params.k + descriptor.chunk_params.k) * 32;
+            assert_eq!(
+                roots.len(),
+                expected,
+                "[DB:{}] merkle_bucket_roots.bin has {} bytes, expected {}",
+                descriptor.name,
+                roots.len(),
+                expected
+            );
+        }
+        if bucket_merkle_tree_tops.is_some() {
+            println!(
+                "  Bucket Merkle: {} INDEX sib levels, {} CHUNK sib levels, roots={}, super-root={}",
                 bucket_merkle_index_siblings.len(),
                 bucket_merkle_chunk_siblings.len(),
-                if bucket_merkle_tree_tops.is_some() { "yes" } else { "no" },
+                if bucket_merkle_roots.is_some() { "yes" } else { "no" },
                 if bucket_merkle_root.is_some() { "yes" } else { "no" },
             );
         }
@@ -876,144 +520,6 @@ mod tests {
     use pir_core::params::INDEX_PARAMS;
     use pir_core::seeds::{ChainAnchor, CHAIN_ANCHOR_BYTES};
     use std::io::Write as _;
-
-    fn cached_bucket_merkle_fixture(
-        index_bins: usize,
-        chunk_bins: usize,
-        index_k: usize,
-        chunk_k: usize,
-        cache_from_level: usize,
-    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        let mut tree_tops = Vec::new();
-        let tree_count = index_k + chunk_k;
-        tree_tops.extend_from_slice(&(tree_count as u32).to_le_bytes());
-        let mut roots = Vec::with_capacity(tree_count * 32);
-        for tree_index in 0..tree_count {
-            let mut nodes = if tree_index < index_k {
-                index_bins
-            } else {
-                chunk_bins
-            };
-            for _ in 0..cache_from_level {
-                nodes = nodes.div_ceil(8);
-            }
-            let mut level_sizes = vec![nodes];
-            while nodes > 1 {
-                nodes = nodes.div_ceil(8);
-                level_sizes.push(nodes);
-            }
-            let root = [(tree_index as u8).wrapping_add(1); 32];
-            roots.extend_from_slice(&root);
-            tree_tops.push(cache_from_level as u8);
-            tree_tops.extend_from_slice(
-                &(level_sizes.iter().copied().sum::<usize>() as u32).to_le_bytes(),
-            );
-            tree_tops.extend_from_slice(&8u16.to_le_bytes());
-            tree_tops.push(level_sizes.len() as u8);
-            for (level, size) in level_sizes.into_iter().enumerate() {
-                tree_tops.extend_from_slice(&(size as u32).to_le_bytes());
-                for node in 0..size {
-                    let hash = if size == 1 {
-                        root
-                    } else {
-                        [((tree_index + level + node) as u8).wrapping_add(17); 32]
-                    };
-                    tree_tops.extend_from_slice(&hash);
-                }
-            }
-        }
-        let super_root = sha256(&roots).to_vec();
-        (tree_tops, roots, super_root)
-    }
-
-    #[test]
-    fn fully_cached_bucket_merkle_without_sibling_tables_is_complete() {
-        let (tree_tops, roots, super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 0);
-        assert!(validate_bucket_merkle_layout(
-            128,
-            128,
-            2,
-            3,
-            &[],
-            &[],
-            Some(&tree_tops),
-            Some(&roots),
-            Some(&super_root),
-        )
-        .unwrap());
-    }
-
-    #[test]
-    fn bucket_merkle_layout_rejects_partial_or_unbound_artifacts() {
-        assert!(
-            !validate_bucket_merkle_layout(128, 128, 2, 3, &[], &[], None, None, None).unwrap()
-        );
-        let (tree_tops, roots, mut super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 0);
-        assert!(validate_bucket_merkle_layout(
-            128,
-            128,
-            2,
-            3,
-            &[],
-            &[],
-            Some(&tree_tops),
-            Some(&roots),
-            None,
-        )
-        .unwrap_err()
-        .contains("partial"));
-        super_root[0] ^= 1;
-        assert!(validate_bucket_merkle_layout(
-            128,
-            128,
-            2,
-            3,
-            &[],
-            &[],
-            Some(&tree_tops),
-            Some(&roots),
-            Some(&super_root),
-        )
-        .unwrap_err()
-        .contains("does not bind"));
-    }
-
-    #[test]
-    fn strict_bucket_merkle_rejects_level_one_cache_without_sibling_tables() {
-        let (tree_tops, roots, super_root) = cached_bucket_merkle_fixture(128, 128, 2, 3, 1);
-        let error = validate_bucket_merkle_layout(
-            128,
-            128,
-            2,
-            3,
-            &[],
-            &[],
-            Some(&tree_tops),
-            Some(&roots),
-            Some(&super_root),
-        )
-        .unwrap_err();
-        assert!(
-            error.contains("starts at level 1, but 0 sibling tables are loaded"),
-            "{error}"
-        );
-    }
-
-    #[test]
-    fn optional_bucket_merkle_reader_distinguishes_absent_from_unreadable() {
-        let root = temp_path("bucket-merkle-reader");
-        std::fs::create_dir_all(&root).unwrap();
-        let absent = root.join("absent.bin");
-        assert!(read_optional_bucket_merkle_artifact(&absent)
-            .unwrap()
-            .is_none());
-
-        let directory = root.join("not-a-file.bin");
-        std::fs::create_dir(&directory).unwrap();
-        let error = read_optional_bucket_merkle_artifact(&directory).unwrap_err();
-        assert!(error.contains("not-a-file.bin"), "{error}");
-        std::fs::remove_dir_all(&root).unwrap();
-    }
 
     fn temp_path(tag: &str) -> std::path::PathBuf {
         let mut p = std::env::temp_dir();
