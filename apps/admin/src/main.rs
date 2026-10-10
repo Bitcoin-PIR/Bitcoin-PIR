@@ -37,6 +37,8 @@ mod api_key;
 mod attest;
 mod channel_test;
 mod db_proof;
+mod directory_artifact;
+mod directory_publish;
 mod generate_identity;
 mod keygen;
 mod pir2_sealed_observe_fields;
@@ -88,6 +90,11 @@ enum Command {
     /// Verify attested-builder database build proof artifacts.
     #[command(name = "db-proof")]
     DbProof(db_proof::DbProofArgs),
+    /// Generate the directory key, build and sign Nostr service-directory
+    /// artifacts (operator assertion, entry, tombstone, checkpoints), and
+    /// publish them unchanged to relays (docs/DIRECTORY_PROTOCOL.md).
+    #[command(name = "directory-artifact")]
+    DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
     /// Verify a fresh SNP observation and emit one canonical pir2 release.
     #[command(name = "pir2-sealed-release")]
     Pir2SealedRelease(Box<pir2_sealed_release::Pir2SealedReleaseArgs>),
@@ -150,6 +157,13 @@ async fn main() {
         Command::ShowVcekUrl(args) => match show_vcek_url::run(args).await {
             Ok(()) => 0,
             Err(code) => code,
+        },
+        Command::DirectoryArtifact(args) => match directory_artifact::run(args).await {
+            Ok(code) => code,
+            Err(e) => {
+                eprintln!("directory-artifact: {}", e);
+                1
+            }
         },
         Command::Upload(args) => match upload::run(args).await {
             Ok(()) => 0,

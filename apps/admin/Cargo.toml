@@ -21,6 +21,7 @@ pir-attest-verify = { path = "../../crates/trust/attest-verify" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-private-files = { path = "../../crates/security/private-files" }
 pir-runtime-core = { path = "../../crates/protocol/runtime" }
+pir-directory-nostr = { path = "../../crates/directory/nostr" }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time"] }
@@ -28,6 +29,7 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 ed25519-dalek = "2"
+k256 = { version = "0.13", default-features = false, features = ["schnorr"] }
 getrandom = "0.2"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }

@@ -301,9 +301,11 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.17",
  "hex",
+ "k256",
  "pir-attest-verify",
  "pir-core",
  "pir-db-attest",
+ "pir-directory-nostr",
  "pir-identity",
  "pir-private-files",
  "pir-runtime-core",
@@ -1725,6 +1727,20 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "pir-directory-nostr"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "ed25519-dalek",
+ "futures",
+ "getrandom 0.2.17",
+ "k256",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

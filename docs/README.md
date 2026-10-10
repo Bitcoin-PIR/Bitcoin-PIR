@@ -28,6 +28,11 @@ status subcommand for the rest.
   and the mint on pir1 is [Issuer and mint](runbooks/issuer-and-mint.md).
   The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live
   only in git history.
+- Provider discovery over Nostr: [Directory protocol](DIRECTORY_PROTOCOL.md)
+  is the contract for the service directory (NIP-01/NIP-78 entries and
+  checkpoints, operator assertions, client rollback state, relay profile);
+  the codec is `crates/directory/nostr`, the operator commands are
+  `bpir-admin directory-artifact`.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
   repository's [`verification/locks/`](../verification/locks/).
 - Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).

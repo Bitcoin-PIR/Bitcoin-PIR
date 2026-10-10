@@ -69,7 +69,8 @@ BitcoinPIR/
 ├── crates/
 │   ├── protocol/      Shared database, channel, and server-runtime primitives
 │   ├── sdk/           Rust core, native-client, and WASM SDK crates
-│   └── trust/         Identity, attestation, and database-proof verification
+│   ├── trust/         Identity, attestation, and database-proof verification
+│   └── directory/     Nostr service-directory codec (provider discovery)
 ├── apps/
 │   ├── server/        Production server and diagnostic binaries
 │   └── admin/         Operator CLI
