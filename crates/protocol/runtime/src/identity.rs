@@ -130,8 +130,8 @@ pub struct ServerIdentity {
 }
 
 /// Load the identity Ed25519 keypair from disk. Returns the parsed
-/// [`SigningKey`]. The file must hold exactly 32 raw seed bytes (this
-/// matches `bpir-admin generate-identity --raw` output).
+/// [`SigningKey`]. The file must hold exactly 32 raw seed bytes, as
+/// `bpir-admin keygen` writes.
 pub fn load_identity_key(path: &Path) -> Result<SigningKey, IdentityLoadError> {
     let bytes = fs::read(path).map_err(|e| IdentityLoadError::Io {
         path: path.display().to_string(),

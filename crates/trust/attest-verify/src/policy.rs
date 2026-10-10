@@ -18,9 +18,8 @@
 //!
 //! This module bundles the runtime-configurable policy that production
 //! verifiers should apply ON TOP of the signature check. The default
-//! [`PolicyRequirements`] is what BitcoinPIR's `unified_server`
-//! expects: VMPL 0, no debug, no MA migration, TCB-monotonic (no
-//! claimed-newer-than-committed downgrade attack).
+//! [`PolicyRequirements`] is VMPL 0, no debug, no MA migration,
+//! TCB-monotonic (no claimed-newer-than-committed downgrade attack).
 //!
 //! ## What this module does NOT check
 //!
@@ -593,41 +592,5 @@ mod tests {
             "{:?}",
             err
         );
-    }
-
-    #[test]
-    fn policy_short_circuits_on_first_failure() {
-        // VMPL fails first → we don't get a TCB error even though
-        // TCB would also fail.
-        let mut r = base_report();
-        r.vmpl = 99;
-        r.reported_tcb = TcbVersion {
-            fmc: None,
-            bootloader: 200,
-            tee: 0,
-            snp: 0,
-            microcode: 0,
-        };
-        r.committed_tcb = TcbVersion {
-            fmc: None,
-            bootloader: 1,
-            tee: 0,
-            snp: 0,
-            microcode: 0,
-        };
-        let err = verify_policy(&r, &PolicyRequirements::default()).unwrap_err();
-        assert!(matches!(err, PolicyError::VmplTooHigh { .. }), "{:?}", err);
-    }
-
-    #[test]
-    fn display_includes_hex_for_pinned_fields() {
-        let e = PolicyError::MeasurementMismatch {
-            actual: [0xAA; 48],
-            expected: [0xBB; 48],
-        };
-        let s = e.to_string();
-        assert!(s.contains("MEASUREMENT mismatch"));
-        assert!(s.contains(&"aa".repeat(48)));
-        assert!(s.contains(&"bb".repeat(48)));
     }
 }

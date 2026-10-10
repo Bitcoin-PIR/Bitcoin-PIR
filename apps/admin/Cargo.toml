@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.81"
 authors = ["Bitcoin PIR contributors"]
-description = "Operator CLI for Bitcoin PIR servers: keygen, attest, DB upload"
+description = "Operator CLI for Bitcoin PIR servers"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -14,26 +14,19 @@ path = "src/main.rs"
 
 [dependencies]
 pir-core = { path = "../../crates/protocol/core" }
-pir-sdk = { path = "../../crates/sdk/core" }
 pir-sdk-client = { path = "../../crates/sdk/client" }
 pir-identity = { path = "../../crates/trust/identity" }
 pir-attest-verify = { path = "../../crates/trust/attest-verify" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
-pir-runtime-core = { path = "../../crates/protocol/runtime" }
 
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "time"] }
-tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
-futures-util = "0.3"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 ed25519-dalek = "2"
 getrandom = "0.2"
 hex = "0.4"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["raw_value"] }
 zeroize = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
+pir-runtime-core = { path = "../../crates/protocol/runtime" }
 tempfile = "3"
-toml = "0.8"

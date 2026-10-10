@@ -3,20 +3,20 @@
 //! ## Why this exists
 //!
 //! The PIR encrypted channel ([`pir_channel`]) terminates inside the
-//! unified_server process, *behind* cloudflared. For hosts with SEV-SNP
-//! (pir2), the channel's long-lived X25519 pubkey is bound into the
-//! chip-signed REPORT_DATA via [`pir_core::attest::build_report_data`]
-//! — so a client verifying the SEV report can trust that the pubkey it
-//! handshakes against came from the attested guest.
+//! unified_server process, *behind* cloudflared. On a SEV-SNP host the
+//! channel's long-lived X25519 pubkey is bound into the chip-signed
+//! REPORT_DATA via [`pir_core::attest::build_report_data`], so a client
+//! verifying the SEV report can trust that the pubkey it handshakes
+//! against came from the attested guest.
 //!
-//! Hosts without hardware attestation (pir1, on Hetzner) have no such
-//! anchor. The wire-returned `server_static_pub` is just self-asserted,
-//! and a TLS-terminating middlebox (cloudflared) could substitute it
-//! at will. This crate closes that gap with operator-signed identity:
+//! Hosts without hardware attestation have no such anchor. The
+//! wire-returned `server_static_pub` is just self-asserted, and a
+//! TLS-terminating middlebox (cloudflared) could substitute it at will.
+//! This crate closes that gap with operator-signed identity:
 //!
 //! ```text
-//!   Operator's long-term Ed25519 key   (offline; eventually broadcast
-//!     │                                 via Nostr or similar)
+//!   Operator's long-term Ed25519 key   (offline; clients pin its pubkey)
+//!     │
 //!     │ signs once per server identity rotation
 //!     ▼
 //!   IdentityCert  { server_id, identity_pubkey, valid_from, valid_until }
@@ -66,8 +66,6 @@ pub const CHANNEL_MANIFEST_DOMAIN_TAG: &[u8] = b"BPIR-CHANNEL-MANIFEST-V1";
 /// Wire-format / verification errors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IdentityError {
-    /// A structurally bounded field violates the artifact contract.
-    InvalidField(&'static str),
     /// Wire decode found a length-prefixed field whose body would
     /// extend past the end of the input.
     Truncated(&'static str),
@@ -83,15 +81,15 @@ pub enum IdentityError {
     /// servers serve a handful of DBs (today: 4); we cap at 32 to
     /// allow growth without admitting absurd blobs.
     TooManyManifestRoots(usize),
-    /// Provided bytes are not the right length for the field they
-    /// were assigned to.
-    BadLength {
-        field: &'static str,
-        expected: usize,
-        got: usize,
-    },
     /// Ed25519 signature failed verification.
     BadSignature,
+    /// [`IdentityCert::check_validity`]: `now` is outside the cert's
+    /// validity window.
+    OutsideValidity {
+        now: i64,
+        valid_from: i64,
+        valid_until: i64,
+    },
     /// The Ed25519 pubkey bytes are not a valid point.
     BadPubkey,
     /// Trailing bytes after the structure's declared end. Strict
@@ -102,7 +100,6 @@ pub enum IdentityError {
 impl core::fmt::Display for IdentityError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidField(field) => write!(f, "invalid identity field: {}", field),
             Self::Truncated(s) => write!(f, "truncated: {}", s),
             Self::UnknownVersion { kind, version } => {
                 write!(f, "{}: unknown version {}", kind, version)
@@ -111,16 +108,15 @@ impl core::fmt::Display for IdentityError {
                 write!(f, "field {} too long: {}", field, len)
             }
             Self::TooManyManifestRoots(n) => write!(f, "manifest_roots count {} > 32", n),
-            Self::BadLength {
-                field,
-                expected,
-                got,
+            Self::BadSignature => write!(f, "Ed25519 signature verification failed"),
+            Self::OutsideValidity {
+                now,
+                valid_from,
+                valid_until,
             } => write!(
                 f,
-                "bad length for {}: expected {}, got {}",
-                field, expected, got
+                "time {now} is outside the validity window [{valid_from}, {valid_until}]"
             ),
-            Self::BadSignature => write!(f, "Ed25519 signature verification failed"),
             Self::BadPubkey => write!(f, "Ed25519 pubkey is not a valid point"),
             Self::TrailingBytes(n) => write!(f, "{} trailing bytes after structure", n),
         }
@@ -140,11 +136,10 @@ const MAX_MANIFEST_ROOTS: usize = 32;
 ///
 /// The operator signs this OFFLINE — `identity_pubkey` is generated
 /// server-side; the operator receives it out-of-band (e.g., via
-/// `bpir-admin generate-identity` output) and produces this blob with
-/// `bpir-admin sign-identity`. Rotating the operator key requires
-/// publishing the new pubkey through the agreed channel (Nostr,
-/// eventually). Rotating just the `identity_pubkey` requires re-signing
-/// the cert with the unchanged operator key.
+/// `bpir-admin keygen` output) and produces this blob with
+/// `bpir-admin sign-identity`. Rotating the operator key means
+/// re-pinning its pubkey in clients. Rotating just the `identity_pubkey`
+/// requires re-signing the cert with the unchanged operator key.
 ///
 /// `valid_from` and `valid_until` are unix-seconds (i64 for negative
 /// values; in practice always positive). Use `0` for `valid_from` if
@@ -227,11 +222,14 @@ impl IdentityCert {
     /// `[valid_from, valid_until]` (inclusive). `valid_until == 0`
     /// is treated as "no upper bound" — useful for indefinite certs.
     pub fn check_validity(&self, now_unix_seconds: i64) -> Result<(), IdentityError> {
-        if now_unix_seconds < self.valid_from {
-            return Err(IdentityError::BadSignature); // re-use; cert is not yet valid
-        }
-        if self.valid_until != 0 && now_unix_seconds > self.valid_until {
-            return Err(IdentityError::BadSignature); // cert is expired
+        if now_unix_seconds < self.valid_from
+            || (self.valid_until != 0 && now_unix_seconds > self.valid_until)
+        {
+            return Err(IdentityError::OutsideValidity {
+                now: now_unix_seconds,
+                valid_from: self.valid_from,
+                valid_until: self.valid_until,
+            });
         }
         Ok(())
     }
@@ -345,7 +343,7 @@ pub fn sign_identity_cert(
 }
 
 /// Per-boot Tier-2 manifest. Signed by the server's identity key (held
-/// on disk inside the SEV guest / on pir1's filesystem). Commits the
+/// on the server's disk). Commits the
 /// long-lived X25519 channel pubkey along with build identifiers so a
 /// client can cross-check what binary + git rev + DB manifest the
 /// channel pubkey came from.
@@ -604,10 +602,8 @@ pub fn sign_channel_manifest(
 ///    * `manifest.server_id == cert.server_id`
 /// 5. Apply the caller's freshness policy on `manifest.issued_at`.
 ///
-/// Step 1 is currently optional in the client (the operator pubkey
-/// publishing mechanism is being designed — see the project notes on
-/// Nostr distribution). When the operator pubkey becomes pinned, the
-/// caller MUST run step 1, otherwise the chain is unauthenticated.
+/// Without step 1 against a pinned operator pubkey the chain is
+/// unauthenticated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AnnouncementBundle {
     pub cert: IdentityCert,
@@ -1024,13 +1020,5 @@ mod tests {
         let parsed = AnnouncementBundle::decode(&bytes).unwrap();
         assert_eq!(bundle, parsed);
         parsed.verify_chain().unwrap();
-    }
-
-    #[test]
-    fn domain_tags_are_distinct() {
-        // No risk of cross-protocol confusion: a signature over an
-        // IdentityCert preimage cannot be re-used as a ChannelManifest
-        // signature (or vice versa) because the domain tags differ.
-        assert_ne!(IDENTITY_CERT_DOMAIN_TAG, CHANNEL_MANIFEST_DOMAIN_TAG);
     }
 }

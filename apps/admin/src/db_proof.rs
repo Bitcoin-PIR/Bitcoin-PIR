@@ -151,42 +151,15 @@ async fn verify_live(args: VerifyLiveArgs) -> Result<(), String> {
     let bundle = fetch_database_proof(&mut conn, args.db_id)
         .await
         .map_err(|e| format!("fetch db proof from {} failed: {}", args.server, e))?;
-    if bundle.db_id != args.db_id {
-        return Err(mismatch(
-            "db_id",
-            args.db_id.to_string(),
-            bundle.db_id.to_string(),
-        ));
-    }
+    verify_database_proof(db_info, &bundle, &DatabaseProofPolicy::default())
+        .map_err(|e| format!("db proof does not match the live catalog: {e}"))?;
     let proof = bundle
         .as_attest_bundle()
         .verify()
         .map_err(|e| e.to_string())?;
-    let policy = policy_from_expectations(&args.expected)?;
-    verify_database_proof(db_info, &bundle, &policy)
-        .map_err(|e| format!("db proof does not match live catalog/policy: {e}"))?;
     apply_expectations(&args.expected, &proof)?;
     print_live_summary(&args.server, bundle.db_id, &proof)?;
     Ok(())
-}
-
-fn policy_from_expectations(args: &ExpectedProofArgs) -> Result<DatabaseProofPolicy, String> {
-    let mut policy = DatabaseProofPolicy::default();
-    if let Some(expected) = &args.expect_network_magic {
-        policy.expected_network_magic = Some(parse_hex_array("network_magic", expected)?);
-    }
-    if let Some(expected) = &args.expect_params_hash {
-        policy.expected_params_hash = Some(parse_hex_array("params_hash", expected)?);
-    }
-    if let Some(expected) = &args.expect_builder_binary_sha256 {
-        policy
-            .allowed_builder_binary_sha256
-            .push(parse_hex_array("builder_binary_sha256", expected)?);
-    }
-    if let Some(expected) = &args.expect_builder_git_commit {
-        policy.allowed_builder_git_commits.push(expected.clone());
-    }
-    Ok(policy)
 }
 
 fn apply_expectations(args: &ExpectedProofArgs, proof: &ProofDirectory) -> Result<(), String> {
@@ -321,6 +294,13 @@ fn print_summary_body(proof: &ProofDirectory) -> Result<(), String> {
     println!("onion_entry_size={}", evidence.onion_entry_size);
     println!("bucket_super_root={}", hex32(&evidence.bucket_super_root));
     println!("onion_super_root={}", hex32(&evidence.onion_super_root));
+    if let Some(layout) = &evidence.onion_layout_v2 {
+        println!("onion_total_packed_entries={}", layout.total_packed_entries);
+        println!("onion_index_bins_per_table={}", layout.index_bins_per_table);
+        println!("onion_chunk_bins_per_table={}", layout.chunk_bins_per_table);
+        println!("onion_index_slots_per_bin={}", layout.index_slots_per_bin);
+        println!("onion_index_slot_size={}", layout.index_slot_size);
+    }
     println!(
         "root_bundle_payload_sha256={}",
         hex32(&evidence.root_bundle_payload_sha256)
@@ -402,16 +382,4 @@ fn normalize_hex(value: &str) -> Result<String, String> {
         return Err(format!("hex value contains non-hex characters: {value}"));
     }
     Ok(hex)
-}
-
-fn parse_hex_array<const N: usize>(field: &'static str, value: &str) -> Result<[u8; N], String> {
-    let normalized = normalize_hex(value)?;
-    let bytes = hex::decode(&normalized).map_err(|e| format!("{field}: invalid hex: {e}"))?;
-    bytes.try_into().map_err(|bytes: Vec<u8>| {
-        format!(
-            "{field}: expected {}-byte hex, got {} bytes",
-            N,
-            bytes.len()
-        )
-    })
 }

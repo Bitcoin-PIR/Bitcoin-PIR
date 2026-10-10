@@ -169,7 +169,7 @@ printf '%s\n' 59392a0738106c4954c317f9bfae2e4918fe809fa0c49fdf23493ce709b9c6e0 >
 ## 7. Server identity
 
 ```sh
-"$REPO/target/release/bpir-admin" generate-identity --purpose server --out "$NODE/identity/server.key"
+"$REPO/target/release/bpir-admin" keygen --out "$NODE/identity/server.key"
 ```
 
 Send the printed identity **public** key (64 hex) to the Mac Studio

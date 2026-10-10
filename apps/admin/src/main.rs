@@ -3,21 +3,21 @@
 //! Subcommands:
 //! - `api-key new` — mint an operator API key for the server's
 //!   `--api-key-file` (docs/CREDITS.md "API keys").
-//! - `keygen` — generate an ed25519 keypair for the admin auth flow.
-//!   Writes the private key to a file (mode 0600) and prints the
-//!   public key as 64-char hex for the operator to put into the
-//!   server's `--admin-pubkey-hex` flag.
+//! - `keygen` — generate an Ed25519 keypair (admin key, server identity
+//!   or operator key). Writes the 32-byte seed to a file (mode 0600) and
+//!   prints the public key as 64-char hex.
+//! - `sign-identity` — the operator signs a server's IdentityCert.
 //! - `attest` — exercise REQ_ATTEST against a server, verify the
-//!   REPORT_DATA binding, optionally cross-check against expected
-//!   binary hash / manifest roots.
+//!   REPORT_DATA binding, optionally cross-check the binary hash,
+//!   launch MEASUREMENT and AMD certificate chain against pins.
 //! - `channel-test` — end-to-end smoke test of the encrypted channel:
 //!   attest → handshake → encrypted ping/pong + get_info. Use post-deploy
 //!   to confirm the cloudflared-blind path actually works.
 //! - `upload` — authenticate, build a manifest, stream a DB directory
 //!   to the server's staging area, finalize, optionally activate.
-//! - `db-proof verify` — verify attested-builder evidence, root bundle,
-//!   artifact manifests, and SEV-SNP REPORT_DATA binding for a database
-//!   build proof directory.
+//! - `db-proof verify` / `verify-live` — verify attested-builder evidence,
+//!   root bundle, artifact manifests, and SEV-SNP REPORT_DATA binding for
+//!   a local proof directory or a live server's proof.
 //!
 //! Wire protocol surfaces consumed by this tool live in
 //! `pir-sdk-client::{attest, admin}` and are tested independently.
@@ -29,9 +29,7 @@ mod api_key;
 mod attest;
 mod channel_test;
 mod db_proof;
-mod generate_identity;
 mod keygen;
-mod show_vcek_url;
 mod sign_identity;
 mod upload;
 
@@ -48,13 +46,9 @@ enum Command {
     /// (docs/CREDITS.md "API keys").
     #[command(name = "api-key")]
     ApiKey(api_key::ApiKeyArgs),
-    /// Generate an ed25519 admin keypair.
+    /// Generate an Ed25519 keypair: admin key, server identity, or
+    /// operator key.
     Keygen(keygen::KeygenArgs),
-    /// Generate an Ed25519 identity keypair (server identity OR
-    /// operator long-term key — see `--purpose`). For the
-    /// operator-signed announcement bundle flow.
-    #[command(name = "generate-identity")]
-    GenerateIdentity(generate_identity::GenerateIdentityArgs),
     /// Operator signs an IdentityCert for a server, OFFLINE on the
     /// operator's workstation. Output is deployed to the server at
     /// the path passed to unified_server via `--identity-cert-path`.
@@ -67,10 +61,6 @@ enum Command {
     /// cloudflared-blind path works.
     #[command(name = "channel-test")]
     ChannelTest(channel_test::ChannelTestArgs),
-    /// Print the AMD KDS URLs for the connected server's chip + TCB so
-    /// the operator can curl them down and place in --vcek-dir.
-    #[command(name = "show-vcek-url")]
-    ShowVcekUrl(show_vcek_url::ShowVcekUrlArgs),
     /// Upload a DB directory: auth → BEGIN → CHUNK* → FINALIZE → ACTIVATE.
     Upload(upload::UploadArgs),
     /// Verify attested-builder database build proof artifacts.
@@ -81,61 +71,17 @@ enum Command {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let cli = Cli::parse();
-    let exit_code = match cli.command {
-        Command::ApiKey(args) => match api_key::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("api-key: {}", e);
-                1
-            }
-        },
-        Command::Keygen(args) => match keygen::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("keygen: {}", e);
-                1
-            }
-        },
-        Command::GenerateIdentity(args) => match generate_identity::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("generate-identity: {}", e);
-                1
-            }
-        },
-        Command::SignIdentity(args) => match sign_identity::run(args) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("sign-identity: {}", e);
-                1
-            }
-        },
-        Command::Attest(args) => match attest::run(args).await {
-            Ok(()) => 0,
-            Err(code) => code,
-        },
-        Command::ChannelTest(args) => match channel_test::run(args).await {
-            Ok(()) => 0,
-            Err(code) => code,
-        },
-        Command::ShowVcekUrl(args) => match show_vcek_url::run(args).await {
-            Ok(()) => 0,
-            Err(code) => code,
-        },
-        Command::Upload(args) => match upload::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("upload: {}", e);
-                1
-            }
-        },
-        Command::DbProof(args) => match db_proof::run(args).await {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("db-proof: {}", e);
-                1
-            }
-        },
+    let (name, result) = match cli.command {
+        Command::ApiKey(args) => ("api-key", api_key::run(args)),
+        Command::Keygen(args) => ("keygen", keygen::run(args)),
+        Command::SignIdentity(args) => ("sign-identity", sign_identity::run(args)),
+        Command::Attest(args) => ("attest", attest::run(args).await),
+        Command::ChannelTest(args) => ("channel-test", channel_test::run(args).await),
+        Command::Upload(args) => ("upload", upload::run(args).await),
+        Command::DbProof(args) => ("db-proof", db_proof::run(args).await),
     };
-    std::process::exit(exit_code);
+    if let Err(e) = result {
+        eprintln!("{name}: {e}");
+        std::process::exit(1);
+    }
 }
