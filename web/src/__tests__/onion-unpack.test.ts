@@ -5,7 +5,6 @@
  *
  *   - bits_per_coeff math (default + edge cases)
  *   - pack/unpack round-trip on full + short payloads
- *   - pack truncates oversize input silently
  *   - unpack rejects truncated / N-mismatch inputs
  *   - a second non-default config (N=4096) to catch hardcoded 13-bit
  *     assumptions
@@ -18,11 +17,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {
-  bitsPerCoeff,
-  packBytesIntoCoefficients,
-  unpackOnionPlaintext,
-} from '../onion-unpack.js';
+import { bitsPerCoeff, unpackOnionPlaintext } from '../onion-unpack.js';
 
 /** Default OnionPIRv2 `CONFIG_N2048_K1` post-port shape. */
 const N = 2048;
@@ -34,6 +29,59 @@ function synthesizeWireBytes(coeffs: BigUint64Array): Uint8Array {
   dv.setUint32(0, coeffs.length, true);
   for (let i = 0; i < coeffs.length; i++) {
     dv.setBigUint64(4 + i * 8, coeffs[i], true);
+  }
+  return out;
+}
+
+/**
+ * Pack `bytes` into `polyDegree` `u64` coefficients (returned as
+ * `BigUint64Array`).
+ *
+ * Output length is exactly `polyDegree`. Bytes past `entrySize` are
+ * silently truncated — caller's responsibility to know `entrySize`.
+ * Inverse of `unpackOnionPlaintext`; mirrors the Rust
+ * `pack_bytes_into_coefficients`.
+ */
+function packBytesIntoCoefficients(
+  bytes: Uint8Array,
+  entrySize: number,
+  polyDegree: number,
+): BigUint64Array {
+  const bpc = bitsPerCoeff(entrySize, polyDegree);
+  if (bpc === null) {
+    throw new Error(
+      `packBytesIntoCoefficients: entrySize ${entrySize} * 8 must be a multiple of polyDegree ${polyDegree}`,
+    );
+  }
+  const bpcBig = BigInt(bpc);
+  const mask = (1n << bpcBig) - 1n;
+  const out = new BigUint64Array(polyDegree);
+
+  let buffer = 0n;
+  let offset = 0n; // bit count in `buffer`
+  let coeffIdx = 0;
+
+  const take = Math.min(bytes.length, entrySize);
+  for (let i = 0; i < take; i++) {
+    buffer |= BigInt(bytes[i]) << offset;
+    offset += 8n;
+    while (offset >= bpcBig) {
+      if (coeffIdx >= polyDegree) {
+        // Unreachable for valid params + bytes.length ≤ entrySize, but
+        // guard anyway.
+        return out;
+      }
+      out[coeffIdx] = buffer & mask;
+      coeffIdx += 1;
+      buffer >>= bpcBig;
+      offset -= bpcBig;
+    }
+  }
+  // Flush trailing partial buffer. If `bytes.length === entrySize`
+  // and the bits align cleanly, `offset` is zero here and this is a
+  // no-op.
+  if (offset > 0n && coeffIdx < polyDegree) {
+    out[coeffIdx] = buffer & mask;
   }
   return out;
 }
@@ -93,18 +141,6 @@ describe('onion-unpack', () => {
     const dv = new DataView(wire.buffer);
     dv.setUint32(0, 4096, true); // claim N=4096
     expect(unpackOnionPlaintext(wire, N, ENTRY_SIZE)).toBeNull();
-  });
-
-  it('pack truncates oversize input silently', () => {
-    const oversize = new Uint8Array(ENTRY_SIZE + 100).fill(0xab);
-    const coeffs = packBytesIntoCoefficients(oversize, ENTRY_SIZE, N);
-    const wire = synthesizeWireBytes(coeffs);
-    const recovered = unpackOnionPlaintext(wire, N, ENTRY_SIZE);
-    expect(recovered).not.toBeNull();
-    expect(recovered!.length).toBe(ENTRY_SIZE);
-    for (let i = 0; i < ENTRY_SIZE; i++) {
-      expect(recovered![i]).toBe(0xab);
-    }
   });
 
   it('round-trips at N=4096, entry_size=19968 (CONFIG_N4096_K2_MP)', () => {

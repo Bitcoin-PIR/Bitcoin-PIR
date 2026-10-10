@@ -725,133 +725,6 @@ export interface OnionPirClientConfig {
   onLog?: (message: string, level: 'info' | 'success' | 'error') => void;
 }
 
-// ─── CHUNK Round-Presence Symmetry: per-slot classifier ───────────────────
-//
-// Mirrors the Rust helper `classify_chunk_slots` in
-// `crates/sdk/client/src/onion.rs`. Pure (no side effects, no RNG, no DOM
-// access) so it can be exercised by unit tests in node without
-// instantiating the WASM module.
-//
-// CHUNK Round-Presence Symmetry (CLAUDE.md): every per-query slot
-// produces exactly one action — `AppendReal` if the INDEX scan
-// returned a non-whale match, `AppendDummy` otherwise (not-found or
-// whale). The pre-fix bug skipped not-found / whale slots entirely,
-// so CHUNK round count was a binary side channel for found vs
-// not-found. The classifier captures the structural fix: the
-// per-slot action list has length equal to the input list, with no
-// "skip" branch.
-
-/**
- * Per-slot input shape — projection of the relevant fields of the
- * IndexResult-like objects produced by the INDEX scan loop. Used by
- * the classifier; the OnionPirWebClient also emits this shape when
- * delegating to `classifyChunkSlots`.
- */
-export interface ChunkSlotInput {
-  entryId: number;
-  numEntries: number;
-}
-
-/**
- * Per-slot action emitted by the classifier. The `queryBatch` chunk
- * loop dispatches on this discriminator: `append_real` adds
- * `numEntries` real entry_ids to the unique-fetch list,
- * `append_dummy` injects one uniformly random dummy entry_id (with
- * up to 32 dedup retries).
- */
-export type ChunkSlotAction =
-  | { kind: 'append_real'; entryId: number; numEntries: number }
-  | { kind: 'append_dummy' };
-
-/**
- * Classify each per-query slot for the OnionPIR CHUNK round.
- *
- * Postconditions (verified by the unit tests in
- * `web/src/__tests__/onion_chunk_slot_classifier.test.ts`):
- *
- * - **P1** (round-count uniformity) — `result.length === slots.length`.
- *   Combined with the call-site loop in `queryBatch`, this gives
- *   `uniqueEntryIds.length >= slots.length` (modulo dedup
- *   collisions on the dummy path, probabilistically negligible).
- * - **P2** (no-skip) — every slot maps to either `append_real` or
- *   `append_dummy`. There is no third "skip" branch — the pre-fix
- *   bug.
- *
- * Mirrors `classify_chunk_slots` in `crates/sdk/client/src/onion.rs`.
- * Cross-language consistency is enforced by the cross-language diff
- * test (`onion_leakage_diff.test.ts`) — same RoundProfile shape on
- * the wire requires same per-slot decisions here.
- */
-export function classifyChunkSlots(slots: readonly ChunkSlotInput[]): ChunkSlotAction[] {
-  return slots.map((s) => {
-    if (s.numEntries > 0) {
-      return { kind: 'append_real' as const, entryId: s.entryId, numEntries: s.numEntries };
-    }
-    return { kind: 'append_dummy' as const };
-  });
-}
-
-/**
- * Pure model of the per-slot classify-then-dedup logic, parameterised on
- * the dummy source so it's deterministic under test.
- *
- * This is a test-friendly analog, not a byte-for-byte mirror of the
- * production CHUNK path. Production `queryBatch` collects only the *real*
- * chunk entry_ids into its `uniqueEntryIds` list (an all-not-found batch
- * yields an empty list and substitutes the `[[]]` empty round); the
- * K_CHUNK dummy padding is then injected later, per group, as random
- * cuckoo *bin indices* drawn from `this.rng` (a `DummyRng` seeded from
- * `splitmix64(Date.now())`), and every query — real or dummy — is
- * FHE-encrypted via `generateQuery`. The bin-index RNG is NOT a privacy
- * boundary: SEAL re-randomises each ciphertext with its own CSPRNG, so a
- * dummy query is computationally unlinkable to its bin index regardless
- * of how that index was chosen. This helper instead takes an explicit
- * `dummyGen` so the dedup behaviour can be exercised without SEAL.
- *
- * **Returns** `{ unique, dummiesAdded }` where `unique` is the
- * deduplicated entry_id list and `dummiesAdded` is the count of
- * successful dummy appends.
- *
- * **Property** verified by tests: when the dummy generator yields
- * fresh values (no dedup collisions), `unique.length === slots.length`
- * for any input — every slot contributes one entry, real or dummy.
- */
-export function selectChunkUniqueFetches(
-  slots: readonly ChunkSlotInput[],
-  dummyGen: () => number,
-): { unique: number[]; dummiesAdded: number } {
-  const actions = classifyChunkSlots(slots);
-  const unique: number[] = [];
-  const seen = new Set<number>();
-  let dummiesAdded = 0;
-
-  for (const action of actions) {
-    if (action.kind === 'append_real') {
-      for (let i = 0; i < action.numEntries; i++) {
-        const eid = action.entryId + i;
-        if (!seen.has(eid)) {
-          seen.add(eid);
-          unique.push(eid);
-        }
-      }
-    } else {
-      // Up to 32 retries to dodge dedup collisions — same bound as
-      // the production code.
-      for (let attempt = 0; attempt < 32; attempt++) {
-        const cand = dummyGen();
-        if (!seen.has(cand)) {
-          seen.add(cand);
-          unique.push(cand);
-          dummiesAdded++;
-          break;
-        }
-      }
-    }
-  }
-
-  return { unique, dummiesAdded };
-}
-
 // ─── Client class ─────────────────────────────────────────────────────────
 
 /** One connection's FHE keys, registered per database on first use (the
@@ -869,7 +742,6 @@ export class OnionPirWebClient {
   /** Funds metered frames when the server requires credits (docs/CREDITS.md). */
   private credited: CreditedChannel | null = null;
   private config: OnionPirClientConfig;
-  private connectionState: ConnectionState = 'disconnected';
   private rng = new DummyRng();
 
   // Server info (fetched via JSON)
@@ -904,27 +776,12 @@ export class OnionPirWebClient {
   attestation: ServerAttestation = { state: 'unattested' };
   operatorIdentity: OperatorIdentity = { state: 'not-checked' };
 
-  // Test hook: one-shot override of the computed scripthashes for the next
-  // queryBatch() call. Consumed on use and then cleared. Used by harnesses
-  // that need to drive a query at a specific scripthash without reversing
-  // HASH160. Production UI never sets this.
-  private _scriptHashOverride: Uint8Array[] | undefined = undefined;
-
   // Optional leakage recorder. When installed, every transport-level
   // roundtrip emits a structured `RoundProfile` matching what the Rust
   // `OnionClient` emits — see docs/VERIFICATION_OVERVIEW.md
   // diff-tests Rust against TS using these profiles. `null` = no
   // recording (zero overhead in the no-recorder case).
   private leakageRecorder: LeakageRecorder | null = null;
-
-  /**
-   * Set a one-shot scripthash override for the NEXT queryBatch call.
-   * The override[] replaces the computed scripthashes 1:1 (same length).
-   * Cleared after consumption.
-   */
-  setScriptHashOverrideForNextQuery(hashes: Uint8Array[]): void {
-    this._scriptHashOverride = hashes;
-  }
 
   constructor(config: OnionPirClientConfig) {
     this.config = config;
@@ -1067,11 +924,9 @@ export class OnionPirWebClient {
   }
 
   private setState(state: ConnectionState, msg?: string): void {
-    this.connectionState = state;
     this.config.onConnectionStateChange?.(state, msg);
   }
 
-  getConnectionState(): ConnectionState { return this.connectionState; }
   isConnected(): boolean { return this.ws?.isOpen() ?? false; }
 
   // ─── Connection (delegates to shared ws.ts) ───────────────────────────
@@ -1465,9 +1320,6 @@ export class OnionPirWebClient {
     if (!this.wasmModule) throw new Error('WASM not loaded');
     if (dbIdOverride !== undefined) this.setDbId(dbIdOverride);
     const dbId = this.dbId;
-    const override = this._scriptHashOverride;
-    this._scriptHashOverride = undefined;
-    if (override && override.length === scriptHashes.length) scriptHashes = override;
     if (scriptHashes.length === 0) return [];
 
     const progress = onProgress ?? (() => {});
@@ -2076,16 +1928,6 @@ export class OnionPirWebClient {
   // ═══════════════════════════════════════════════════════════════════════
   // MERKLE VERIFICATION
   // ═══════════════════════════════════════════════════════════════════════
-
-  /** Check if the ACTIVE database supports OnionPIR per-bin Merkle verification */
-  hasMerkle(): boolean {
-    return this.hasMerkleForDb(this.dbId);
-  }
-
-  /** The Merkle root hex for the active database (for display). */
-  getMerkleRootHex(): string | undefined {
-    return this.getMerkleRootHexForDb(this.dbId);
-  }
 
   /**
    * Verify the batch's per-group OnionPIR Merkle leaves and record each

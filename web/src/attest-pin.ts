@@ -1,17 +1,11 @@
-import { requireSdkWasm, type WasmPolicyRequirements } from './sdk-bridge.js';
+import { bytesToHex } from './hash.js';
+import type { WasmPolicyRequirements } from './sdk-bridge.js';
 import type { DatabaseProofPin } from './db-proof.js';
 
 /**
- * Operator-pinned 32-byte SHA-256 fingerprint of the AMD ARK (Root
- * Key) certificate, as a human-readable hex string.
- *
- * This constant is **documentation** — the live runtime value used by
- * the verifier comes from the WASM module (`turinArkFingerprint()`,
- * exported from `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256`).
- * Keeping the hex here gives operators a searchable, auditable copy
- * of the pinned value AND a build-time cross-check (see
- * [`getAmdTurinArkFingerprint`] below) that catches drift if anyone
- * ever rotates one without the other.
+ * Operator-pinned 32-byte SHA-256 fingerprint of the AMD Turin-family ARK
+ * (Root Key) certificate, as hex. Same value as the Rust constant
+ * `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256`.
  *
  * Pinned 2026-05-03 by the operator from the Turin family ARK at
  * https://kdsintf.amd.com/vcek/v1/Turin/cert_chain (second PEM block).
@@ -22,9 +16,7 @@ import type { DatabaseProofPin } from './db-proof.js';
  *        # Split, then SHA-256 the ARK DER:
  *        csplit -z -f cert_ -b "%d.pem" cert_chain.pem '/-----BEGIN CERT/' '{*}'
  *        openssl x509 -in cert_1.pem -outform DER | sha256sum
- *   3. Replace the hex below AND the Rust constant
- *      `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256`, then rebuild
- *      the WASM bundle.
+ *   3. Replace the hex below and the Rust constant.
  *
  * Same fingerprint applies to all Turin-family chips. Other generations
  * have their own ARK and pin (Milan: [`AMD_MILAN_ARK_FINGERPRINT_HEX`]).
@@ -36,10 +28,9 @@ export const AMD_TURIN_ARK_FINGERPRINT_HEX =
  * The AMD Milan-family ARK fingerprint, for SEV hosts on Milan (EPYC 7003).
  * Pinned 2026-10-02 from https://kdsintf.amd.com/vcek/v1/Milan/cert_chain
  * (second PEM block, CN=ARK-Milan) for the VPSBG Direct ORAM host (EPYC
- * 7713P). Same role, runtime source (`milanArkFingerprint()`, from
- * `pir-attest-verify::MILAN_ARK_FINGERPRINT_SHA256`) and rotation steps as
- * the Turin pin above. Reports chained to it must also meet
- * [`AMD_MILAN_SEV_SNP_FLOOR`].
+ * 7713P). Same role and rotation steps as the Turin pin above (Rust:
+ * `pir-attest-verify::MILAN_ARK_FINGERPRINT_SHA256`). Reports chained to it
+ * must also meet [`AMD_MILAN_SEV_SNP_FLOOR`].
  */
 export const AMD_MILAN_ARK_FINGERPRINT_HEX =
   '69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd';
@@ -52,72 +43,11 @@ function arkHexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** Decode the hex constant once at module load. Used as the
- *  authoritative *human-readable* source — the runtime value comes
- *  from WASM and is checked against this at [`getAmdTurinArkFingerprint`]
- *  call time. */
-const HEX_AS_BYTES: Uint8Array = arkHexToBytes(AMD_TURIN_ARK_FINGERPRINT_HEX);
-const MILAN_HEX_AS_BYTES: Uint8Array = arkHexToBytes(AMD_MILAN_ARK_FINGERPRINT_HEX);
+/** Bytes of [`AMD_TURIN_ARK_FINGERPRINT_HEX`]. */
+export const AMD_TURIN_ARK_FINGERPRINT: Uint8Array = arkHexToBytes(AMD_TURIN_ARK_FINGERPRINT_HEX);
 
-/** Cross-check a WASM-exported ARK fingerprint against its hex pin. */
-function checkedWasmArkFingerprint(name: string, fromWasm: Uint8Array, hex: string): Uint8Array {
-  if (fromWasm.length !== 32) {
-    throw new Error(
-      `attest-pin: WASM ${name} returned ${fromWasm.length} bytes (expected 32)`,
-    );
-  }
-  if (bytesToHex(fromWasm) !== hex) {
-    throw new Error(
-      `attest-pin: ARK fingerprint mismatch between WASM ${name} (${bytesToHex(fromWasm)}) ` +
-        `and its hex pin (${hex}). One was rotated without the other — fix and rebuild.`,
-    );
-  }
-  return fromWasm;
-}
-
-/**
- * Return the 32-byte ARK fingerprint sourced from the WASM module
- * (which mirrors the Rust constant
- * `pir-attest-verify::TURIN_ARK_FINGERPRINT_SHA256`).
- *
- * Throws if [`initSdkWasm`] hasn't resolved yet — the WASM module is
- * the single source of truth, so this function intentionally has no
- * pure-TS fallback. Callers that need the value before WASM init can
- * use [`AMD_TURIN_ARK_FINGERPRINT_HEX`] for display purposes only
- * (never as the value passed to `verifyVcekChain` / `verifyFull` —
- * that would defeat the cross-check).
- *
- * On first call after WASM init, cross-checks the WASM-exported bytes
- * against the hex constant and throws on mismatch (build-time drift
- * between Rust + TS). Subsequent calls return the cached Uint8Array.
- */
-let cachedArkFingerprint: Uint8Array | null = null;
-export function getAmdTurinArkFingerprint(): Uint8Array {
-  if (cachedArkFingerprint) return cachedArkFingerprint;
-  cachedArkFingerprint = checkedWasmArkFingerprint(
-    'turinArkFingerprint',
-    requireSdkWasm().turinArkFingerprint(),
-    AMD_TURIN_ARK_FINGERPRINT_HEX,
-  );
-  return cachedArkFingerprint;
-}
-
-
-/**
- * @deprecated Use [`getAmdTurinArkFingerprint`] instead. This eager
- * Uint8Array is kept for back-compat with pre-Slice-D.4 callers; new
- * code should source from WASM so the cross-check fires. Will be
- * removed once `dpf-adapter.ts` / `harmonypir-adapter.ts` migrate.
- */
-export const AMD_TURIN_ARK_FINGERPRINT: Uint8Array = HEX_AS_BYTES;
-
-/** Eager bytes of [`AMD_MILAN_ARK_FINGERPRINT_HEX`] for module-level
- *  provider pins (`ProductionProviderPin.expectedArkFingerprint`). */
-export const AMD_MILAN_ARK_FINGERPRINT: Uint8Array = MILAN_HEX_AS_BYTES;
-
-function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
+/** Bytes of [`AMD_MILAN_ARK_FINGERPRINT_HEX`]. */
+export const AMD_MILAN_ARK_FINGERPRINT: Uint8Array = arkHexToBytes(AMD_MILAN_ARK_FINGERPRINT_HEX);
 
 /**
  * The TCB floor and platform checks every report chained to the Milan ARK
@@ -163,8 +93,8 @@ export function applySevSnpPlatformFloor(
  * Per-server build-time pins for values the SEV-SNP report surfaces.
  * Defense in depth on top of the ARK chain validation: even with a
  * verified chain, mismatches on these self-reported (but in Tier 3
- * MEASUREMENT-covered) values trip state to `'mismatch'` and the
- * adapter refuses to upgrade to the encrypted channel.
+ * MEASUREMENT-covered) values set the state to `'mismatch'`, which the
+ * adapter reports.
  *
  * - `measurementHex`: 96-char hex (48 bytes) — the launch
  *   MEASUREMENT AMD's PSP signs into every report. For Tier 3 this
@@ -236,9 +166,9 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  * (PIR2_TIER3_PIN above) was retired on 2026-10-02: a MacBook (macOS arm64),
  * NO TEE. It serves DPF server 1 and the HarmonyPIR query role; Direct ORAM is
  * paused. As with PIR1_PIN there is no MEASUREMENT; the binary pin is not
- * hardware-backed but detects drift from the operator-published build, and
- * strict mode additionally requires the operator-signed identity
- * (server id pir2-macbook-v1, pir2 operator key).
+ * hardware-backed but detects drift from the operator-published build. The
+ * operator-signed identity (server id pir2-macbook-v1, pir2 operator key)
+ * is checked too.
  */
 export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // No measurementHex — no SEV on this host.

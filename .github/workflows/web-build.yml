@@ -1,33 +1,9 @@
 name: Web client build + tests
 
-# Release-readiness gate for the web client and its WASM dependencies.
-#
-# `pir-sdk-integration.yml` already validates the Rust-native code path
-# against the live Hetzner deployment, and `deploy-web.yml` builds the
-# web bundle on push-to-main for GitHub Pages. Neither covers:
-#
-#   1. **wasm32 target compilation on PRs.** Before this gate, wasm-pack ran
-#      only via `deploy-web.yml` on push-to-main; a PR that broke the
-#      wasm32 build (e.g., refactor that pulls a native-only API into
-#      shared code) merges silently and surfaces only at deploy time.
-#
-#   2. **PR-time TypeScript strict typecheck (`tsc`).** `web/package.json`
-#      has `build` = `tsc` and `build-web` = `vite build`. The deploy
-#      workflow now also runs typecheck, unit and Chromium gates before a
-#      manual production render; this workflow gives the same strict-mode
-#      errors (null-vs-undefined narrows, hand-written interface drift between
-#      `sdk-bridge.ts` and WASM-generated stubs, etc.) a pre-merge signal.
-#
-#   3. **vitest unit tests.** `web/src/__tests__/` includes pure-helper
-#      TS-side analogs of the Kani harnesses plus the Payment V1 admission,
-#      recovery, and provider-selection tests. This suite is never inferred
-#      from a stale hard-coded test count.
-#
-# This workflow plugs all three gaps with a single PR-time job. The
-# wasm-pack output is reused by the tsc step (the regenerated
-# `crates/sdk/wasm/pkg/*.d.ts` stubs are what `web/src/sdk-bridge.ts`
-# imports), so any drift between the Rust-side `#[wasm_bindgen]` API
-# and the hand-written TS interface fires at this point.
+# PR-time gate for the web client and its WASM dependencies: builds the
+# wasm crate for wasm32 (wasm-pack), typechecks web/src (`npm run build` =
+# `tsc --noEmit`), runs the vitest suite, and builds the production bundle
+# with its CSP check (`npm run build-web`).
 
 on:
   push:
@@ -133,11 +109,9 @@ jobs:
           --target web --out-dir pkg --mode no-install --no-opt
           -- --locked --offline
 
-      # `npm run build` = `tsc`. Strict typecheck of every .ts file
-      # under web/src/, including the test files. Catches drift in
-      # `sdk-bridge.ts` interfaces against the regenerated
-      # `crates/sdk/wasm/pkg/*.d.ts` stubs.
-      - name: TypeScript strict typecheck (npm run build = tsc)
+      # `npm run build` = `tsc --noEmit`: strict typecheck of every .ts
+      # file under web/src/, including the test files.
+      - name: TypeScript strict typecheck (npm run build)
         working-directory: web
         run: npm run build
 

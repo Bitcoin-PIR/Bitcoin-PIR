@@ -1,20 +1,12 @@
 /**
- * Bridge between the existing web client and pir-sdk-wasm.
- *
- * This module provides a migration path from the pure-TS implementation
- * to the Rust SDK via WASM. Functions check if the WASM module is loaded
- * and fall back to the TS implementation if not.
+ * Loads `pir-sdk-wasm` and types the parts of its surface the web client
+ * calls.
  */
-
-import type { DatabaseCatalog } from './server-info.js';
-import type { SyncPlan, SyncStep } from './sync.js';
-import { computeSyncPlan as computeSyncPlanTS } from './sync.js';
 
 // ─── WASM module type ───────────────────────────────────────────────────────
 
 interface PirSdkWasm {
   WasmDatabaseCatalog: {
-    new(): WasmDatabaseCatalog;
     fromJson(json: any): WasmDatabaseCatalog;
   };
   /** ARC credentials for credits (`docs/CREDITS.md`); see `sdkArcFactories`. */
@@ -24,13 +16,6 @@ interface PirSdkWasm {
   };
   WasmArcCredential: {
     new(credential: Uint8Array, epoch: number, presentationLimit: number, nextNonce: number): WasmArcCredential;
-  };
-  WasmSyncPlan: WasmSyncPlan;
-  WasmQueryResult: {
-    new(): WasmQueryResult;
-    /** Data import only: caller `merkleVerified` is ignored and the returned
-     * handle is always unverified. */
-    fromJson(json: any): WasmQueryResult;
   };
   // Native-WASM DPF client — used by `dpf-adapter.ts` to retire the pure-TS
   // `BatchPirClient`. The class is constructed with two server URLs; its
@@ -65,12 +50,6 @@ interface PirSdkWasm {
   WasmStandaloneSecureChannelV1: {
     new(): WasmStandaloneSecureChannelV1;
   };
-  // Phase 2+ observability bridge — lock-free atomic counters shared between
-  // JavaScript and any client that has the recorder installed. See the
-  // `WasmAtomicMetrics` interface below for the JS-facing surface.
-  WasmAtomicMetrics: {
-    new(): WasmAtomicMetrics;
-  };
   /**
    * Constructor for [`WasmPolicyRequirements`] used by
    * `WasmAttestVerification.verifyFull`. `new sdk.WasmPolicyRequirements()`
@@ -79,22 +58,6 @@ interface PirSdkWasm {
   WasmPolicyRequirements: {
     new(): WasmPolicyRequirements;
   };
-  /**
-   * Returns the 32-byte SHA-256 fingerprint of the AMD Turin-family
-   * ARK certificate (DER-encoded). Pinned inside `pir-attest-verify`
-   * so the WASM module is the single source of truth — pass directly
-   * to `WasmAttestVerification.verifyFull` /
-   * `WasmAttestVerification.verifyVcekChain` on Turin hardware.
-   *
-   * Mirrors `web/src/attest-pin.ts::AMD_TURIN_ARK_FINGERPRINT_HEX` —
-   * `attest-pin.ts` uses this function as its runtime source and
-   * cross-checks the human-readable hex string against the WASM bytes
-   * at module load (catches drift if the two ever diverge).
-   */
-  turinArkFingerprint(): Uint8Array;
-  /** The Milan-family ARK fingerprint; same contract as
-   * `turinArkFingerprint`, for Milan servers (`AMD_MILAN_ARK_FINGERPRINT_HEX`). */
-  milanArkFingerprint(): Uint8Array;
   /**
    * Verify a standalone SEV-SNP report plus PEM ARK/ASK/VCEK chain using
    * the same Rust verifier as live runtime attestation. Used for static
@@ -130,109 +93,20 @@ interface PirSdkWasm {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): WasmDatabaseProof;
-  PRP_HMR12: () => number;
-  PRP_FASTPRP: () => number;
-  /**
-   * Opaque wrapper around a parsed tree-tops blob. Obtain via
-   * `WasmBucketMerkleTreeTops.fromBytes(...)` and reuse across all items that
-   * belong to the same (db_id, height) — reparsing for every item is wasted
-   * work.
-   *
-   * Remember to call `.free()` once you're done with it (or when the
-   * containing FinalizationRegistry fires) so the WASM-side allocation can
-   * be released.
-   */
-  WasmBucketMerkleTreeTops: {
-    fromBytes(data: Uint8Array): WasmBucketMerkleTreeTops;
-  };
-  computeSyncPlan(catalog: WasmDatabaseCatalog, lastSyncedHeight?: number | null): WasmSyncPlan;
-  mergeDelta(snapshot: WasmQueryResult, deltaRaw: Uint8Array): WasmQueryResult;
-  decodeDeltaData(raw: Uint8Array): DeltaDataJson;
-  // Hash functions
-  splitmix64(xHi: number, xLo: number): Uint8Array;
-  computeTag(tagSeedHi: number, tagSeedLo: number, scriptHash: Uint8Array): Uint8Array;
-  deriveGroups(scriptHash: Uint8Array, k: number): Uint32Array;
-  deriveCuckooKey(masterSeedHi: number, masterSeedLo: number, groupId: number, hashFn: number): Uint8Array;
-  cuckooHash(scriptHash: Uint8Array, keyHi: number, keyLo: number, numBins: number): number;
-  deriveChunkGroups(chunkId: number, k: number): Uint32Array;
-  cuckooHashInt(chunkId: number, keyHi: number, keyLo: number, numBins: number): number;
-  // PBC
-  cuckooPlace(candGroupsFlat: Uint32Array, numItems: number, numGroups: number, maxKicks: number, numHashes: number): Int32Array;
-  planRounds(itemGroupsFlat: Uint32Array, itemsPer: number, numGroups: number, numHashes: number, maxKicks: number): [number, number][][];
-  // Codec
-  readVarint(data: Uint8Array, offset: number): Uint32Array;
-  decodeUtxoData(data: Uint8Array): UtxoEntryRaw[];
-  // Per-bucket bin-Merkle primitives. The network-facing half of the verifier
-  // (K-padded sibling batches over DPF) stays in JS; these bindings cover the
-  // pure SHA-256 walk so the web client can drop its duplicate TS
-  // implementation.
-  bucketMerkleSha256(data: Uint8Array): Uint8Array;
-  bucketMerkleLeafHash(binIndex: number, binContent: Uint8Array): Uint8Array;
-  /** Arity-N parent hash. `childrenFlat.length` must be a multiple of 32. */
-  bucketMerkleParentN(childrenFlat: Uint8Array): Uint8Array;
-  /** XOR two equal-length buffers (for DPF `server0 ⊕ server1` folds). */
-  xorBuffers(a: Uint8Array, b: Uint8Array): Uint8Array;
-  /**
-   * Verify one per-bucket Merkle proof from leaf → cached root.
-   *
-   * `siblingRowsFlat` is one 256B row per level below `cacheFromLevel`,
-   * bottom-up, already XOR'd across server0 and server1. Returns `false`
-   * (not throw) on any mismatch or shape error — treat `false` as a
-   * verification failure and coerce the corresponding `QueryResult` to
-   * `merkleFailed()`.
-   */
-  verifyBucketMerkleItem(
-    binIndex: number,
-    binContent: Uint8Array,
-    pbcGroup: number,
-    siblingRowsFlat: Uint8Array,
-    treeTops: WasmBucketMerkleTreeTops,
-  ): boolean;
-  /**
-   * Install a `tracing-wasm` subscriber as the global `tracing` default,
-   * so the Phase 1 `#[tracing::instrument]` spans on the native
-   * `DpfClient` / `HarmonyClient` / `OnionClient` / `WsConnection` surface
-   * in the browser DevTools console. Call once at app startup after
-   * `await init()`. Subsequent calls are no-ops (guarded by
-   * `std::sync::Once`).
-   */
-  initTracingSubscriber(): void;
-}
-
-interface WasmBucketMerkleTreeTops {
-  free(): void;
-  readonly treeCount: number;
-  cacheFromLevel(groupIdx: number): number;
-  root(groupIdx: number): Uint8Array;
 }
 
 interface WasmDatabaseCatalog {
   free(): void;
-  readonly count: number;
-  readonly latestTip: number | undefined;
-  getDatabase(index: number): any;
-  /** Look up a database by `db_id`; returns `null` if not in the catalog. */
-  getEntry(dbId: number): any;
-  /** Does the database with `db_id` publish per-bucket Merkle commitments? */
-  hasBucketMerkle(dbId: number): boolean;
   toJson(): any;
 }
 
-/**
- * Native-WASM DPF client. See `PirSdkWasm.WasmDpfClient` for the constructor
- * signature. Only the subset used by `dpf-adapter.ts` is typed here; other
- * surfaces (`sync`, `syncWithProgress`, `queryBatch`) exist on the actual
- * class but aren't needed by the adapter.
- */
 /**
  * JS-visible result of a `WasmDpfClient.attest()` /
  * `WasmHarmonyClient.attest()` call. Mirrors the Rust struct
  * `pir_sdk_wasm::WasmAttestVerification`.
  *
  * Use the `serverStaticPub` getter (raw 32 bytes) as input to
- * `upgradeToSecureChannel`. Until Slice D's WASM VCEK chain verifier
- * lands, callers should at minimum check `sevStatus === 'reportDataMatch'`
- * before trusting the self-reported fields.
+ * `upgradeToSecureChannel`.
  */
 export interface WasmAttestVerification {
   free(): void;
@@ -255,12 +129,8 @@ export interface WasmAttestVerification {
   /** Per-DB manifest roots in db_id order, each as 64-char hex. */
   readonly manifestRootsHex: string[];
   /** Raw signed SEV-SNP attestation report bytes (~1184 for v5).
-   *  Empty if not on a SEV-SNP host. Slice D's VCEK chain verifier
-   *  consumes this directly. */
+   *  Empty if not on a SEV-SNP host. */
   readonly sevSnpReport: Uint8Array;
-  /** Hex-encoded REPORT_DATA preimage hash the client recomputed
-   *  locally. Compare against `sevSnpReport[0x50..0x70]`. */
-  readonly expectedReportDataHashHex: string;
   /** Hex-encoded launch MEASUREMENT — the 48-byte hash AMD's PSP
    *  signs into every SEV-SNP report, covering OVMF + the loaded
    *  UKI bytes (kernel + initramfs + cmdline). Empty string when
@@ -269,7 +139,6 @@ export interface WasmAttestVerification {
    *  running stack. */
   readonly launchMeasurementHex: string;
 
-  // ── Slice D.2 + D.3 cert chain ──────────────────────────────────
   /** Raw PEM bytes of the AMD ARK (Root Key) cert, as bundled by
    *  the server. Empty if `--vcek-dir` wasn't configured server-
    *  side. */
@@ -279,32 +148,20 @@ export interface WasmAttestVerification {
   readonly askPem: Uint8Array;
   /** Raw PEM bytes of the per-chip VCEK cert. Empty if not bundled. */
   readonly vcekPem: Uint8Array;
-  /** True when all three cert PEMs are non-empty. Pre-check before
-   *  calling `verifyVcekChain`. */
+  /** True when all three cert PEMs are non-empty. */
   readonly hasVcekChain: boolean;
-  /**
-   * One-shot AMD VCEK chain validation. Verifies:
-   *   1. ARK PEM's SHA-256 fingerprint matches the operator-pinned
-   *      32 bytes (pass `null` to skip — NOT recommended).
-   *   2. ARK self-signed; ARK→ASK; ASK→VCEK (RSA-PSS-SHA384).
-   *   3. SEV-SNP report's ECDSA-P384 signature against VCEK's pubkey.
-   *
-   * Resolves on success. Throws on any failure with a single-line
-   * diagnostic string.
-   */
-  verifyVcekChain(expectedArkFingerprint: Uint8Array | null): void;
 
   /**
-   * Highest-level verify: runs `verifyVcekChain`'s four steps PLUS
-   * the policy assertions captured in `policy` — VMPL ceiling,
+   * Verify the AMD chain (ARK fingerprint against the pin when one is
+   * passed; ARK→ASK→VCEK) and the report signature, plus the policy
+   * assertions captured in `policy` — VMPL ceiling,
    * `debug_allowed` / `migrate_ma_allowed` / `single_socket_required`
    * bits, TCB monotonicity (`reported_tcb ≤ committed_tcb`) + optional
    * minimum TCB, optional MEASUREMENT / family_id / image_id pins.
    *
    * Throws on the FIRST failing step. Caller can detect which step
    * failed by inspecting the error message ("chain: …", "report-sig: …",
-   * "policy: …"). Use `verifyVcekChain` directly if you'd rather get a
-   * raw chain-only verdict.
+   * "policy: …").
    */
   verifyFull(
     expectedArkFingerprint: Uint8Array | null,
@@ -316,7 +173,6 @@ export interface WasmAttestVerification {
  * counters remain in Rust/WASM; JS only transports canonical frames. */
 export interface WasmStandaloneSecureChannelV1 {
   free(): void;
-  readonly established: boolean;
   attestRequest(): Uint8Array;
   verifyAttestation(responseFrame: Uint8Array): WasmAttestVerification;
   handshakeRequest(): Uint8Array;
@@ -442,11 +298,6 @@ export interface WasmDpfClient {
    *  without `--identity-*` flags. See `WasmAnnounceVerification` for the
    *  verification methods to run on the result. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
-  /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
-   *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
-   *  `{ gasAdded, gasBalance }`. Bearer material: call after
-   *  `upgradeToSecureChannel`. */
-  presentCredits(serverIndex: number, kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
   /** Pay one leg's metered frames from `provider` when that server requires
    *  credits (`docs/CREDITS.md`): `provider(credits)` returns
    *  `{ kind, payload, credits }` or `null` and is called from inside query
@@ -461,8 +312,8 @@ export interface WasmDpfClient {
   presentApiKey(serverIndex: number, key: string): Promise<void>;
   /** Wrap both server connections with the encrypted-channel transport.
    *  Caller MUST first verify `pub0`/`pub1` came from a trustworthy
-   *  source (call `attest` first; ideally also check the SEV-SNP report's
-   *  AMD VCEK chain — Slice D). After this returns, every subsequent
+   *  source (call `attest` first, and check the SEV-SNP report's AMD
+   *  VCEK chain where there is one). After this returns, every subsequent
    *  query is AEAD-sealed via `pir_channel`'s ChaCha20-Poly1305 frame
    *  layer; cloudflared sees only ciphertext.
    *
@@ -495,37 +346,12 @@ export interface WasmDpfClient {
    * callback receives a single string (`"connecting"` / `"connected"` /
    * `"disconnected"`). Replaces any previously registered listener. */
   onStateChange(cb: (state: string) => void): void;
-  /** Returns `[server0Url, server1Url]`. */
-  serverUrls(): [string, string];
-  /** Install a `WasmAtomicMetrics` recorder. The recorder's counters are
-   *  shared (via an `Arc` clone) with the native `DpfClient`; all
-   *  subsequent connect / disconnect / byte / query-lifecycle events
-   *  increment the shared counters. Installing replaces any previous
-   *  recorder. */
-  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
-  /** Remove any installed metrics recorder on this client. Counters
-   *  already observed by a `WasmAtomicMetrics` handle held by JS
-   *  continue to reflect the values at uninstall time — they don't
-   *  zero out. */
-  clearMetricsRecorder(): void;
-}
-
-interface WasmSyncPlan {
-  free(): void;
-  readonly stepsCount: number;
-  readonly isFreshSync: boolean;
-  readonly targetHeight: number;
-  readonly isEmpty: boolean;
-  getStep(index: number): any;
-  toJson(): any;
 }
 
 /**
- * Native-WASM HarmonyPIR client. See `PirSdkWasm.WasmHarmonyClient` for the
- * constructor signature. Fields used by `harmonypir-adapter.ts`; the full
- * surface exposed by `crates/sdk/wasm/src/client.rs::WasmHarmonyClient` is a
- * superset (notably `queryBatch` + `fetchCatalog`, which the adapter doesn't
- * need because PIR rounds go through `queryBatchVerified`).
+ * Native-WASM HarmonyPIR client: the part of
+ * `crates/sdk/wasm/src/client.rs::WasmHarmonyClient` that
+ * `harmonypir-adapter.ts` uses.
  */
 export interface WasmHarmonyClient {
   free(): void;
@@ -533,36 +359,21 @@ export interface WasmHarmonyClient {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   /** Same as `WasmDpfClient.attest`. `serverIndex` 0 = hint server,
-   *  1 = query server (matches `serverUrls()` order). */
+   *  1 = query server. */
   attest(serverIndex: number): Promise<WasmAttestVerification>;
   /** Same as `WasmDpfClient.announce`. `serverIndex` 0 = hint server,
    *  1 = query server. Rejects with "announce not configured" when the
    *  server was started without `--identity-*` flags. */
   announce(serverIndex: number): Promise<WasmAnnounceVerification>;
-  /** Present credits (`docs/CREDITS.md`) on one leg: `kind` 1 is a Cashu
-   *  token, 2 an ARC payload from `WasmArcCredential.present`. Resolves to
-   *  `{ gasAdded, gasBalance }`. Bearer material: call after
-   *  `upgradeToSecureChannel`. */
-  presentCredits(serverIndex: number, kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
-  /** Pay one leg's metered frames from `provider` when that server requires
-   *  credits (`docs/CREDITS.md`): `provider(credits)` returns
-   *  `{ kind, payload, credits }` or `null` and is called from inside query
-   *  calls whenever the connection's balance runs short. Resolves to
-   *  `"not-enabled"`, `"not-required"`, `"required"`, or
-   *  `"best-effort"`. Call after
-   *  `upgradeToSecureChannel`. */
+  /** Same as `WasmDpfClient.enableCredits`. */
   enableCredits(serverIndex: number, provider: (credits: number) => unknown): Promise<string>;
-  /** Present an operator-issued API key on one leg (`docs/CREDITS.md`
-   *  "API keys"); that connection is then unmetered. Bearer material: call
-   *  after `upgradeToSecureChannel`. */
+  /** Same as `WasmDpfClient.presentApiKey`. */
   presentApiKey(serverIndex: number, key: string): Promise<void>;
-  /** Same as `WasmDpfClient.upgradeToSecureChannel`. Argument order
-   *  matches `serverUrls()` — `(hintServerStaticPub, queryServerStaticPub)`. */
+  /** Same as `WasmDpfClient.upgradeToSecureChannel`, with the arguments
+   *  `(hintServerStaticPub, queryServerStaticPub)`. */
   upgradeToSecureChannel(hintServerStaticPub: Uint8Array, queryServerStaticPub: Uint8Array): Promise<void>;
   /** Fetch + cache the database catalog over the WASM client's
-   *  internal connection. Returns a `WasmDatabaseCatalog` handle the
-   *  caller can pass back into `fetchHintsWithProgress` / `loadHints`
-   *  / `fingerprint`. */
+   *  internal connection. */
   fetchCatalog(): Promise<WasmDatabaseCatalog>;
   /** Same as `WasmDpfClient.verifyDatabaseProof`. */
   verifyDatabaseProof(
@@ -575,12 +386,9 @@ export interface WasmHarmonyClient {
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
   /** Same as `WasmDpfClient.preflightDatabase`. */
   preflightDatabase(dbId: number): Promise<void>;
-  serverUrls(): [string, string];
-  /** Returns the active `db_id`, or `undefined` if no hints are loaded. */
-  dbId(): number | undefined;
   setDbId(dbId: number): void;
   /** Overwrite the random 16-byte master PRP key. Must happen before
-   *  `loadHints(...)`. Throws on non-16-byte input. */
+   *  `loadCompleteHints(...)`. Throws on non-16-byte input. */
   setMasterKey(key: Uint8Array): void;
   /** Effective key bound to the current hint state. V2 hint setup may
    *  replace the key originally installed through `setMasterKey`. */
@@ -599,12 +407,10 @@ export interface WasmHarmonyClient {
   /** Serialize the currently-loaded hint state to a self-describing
    *  binary blob. Returns `null` / `undefined` when nothing is loaded. */
   saveHints(): Uint8Array | undefined | null;
-  /** Restore hint state from a `saveHints()` blob. Fingerprint is
-   *  cross-checked against `(masterKey, prpBackend, catalog.get(dbId))`;
-   *  a mismatch throws rather than silently loading stale hints. */
-  loadHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
-  /** Restore only a complete paid hint resource. Requires authenticated
-   *  tree-tops and rejects/clears main-only or malformed sibling state. */
+  /** Restore a complete hint set from a `saveHints()` blob. The fingerprint
+   *  is cross-checked against `(masterKey, prpBackend, catalog.get(dbId))`;
+   *  a mismatch throws. Requires authenticated tree-tops and
+   *  rejects/clears main-only or malformed sibling state. */
   loadCompleteHints(bytes: Uint8Array, catalog: WasmDatabaseCatalog, dbId: number): void;
   /** Whether the in-memory state exactly covers all main and authenticated
    *  sibling groups for this proof-verified database. */
@@ -614,37 +420,14 @@ export interface WasmHarmonyClient {
   minQueriesRemaining(): number | undefined;
   /** Size of the `saveHints()` blob that would be produced right now. */
   estimateHintSizeBytes(): number;
-  /** Register a `ConnectionState` transition listener. */
-  onStateChange(cb: (state: string) => void): void;
-  /** Progress-reporting variant of `sync`; currently unused by the
-   *  adapter (`queryBatchVerified` is the primary path). */
-  syncWithProgress(
-    scriptHashes: Uint8Array,
-    lastHeight: number | null | undefined,
-    progress: (step: string, detail: string) => void,
-  ): Promise<any>;
-  /** Pre-fetch the main hint state for `dbId`, firing `progress` after
-   *  each per-group response is loaded. `progress` receives a single
-   *  `{ done, total, phase }` argument; `total` is `index_k + chunk_k`
-   *  (typically 155). On a cache hit / already-loaded state the
-   *  callback fires once with `done === total`. */
-  fetchHintsWithProgress(
-    catalog: WasmDatabaseCatalog,
-    dbId: number,
-    progress: (event: { done: number; total: number; phase: string }) => void,
-  ): Promise<void>;
-  /** Fetch all main and Merkle-sibling hints, so the set can be cached. */
+  /** Fetch all main and Merkle-sibling hints, so the set can be cached.
+   *  `progress` receives `{ done, total, phase }` after each per-group
+   *  response. */
   fetchCompleteHintsWithProgress(
     catalog: WasmDatabaseCatalog,
     dbId: number,
     progress: (event: { done: number; total: number; phase: string }) => void,
   ): Promise<void>;
-  /** Install a `WasmAtomicMetrics` recorder. Mirrors
-   *  `WasmDpfClient.setMetricsRecorder`; the same recorder can be
-   *  installed on multiple clients to aggregate counters across them. */
-  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
-  /** Remove any installed metrics recorder on this client. */
-  clearMetricsRecorder(): void;
 }
 
 /**
@@ -664,8 +447,6 @@ export interface WasmOramClient {
   disconnect(): Promise<void>;
   attest(): Promise<WasmAttestVerification>;
   announce(): Promise<WasmAnnounceVerification>;
-  /** Present credits on the connection; see `WasmDpfClient.presentCredits`. */
-  presentCredits(kind: number, payload: Uint8Array): Promise<{ gasAdded: number; gasBalance: number }>;
   /** Pay the server's metered frames from `provider` when it requires credits; see `WasmDpfClient.enableCredits`. */
   enableCredits(provider: (credits: number) => unknown): Promise<string>;
   /** Present an operator-issued API key; see `WasmDpfClient.presentApiKey`. */
@@ -681,97 +462,6 @@ export interface WasmOramClient {
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
   queryBatch(scriptHashes: Uint8Array, dbId: number): Promise<any[]>;
   queryBatchPadded(scriptHashes: Uint8Array, dbId: number, paddedSlots: number): Promise<any[]>;
-  serverUrl(): string;
-  setMetricsRecorder(metrics: WasmAtomicMetrics): void;
-  clearMetricsRecorder(): void;
-}
-
-/**
- * Plain-JS shape of one `WasmAtomicMetrics.snapshot()` observation.
- *
- * Every counter is a `u64` on the native side, surfaced to JS as a
- * `bigint` to avoid the 2^53 precision ceiling on `Number`. Wrap with
- * `Number(snap.bytesSent)` if you prefer `Number` arithmetic and the
- * value is known to fit.
- *
- * Latency-snapshot semantics (apply to both the per-query and
- * per-roundtrip families):
- * - `total*LatencyMicros` and `max*LatencyMicros` are `0n` when no
- *   measurements have been recorded.
- * - `min*LatencyMicros` is `0xFFFF_FFFF_FFFF_FFFFn` (the BigInt form
- *   of `u64::MAX`) when no measurements have been recorded.
- *   Normalize via the comparison
- *   `snap.minQueryLatencyMicros === 0xFFFF_FFFF_FFFF_FFFFn ? 0n : snap.minQueryLatencyMicros`
- *   if a 0-when-empty value is preferable.
- *
- * `framesSent - roundtripsObserved` is the number of sends that
- * succeeded but whose matching response failed (transient-network
- * signal — `on_roundtrip_end` only fires on full success).
- */
-interface AtomicMetricsSnapshot {
-  readonly queriesStarted: bigint;
-  readonly queriesCompleted: bigint;
-  readonly queryErrors: bigint;
-  readonly bytesSent: bigint;
-  readonly bytesReceived: bigint;
-  readonly framesSent: bigint;
-  readonly framesReceived: bigint;
-  readonly connects: bigint;
-  readonly disconnects: bigint;
-  /** Sum of every observed query duration in microseconds. */
-  readonly totalQueryLatencyMicros: bigint;
-  /** Smallest observed query duration in microseconds. `u64::MAX` (the
-   *  sentinel) when no completions have been recorded. */
-  readonly minQueryLatencyMicros: bigint;
-  /** Largest observed query duration in microseconds. `0n` when no
-   *  completions have been recorded. */
-  readonly maxQueryLatencyMicros: bigint;
-  /** Number of successful transport-level roundtrips observed
-   *  (matching pairs of send + receive). Distinct from `framesSent`
-   *  (which counts every successful send, even those whose response
-   *  failed); `framesSent - roundtripsObserved` is the count of
-   *  send-succeeded-but-recv-failed events. */
-  readonly roundtripsObserved: bigint;
-  /** Sum of every observed roundtrip duration in microseconds.
-   *  Divide by `roundtripsObserved` for the running mean. */
-  readonly totalRoundtripLatencyMicros: bigint;
-  /** Smallest observed roundtrip duration in microseconds. `u64::MAX`
-   *  (the sentinel) when no roundtrips have been observed. */
-  readonly minRoundtripLatencyMicros: bigint;
-  /** Largest observed roundtrip duration in microseconds. `0n` when
-   *  no roundtrips have been observed. */
-  readonly maxRoundtripLatencyMicros: bigint;
-}
-
-/**
- * Lock-free atomic metrics recorder exposed to JavaScript.
- *
- * Construct via `sdkCreateAtomicMetrics()` or the raw class constructor
- * (`new sdkWasm.WasmAtomicMetrics()`), then install on one or more
- * clients via `client.setMetricsRecorder(metrics)` to start recording.
- *
- * Every client the recorder is installed on shares the same atomic
- * counters (via an `Arc` clone on the native side), so this single
- * handle aggregates events from an entire PIR deployment.
- */
-interface WasmAtomicMetrics {
-  free(): void;
-  /**
-   * Return a snapshot object with sixteen `bigint` counters: nine
-   * lifecycle / byte counters (`queriesStarted`, `queriesCompleted`,
-   * `queryErrors`, `bytesSent`, `bytesReceived`, `framesSent`,
-   * `framesReceived`, `connects`, `disconnects`), three per-query
-   * latency fields (`totalQueryLatencyMicros`, `minQueryLatencyMicros`,
-   * `maxQueryLatencyMicros`), and four per-roundtrip latency fields
-   * (`roundtripsObserved`, `totalRoundtripLatencyMicros`,
-   * `minRoundtripLatencyMicros`, `maxRoundtripLatencyMicros`).
-   * Individual counters are atomic, but the snapshot as a whole is
-   * NOT — two counters may be observed at slightly different
-   * instants. See [`AtomicMetricsSnapshot`] for the latency-sentinel
-   * semantics and the `framesSent - roundtripsObserved`
-   * partial-failure-detection signal.
-   */
-  snapshot(): AtomicMetricsSnapshot;
 }
 
 export interface WasmQueryResult {
@@ -779,31 +469,14 @@ export interface WasmQueryResult {
   readonly entryCount: number;
   readonly totalBalance: bigint;
   readonly isWhale: boolean;
-  /** Native release verdict. Constructor/fromJson handles always return false. */
+  /** Native per-result Merkle verdict. */
   readonly merkleVerified: boolean;
   /** Returns `{txid: hexString, vout, amountSats}` or `null`. */
   getEntry(index: number): any;
-  /** Inspector state: `[{pbcGroup, binIndex, binContent: hexString}, ...]`. */
-  indexBins(): any;
+  /** The CHUNK bins fetched for this result. */
   chunkBins(): any;
-  /** The matched INDEX bin's position in `indexBins()`, or `undefined`
-   * for not-found / inspector-free results. */
-  matchedIndexIdx(): number | undefined;
   /** Raw chunk bytes for delta-database queries, else `undefined`. */
   rawChunkData(): Uint8Array | undefined;
-  toJson(): any;
-}
-
-interface DeltaDataJson {
-  spent: string[];
-  newUtxos: UtxoEntryRaw[];
-}
-
-interface UtxoEntryRaw {
-  txid: string;
-  vout: number;
-  amount?: number;
-  amountSats?: number;
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -834,7 +507,7 @@ export async function initSdkWasm(): Promise<boolean> {
       console.log('[PIR-SDK] WASM module loaded successfully');
       return true;
     } catch (e) {
-      console.warn('[PIR-SDK] Failed to load WASM module, using pure-TS fallback:', e);
+      console.warn('[PIR-SDK] Failed to load WASM module:', e);
       return false;
     }
   })();
@@ -896,437 +569,9 @@ export function sdkArcFactories(): {
   };
 }
 
-// ─── Catalog Conversion ─────────────────────────────────────────────────────
-
-/**
- * Convert web client DatabaseCatalog to SDK format.
- */
-function catalogToSdkFormat(catalog: DatabaseCatalog): any {
-  return {
-    databases: catalog.databases.map(db => ({
-      dbId: db.dbId,
-      dbType: db.dbType,
-      name: db.name,
-      baseHeight: db.baseHeight,
-      height: db.height,
-      indexBins: db.indexBinsPerTable,
-      chunkBins: db.chunkBinsPerTable,
-      indexK: db.indexK,
-      chunkK: db.chunkK,
-      tagSeed: `0x${db.tagSeed.toString(16)}`,
-      dpfNIndex: db.dpfNIndex,
-      dpfNChunk: db.dpfNChunk,
-      hasBucketMerkle: db.hasBucketMerkle,
-      indexMasterSeed: `0x${db.indexMasterSeed.toString(16)}`,
-      chunkMasterSeed: `0x${db.chunkMasterSeed.toString(16)}`,
-      anchorKind: db.anchorKind,
-      anchorHex: db.anchorHex,
-    })),
-  };
-}
-
-/**
- * Convert SDK SyncPlan to web client format.
- */
-function sdkPlanToWebFormat(plan: WasmSyncPlan): SyncPlan {
-  const steps: SyncStep[] = [];
-  for (let i = 0; i < plan.stepsCount; i++) {
-    const step = plan.getStep(i);
-    if (step) {
-      steps.push({
-        dbId: step.dbId,
-        dbType: step.dbType,
-        name: step.name,
-        baseHeight: step.baseHeight,
-        tipHeight: step.tipHeight,
-      });
-    }
-  }
-  return {
-    steps,
-    isFreshSync: plan.isFreshSync,
-    targetHeight: plan.targetHeight,
-  };
-}
-
-// ─── SDK-backed Functions ───────────────────────────────────────────────────
-
-/**
- * Compute sync plan using SDK WASM if available, otherwise fall back to TS.
- *
- * This is a drop-in replacement for the TS computeSyncPlan function.
- */
-export function computeSyncPlanSdk(
-  catalog: DatabaseCatalog,
-  lastSyncedHeight?: number,
-): SyncPlan {
-  // Try WASM first
-  if (sdkWasm) {
-    try {
-      const sdkCatalog = sdkWasm.WasmDatabaseCatalog.fromJson(catalogToSdkFormat(catalog));
-      const sdkPlan = sdkWasm.computeSyncPlan(sdkCatalog, lastSyncedHeight ?? null);
-      const result = sdkPlanToWebFormat(sdkPlan);
-      // Free WASM objects
-      sdkPlan.free();
-      sdkCatalog.free();
-      return result;
-    } catch (e) {
-      console.warn('[PIR-SDK] WASM computeSyncPlan failed, falling back to TS:', e);
-    }
-  }
-
-  // Fall back to TypeScript implementation
-  return computeSyncPlanTS(catalog, lastSyncedHeight);
-}
-
-// ─── Hash Function Wrappers ─────────────────────────────────────────────────
-
-/**
- * Convert 8-byte LE array to BigInt.
- */
-function leBytes8ToBigint(bytes: Uint8Array): bigint {
-  let result = 0n;
-  for (let i = 7; i >= 0; i--) {
-    result = (result << 8n) | BigInt(bytes[i]);
-  }
-  return result;
-}
-
-/**
- * Split BigInt into [hi, lo] u32 pair.
- */
-function bigintToHiLo(v: bigint): [number, number] {
-  const lo = Number(v & 0xFFFFFFFFn);
-  const hi = Number((v >> 32n) & 0xFFFFFFFFn);
-  return [hi, lo];
-}
-
-/**
- * SDK-backed splitmix64.
- */
-export function sdkSplitmix64(x: bigint): bigint | undefined {
-  if (!sdkWasm) return undefined;
-  const [hi, lo] = bigintToHiLo(x);
-  const result = sdkWasm.splitmix64(hi, lo);
-  return leBytes8ToBigint(result);
-}
-
-/**
- * SDK-backed computeTag.
- */
-export function sdkComputeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint | undefined {
-  if (!sdkWasm) return undefined;
-  const [hi, lo] = bigintToHiLo(tagSeed);
-  const result = sdkWasm.computeTag(hi, lo, scriptHash);
-  return leBytes8ToBigint(result);
-}
-
-/**
- * SDK-backed deriveGroups.
- */
-export function sdkDeriveGroups(scriptHash: Uint8Array, k: number): number[] | undefined {
-  if (!sdkWasm) return undefined;
-  const result = sdkWasm.deriveGroups(scriptHash, k);
-  return Array.from(result);
-}
-
-/**
- * SDK-backed deriveCuckooKey.
- */
-export function sdkDeriveCuckooKey(
-  masterSeed: bigint,
-  groupId: number,
-  hashFn: number,
-): bigint | undefined {
-  if (!sdkWasm) return undefined;
-  const [hi, lo] = bigintToHiLo(masterSeed);
-  const result = sdkWasm.deriveCuckooKey(hi, lo, groupId, hashFn);
-  return leBytes8ToBigint(result);
-}
-
-/**
- * SDK-backed cuckooHash.
- */
-export function sdkCuckooHash(
-  scriptHash: Uint8Array,
-  key: bigint,
-  numBins: number,
-): number | undefined {
-  if (!sdkWasm) return undefined;
-  const [hi, lo] = bigintToHiLo(key);
-  return sdkWasm.cuckooHash(scriptHash, hi, lo, numBins);
-}
-
-/**
- * SDK-backed deriveChunkGroups.
- */
-export function sdkDeriveChunkGroups(chunkId: number, k: number): number[] | undefined {
-  if (!sdkWasm) return undefined;
-  const result = sdkWasm.deriveChunkGroups(chunkId, k);
-  return Array.from(result);
-}
-
-/**
- * SDK-backed cuckooHashInt.
- */
-export function sdkCuckooHashInt(
-  chunkId: number,
-  key: bigint,
-  numBins: number,
-): number | undefined {
-  if (!sdkWasm) return undefined;
-  const [hi, lo] = bigintToHiLo(key);
-  return sdkWasm.cuckooHashInt(chunkId, hi, lo, numBins);
-}
-
-// ─── Codec / PBC Wrappers ───────────────────────────────────────────────────
-//
-// These wrap the Rust-native UTXO decoder and multi-round PBC planner so the
-// web client can drop its duplicate TS implementations. Both wrappers return
-// `undefined` when the WASM module isn't loaded so callers can fall through
-// to the pure-TS implementation (same pattern as the hash wrappers above).
-//
-// Deliberately NOT wrapped:
-//   - `readVarint`: WASM version panics on truncation while TS throws a typed
-//     `Error('Unexpected end of data …')` that tests and error-handling code
-//     depend on. Marshalling cost per call also rivals the work saved.
-//   - `cuckooPlace`: TS API mutates a caller-supplied `groups` array for one
-//     item at a time with eviction tracking; WASM API does bulk batch
-//     placement and returns full assignments. Not a drop-in replacement.
-
-/** Hex-decode a hex string of any even length to a `Uint8Array`. */
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length >>> 1);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }
-  return out;
-}
-
-/**
- * SDK-backed UTXO data decoder.
- *
- * WASM returns `{txid: hexString, vout: number, amount: number}[]`; this
- * wrapper converts txids to `Uint8Array` (hex-decode) and amounts to `bigint`
- * so the result is bit-identical to the TS `decodeUtxoData` output shape.
- *
- * Precision: WASM `amount` crosses the JS boundary as a `number`. Bitcoin's
- * 21M BTC supply = 2.1e15 sats is well under JS `Number.MAX_SAFE_INTEGER`
- * (2^53 ≈ 9e15), so real mainnet values preserve full precision.
- *
- * Note: unlike the TS version, the WASM path has no way to call `onError` on
- * mid-stream truncation — the underlying `pir_core::codec::parse_utxo_data`
- * silently truncates. Truncation is extremely rare in practice (the build
- * pipeline zero-pads on BLOCK_SIZE boundaries), so callers that care about
- * the warning should fall back to the TS implementation.
- */
-export function sdkDecodeUtxoData(
-  data: Uint8Array,
-): { entries: { txid: Uint8Array; vout: number; amount: bigint }[]; totalSats: bigint } | undefined {
-  if (!sdkWasm) return undefined;
-  // WASM returns `Array<{txid: hexString, vout: number, amount: number}>`.
-  const raw = sdkWasm.decodeUtxoData(data) as unknown as Array<{
-    txid: string;
-    vout: number;
-    amount?: number;
-    amountSats?: number;
-  }>;
-  if (!Array.isArray(raw)) return undefined;
-  const entries: { txid: Uint8Array; vout: number; amount: bigint }[] = [];
-  let totalSats = 0n;
-  for (const e of raw) {
-    const amountNum = e.amount ?? e.amountSats ?? 0;
-    const amount = BigInt(amountNum);
-    entries.push({
-      txid: hexToBytes(e.txid),
-      vout: e.vout,
-      amount,
-    });
-    totalSats += amount;
-  }
-  return { entries, totalSats };
-}
-
-/**
- * SDK-backed delta data decoder.
- *
- * WASM returns `{spent: hexString[], newUtxos: {txid: hexString, vout: number,
- * amountSats: number}[]}` where each `spent` hex string is 72 chars (36 bytes
- * = `[32B txid][4B vout_le]` — this is the in-memory shape `pir_sdk` packs
- * for `apply_delta_data`'s `HashSet<[u8; 36]>` lookup, not the on-wire
- * varint shape). This wrapper unpacks spent outpoints into the internal
- * `SpentRef` shape (`{txid: Uint8Array, vout: number}`) and converts
- * `amountSats` → `bigint` on each new UTXO so the result is bit-identical
- * to the TS `decodeDeltaData` output.
- *
- * Precision: WASM `amountSats` crosses as a JS `number`. Bitcoin 21M BTC
- * = 2.1e15 sats is well under `Number.MAX_SAFE_INTEGER` = 9e15.
- *
- * Errors: the underlying `pir_sdk::decode_delta_data` returns a typed
- * `PirError::Decode` on truncation / varint overflow; the WASM binding
- * wraps that in a `JsError` which surfaces here as a thrown exception.
- * The wrapper catches and returns `undefined` so the caller falls back to
- * the TS implementation, which throws its own typed `Error` — preserving
- * the "decode failures throw" contract.
- */
-export function sdkDecodeDeltaData(
-  data: Uint8Array,
-): {
-  spent: { txid: Uint8Array; vout: number }[];
-  newUtxos: { txid: Uint8Array; vout: number; amount: bigint }[];
-} | undefined {
-  if (!sdkWasm) return undefined;
-  let raw: {
-    spent: string[];
-    newUtxos: Array<{ txid: string; vout: number; amount?: number; amountSats?: number }>;
-  };
-  try {
-    raw = sdkWasm.decodeDeltaData(data) as unknown as typeof raw;
-  } catch {
-    return undefined;
-  }
-  if (!raw || !Array.isArray(raw.spent) || !Array.isArray(raw.newUtxos)) return undefined;
-
-  const spent: { txid: Uint8Array; vout: number }[] = [];
-  for (const opHex of raw.spent) {
-    // 36 bytes packed: [32B txid][4B vout_le]. Two hex chars per byte → 72.
-    if (typeof opHex !== 'string' || opHex.length !== 72) return undefined;
-    const full = hexToBytes(opHex);
-    const dv = new DataView(full.buffer, full.byteOffset, full.byteLength);
-    spent.push({
-      txid: full.slice(0, 32),
-      vout: dv.getUint32(32, true),
-    });
-  }
-
-  const newUtxos: { txid: Uint8Array; vout: number; amount: bigint }[] = [];
-  for (const e of raw.newUtxos) {
-    const amountNum = e.amountSats ?? e.amount ?? 0;
-    newUtxos.push({
-      txid: hexToBytes(e.txid),
-      vout: e.vout,
-      amount: BigInt(amountNum),
-    });
-  }
-
-  return { spent, newUtxos };
-}
-
-/**
- * SDK-backed multi-round PBC placement planner.
- *
- * Flattens the TS `number[][]` candidate-groups table to a `Uint32Array` for
- * the WASM binding, calls it with the TS-hardcoded `maxKicks = 500`, and
- * returns the tuple-pair rounds in the same shape as `pbc.ts::planRounds`.
- *
- * Preconditions enforced here (return `undefined` on violation so the caller
- * can fall back to TS):
- *   - Every `itemGroups[i]` must have the same length, which in turn must
- *     equal `numHashes`. The WASM binding derives `num_items` by dividing
- *     `flat.len() / itemsPer`, so ragged arrays would be silently truncated.
- *   - `numHashes > 0`.
- *
- * Empty `itemGroups` returns `[]` without calling WASM (WASM would need a
- * non-zero `itemsPer` to slice into zero items).
- *
- * Note: the TS `planRounds` accepts an optional `onError` callback for the
- * "could not place any remaining items" edge case. The WASM binding has no
- * equivalent hook — that diagnostic is silently dropped on the WASM path.
- */
-export function sdkPlanRounds(
-  itemGroups: number[][],
-  numGroups: number,
-  numHashes: number,
-): [number, number][][] | undefined {
-  if (!sdkWasm) return undefined;
-  if (numHashes <= 0) return undefined;
-  if (itemGroups.length === 0) return [];
-  // Every row must have exactly `numHashes` candidates — ragged input would
-  // desync the flat-array indexing inside the WASM binding.
-  for (let i = 0; i < itemGroups.length; i++) {
-    if (itemGroups[i].length !== numHashes) return undefined;
-  }
-  const flat = new Uint32Array(itemGroups.length * numHashes);
-  for (let i = 0; i < itemGroups.length; i++) {
-    const row = itemGroups[i];
-    const base = i * numHashes;
-    for (let h = 0; h < numHashes; h++) {
-      flat[base + h] = row[h] >>> 0;
-    }
-  }
-  // maxKicks = 500 matches the hardcoded constant in `pbc.ts::planRounds`.
-  const rounds = sdkWasm.planRounds(flat, numHashes, numGroups, numHashes, 500);
-  if (!Array.isArray(rounds)) return undefined;
-  return rounds;
-}
-
-// ─── Per-bucket Merkle primitives ───────────────────────────────────────────
-//
-// These are the pure-crypto half of the per-bucket bin-Merkle verifier. They
-// are thin wrappers around the `pir-sdk-wasm` bindings (which themselves
-// delegate to `pir_core::merkle`), exposed so that `web/src/merkle-verify-bucket.ts`
-// can drop its ~100+ LOC of duplicated TS crypto (tree-top parse, leaf hash,
-// parent hash, walk-to-root) in favour of a single implementation shared with
-// the native Rust and WASM verifiers.
-//
-// Unlike the hash functions above, these require the WASM module to be loaded
-// — they `throw` rather than return `undefined` on a missing SDK, because the
-// caller (the Merkle verifier wire loop) has no TS fallback worth keeping.
-// `initSdkWasm()` must have been awaited at app startup (see `web/index.html`).
-
-function requireSdkForMerkle(): PirSdkWasm {
-  if (!sdkWasm) {
-    throw new Error(
-      '[PIR-SDK] WASM module required for bucket Merkle primitives. ' +
-        'Call initSdkWasm() at app startup.',
-    );
-  }
-  return sdkWasm;
-}
-
-/**
- * SDK-backed per-item Merkle verifier.
- *
- * Walks one proof from leaf to the published per-group root. `siblingRowsFlat`
- * is the server0 ⊕ server1 XOR'd sibling-batch responses, one 256B row per
- * level below `cacheFromLevel`, concatenated bottom-up.
- *
- * Returns `false` (never throws) on any shape / cryptographic mismatch — the
- * caller should coerce a failed result to the equivalent of
- * `QueryResult::merkle_failed()`.
- */
-export function sdkVerifyBucketMerkleItem(
-  binIndex: number,
-  binContent: Uint8Array,
-  pbcGroup: number,
-  siblingRowsFlat: Uint8Array,
-  treeTops: WasmBucketMerkleTreeTops,
-): boolean {
-  return requireSdkForMerkle().verifyBucketMerkleItem(
-    binIndex,
-    binContent,
-    pbcGroup,
-    siblingRowsFlat,
-    treeTops,
-  );
-}
-
-// Re-export the opaque handle type so consumers don't have to reach into the
-// `PirSdkWasm` interface directly.
-export type { WasmBucketMerkleTreeTops };
-
-// ─── DPF client accessor ───────────────────────────────────────────────────
-//
-// `dpf-adapter.ts` needs the loaded `PirSdkWasm` module to construct a
-// `WasmDpfClient` at connect-time. This export mirrors the pattern used by
-// the Merkle primitives above (`requireSdkForMerkle`) — `throw` rather than
-// returning `undefined`, because the adapter has no TS fallback since
-// `web/src/client.ts` is being deleted in Session 3.
-
 /**
  * Return the loaded `PirSdkWasm` module, throwing if `initSdkWasm()` has
- * not resolved yet. Intended for consumers that cannot operate without
- * the WASM surface (e.g. `BatchPirClientAdapter`).
+ * not resolved yet.
  */
 export function requireSdkWasm(): PirSdkWasm {
   if (!sdkWasm) {
@@ -1341,73 +586,3 @@ export function requireSdkWasm(): PirSdkWasm {
 // import them without having to reach into this module's type-only
 // `PirSdkWasm` shape.
 export type { WasmDatabaseCatalog };
-
-// ─── Metrics bridge (Phase 2+ observability) ───────────────────────────────
-//
-// A `WasmAtomicMetrics` handle wraps `Arc<pir_sdk::AtomicMetrics>`. Install
-// one on a `WasmDpfClient` / `WasmHarmonyClient` via `setMetricsRecorder`
-// and every connect / disconnect / byte / query-lifecycle event is
-// reflected in the atomic counters. `snapshot()` returns a plain JS object
-// with nine `bigint` fields so a browser tools panel / dashboard can poll
-// live counters without JS `Number` precision loss.
-//
-// 🔒 Padding invariants: the metrics layer is strictly observational — it
-// sits above the query code that owns K=75 INDEX / K_CHUNK=80 CHUNK /
-// 25-MERKLE padding, and has no code path by which a recorder can
-// influence the number or content of padding queries sent.
-
-/**
- * Construct a fresh `WasmAtomicMetrics` handle. All nine counters start
- * at zero. Throws if the SDK WASM module hasn't been loaded yet — call
- * `initSdkWasm()` at app startup first.
- *
- * Remember to call `.free()` on the returned handle when done (or rely
- * on a `FinalizationRegistry`). The underlying `Arc` is NOT freed until
- * every client that has the recorder installed uninstalls it too —
- * calling `.free()` on the JS handle only drops this one reference.
- */
-export function sdkCreateAtomicMetrics(): WasmAtomicMetrics {
-  return new (requireSdkWasm().WasmAtomicMetrics)();
-}
-
-export type { WasmAtomicMetrics, AtomicMetricsSnapshot };
-
-// ─── Tracing subscriber (Phase 2+ observability tail) ──────────────────────
-//
-// Companion to the metrics bridge above. Where `WasmAtomicMetrics` exposes
-// structured counters, `initSdkTracing()` routes the Phase 1
-// `#[tracing::instrument]` spans from the native client code into the
-// browser's DevTools console. Install both for full observability — they
-// answer different questions ("how many" vs. "what is happening now").
-//
-// 🔒 Padding invariants: the tracing bridge is strictly observational.
-// Span fields are filtered by `#[tracing::instrument(skip_all, ...)]` on
-// the native side, so only whitelisted scalars / URLs / labels reach the
-// subscriber — never binary payloads, hint blobs, or secret keys.
-
-/**
- * Install the `tracing-wasm` subscriber as the global `tracing` default.
- *
- * Call once at app startup (after `initSdkWasm()` has resolved). All
- * subsequent calls are no-ops (guarded on the Rust side by a
- * `std::sync::Once`), so invoking from multiple initialization paths is
- * safe.
- *
- * After this returns, every PIR operation — `DpfClient::sync`,
- * `HarmonyClient::query_batch`, `WsConnection::connect`, etc. — emits
- * structured spans to the browser DevTools console with a consistent
- * `backend="dpf"/"harmony"/"onion"` field plus per-method scalars
- * (db_id, step name, height, batch size, URL, etc.).
- *
- * Throws if `initSdkWasm()` has not resolved yet — there is no TS
- * fallback, because the point of the bridge is to surface Rust-side
- * span events.
- */
-export function initSdkTracing(): void {
-  requireSdkWasm().initTracingSubscriber();
-}
-
-// ─── Re-exports for convenience ─────────────────────────────────────────────
-
-export { computeSyncPlanTS };
-export type { SyncPlan, SyncStep } from './sync.js';

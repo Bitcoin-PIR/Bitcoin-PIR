@@ -1,12 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   BufferingLeakageRecorder,
-  countOfKind,
-  itemsUniform,
-  kindMatches,
   leakageProfilesEqual,
   roundProfilesEqual,
-  roundsOfKind,
   type LeakageProfile,
   type RoundProfile,
 } from '../leakage.js';
@@ -76,69 +72,6 @@ describe('BufferingLeakageRecorder', () => {
     r.recordRound('onion', indexRound(0, 0, 75, 2));
     r.clear();
     expect(r.isEmpty).toBe(true);
-  });
-});
-
-// ─── Helper functions ────────────────────────────────────────────────────────
-
-describe('itemsUniform', () => {
-  it('returns true when length and value match', () => {
-    expect(itemsUniform(indexRound(0, 0, 75, 2), 75, 2)).toBe(true);
-  });
-
-  it('rejects wrong length', () => {
-    expect(itemsUniform(indexRound(0, 0, 75, 2), 74, 2)).toBe(false);
-  });
-
-  it('rejects wrong value', () => {
-    expect(itemsUniform(indexRound(0, 0, 75, 2), 75, 1)).toBe(false);
-  });
-
-  it('rejects one outlier', () => {
-    const r = indexRound(0, 0, 75, 2);
-    r.items[40] = 1;
-    expect(itemsUniform(r, 75, 2)).toBe(false);
-  });
-
-  it('treats empty items as length-0 only', () => {
-    const r: RoundProfile = {
-      kind: 'info',
-      server_id: 0,
-      db_id: null,
-      request_bytes: 0,
-      response_bytes: 0,
-      items: [],
-    };
-    expect(itemsUniform(r, 0, 99)).toBe(true);
-    expect(itemsUniform(r, 1, 0)).toBe(false);
-  });
-});
-
-describe('kindMatches / roundsOfKind / countOfKind', () => {
-  it('matches by kind discriminator regardless of level', () => {
-    const a = indexMerkleRound(0, 1, 2);
-    const b = indexMerkleRound(7, 1, 2);
-    expect(kindMatches(a, 'index_merkle_siblings')).toBe(true);
-    expect(kindMatches(b, 'index_merkle_siblings')).toBe(true);
-    expect(kindMatches(a, 'chunk_merkle_siblings')).toBe(false);
-    expect(kindMatches(a, 'index')).toBe(false);
-  });
-
-  it('roundsOfKind filters across levels', () => {
-    const profile: LeakageProfile = {
-      backend: 'onion',
-      rounds: [
-        indexRound(0, 0, 75, 2),
-        indexMerkleRound(0, 75, 1),
-        indexMerkleRound(1, 75, 1),
-        indexMerkleRound(2, 75, 1),
-      ],
-    };
-    expect(roundsOfKind(profile, 'index_merkle_siblings').length).toBe(3);
-    expect(countOfKind(profile, 'index_merkle_siblings')).toBe(3);
-    expect(countOfKind(profile, 'index')).toBe(1);
-    expect(countOfKind(profile, 'chunk')).toBe(0);
-    expect(countOfKind(profile, 'onion_key_register')).toBe(0);
   });
 });
 

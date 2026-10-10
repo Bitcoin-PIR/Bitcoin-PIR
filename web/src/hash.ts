@@ -5,28 +5,7 @@
  * All 64-bit arithmetic uses BigInt to match the Rust implementation exactly.
  */
 
-import {
-  K, K_CHUNK, NUM_HASHES,
-  MASTER_SEED, CHUNK_MASTER_SEED,
-} from './constants.js';
-
-import {
-  sdkSplitmix64,
-  sdkComputeTag,
-  sdkDeriveGroups,
-  sdkDeriveCuckooKey,
-  sdkCuckooHash,
-  sdkDeriveChunkGroups,
-  sdkCuckooHashInt,
-} from './sdk-bridge.js';
-
-// `pir-sdk-wasm` doesn't bind a dedicated `deriveChunkCuckooKey` because it is
-// bit-for-bit identical to `deriveCuckooKey` on the Rust side (both call
-// `pir_core::hash::derive_cuckoo_key`). The TS-level distinction is purely the
-// master seed the caller passes — `MASTER_SEED` vs `CHUNK_MASTER_SEED`. So the
-// WASM-first dispatch for the chunk variant just reuses `sdkDeriveCuckooKey`
-// with `CHUNK_MASTER_SEED` baked in at the call site (`deriveChunkCuckooKey`
-// below).
+import { K, K_CHUNK, NUM_HASHES } from './constants.js';
 
 const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
@@ -34,9 +13,6 @@ const MASK64 = 0xFFFFFFFFFFFFFFFFn;
 
 /** splitmix64 finalizer (matches Rust exactly) */
 export function splitmix64(x: bigint): bigint {
-  const w = sdkSplitmix64(x);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   x = (x ^ (x >> 30n)) & MASK64;
   x = (x * 0xbf58476d1ce4e5b9n) & MASK64;
   x = (x ^ (x >> 27n)) & MASK64;
@@ -67,9 +43,6 @@ function shC(data: Uint8Array): bigint {
 
 /** Compute an 8-byte fingerprint tag for a script_hash using a keyed hash */
 export function computeTag(tagSeed: bigint, scriptHash: Uint8Array): bigint {
-  const w = sdkComputeTag(tagSeed, scriptHash);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   let h = (shA(scriptHash) ^ tagSeed) & MASK64;
   h = (h ^ shB(scriptHash)) & MASK64;
   h = splitmix64((h ^ shC(scriptHash)) & MASK64);
@@ -88,9 +61,6 @@ function hashForGroup(scriptHash: Uint8Array, nonce: bigint): bigint {
 
 /** Derive NUM_HASHES (3) distinct group indices for a script_hash */
 export function deriveGroups(scriptHash: Uint8Array): number[] {
-  const w = sdkDeriveGroups(scriptHash, K);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   const groups: number[] = [];
   let nonce = 0n;
 
@@ -109,24 +79,8 @@ export function deriveGroups(scriptHash: Uint8Array): number[] {
 
 // ─── Index-level cuckoo hashing ────────────────────────────────────────────
 
-/** Derive a cuckoo hash function key for (groupId, hash_fn) */
-export function deriveCuckooKey(groupId: number, hashFn: number): bigint {
-  const w = sdkDeriveCuckooKey(MASTER_SEED, groupId, hashFn);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
-  return splitmix64(
-    (MASTER_SEED
-      + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
-      + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
-    ) & MASK64
-  );
-}
-
 /** Cuckoo hash: hash a script_hash with a derived key, return a bin index */
 export function cuckooHash(scriptHash: Uint8Array, key: bigint, numBins: number): number {
-  const w = sdkCuckooHash(scriptHash, key, numBins);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   let h = (shA(scriptHash) ^ key) & MASK64;
   h = (h ^ shB(scriptHash)) & MASK64;
   h = splitmix64((h ^ shC(scriptHash)) & MASK64);
@@ -144,9 +98,6 @@ function hashChunkForGroup(chunkId: number, nonce: bigint): bigint {
 
 /** Derive 3 distinct chunk-level group indices for a chunk_id */
 export function deriveChunkGroups(chunkId: number): number[] {
-  const w = sdkDeriveChunkGroups(chunkId, K_CHUNK);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   const groups: number[] = [];
   let nonce = 0n;
 
@@ -165,25 +116,8 @@ export function deriveChunkGroups(chunkId: number): number[] {
 
 // ─── Chunk-level cuckoo hashing ────────────────────────────────────────────
 
-/** Derive a cuckoo hash function key for chunk-level (groupId, hash_fn) */
-export function deriveChunkCuckooKey(groupId: number, hashFn: number): bigint {
-  // Same Rust function as `deriveCuckooKey`; just pass `CHUNK_MASTER_SEED`.
-  const w = sdkDeriveCuckooKey(CHUNK_MASTER_SEED, groupId, hashFn);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
-  return splitmix64(
-    (CHUNK_MASTER_SEED
-      + ((BigInt(groupId) * 0x9e3779b97f4a7c15n) & MASK64)
-      + ((BigInt(hashFn) * 0x517cc1b727220a95n) & MASK64)
-    ) & MASK64
-  );
-}
-
 /** Cuckoo hash for chunk_ids: map a chunk_id to a bin index using a derived key */
 export function cuckooHashInt(chunkId: number, key: bigint, numBins: number): number {
-  const w = sdkCuckooHashInt(chunkId, key, numBins);
-  if (w !== undefined) return w;
-  // Pure-TS fallback
   return Number(splitmix64((BigInt(chunkId) ^ key) & MASK64) % BigInt(numBins));
 }
 

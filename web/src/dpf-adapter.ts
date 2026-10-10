@@ -147,22 +147,13 @@ export class BatchPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  hasMerkleForDb(dbId: number): boolean {
-    return this.getCatalogEntry(dbId)?.hasBucketMerkle ?? false;
-  }
-
-  /** The verified database proof's bucket Merkle root, if any. */
-  getMerkleRootHexForDb(dbId: number): string | undefined {
-    return this.databaseProofs.get(dbId)?.proof?.bucketSuperRootHex;
-  }
-
-  /** Query `scriptHashes` (20-byte HASH160s) against `dbId`. A slot is `null`
-   * when nothing was probed for it. */
+  /** Query `scriptHashes` (20-byte HASH160s) against `dbId`: one result per
+   * input, in order. A not-found input has no entries. */
   async queryBatch(
     scriptHashes: Uint8Array[],
     onProgress?: (step: string, detail: string) => void,
     dbId: number = 0,
-  ): Promise<(QueryResult | null)[]> {
+  ): Promise<QueryResult[]> {
     const client = this.wasmClient;
     if (!client || !this.isConnected()) throw new Error('Not connected');
     onProgress?.('Level 1', 'sending batched INDEX queries');
@@ -170,9 +161,7 @@ export class BatchPirClientAdapter {
     onProgress?.('Decode', `translating ${handles.length} results`);
     return handles.map((handle) => {
       try {
-        const result = translateWasmResult(handle);
-        const probed = (result.allIndexBins?.length ?? 0) > 0 || result.isWhale || result.entries.length > 0;
-        return probed ? result : null;
+        return translateWasmResult(handle);
       } finally {
         handle.free();
       }
@@ -185,7 +174,7 @@ export class BatchPirClientAdapter {
     scriptHashes: Uint8Array[],
     dbId: number = 1,
     onProgress?: (step: string, detail: string) => void,
-  ): Promise<(QueryResult | null)[]> {
+  ): Promise<QueryResult[]> {
     return this.queryBatch(scriptHashes, onProgress, dbId);
   }
 
@@ -274,32 +263,16 @@ function translateWasmResult(wqr: WasmQueryResult): QueryResult {
     });
   }
 
-  type WireBin = { pbcGroup: number; binIndex: number; binContent: string };
-  const indexBins = ((wqr.indexBins() as WireBin[]) ?? []).map((b) => ({
-    pbcGroup: b.pbcGroup,
-    binIndex: b.binIndex,
-    binContent: hexToBytes(b.binContent),
-  }));
-  const chunkBins = (wqr.chunkBins() as WireBin[]) ?? [];
-  const matchedIdx = wqr.matchedIndexIdx();
-  const primary = typeof matchedIdx === 'number' ? indexBins[matchedIdx] : indexBins[0];
   const rawChunkData = wqr.rawChunkData();
 
   return {
     entries,
     totalSats: wqr.totalBalance,
     startChunkId: 0,
-    numChunks: chunkBins.length,
+    numChunks: ((wqr.chunkBins() as unknown[]) ?? []).length,
     numRounds: 0,
     isWhale: wqr.isWhale,
     merkleVerified: wqr.merkleVerified,
     rawChunkData: rawChunkData instanceof Uint8Array ? rawChunkData : undefined,
-    indexPbcGroup: primary?.pbcGroup,
-    indexBinIndex: primary?.binIndex,
-    indexBinContent: primary?.binContent,
-    allIndexBins: indexBins.length > 0 ? indexBins : undefined,
-    chunkPbcGroups: chunkBins.length > 0 ? chunkBins.map((b) => b.pbcGroup) : undefined,
-    chunkBinIndices: chunkBins.length > 0 ? chunkBins.map((b) => b.binIndex) : undefined,
-    chunkBinContents: chunkBins.length > 0 ? chunkBins.map((b) => hexToBytes(b.binContent)) : undefined,
   };
 }

@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Harmony `*Provider` equivalents) and `setRequireVerifiedDatabaseRoots`.
 - `serviceAuthorizationExporterV1`, `verifyDatabaseProofResponse` (v1), and
   `WasmOramClient.setRequireVerifiedDatabaseRoots`; nothing called them.
+- Bindings nothing called: `turinArkFingerprint`, `milanArkFingerprint`,
+  `serverUrls` / `serverUrl`, the `WasmDatabaseCatalog` constructor and its
+  `count` / `latestTip` / `getDatabase` / `getEntry` / `hasBucketMerkle`,
+  `WasmSyncPlan.isEmpty` / `toJson`, the `WasmQueryResult` constructor, and
+  `WasmStandaloneSecureChannelV1.established`.
 
 ### Security
 
@@ -89,9 +94,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     manage the wire loop themselves.
 - **Sync planning, delta merging, hash primitives**:
   - `computeSyncPlan(catalog, lastHeight?)` → `WasmSyncPlan`.
-  - `decodeDeltaData(raw)` → `{ spent, newUtxos, entriesIter }`.
+  - `decodeDeltaData(raw)` → `{ spent, newUtxos }`.
   - `mergeDelta(snapshot, deltaRaw)` → `WasmQueryResult`.
-  - `mergeDeltaBatch(snapshots[], deltas[])`.
   - `splitmix64`, `computeTag`, `deriveGroups`,
     `deriveCuckooKey`, `cuckooHash`, `deriveChunkGroups`,
     `cuckooHashInt`, `cuckooPlace`, `planRounds`, `readVarint`,

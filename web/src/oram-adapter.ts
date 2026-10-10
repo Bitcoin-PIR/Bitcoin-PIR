@@ -22,7 +22,6 @@ import {
   initSdkWasm,
   isSdkWasmReady,
   requireSdkWasm,
-  type WasmAtomicMetrics,
   type WasmOramClient,
 } from './sdk-bridge.js';
 import type { ConnectionState, QueryResult, UtxoEntry } from './types.js';
@@ -35,13 +34,6 @@ import {
   type ServerAttestation,
 } from './verification.js';
 import { enableCreditsOnLeg, type CreditEnablement, type CreditProvider } from './credits.js';
-
-export interface OramLayoutInfo {
-  backend: 'oram-direct';
-  usesPbc: false;
-  serverCount: 1;
-  merkleModel: 'server-authenticated-oram';
-}
 
 export const DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST = 1;
 export const DEFAULT_ORAM_ACCESS_BUDGET = 50;
@@ -134,19 +126,6 @@ export class OramPirClientAdapter {
     this.config = config;
   }
 
-  static layout(): OramLayoutInfo {
-    return {
-      backend: 'oram-direct',
-      usesPbc: false,
-      serverCount: 1,
-      merkleModel: 'server-authenticated-oram',
-    };
-  }
-
-  layout(): OramLayoutInfo {
-    return OramPirClientAdapter.layout();
-  }
-
   async connect(): Promise<void> {
     await this.teardown().catch(() => {});
     this.setState('connecting');
@@ -203,12 +182,6 @@ export class OramPirClientAdapter {
     return this.databaseProofs.get(dbId);
   }
 
-  /** Direct ORAM has no client-verifiable bucket Merkle trees; the page store
-   * is authenticated inside the TEE. */
-  hasMerkleForDb(_dbId: number): boolean {
-    return false;
-  }
-
   async queryBatch(
     scriptHashes: Uint8Array[],
     onProgress?: (step: string, detail: string) => void,
@@ -249,14 +222,6 @@ export class OramPirClientAdapter {
     onProgress?: (step: string, detail: string) => void,
   ): Promise<(QueryResult | null)[]> {
     return this.queryBatch(scriptHashes, onProgress, dbId);
-  }
-
-  setMetricsRecorder(metrics: WasmAtomicMetrics): void {
-    this.wasmClient?.setMetricsRecorder(metrics);
-  }
-
-  clearMetricsRecorder(): void {
-    this.wasmClient?.clearMetricsRecorder();
   }
 
   /** Present the API key, or enable credits. */
@@ -365,14 +330,6 @@ export function splitOramScriptHashBatches<T>(
     out.push(items.slice(i, i + max));
   }
   return out;
-}
-
-export function planOramScriptHashBatches<T>(
-  items: readonly T[],
-  config: OramBatchPlannerConfig = {},
-): T[][] {
-  const plan = resolveOramBatchPlan(config);
-  return splitOramScriptHashBatches(items, plan.maxScriptHashesPerRequest);
 }
 
 export function resolveOramBatchPlan(config: OramBatchPlannerConfig = {}): OramBatchPlan {

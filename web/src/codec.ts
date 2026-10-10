@@ -6,7 +6,6 @@
  */
 
 import { splitmix64 } from './hash.js';
-import { sdkDecodeDeltaData, sdkDecodeUtxoData } from './sdk-bridge.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -47,24 +46,12 @@ export function readVarint(data: Uint8Array, offset: number): { value: bigint; b
  *
  * Format: [varint numEntries][per entry: 32B txid, varint vout, varint amount]
  *
- * WASM-first dispatch: when `pir-sdk-wasm` is loaded the Rust-native decoder
- * (`pir_core::codec::parse_utxo_data`) runs; the pure-TS implementation below
- * is the fallback. The WASM path cannot invoke `onError` on mid-stream
- * truncation — the underlying Rust function silently stops — so callers that
- * depend on that diagnostic only see it when the WASM module failed to load.
- * Truncation is extremely rare in practice because the build pipeline
- * zero-pads on `BLOCK_SIZE` boundaries.
+ * Mirrors `pir_core::codec::parse_utxo_data`; `onError` reports truncation.
  */
 export function decodeUtxoData(
   fullData: Uint8Array,
   onError?: (msg: string) => void,
 ): { entries: UtxoEntryRaw[]; totalSats: bigint } {
-  // Try WASM first; on any failure (module not loaded, malformed payload),
-  // fall back to the pure-TS implementation so the diagnostic `onError`
-  // callback still fires on truncation.
-  const viaSdk = sdkDecodeUtxoData(fullData);
-  if (viaSdk !== undefined) return viaSdk;
-
   let pos = 0;
   const { value: numEntries, bytesRead: countBytes } = readVarint(fullData, pos);
   pos += countBytes;
@@ -123,26 +110,12 @@ export interface DeltaData {
  *   [varint num_new]
  *     per new:   [32B txid][varint vout][varint amount]
  *
- * WASM-first dispatch: when `pir-sdk-wasm` is loaded the Rust-native decoder
- * (`pir_sdk::decode_delta_data`) runs; the pure-TS implementation below is
- * the fallback. The WASM path cannot invoke `onError` on mid-stream
- * truncation — `pir_sdk::decode_delta_data` returns a typed `PirError` on
- * truncation / varint overflow, which the WASM binding wraps in a `JsError`
- * that `sdkDecodeDeltaData` catches and converts to `undefined`, triggering
- * fall-through to the TS path (which then throws on the same malformed
- * input via `readVarint`). Callers that rely on the `onError` diagnostic
- * string only see it when the WASM module failed to load.
+ * Mirrors `pir_sdk::decode_delta_data`; `onError` reports truncation.
  */
 export function decodeDeltaData(
   fullData: Uint8Array,
   onError?: (msg: string) => void,
 ): DeltaData {
-  // Try WASM first; on any failure (module not loaded, malformed payload),
-  // fall back to the pure-TS implementation so the `onError` callback can
-  // still fire on mid-stream truncation for diagnostic purposes.
-  const viaSdk = sdkDecodeDeltaData(fullData);
-  if (viaSdk !== undefined) return viaSdk;
-
   let pos = 0;
 
   // Spent UTXOs

@@ -4,27 +4,6 @@
  * Main entry point for the two-level Batch PIR web client library.
  */
 
-// Polyfill Buffer for browser environment
-import { Buffer } from 'buffer';
-if (typeof window !== 'undefined') {
-  (window as any).Buffer = Buffer;
-
-  if (!(window as any).crypto) {
-    (window as any).crypto = {};
-  }
-  if (!(window as any).crypto.randomBytes) {
-    (window as any).crypto.randomBytes = (size: number) => {
-      const bytes = new Uint8Array(size);
-      if (window.crypto && window.crypto.getRandomValues) {
-        window.crypto.getRandomValues(bytes);
-      } else {
-        throw new Error('crypto.getRandomValues is required but not available in this browser');
-      }
-      return Buffer.from(bytes);
-    };
-  }
-}
-
 export {
   BatchPirClientAdapter,
   type BatchPirClientConfig,
@@ -39,23 +18,11 @@ export type {
 } from './types.js';
 
 export {
-  encodeRequest,
-  decodeResponse,
-  type Request,
-  type Response,
-  type BatchQuery,
-  type BatchResult,
-  type ServerInfo,
-} from './protocol.js';
-
-export {
   splitmix64,
   computeTag,
   deriveGroups,
-  deriveCuckooKey,
   cuckooHash,
   deriveChunkGroups,
-  deriveChunkCuckooKey,
   cuckooHashInt,
   deriveCuckooKeyGeneric,
   sha256,
@@ -70,19 +37,9 @@ export {
 } from './hash.js';
 
 export {
-  K, K_CHUNK, NUM_HASHES,
-  SCRIPT_HASH_SIZE, TAG_SIZE, INDEX_SLOT_SIZE,
-  CHUNK_SIZE, CHUNKS_PER_UNIT, UNIT_DATA_SIZE,
-  INDEX_SLOTS_PER_BIN, INDEX_CUCKOO_NUM_HASHES,
-  CHUNK_SLOTS_PER_BIN, CHUNK_CUCKOO_NUM_HASHES,
-  DPF_N, CHUNK_DPF_N,
-  HARMONY_INDEX_W, HARMONY_CHUNK_W, HARMONY_EMPTY,
-  BUCKET_MERKLE_ARITY, BUCKET_MERKLE_SIB_ROW_SIZE,
-  REQ_BUCKET_MERKLE_SIB_BATCH, RESP_BUCKET_MERKLE_SIB_BATCH,
-  REQ_BUCKET_MERKLE_TREE_TOPS, RESP_BUCKET_MERKLE_TREE_TOPS,
+  K, K_CHUNK, NUM_HASHES, INDEX_CUCKOO_NUM_HASHES,
+  PRODUCTION_ISSUER_URL,
 } from './constants.js';
-
-export { PRODUCTION_ISSUER_URL } from './constants.js';
 
 export {
   checkQuoteStatus,
@@ -138,12 +95,10 @@ export {
   DEFAULT_ORAM_SCRIPT_HASHES_PER_REQUEST,
   OramPirClientAdapter,
   oramJsonResultToQueryResult,
-  planOramScriptHashBatches,
   resolveOramBatchPlan,
   splitOramScriptHashBatches,
   type OramBatchPlan,
   type OramBatchPlannerConfig,
-  type OramLayoutInfo,
   type OramPirClientConfig,
 } from './oram-adapter.js';
 
@@ -196,24 +151,9 @@ export {
 export type {
   HarmonyQueryResult,
   HarmonyUtxoEntry,
-  QueryInspectorData,
-  RoundTimingData,
 } from './harmony-types.js';
 
-export {
-  fetchProofArtifactBytesV1,
-  resolveProofArtifactUrlV1,
-  type ProofArtifactFetchOptionsV1,
-} from './proof-artifact-fetch.js';
-
-// Backwards-compat shims for the old `pir-core-wasm` bridge. The crate has
-// been retired and all primitives it exposed are now served by `pir-sdk-wasm`,
-// so these names forward to the SDK init. New callers should import
-// `initSdkWasm` / `isSdkWasmReady` directly.
-export {
-  initSdkWasm as initWasm,
-  isSdkWasmReady as isWasmReady,
-} from './sdk-bridge.js';
+export { fetchProofArtifactBytesV1 } from './proof-artifact-fetch.js';
 
 export {
   cuckooPlace,
@@ -247,9 +187,7 @@ export {
 export {
   mergeDeltaIntoSnapshot,
   applyDeltaData,
-  mergeDeltaBatch,
   mergeDeltaIntoHarmonySnapshot,
-  mergeDeltaHarmonyBatch,
 } from './sync-merge.js';
 
 export {
@@ -261,21 +199,12 @@ export {
   type SyncControllerConfig,
 } from './sync-controller.js';
 
-// SDK WASM bridge (optional - use pir-sdk-wasm for Rust-backed implementations)
 export {
   initSdkWasm,
   sdkArcFactories,
   type WasmArcCredential,
   type WasmArcCredentialRequest,
   isSdkWasmReady,
-  computeSyncPlanSdk,
-  sdkSplitmix64,
-  sdkComputeTag,
-  sdkDeriveGroups,
-  sdkDeriveCuckooKey,
-  sdkCuckooHash,
-  sdkDeriveChunkGroups,
-  sdkCuckooHashInt,
 } from './sdk-bridge.js';
 
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';

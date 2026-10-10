@@ -63,7 +63,7 @@ Targets supported by `wasm-pack build --target`:
 ```typescript
 import init, {
   WasmDpfClient,
-  sdkCreateAtomicMetrics,
+  WasmAtomicMetrics,
   initTracingSubscriber,
 } from 'pir-sdk-wasm';
 
@@ -74,7 +74,7 @@ await init();
 initTracingSubscriber();
 
 // 3. (optional) Install a metrics recorder shared by every client.
-const metrics = sdkCreateAtomicMetrics();
+const metrics = new WasmAtomicMetrics();
 
 // 4. Build + connect a DPF client.
 const client = new WasmDpfClient(
@@ -118,18 +118,17 @@ Client methods (both `Dpf` and `Harmony`):
 - `sync(scriptHashes, null): Promise<WasmSyncResult>` — full sync (snapshot +
   deltas). A height is rejected: the client keeps no previous results to
   apply a delta chain to
-- `queryBatch(scriptHashes, dbId): Promise<WasmQueryResult[]>`
+- `queryBatch(scriptHashes, dbId)` — plain JSON results
 - `queryBatchVerified(scriptHashes, dbId)` — query with inspector state: one
   non-null `WasmQueryResult` per input carrying the probed bins and its own
   `merkleVerified`
-- `serverUrls(): [string, string]`
 - `onStateChange(cb)` — push `ConnectionState` transitions to JS
 - `syncWithProgress(scriptHashes, null, onEvent)` — progress events
 - `setMetricsRecorder(metrics)` / `clearMetricsRecorder()`
 
 `WasmHarmonyClient` additionally has:
 
-- `setMasterKey(Uint8Array[16])` / `setPrpBackend(PRP_HMR12/PRP_FASTPRP/PRP_ALF)`
+- `setMasterKey(Uint8Array[16])` / `setPrpBackend(PRP_HMR12/PRP_FASTPRP)`
 - `dbId()` / `setDbId(u8)` — switch databases (invalidates hints)
 - `minQueriesRemaining()` / `estimateHintSizeBytes()`
 - `fingerprint(catalog, dbId)` — 16-byte cache key
@@ -138,9 +137,8 @@ Client methods (both `Dpf` and `Harmony`):
 ### Sync planning & delta merging
 
 - `computeSyncPlan(catalog, lastHeight?): WasmSyncPlan`
-- `decodeDeltaData(raw): { spent, newUtxos, entriesIter }`
+- `decodeDeltaData(raw): { spent, newUtxos }`
 - `mergeDelta(snapshot, deltaRaw): WasmQueryResult`
-- `mergeDeltaBatch(snapshots[], deltas[])`
 
 ### Merkle verification (pure crypto)
 
@@ -160,7 +158,9 @@ for callers that manage the wire loop themselves.
   - `bytesSent` / `bytesReceived` / `framesSent` / `framesReceived`
   - `connects` / `disconnects`
   - `totalQueryLatencyMicros` / `minQueryLatencyMicros` / `maxQueryLatencyMicros`
-  - `sentinel = 0xFFFF_FFFF_FFFF_FFFFn` on min if no samples yet
+  - `roundtripsObserved` / `totalRoundtripLatencyMicros` /
+    `minRoundtripLatencyMicros` / `maxRoundtripLatencyMicros`
+  - `sentinel = 0xFFFF_FFFF_FFFF_FFFFn` on the minimums if no samples yet
 - `initTracingSubscriber()` — installs a `tracing-wasm` subscriber that
   routes Rust-side spans to the browser DevTools console (idempotent).
 

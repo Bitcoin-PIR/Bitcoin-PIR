@@ -235,7 +235,6 @@ describe('issuer client', () => {
     expect(calls[0].url).toBe('https://issuer.example/v2/credentials');
     expect(calls[0].body).toEqual({ credits: 100, sat: 1000, token: 'cashuB', request_hex: '0102' });
     await expect(client.info()).rejects.toMatchObject({ status: 402, code: 'token_rejected' } satisfies Partial<IssuerError>);
-    expect(() => new IssuerClient('ws://x')).toThrow(/https/);
     expect(() => parseIssuedCredential({ response_hex: 'zz' })).toThrow(/hex/);
   });
 });

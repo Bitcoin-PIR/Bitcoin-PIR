@@ -149,7 +149,7 @@ describe('computeSyncPlan', () => {
     expect(plan.targetHeight).toBe(944000);
   });
 
-  it('no matching delta chain falls back to full', () => {
+  it('no matching delta chain falls back to a fresh sync', () => {
     const cat = catalog(
       entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 944000 }),
       entry({ dbId: 1, dbType: 1, name: 'd1', baseHeight: 940611, height: 942000 }),
@@ -157,13 +157,13 @@ describe('computeSyncPlan', () => {
     );
 
     const plan = computeSyncPlan(cat, 940611);
-    expect(plan.isFreshSync).toBe(false);
+    expect(plan.isFreshSync).toBe(true);
     expect(plan.steps).toHaveLength(1);
     expect(plan.steps[0].dbType).toBe('full');
     expect(plan.steps[0].tipHeight).toBe(944000);
   });
 
-  it('too many deltas (>5) falls back to full', () => {
+  it('too many deltas (>5) falls back to a fresh sync', () => {
     const entries: DatabaseCatalogEntry[] = [
       entry({ dbId: 0, dbType: 0, name: 'main', baseHeight: 0, height: 946000 }),
     ];

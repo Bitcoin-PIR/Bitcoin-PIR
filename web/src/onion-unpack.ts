@@ -17,14 +17,6 @@
  * the bit stream on `CONFIG_N4096_K2_MP` (39 bits/coeff). BigInt is
  * slower than `number` but the unpacker only runs once per response
  * (a few KiB) so the overhead is negligible.
- *
- * **Wiring status (2026-05-14).** This helper is forward-looking:
- * the web client's WASM module at `web/public/wasm/onionpir_client.{js,wasm}`
- * is still pre-port (it ships `decryptResponse(idx, response)` →
- * unpacked entry bytes directly). When the WASM module is rebuilt
- * from upstream's post-port `wasm/bindings.cpp`, `decryptResponse`
- * will return the raw `[u32 N][u64 coeff_i...]` plaintext and this
- * helper takes over the unpack-to-bytes step.
  */
 
 /**
@@ -44,61 +36,8 @@ export function bitsPerCoeff(entrySize: number, polyDegree: number): number | nu
 }
 
 /**
- * Pack `bytes` into `polyDegree` `u64` coefficients (returned as
- * `BigUint64Array`).
- *
- * Output length is exactly `polyDegree`. Bytes past `entrySize` are
- * silently truncated — caller's responsibility to know `entrySize`.
- *
- * Inverse of [`unpackOnionPlaintext`].
- */
-export function packBytesIntoCoefficients(
-  bytes: Uint8Array,
-  entrySize: number,
-  polyDegree: number,
-): BigUint64Array {
-  const bpc = bitsPerCoeff(entrySize, polyDegree);
-  if (bpc === null) {
-    throw new Error(
-      `packBytesIntoCoefficients: entrySize ${entrySize} * 8 must be a multiple of polyDegree ${polyDegree}`,
-    );
-  }
-  const bpcBig = BigInt(bpc);
-  const mask = (1n << bpcBig) - 1n;
-  const out = new BigUint64Array(polyDegree);
-
-  let buffer = 0n;
-  let offset = 0n; // bit count in `buffer`
-  let coeffIdx = 0;
-
-  const take = Math.min(bytes.length, entrySize);
-  for (let i = 0; i < take; i++) {
-    buffer |= BigInt(bytes[i]) << offset;
-    offset += 8n;
-    while (offset >= bpcBig) {
-      if (coeffIdx >= polyDegree) {
-        // Unreachable for valid params + bytes.length ≤ entrySize, but
-        // guard anyway.
-        return out;
-      }
-      out[coeffIdx] = buffer & mask;
-      coeffIdx += 1;
-      buffer >>= bpcBig;
-      offset -= bpcBig;
-    }
-  }
-  // Flush trailing partial buffer. If `bytes.length === entrySize`
-  // and the bits align cleanly, `offset` is zero here and this is a
-  // no-op.
-  if (offset > 0n && coeffIdx < polyDegree) {
-    out[coeffIdx] = buffer & mask;
-  }
-  return out;
-}
-
-/**
  * Decode the raw `decryptResponse` bytes into the original packed
- * payload (the inverse of [`packBytesIntoCoefficients`]).
+ * payload.
  *
  * Input wire format (per upstream `Client::decrypt_response`):
  *
@@ -107,7 +46,7 @@ export function packBytesIntoCoefficients(
  * ```
  *
  * Returns the first `entrySize` payload bytes — i.e. what was
- * originally fed to `packBytesIntoCoefficients`. Returns `null` on:
+ * originally packed into the coefficients. Returns `null` on:
  *
  * * Truncated input (length < `4 + 8 * polyDegree`)
  * * Leading `u32 N` does not equal `polyDegree`

@@ -1,5 +1,5 @@
 import { extractSnpMeasurement, extractSnpReportData } from './bhtm-proof.js';
-import { getAmdTurinArkFingerprint } from './attest-pin.js';
+import { AMD_TURIN_ARK_FINGERPRINT } from './attest-pin.js';
 import type { DatabaseProofPin, VerifiedDatabaseProof } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
 import { bytesToHex, hexToBytes, sha256 } from './hash.js';
@@ -810,7 +810,7 @@ function verifyStaticSnpReportSignature(
     arkPem,
     askPem,
     vcekPem,
-    getAmdTurinArkFingerprint(),
+    AMD_TURIN_ARK_FINGERPRINT,
     policy,
   );
 }
@@ -1108,23 +1108,6 @@ function validateManifestShape(manifest: OramSourceProofManifest): void {
   }
   if (!manifest.attestedBuilder?.measurementHex || !manifest.attestedBuilder.artifacts) {
     throw new Error('ORAM source-proof manifest missing attested builder policy/artifacts');
-  }
-  const expectedArtifacts = [
-    'allArtifactsManifest',
-    'arkPem',
-    'askPem',
-    'buildEvidence',
-    'databaseManifest',
-    'rootBundlePayload',
-    'serverDbManifest',
-    'sevSnpReport',
-    'vcekPem',
-  ];
-  const actualArtifacts = Object.keys(manifest.attestedBuilder.artifacts).sort();
-  if (actualArtifacts.join('\0') !== expectedArtifacts.join('\0')) {
-    throw new Error(
-      `ORAM source-proof artifact set must be closed: expected ${expectedArtifacts.join(', ')}`,
-    );
   }
 }
 

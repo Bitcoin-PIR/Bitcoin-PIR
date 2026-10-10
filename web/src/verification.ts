@@ -6,7 +6,7 @@
 
 import {
   applySevSnpPlatformFloor,
-  getAmdTurinArkFingerprint,
+  AMD_TURIN_ARK_FINGERPRINT,
   pinAcceptsBinary,
   type ServerAttestPin,
 } from './attest-pin.js';
@@ -214,11 +214,7 @@ export async function checkOperatorIdentity(
  * when `undefined`; `null` skips the check. */
 export function arkFingerprint(configured: Uint8Array | null | undefined): Uint8Array | null {
   if (configured !== undefined) return configured;
-  try {
-    return getAmdTurinArkFingerprint();
-  } catch {
-    return null;
-  }
+  return AMD_TURIN_ARK_FINGERPRINT;
 }
 
 /** The WASM client methods a two-server client needs for `attestPair`. */

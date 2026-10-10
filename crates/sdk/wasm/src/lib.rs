@@ -1,16 +1,12 @@
 //! WASM bindings for PIR SDK.
 //!
-//! Exposes sync planning, delta merging, and core types to JavaScript/TypeScript.
+//! Exposes the PIR clients, sync planning, delta merging, and core types to
+//! JavaScript/TypeScript.
 //!
 //! # Usage in JavaScript
 //!
 //! ```javascript
-//! import init, {
-//!   computeSyncPlan,
-//!   mergeDeltaBatch,
-//!   WasmDatabaseCatalog,
-//!   WasmSyncPlan,
-//! } from 'pir-sdk-wasm';
+//! import init, { computeSyncPlan, WasmDatabaseCatalog } from 'pir-sdk-wasm';
 //!
 //! await init();
 //!
@@ -34,12 +30,11 @@ use pir_sdk::{
 };
 use wasm_bindgen::prelude::*;
 
-/// Per-bucket bin Merkle verifier — pure SHA-256 walk exposed to JS so the
-/// web client can drop its duplicate TS verifier.
+/// Per-bucket bin Merkle verifier — pure SHA-256 walk exposed to JS.
 ///
-/// JS still owns the WebSocket transport and the multi-pass padded sibling
-/// fetch; this module contributes the tree-top parser, leaf/parent hash
-/// primitives, and the item-level walk from leaf → cached root.
+/// The tree-top parser, leaf/parent hash primitives, and the item-level walk
+/// from leaf → cached root, for callers that run the padded sibling fetch
+/// themselves.
 ///
 /// See `merkle_verify.rs` for the JS usage pattern.
 pub mod merkle_verify;
@@ -300,14 +295,6 @@ impl WasmDatabaseCatalog {
 
 #[wasm_bindgen]
 impl WasmDatabaseCatalog {
-    /// Create an empty catalog.
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        Self {
-            inner: DatabaseCatalog::new(),
-        }
-    }
-
     /// Create a catalog from JSON.
     ///
     /// Expected format:
@@ -410,59 +397,6 @@ impl WasmDatabaseCatalog {
         Ok(WasmDatabaseCatalog {
             inner: DatabaseCatalog { databases },
         })
-    }
-
-    /// Number of databases in the catalog.
-    #[wasm_bindgen(getter)]
-    pub fn count(&self) -> usize {
-        self.inner.databases.len()
-    }
-
-    /// Get latest tip height.
-    #[wasm_bindgen(getter, js_name = latestTip)]
-    pub fn latest_tip(&self) -> Option<u32> {
-        self.inner.latest_tip()
-    }
-
-    /// Get database info (by slot index in the catalog's array) as JSON.
-    ///
-    /// Pre-existing, positional — use [`getEntry`](Self::get_entry) if
-    /// you want to look up by `db_id` instead.
-    #[wasm_bindgen(js_name = getDatabase)]
-    pub fn get_database(&self, index: usize) -> JsValue {
-        if index >= self.inner.databases.len() {
-            return JsValue::NULL;
-        }
-        to_js_object(&database_info_to_json(&self.inner.databases[index]))
-    }
-
-    /// Get a database's full info by `db_id`, returning the same JSON
-    /// shape as [`toJson`]'s `databases[i]` entry. Returns `null` if
-    /// no database in the catalog carries that ID.
-    ///
-    /// Complements [`getDatabase`], which is positional — callers who
-    /// only know the `db_id` (e.g. from a `SyncStep`) should reach
-    /// here instead of scanning `getDatabase(i)` for the right index.
-    #[wasm_bindgen(js_name = getEntry)]
-    pub fn get_entry(&self, db_id: u8) -> JsValue {
-        match self.inner.get(db_id) {
-            Some(db) => to_js_object(&database_info_to_json(db)),
-            None => JsValue::NULL,
-        }
-    }
-
-    /// Does the database with `db_id` publish per-bucket bin Merkle
-    /// commitments? `false` if the database is absent or carries no
-    /// Merkle section.
-    ///
-    /// Queries on a database without commitments come back with
-    /// `merkleVerified = false`.
-    #[wasm_bindgen(js_name = hasBucketMerkle)]
-    pub fn has_bucket_merkle(&self, db_id: u8) -> bool {
-        self.inner
-            .get(db_id)
-            .map(|db| db.has_bucket_merkle)
-            .unwrap_or(false)
     }
 
     /// Convert to JSON.
@@ -571,12 +505,6 @@ impl WasmSyncPlan {
         self.inner.target_height
     }
 
-    /// Whether the plan is empty (already at tip).
-    #[wasm_bindgen(getter, js_name = isEmpty)]
-    pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
-    }
-
     /// Get a step by index.
     #[wasm_bindgen(js_name = getStep)]
     pub fn get_step(&self, index: usize) -> JsValue {
@@ -592,30 +520,6 @@ impl WasmSyncPlan {
             "tipHeight": step.tip_height,
         });
         to_js_object(&json)
-    }
-
-    /// Get all steps as JSON array.
-    #[wasm_bindgen(js_name = toJson)]
-    pub fn to_json(&self) -> JsValue {
-        let steps: Vec<serde_json::Value> = self
-            .inner
-            .steps
-            .iter()
-            .map(|step| {
-                serde_json::json!({
-                    "dbId": step.db_id,
-                    "dbType": if step.is_full() { "full" } else { "delta" },
-                    "name": step.name,
-                    "baseHeight": step.base_height,
-                    "tipHeight": step.tip_height,
-                })
-            })
-            .collect();
-        to_js_object(&serde_json::json!({
-            "steps": steps,
-            "isFreshSync": self.inner.is_fresh_sync,
-            "targetHeight": self.inner.target_height,
-        }))
     }
 }
 
@@ -657,14 +561,6 @@ impl WasmQueryResult {
 
 #[wasm_bindgen]
 impl WasmQueryResult {
-    /// Create an empty result.
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        Self {
-            inner: QueryResult::empty(),
-        }
-    }
-
     /// Create a result from JSON (the `toJson` shape).
     #[wasm_bindgen(js_name = fromJson)]
     pub fn from_json(json: &JsValue) -> Result<WasmQueryResult, JsError> {
@@ -1256,32 +1152,5 @@ mod tests {
         let json = database_info_to_json(&db);
         assert_eq!(json["anchorKind"], 2);
         assert_eq!(json["anchorHex"], hex_encode(&db.anchor_bytes));
-    }
-
-    #[test]
-    fn wasm_database_catalog_get_entry_by_db_id() {
-        // Build a catalog whose positional order differs from db_id
-        // order, to catch "positional vs by-id" regressions:
-        // databases[0].db_id = 7, databases[1].db_id = 3.
-        let mut catalog = DatabaseCatalog::new();
-        catalog.databases.push(make_info(7, true));
-        catalog.databases.push(make_info(3, false));
-        let wrapper = WasmDatabaseCatalog::from_native(catalog);
-        // get_entry(db_id) must find db_id == 3 even though it's at
-        // position 1.
-        assert!(wrapper.has_bucket_merkle(7));
-        assert!(!wrapper.has_bucket_merkle(3));
-        // Absent db_id ⇒ hasBucketMerkle = false, not a panic.
-        assert!(!wrapper.has_bucket_merkle(99));
-    }
-
-    #[test]
-    fn wasm_database_catalog_has_bucket_merkle_reflects_native_flag() {
-        let mut catalog = DatabaseCatalog::new();
-        catalog.databases.push(make_info(0, true));
-        catalog.databases.push(make_info(1, false));
-        let wrapper = WasmDatabaseCatalog::from_native(catalog);
-        assert!(wrapper.has_bucket_merkle(0));
-        assert!(!wrapper.has_bucket_merkle(1));
     }
 }

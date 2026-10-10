@@ -2,9 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   mergeDeltaIntoSnapshot,
   applyDeltaData,
-  mergeDeltaBatch,
   mergeDeltaIntoHarmonySnapshot,
-  mergeDeltaHarmonyBatch,
 } from '../sync-merge.js';
 import type { QueryResult, UtxoEntry } from '../types.js';
 import type { HarmonyQueryResult, HarmonyUtxoEntry } from '../harmony-types.js';
@@ -332,44 +330,6 @@ describe('mergeDeltaIntoSnapshot', () => {
   });
 });
 
-// ─── mergeDeltaBatch ─────────────────────────────────────────────────────────
-
-describe('mergeDeltaBatch', () => {
-  it('merges per-index across parallel arrays', () => {
-    const snapA = snapshot([utxo(1, 0, 1000n)]);
-    const snapB = snapshot([utxo(2, 0, 2000n), utxo(3, 0, 3000n)]);
-
-    const deltaA = deltaResult(encodeDelta(
-      [],
-      [{ txid: fakeTxid(11), vout: 0, amount: 100n }],
-    ));
-    const deltaB = deltaResult(encodeDelta(
-      [{ txid: fakeTxid(2), vout: 0 }],
-      [],
-    ));
-
-    const out = mergeDeltaBatch([snapA, snapB], [deltaA, deltaB]);
-
-    expect(out).toHaveLength(2);
-    expect(out[0]!.entries).toHaveLength(2);
-    expect(out[0]!.totalSats).toBe(1100n);
-    expect(out[1]!.entries).toHaveLength(1);
-    expect(out[1]!.totalSats).toBe(3000n);
-  });
-
-  it('handles nulls in either array', () => {
-    const snapA = snapshot([utxo(1, 0, 1000n)]);
-    const out = mergeDeltaBatch([snapA, null], [null, null]);
-    expect(out).toHaveLength(2);
-    expect(out[0]).toBe(snapA);
-    expect(out[1]).toBeNull();
-  });
-
-  it('throws on length mismatch', () => {
-    expect(() => mergeDeltaBatch([snapshot([])], [])).toThrow('length mismatch');
-  });
-});
-
 // ─── HarmonyPIR merge ────────────────────────────────────────────────────────
 
 /** Build a HarmonyUtxoEntry matching the wire shape the HarmonyPIR client uses. */
@@ -513,30 +473,5 @@ describe('mergeDeltaIntoHarmonySnapshot', () => {
       whale: false,
     };
     expect(mergeDeltaIntoHarmonySnapshot(snap, noRaw)).toBe(snap);
-  });
-});
-
-describe('mergeDeltaHarmonyBatch', () => {
-  it('merges parallel arrays of Harmony snapshots + deltas', () => {
-    const snapA = hSnapshot([hUtxo(1, 0, 1000), hUtxo(2, 0, 2000)]);
-    const snapB = hSnapshot([hUtxo(3, 0, 3000)]);
-    const deltaA = hDeltaResult(encodeDelta(
-      [{ txid: fakeTxid(1), vout: 0 }],
-      [{ txid: fakeTxid(11), vout: 0, amount: 100n }],
-    ));
-    const deltaB = hDeltaResult(encodeDelta(
-      [{ txid: fakeTxid(2), vout: 0 }],
-      [],
-    ));
-
-    const out = mergeDeltaHarmonyBatch([snapA, snapB], [deltaA, deltaB]);
-
-    expect(out).toHaveLength(2);
-    expect(out[0]!.utxos).toHaveLength(2); // utxo(2) remains + new utxo(11)
-    expect(out[1]!.utxos).toHaveLength(1); // utxo(3) untouched (delta spent utxo(2), not in B)
-  });
-
-  it('throws on length mismatch', () => {
-    expect(() => mergeDeltaHarmonyBatch([hSnapshot([])], [])).toThrow('length mismatch');
   });
 });

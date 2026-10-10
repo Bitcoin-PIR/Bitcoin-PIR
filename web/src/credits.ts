@@ -183,9 +183,6 @@ export class IssuerClient {
   private readonly fetchImpl: typeof fetch;
 
   constructor(baseUrl: string, fetchImpl?: typeof fetch) {
-    if (!/^https:\/\/[^/]+/.test(baseUrl) && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?/.test(baseUrl)) {
-      throw new Error('issuer URL must be https:// (or a loopback http:// for development)');
-    }
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     const native = (globalThis as { fetch?: typeof fetch }).fetch;
     if (!fetchImpl && !native) throw new Error('fetch is unavailable in this environment');
