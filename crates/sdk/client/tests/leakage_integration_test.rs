@@ -364,7 +364,7 @@ async fn dpf_query_profile(shs: &[ScriptHash]) -> QueryProfile {
 /// Harmony equivalent of [`dpf_query_profile`].
 ///
 /// Payment-V1 admission is completed before the batch (hint leg V2Full grant
-/// + query leg free offer). The profile is intentionally broader than the
+/// and query leg free offer). The profile is intentionally broader than the
 /// strict health canary and remains advisory in scheduled CI.
 async fn harmony_query_profile(shs: &[ScriptHash]) -> QueryProfile {
     with_transport_retry("harmony query_batch", move || async move {

@@ -115,7 +115,6 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(feature = "onion")]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args();
     eprintln!("Connecting to {} ...", args.server_url);
@@ -166,16 +165,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(not(feature = "onion"))]
-fn main() {
-    eprintln!(
-        "This example requires the `onion` feature. Rebuild with:\n  \
-         cargo run -p pir-sdk-client --features onion --example onion_leakage_dump"
-    );
-    std::process::exit(2);
-}
-
-#[cfg(feature = "onion")]
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {

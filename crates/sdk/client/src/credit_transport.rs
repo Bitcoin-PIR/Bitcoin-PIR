@@ -447,9 +447,7 @@ impl CreditedTransport {
 
     /// Attribute a received frame to the oldest unanswered request.
     fn after_recv(&mut self, response_len: u64) -> Option<&'static str> {
-        let Some(head) = self.outstanding.front_mut() else {
-            return None;
-        };
+        let head = self.outstanding.front_mut()?;
         head.note_frame();
         if let Outstanding::Metered { op, frames_seen } = *head {
             let egress = self.params().egress_gas(response_len);
@@ -954,10 +952,8 @@ mod tests {
         let response = conn.roundtrip(&index_round(0)).await.unwrap();
         assert_eq!(response[0], 0x11);
         assert_eq!(wallet.calls.lock().unwrap().as_slice(), &[1]);
-        let sent = server.sent.lock().unwrap();
-        let variants: Vec<u8> = sent.iter().map(|f| f[4]).collect();
+        let variants: Vec<u8> = server.sent.lock().unwrap().iter().map(|f| f[4]).collect();
         assert_eq!(variants, vec![0x03, 0x01, REQ_CREDIT_PRESENT, 0x11]);
-        drop(sent);
         // The fake charged 1,400 plus egress of the 104-byte response (0 gas).
         assert_eq!(*server.balance.lock().unwrap(), 72_000 - 1_400);
         // Tree tops: 25 gas of work but a 12 MiB egress reserve → funded
@@ -975,24 +971,18 @@ mod tests {
         );
         assert_eq!(*server.balance.lock().unwrap(), 72_000 - 1_400 - 25 - 9_155);
         // Many more rounds drain the balance and the wrapper tops up again
-        // without a single refusal.
+        // without a single refusal (a refused round would fail its unwrap).
         for _ in 0..60 {
             conn.roundtrip(&index_round(0)).await.unwrap();
         }
-        let refusals = server
+        let top_ups = server
             .sent
             .lock()
             .unwrap()
             .iter()
             .filter(|f| f[4] == REQ_CREDIT_PRESENT)
             .count();
-        assert!(refusals >= 2);
-        assert!(!server
-            .sent
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|f| f[4] == 0x11 && false));
+        assert!(top_ups >= 2);
         assert!(*server.balance.lock().unwrap() >= 0);
     }
 

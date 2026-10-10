@@ -49,7 +49,7 @@ use sev::firmware::host::TcbVersion;
 /// Default = strictest production stance: VMPL 0, debug forbidden, MA
 /// migration forbidden, TCB-monotonic. Override individual fields if
 /// you need a looser stance (e.g. tests that mint debug guests).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PolicyRequirements {
     /// Maximum allowed VMPL. Production wants `0` (highest
     /// privilege; only the guest itself can sign reports at that
@@ -93,23 +93,6 @@ pub struct PolicyRequirements {
     /// operator runs in production.
     pub expected_family_id: Option<[u8; 16]>,
     pub expected_image_id: Option<[u8; 16]>,
-}
-
-impl Default for PolicyRequirements {
-    fn default() -> Self {
-        Self {
-            max_vmpl: 0,
-            allow_debug: false,
-            allow_migrate_ma: false,
-            require_single_socket: false,
-            min_tcb: None,
-            require_alias_check_complete: false,
-            required_mit_vector_bits: 0,
-            expected_measurement: None,
-            expected_family_id: None,
-            expected_image_id: None,
-        }
-    }
 }
 
 /// Things the policy can reject. Distinct from

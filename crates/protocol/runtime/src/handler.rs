@@ -975,7 +975,7 @@ mod dos_guard_tests {
                 assert_eq!(r.round_id, 9);
                 let entry = INDEX_PARAMS.bin_size();
                 assert_eq!(r.data.len(), 2 * entry);
-                assert!(r.data[..entry].iter().all(|&b| b == (74 ^ 0)));
+                assert!(r.data[..entry].iter().all(|&b| b == 74));
                 assert!(r.data[entry..].iter().all(|&b| b == (74 ^ 5)));
             }
             other => panic!("expected HarmonyQueryResult, got {:?}", other),

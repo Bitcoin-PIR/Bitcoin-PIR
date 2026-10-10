@@ -915,7 +915,7 @@ mod tests {
     #[test]
     fn batch_round_trip_demuxes_to_original_records() {
         let originals: Vec<Vec<u8>> = (0u8..7)
-            .map(|i| make_record(&vec![i, 0x41, 0xaa, 0xbb, 0xcc, i.wrapping_add(0x10)]))
+            .map(|i| make_record(&[i, 0x41, 0xaa, 0xbb, 0xcc, i.wrapping_add(0x10)]))
             .collect();
         // Concat: simulates one WS Binary message carrying all 7 records.
         let mut batch = Vec::new();

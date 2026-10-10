@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn kind_classifies_other() {
-        let io_err = io::Error::new(io::ErrorKind::Other, "oops");
+        let io_err = io::Error::other("oops");
         assert_eq!(PirError::Io(io_err).kind(), ErrorKind::Other);
         assert_eq!(PirError::Internal("bug".into()).kind(), ErrorKind::Other);
     }

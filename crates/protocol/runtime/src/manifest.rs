@@ -776,7 +776,7 @@ mod tests {
             "\"index.bin\" = \"{}\"",
             hex_encode(&sha256(b"small index"))
         );
-        let lines = vec![
+        let lines = [
             "[manifest]",
             "version = 1",
             "",

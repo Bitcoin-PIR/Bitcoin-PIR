@@ -382,6 +382,7 @@ impl pir_sdk_client::credit_transport::CreditProvider for JsCreditProvider {
 
 /// `"not-enabled" | "not-required" | "required" | "best-effort"` for
 /// `enableCredits`.
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn credit_status_str(
     status: pir_sdk_client::credit_transport::CreditStatus,
 ) -> &'static str {

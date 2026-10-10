@@ -208,8 +208,10 @@ impl AdminConnectionState {
             fs::create_dir_all(parent)
                 .map_err(|e| UploadError::Io(format!("create parent dir: {}", e)))?;
         }
+        // Chunks land at their offsets: never truncate.
         let mut f = fs::OpenOptions::new()
             .create(true)
+            .truncate(false)
             .write(true)
             .open(&target)
             .map_err(|e| UploadError::Io(format!("open {}: {}", target.display(), e)))?;
