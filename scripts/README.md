@@ -62,14 +62,6 @@ Tests the PIR client with a script hash query.
 
 Builds the `client` binary and runs a test query against servers at `ws://127.0.0.1:8091` and `ws://127.0.0.1:8092`.
 
-### `get_random_hash.sh`
-
-Samples random entries from the cuckoo hash table for debugging.
-
-```bash
-./scripts/get_random_hash.sh
-```
-
 ### `build_full.sh`
 
 Builds a complete full-snapshot UTXO PIR database (DPF + HarmonyPIR +

@@ -12,12 +12,10 @@ name: PIR SDK Integration Tests
 # keeps TLS handshakes from stepping on each other and keeps the fresh-sync
 # chunk-batch traffic under the Cloudflare connection limit.
 #
-# Required vs live split (2026-08): pull requests and main pushes compile the
-# SDK and run its deterministic unit tests. Tests that depend on the public
-# deployment run only on the daily canary or an explicit workflow dispatch.
-# Production availability and admission offers can change independently of a
-# client patch (the current VPSBG beta offers Free-PoW for Direct ORAM, not
-# DPF), so they must not make an otherwise deterministic PR check fail.
+# Required vs live split: pull requests and main pushes compile the SDK and
+# run its deterministic unit tests. Tests that depend on the public
+# deployment run only on the daily canary or an explicit workflow dispatch,
+# so production availability cannot fail an otherwise deterministic PR check.
 # Scheduled/manual live failures remain visible as canary failures.
 
 on:
@@ -288,8 +286,8 @@ jobs:
 
       - name: Run native database-root canary (OnionPIR)
         if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.probe.outputs.onion_paid != 'true' }}
-        # Same supported boundary as the DPF/Harmony canary: both roots are
-        # verified/preflighted, while admission and the real query use db0.
+        # Same as the DPF/Harmony canary: both roots are verified and
+        # preflighted; the real query uses db0.
         env:
           PIR_STRICT_PRODUCTION_CANARY: "1"
         run: "cargo test -p pir-sdk-client --features onion,fastprp --test integration_test onion_tests::test_onion_strict_production_canary -- --ignored --test-threads=1 --nocapture"

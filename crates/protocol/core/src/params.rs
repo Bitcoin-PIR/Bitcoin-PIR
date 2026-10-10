@@ -193,13 +193,23 @@ pub const CHUNK_HEADER_SIZE: usize = CHUNK_PARAMS.header_size;
 // contributes its *real* chunk count of chunk-Merkle items; the
 // `chunk_max_items_per_group_per_level` axis in
 // Bitcoin-PIR/protocol-proofs/Leakage.ec is a documented, admitted leak again.
-// Production uses the exact revision in verification/locks/formal-proofs.json.
 // Found-vs-not-found stays closed via CHUNK Round-Presence Symmetry,
 // which is a separate mechanism and does not depend on M-padding.
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The padding the privacy argument rests on (CLAUDE.md "Privacy
+    /// invariants"; Bitcoin-PIR/protocol-proofs).
+    #[test]
+    fn privacy_padding_constants_are_fixed() {
+        assert_eq!(K, 75);
+        assert_eq!(K_CHUNK, 80);
+        assert_eq!(NUM_HASHES, 3);
+        assert_eq!(INDEX_CUCKOO_NUM_HASHES, 2);
+        assert_eq!(CHUNK_CUCKOO_NUM_HASHES, 2);
+    }
 
     #[test]
     fn test_compute_dpf_n() {

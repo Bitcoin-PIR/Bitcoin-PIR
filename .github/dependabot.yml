@@ -11,7 +11,6 @@ updates:
   - package-ecosystem: npm
     directories:
       - /web
-      - /explorer
     schedule:
       interval: weekly
       day: tuesday

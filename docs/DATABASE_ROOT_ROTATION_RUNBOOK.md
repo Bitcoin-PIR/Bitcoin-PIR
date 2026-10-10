@@ -57,8 +57,7 @@ authorize a build, VPSBG boot, database mutation or deployment.
   `DatabaseProofBundle` and matching entries in the pin tables that
   backend uses: `PRODUCTION_DB_PROOF_PINS` (DPF/Harmony v1),
   `PRODUCTION_ONION_DB_PROOF_V2_PINS` (pir1 Onion), and
-  `PRODUCTION_ORAM_DB_PROOF_V2_PINS` plus
-  `verification/locks/generated-proofs.json` (pir2 Direct ORAM).
+  `PRODUCTION_ORAM_DB_PROOF_V2_PINS` (pir2 Direct ORAM).
 - Every sync plan selectable from a supported starting height is contiguous in
   both height and block hash. Overlapping alternatives in the active catalog do
   not have to form one full-snapshot-to-delta chain: production may serve a
@@ -163,8 +162,7 @@ In the same change set, update `web/src/attest-pin.ts`:
    packed-entry counts, table sizes, slot sizes, arity, and Merkle geometry
    against the independently accepted v2 proof. Do not recreate the removed
    `PRODUCTION_ONION_QUERY_LAYOUT_PINS` table or a v1 layout fallback.
-3. For Direct ORAM, update `PRODUCTION_ORAM_DB_PROOF_V2_PINS` and the
-   matching lock in `verification/locks/generated-proofs.json`. That
+3. For Direct ORAM, update `PRODUCTION_ORAM_DB_PROOF_V2_PINS`. That
    table shares layout and Merkle roots with the Onion v2 pins and
    independently binds the native full-build producer. Do not collapse
    Onion and ORAM builder identities into one table.
@@ -304,27 +302,9 @@ connection. Run at least:
 
 For each run, record that:
 
-- DPF/HarmonyPIR runtime/identity summaries reach the expected strict tier;
+- DPF/HarmonyPIR attestation and operator identity show as verified;
 - every database proof matches its production pin;
-- tree-top preflight completes before the first address query;
-- every displayed result receives `Verified` only after Merkle verification;
-- sync state is merged only after all database results verify;
-- the connection ends disconnected.
-
-After acceptance, write the release record: generate
-`docs/data-retention/production-release-image-<id>.env` with
-`scripts/generate-release-record.sh` (schema and field reference:
-`docs/data-retention/release-record.env.template`). Pass `--attest-log` with
-the saved output of `bpir-admin attest --expect-ark-fingerprint ...` against
-the serving guest: it fills the measurement and both served-manifest digests
-from chip-attested values (the per-DB manifest root is sha256 of the served
-`MANIFEST.toml`), and refuses a log whose REPORT_DATA or AMD-chain check did
-not verify or whose binary is not the recorded UKI's. Fill any remaining
-TODO field (acceptance tag) and commit the record with or immediately after
-the pin change. Use a unique `--out` path
-for a database-only rotation that reuses an image ID; never use `--force` to
-overwrite an earlier point-in-time record. Every production release — UKI
-switch, database rotation, or both — gets one record.
+- every displayed result shows `Verified`.
 
 HarmonyPIR hints may remain browser-cached. Their native blob fingerprint
 includes database height, geometry, tag seed, and master seeds; a stale blob is
