@@ -115,8 +115,7 @@ impl HarmonyClient {
         // front, in scripthash order. We need these lists indexable by
         // scripthash idx so the batched CHUNK fetch can run once and we
         // still emit per-scripthash QueryResults in original order.
-        let outcomes: Vec<(Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>)> =
-            index_outcomes.into_iter().collect();
+        let outcomes: Vec<IndexOutcome> = index_outcomes.into_iter().collect();
         let mut per_q_real_count: Vec<usize> = Vec::with_capacity(outcomes.len());
         let mut per_q_is_whale: Vec<bool> = Vec::with_capacity(outcomes.len());
         let mut per_q_has_match: Vec<bool> = Vec::with_capacity(outcomes.len());
@@ -249,7 +248,7 @@ impl HarmonyClient {
         &mut self,
         script_hashes: &[ScriptHash],
         db_info: &DatabaseInfo,
-    ) -> PirResult<Vec<(Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>)>> {
+    ) -> PirResult<Vec<IndexOutcome>> {
         let k_index = db_info.index_k as usize;
         let index_bins = db_info.index_bins as usize;
         let tag_seed = db_info.tag_seed;
@@ -293,13 +292,13 @@ impl HarmonyClient {
             // matching what the server stores at build time.
             let mut placements_per_h: [Vec<(u8, u32)>; INDEX_CUCKOO_NUM_HASHES] =
                 std::array::from_fn(|_| Vec::with_capacity(round.len()));
-            for h in 0..INDEX_CUCKOO_NUM_HASHES {
+            for (h, placements) in placements_per_h.iter_mut().enumerate() {
                 for &(sh_idx, pbc_group) in round {
                     let key =
                         pir_core::hash::derive_cuckoo_key(db_info.index_master_seed, pbc_group, h);
                     let target_bin =
                         pir_core::hash::cuckoo_hash(&script_hashes[sh_idx], key, index_bins);
-                    placements_per_h[h].push((pbc_group as u8, target_bin as u32));
+                    placements.push((pbc_group as u8, target_bin as u32));
                 }
             }
 
@@ -328,8 +327,7 @@ impl HarmonyClient {
             // unchanged from the sequential path, so per-scripthash
             // bookkeeping (matched_idx_per_sh, found_info, audit logs)
             // is bit-for-bit equivalent.
-            for h in 0..INDEX_CUCKOO_NUM_HASHES {
-                let answers = answers_per_h[h];
+            for (h, &answers) in answers_per_h.iter().enumerate() {
                 for &(sh_idx, pbc_group) in round {
                     let g = pbc_group as u8;
                     let key =
@@ -531,12 +529,8 @@ impl HarmonyClient {
         // Note: `conn.recv()` returns the raw frame INCLUDING the 4-byte
         // length prefix (unlike `conn.roundtrip()`, which strips it).
         // The strict frame decoder below validates and strips that prefix.
-        let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
+        let (response_h0, response_h1) = if let Some(conn1) = self.query_conn_secondary.as_mut() {
             let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-            let conn1 = self
-                .query_conn_secondary
-                .as_mut()
-                .expect("checked is_some above");
             #[cfg(not(target_arch = "wasm32"))]
             let (r0, r1) = tokio::try_join!(
                 async {
@@ -744,14 +738,10 @@ impl HarmonyClient {
         // Single-socket fallback: send both requests then recv both
         // (unchanged from pre-pool behaviour, kept identical so the
         // pool-size=1 code path is bit-for-bit equivalent).
-        let (response_h0, response_h1) = if self.query_conn_secondary.is_some() {
+        let (response_h0, response_h1) = if let Some(conn1) = self.query_conn_secondary.as_mut() {
             // Disjoint borrows on different `Option` fields → safe to
             // hold both `&mut` simultaneously.
             let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-            let conn1 = self
-                .query_conn_secondary
-                .as_mut()
-                .expect("checked is_some above");
             #[cfg(not(target_arch = "wasm32"))]
             let (r0, r1) = tokio::try_join!(
                 async {

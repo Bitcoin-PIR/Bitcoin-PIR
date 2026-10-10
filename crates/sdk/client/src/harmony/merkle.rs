@@ -436,7 +436,7 @@ impl HarmonyClient {
         let mut merkle_rounds_first: Vec<RoundProfile> = Vec::new();
         let mut merkle_rounds_second: Vec<RoundProfile> = Vec::new();
 
-        let per_item = if self.query_conn_secondary.is_some() {
+        let per_item = if let Some(conn1) = self.query_conn_secondary.as_mut() {
             // ── Parallel path: split INDEX and CHUNK sib trees across
             // the two sockets. Each querier holds the full map for
             // its table_type, plus an empty placeholder for the other
@@ -448,10 +448,6 @@ impl HarmonyClient {
 
             // Disjoint borrows on the two `Option` fields.
             let conn0 = self.query_conn.as_mut().ok_or(PirError::NotConnected)?;
-            let conn1 = self
-                .query_conn_secondary
-                .as_mut()
-                .expect("checked is_some above");
 
             // `q_index` buffers INDEX-Merkle rounds, `q_chunk` buffers
             // CHUNK-Merkle rounds — into disjoint Vecs, so the two

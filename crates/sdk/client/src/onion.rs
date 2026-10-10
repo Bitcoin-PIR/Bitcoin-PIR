@@ -160,6 +160,15 @@ use pir_core::merkle::Hash256;
 #[cfg(feature = "onion")]
 use std::collections::{HashMap, HashSet};
 
+/// `query_chunk_level` output: decrypted chunk bytes and the DATA Merkle leaf
+/// `(hash, group, bin)` per entry id, plus each query's owned entry ids.
+#[cfg(feature = "onion")]
+type ChunkLevelOutput = (
+    HashMap<u32, Vec<u8>>,
+    HashMap<u32, (Hash256, usize, u32)>,
+    Vec<Vec<u32>>,
+);
+
 // ─── Protocol wire codes ────────────────────────────────────────────────────
 
 /// Request: fetch server info as JSON.
@@ -1422,6 +1431,7 @@ impl OnionClient {
     /// This is the single chokepoint for INDEX and CHUNK. The Merkle path
     /// independently fails verification on an empty ciphertext result.
     #[cfg(feature = "onion")]
+    #[allow(clippy::too_many_arguments)]
     async fn onionpir_batch_rpc(
         &mut self,
         msg: &[u8],
@@ -1478,6 +1488,7 @@ impl OnionClient {
     /// One-shot sender for `onionpir_batch_rpc`: single roundtrip, no retry.
     /// Emits exactly one `RoundProfile` for the one actual roundtrip.
     #[cfg(feature = "onion")]
+    #[allow(clippy::too_many_arguments)]
     async fn onionpir_batch_rpc_once(
         &mut self,
         msg: &[u8],
@@ -1734,11 +1745,7 @@ impl OnionClient {
         index_results: &[Option<IndexResult>],
         db_info: &DatabaseInfo,
         params: &OnionDbParams,
-    ) -> PirResult<(
-        HashMap<u32, Vec<u8>>,
-        HashMap<u32, (Hash256, usize, u32)>,
-        Vec<Vec<u32>>,
-    )> {
+    ) -> PirResult<ChunkLevelOutput> {
         // Collect each query's *real* chunk entry_ids. Phase 3 / WS-A
         // removed the M=16 chunk-Merkle padding (see docs/VERIFICATION_OVERVIEW.md):
         // a query now fetches its real chunk count — found-with-N → N

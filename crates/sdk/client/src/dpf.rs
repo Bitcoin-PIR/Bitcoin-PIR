@@ -172,10 +172,10 @@ pub(crate) fn build_index_alphas_batched(
 ) -> Vec<Vec<u64>> {
     debug_assert_eq!(placed_locs.len(), k, "placed_locs must have length k");
     let mut alphas = Vec::with_capacity(k);
-    for g in 0..k {
+    for placed in &placed_locs[..k] {
         let mut group = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
         for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let alpha = match placed_locs[g] {
+            let alpha = match placed {
                 Some(locs) => locs[h],
                 None => next_random_bin() % bins as u64,
             };
@@ -193,6 +193,11 @@ pub(crate) fn build_index_alphas_batched(
 /// Populated by `query_index_level` for every cuckoo position it probes.
 /// Consumed by the Merkle verifier to prove the bin content (and therefore
 /// the FOUND/NOT-FOUND conclusion) is consistent with the published root.
+/// One query's INDEX-phase outcome: the matched entry
+/// (`start_chunk_id`, `num_chunks`, `is_whale`), the probed bins, and which
+/// of them matched.
+type IndexOutcome = (Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>);
+
 #[derive(Clone, Debug)]
 struct IndexBinTrace {
     /// PBC group this bin belongs to (0..index_k).
@@ -1090,7 +1095,7 @@ impl DpfClient {
         &mut self,
         script_hashes: &[ScriptHash],
         db_info: &DatabaseInfo,
-    ) -> PirResult<Vec<(Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>)>> {
+    ) -> PirResult<Vec<IndexOutcome>> {
         let k = db_info.index_k as usize;
         let bins = db_info.index_bins as usize;
         let dpf_n = db_info.dpf_n_index;
@@ -1121,9 +1126,9 @@ impl DpfClient {
         for (sh_idx, sh) in script_hashes.iter().enumerate() {
             let pbc_group = placement[sh_idx].pbc_group;
             let mut locs = [0u64; INDEX_CUCKOO_NUM_HASHES];
-            for h in 0..INDEX_CUCKOO_NUM_HASHES {
+            for (h, loc) in locs.iter_mut().enumerate() {
                 let key = pir_core::hash::derive_cuckoo_key(master_seed, pbc_group, h);
-                locs[h] = pir_core::hash::cuckoo_hash(sh, key, bins) as u64;
+                *loc = pir_core::hash::cuckoo_hash(sh, key, bins) as u64;
             }
             my_locs_per_sh.push(locs);
         }

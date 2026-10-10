@@ -86,6 +86,7 @@ pub struct GroupTiming {
 /// Evaluate N DPF keys over a table, XOR-accumulating results.
 /// Returns Vec of N accumulators, each `result_size` bytes, plus timing.
 /// `prefetch_bin` is an optional callback to prefetch data for an upcoming bin.
+#[allow(clippy::type_complexity)]
 fn process_group_generic(
     keys: &[&DpfKey],
     table_bytes: &[u8],
@@ -130,6 +131,7 @@ fn process_group_generic(
     let mut accs: Vec<Vec<u8>> = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
     let mut bin_buf = vec![0u8; result_size];
 
+    #[allow(clippy::needless_range_loop)] // `evals[i][block_idx]` across all keys
     for block_idx in 0..num_blocks {
         // Skip if all blocks are zero
         let all_zero = (0..num_keys).all(|i| evals[i][block_idx].is_equal(&Block::zero()));

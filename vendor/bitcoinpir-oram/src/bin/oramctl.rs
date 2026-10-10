@@ -5364,14 +5364,14 @@ mod tests {
         // Public bulk output and evidence must not contain the explicit dev
         // seed input (strict mode replaces it with OS entropy) or the page key.
         let evidence_json = fs::read(out.path().join(ORAM_BUILD_EVIDENCE_JSON_FILE)).unwrap();
-        assert!(!contains_subslice(&evidence_json, &vec![0x0a; 32]));
+        assert!(!contains_subslice(&evidence_json, &[0x0a; 32]));
         assert!(!contains_subslice(&evidence_json, page_key_hex.as_bytes()));
         for entry in fs::read_dir(out.path()).unwrap() {
             let path = entry.unwrap().path();
             if path.is_file() {
                 let bytes = fs::read(path).unwrap();
                 assert!(!contains_subslice(&bytes, &[0xb7; 32]));
-                assert!(!contains_subslice(&bytes, &vec![0x0a; 32]));
+                assert!(!contains_subslice(&bytes, &[0x0a; 32]));
             }
         }
     }

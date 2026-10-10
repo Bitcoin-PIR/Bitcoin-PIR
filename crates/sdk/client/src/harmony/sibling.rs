@@ -241,6 +241,7 @@ impl HarmonySiblingQuerier<'_> {
             .collect::<PirResult<Vec<_>>>()?;
         let mut out = vec![vec![None; table_k]; prepared.targets.len()];
 
+        #[allow(clippy::needless_range_loop)] // indexes targets, decoded and out together
         for group_idx in 0..table_k {
             let group_id = group_idx as u8;
             let group = self.sibling_group_mut(prepared.table_type, prepared.level, group_id)?;

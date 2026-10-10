@@ -157,6 +157,7 @@ impl BuildParamsV2 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn encode_table_params(
     out: &mut Vec<u8>,
     k: u16,
