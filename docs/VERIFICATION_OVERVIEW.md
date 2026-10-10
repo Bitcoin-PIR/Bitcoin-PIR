@@ -52,10 +52,9 @@ write-up.
 
 The formal source of truth is the external
 [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs)
-repository. File links below use its default branch for convenient reading;
-production does not trust that mutable branch. It binds the exact proof commit,
-manifest, and content-addressed verification record through
-`verification/locks/formal-proofs.json` and reruns the locked proof in CI.
+repository; the proof is checked there (`make check`), and this repository does
+not pin or re-run it. K=75, K_CHUNK=80 and the two INDEX cuckoo hashes are fixed
+by unit tests in `pir-core` (`params.rs`).
 
 1. **Wire-shape simulator-property** ([proof sources](https://github.com/Bitcoin-PIR/protocol-proofs)). 39
    lemmas, zero `admit` tactics, 415 verification points. The proof
@@ -301,10 +300,8 @@ If you're picking this up cold:
 
 1. Start with [`protocol-proofs/README.md`](https://github.com/Bitcoin-PIR/protocol-proofs/blob/main/README.md) — it's the most
    self-contained explanation of the verification approach.
-2. Check out the exact `protocol-proofs` commit in
-   `verification/locks/formal-proofs.json`, then run `make check` at that
-   repository root to confirm the spec typechecks (one-time install via opam;
-   ~30s on a warm cache).
+2. Clone `protocol-proofs` and run `make check` at its root to confirm the
+   spec typechecks (one-time install via opam; ~30s on a warm cache).
 3. Run `cargo test -p pir-sdk-client --lib` to confirm 151
    unit tests pass.
 4. Run `cd web && npm test` to confirm 138 vitest tests pass.

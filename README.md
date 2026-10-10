@@ -77,8 +77,7 @@ BitcoinPIR/
 │   └── db-builder/    Database generation pipeline
 ├── web/               Production browser query application
 ├── deploy/            Reproducible build and deployment integration
-├── docs/              Design, verification, and operating documentation
-└── verification/      External proof locks and implementation contracts
+└── docs/              Design, verification, and operating documentation
 ```
 
 Production diagnosis starts at
@@ -87,12 +86,10 @@ Direct ORAM source/intermediate retention is mapped in
 [`docs/DATABASE_ARTIFACT_RETENTION.md`](docs/DATABASE_ARTIFACT_RETENTION.md);
 consult it before deleting artifacts or starting an expensive rebuild.
 
-The repository is being reorganized into stable `apps/`, `crates/`, `tools/`,
-and `verification/` boundaries. Reusable protocols, formal proofs, generated
-proof bundles, demos, and research sources live in separate repositories under
-the [Bitcoin-PIR organization](https://github.com/Bitcoin-PIR). See
-[`docs/REPOSITORY_BOUNDARIES.md`](docs/REPOSITORY_BOUNDARIES.md) for the
-ownership rules and migration gates.
+Reusable protocols, formal proofs, generated proof bundles, demos, and
+research sources live in separate repositories under the
+[Bitcoin-PIR organization](https://github.com/Bitcoin-PIR); see
+[`docs/REPOSITORY_BOUNDARIES.md`](docs/REPOSITORY_BOUNDARIES.md).
 
 ## Getting Started
 
@@ -116,7 +113,7 @@ For development, see [`docs/TESTING.md`](docs/TESTING.md).
   entry point; every production operation routes through this page
 - [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) — the
   privacy invariants and formal-verification final state
-- [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material (the exact consumed revision is recorded in [`verification/locks/whitepaper.json`](verification/locks/whitepaper.json))
+- [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material
 
 ## License
 

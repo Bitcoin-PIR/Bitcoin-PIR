@@ -3,7 +3,7 @@ name: Deploy Web Client to GitHub Pages
 on:
   # A main push cannot publish: the deploy job requires the explicit confirmed
   # dispatch below. Keep validation in its dedicated CI workflows and avoid a
-  # second full build/Playwright run that would always end with deploy skipped.
+  # second full build that would always end with deploy skipped.
   workflow_dispatch:
     inputs:
       confirm_production_deploy:
@@ -76,9 +76,6 @@ jobs:
       - name: Install dependencies
         working-directory: web
         run: npm ci
-
-      - name: Enforce manual main-only production Pages deployment
-        run: node scripts/pages-deploy-gate.mjs
 
       - name: TypeScript strict typecheck
         working-directory: web

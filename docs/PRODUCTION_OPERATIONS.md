@@ -72,7 +72,6 @@ stop and report.
 | `production-status.sh` | ~30 s | 20 s per SSH/API call | `PASS production_status` |
 | Local web check (`tsc` + vitest + `build-web`) | 2–10 min | 15 min | npm scripts exit 0 |
 | PR `web-build.yml` | 10–25 min | 30 min job | wasm-pack, tsc, vitest, `build-web` |
-| PR `ci-summary.yml` | waits for siblings | 75 min | one green/red advisory status |
 | Pages `deploy-web.yml` | 20–60 min | 75 min build | `build-web`, then deploy job |
 | pir1 `cargo build --release -p runtime` | 2–5 min | 15 min | compiler output, then systemd active |
 | Tier 3 **runtime** UKI (`build_uki_tier3.sh`) | 5–15 min | 15 min | dracut, inventory, `ukify`, `PASS uki_build` |
@@ -122,9 +121,8 @@ aggregate check on `main`.
 2. Local — open a `codex/` branch; do not mix a production mutation with
    a docs or CI cleanup in the same commit.
 3. Local — open a PR against `main`. Path-filtered workflows run on
-   that PR. Two run on every PR: `formal-proof.yml` and advisory
-   `ci-summary.yml` (waits for sibling runs on the head SHA).
-4. Human — inspect the CI summary, then merge only if the user asked.
+   that PR.
+4. Human — inspect the PR's checks, then merge only if the user asked.
 
 Usual PR workflows, when their paths match:
 
@@ -134,11 +132,6 @@ Usual PR workflows, when their paths match:
 | `pir-sdk-integration.yml` | deterministic SDK jobs | live servers (live jobs are schedule/dispatch) |
 | `rust-ci.yml` | Rust test/clippy lanes and the wasm32 check | production hosts |
 | `build-determinism.yml` | pir-core reproducibility | databases |
-| `workflow-supply-chain.yml` | workflow/UKI contract scripts | a UKI |
-| `generated-proof-lock.yml` | lock files | live proofs |
-| `formal-proof.yml` | locked EasyCrypt / contract | production hosts |
-
-Do not add workflows or required checks from this page.
 
 ## C. Web / GitHub Pages — Local then Auth
 
@@ -146,13 +139,12 @@ The site is `https://www.bitcoinpir.org/`. A push to `main` does **not**
 publish. `.github/workflows/deploy-web.yml` deploys only on
 `workflow_dispatch` from `main` with `confirm_production_deploy=true`.
 The build job has contents-read only; Pages write/OIDC is confined to
-the deploy job. `scripts/pages-deploy-gate.mjs` enforces that
-shape.
+the deploy job.
 
 1. Local — land the web or pin change through Flow B. Pin edits must
-   keep `web/src/attest-pin.ts`, `verification/locks/`, and the
-   duplicate pins in `crates/sdk/client/tests/integration_test.rs`
-   consistent ([rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md) §3).
+   keep `web/src/attest-pin.ts` and the duplicate pins in
+   `crates/sdk/client/tests/integration_test.rs` consistent
+   ([rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md) §3).
 2. Local — wait for `web-build.yml` on that `main` commit.
 3. Auth — dispatch `deploy-web.yml` on `main` with
    `confirm_production_deploy=true`. Expected 20–60 min, hard stop
@@ -299,21 +291,18 @@ schema requires one, is Flow D or E as a **separate** gate.
 
 ### H.0 Classify the proof family — Read
 
-Identity values stay in [`web/src/attest-pin.ts`](../web/src/attest-pin.ts)
-or `verification/locks/`. Do not copy them into prose. EasyCrypt /
-wire-shape locks in [Verification overview](VERIFICATION_OVERVIEW.md)
-are Flow B, not this flow.
+Identity values stay in [`web/src/attest-pin.ts`](../web/src/attest-pin.ts).
+Do not copy them into prose.
 
 | Family | Serves | Pin / lock | Verifier an agent may run |
 | --- | --- | --- | --- |
 | DB proof v1 | DPF + Harmony live opcode | `PRODUCTION_DB_PROOF_PINS` | `verify-live` (v1 opcode only). Roots are already in the V2 evidence; the UKI does not emit a second v1 sidecar |
 | Onion v2 | pir1 OnionPIR | `PRODUCTION_ONION_DB_PROOF_V2_PINS` | local `db-proof verify` / `verify-proof-directory`; **not** `verify-live` |
-| ORAM v2 | pir2 Direct ORAM | `PRODUCTION_ORAM_DB_PROOF_V2_PINS` + `verification/locks/generated-proofs.json` | same local v2 verifiers; **not** `verify-live` |
+| ORAM v2 | pir2 Direct ORAM | `PRODUCTION_ORAM_DB_PROOF_V2_PINS` | same local v2 verifiers; **not** `verify-live` |
 | Builder SNP | attested-builder run | ORAM source manifests under `web/public/proofs/oram-source/` | `pir-attested-builder verify-build-evidence` |
 | Runtime SNP | serving pir2 UKI | `PIR2_TIER3_PIN` | Flow E step 6; `bpir-admin attest` |
 | pir1 binary | serving pir1 | `PIR1_PIN` | browser after Flow C; Flow D step 3 is host health only |
 | BHTM / trust-chain | height + block hash + MuHash | `web/public/proofs/trust-chain/` | browser tests; UKI consumes `BHTM_FROM_LEAF_PROOF` |
-| Formal / EasyCrypt | protocol source | `verification/locks/formal-proofs.json` | Flow B only |
 
 `server-info.super_root` is diagnostic. Never copy it into a pin.
 `--expect-*` values come from the independently accepted proof record,
@@ -342,7 +331,6 @@ never from a live server or from the proof printing itself.
 5. Human — edit pins in the same change set (rotation §3):
    `PRODUCTION_DB_PROOF_PINS`, `PRODUCTION_ONION_DB_PROOF_V2_PINS`,
    `PRODUCTION_ORAM_DB_PROOF_V2_PINS`,
-   `verification/locks/generated-proofs.json` (ORAM table),
    `crates/sdk/client/tests/integration_test.rs`, and
    `web/public/proofs/`. Do not recreate
    `PRODUCTION_ONION_QUERY_LAYOUT_PINS`.
@@ -361,10 +349,7 @@ never from a live server or from the proof printing itself.
    path after Flow C, or `pir2-post-switch-check.sh` for the runtime
    SNP + ORAM smoke. Do not invent a unified “verify all proofs”
    command.
-10. Auth — publish pins with Flow C. Write the release record with
-    `scripts/generate-release-record.sh --attest-log <saved bpir-admin
-    attest output>` (unique `--out`; never `--force` over an earlier
-    record); the attested manifest roots fill the served-manifest fields.
+10. Auth — publish pins with Flow C.
 
 Rollback is rotation §7: restore both hosts to the last generation
 proven on both, then Flow C for the prior pins. If one host fails,

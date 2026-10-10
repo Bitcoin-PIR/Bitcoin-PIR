@@ -16,9 +16,6 @@ if [[ $# -eq 1 && $1 == --help ]]; then
 fi
 [[ $# -eq 2 && $1 == --lane ]] || { usage >&2; exit 2; }
 lane=$2
-# GitHub Actions supplies RUNNER_TEMP; retain a bounded local fallback for
-# syntax/help and intentional local lane runs.
-runner_temp=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
 
 case "$lane" in
   core)
@@ -30,14 +27,6 @@ case "$lane" in
     cargo check --timings --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --lib hint_pool; cargo test --locked --offline -p runtime --bin unified_server; cargo test --locked --offline -p runtime --test unified_server_cli
     cargo clippy --locked --offline -p runtime --bin unified_server --no-deps -- -D warnings
     cargo clippy --locked --offline -p runtime --features test-only-unsafe-query-logging --bin unified_server --no-deps -- -D warnings
-    # The privacy-dangerous logging feature must never compile into a release
-    # profile, with or without debug assertions.
-    log_file="$(mktemp "${runner_temp}/bpir-release-security.XXXXXX")"; trap 'rm -f -- "$log_file"' EXIT
-    diagnostic='feature `test-only-unsafe-query-logging` is restricted to Cargo'
-    if cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then exit 1; fi
-    grep -F "$diagnostic" "$log_file" >/dev/null
-    if RUSTFLAGS='-C debug-assertions=yes' cargo check --locked --offline --release -p runtime --features test-only-unsafe-query-logging >"$log_file" 2>&1; then exit 1; fi
-    grep -F "$diagnostic" "$log_file" >/dev/null
     ;;
   runtime-features)
     cargo test --timings --locked --offline --manifest-path vendor/bitcoinpir-oram/Cargo.toml

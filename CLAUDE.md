@@ -14,7 +14,7 @@ for agents are in [`AGENTS.md`](AGENTS.md); read that first.
 | Any production operation | [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) |
 | Client trust pins (binary hashes, SEV measurement, DB proofs) | [`web/src/attest-pin.ts`](web/src/attest-pin.ts) — never copy values into prose |
 | Live production state | Query it (`scripts/production-status.sh`); never infer from documents |
-| Privacy invariants and proofs | [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) + [`verification/locks/`](verification/locks/) |
+| Privacy invariants and proofs | [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md); EasyCrypt proof in [`Bitcoin-PIR/protocol-proofs`](https://github.com/Bitcoin-PIR/protocol-proofs) |
 
 ## Privacy invariants (NEVER weaken; details in VERIFICATION_OVERVIEW.md)
 
@@ -42,7 +42,7 @@ reopening that decision).
 `crates/protocol` (core primitives, server runtime), `crates/sdk`
 (core/client/wasm), `crates/trust`, `apps/server`
 (unified_server), `apps/admin`, `tools/db-builder`,
-`web/` (browser client), `deploy/`, `verification/`. Full map in
+`web/` (browser client), `deploy/`. Full map in
 [`README.md`](README.md);
 terminology in [`GLOSSARY.md`](GLOSSARY.md).
 

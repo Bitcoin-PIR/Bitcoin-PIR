@@ -28,9 +28,10 @@ status subcommand for the rest.
   and the mint on pir1 is [Issuer and mint](runbooks/issuer-and-mint.md).
   The retired Payment V1 material and the 2026-09 ARC/Cashu verifiers live
   only in git history.
-- Verification: [Verification overview](VERIFICATION_OVERVIEW.md) and the
-  repository's [`verification/locks/`](../verification/locks/).
-- Repository ownership: [Repository boundaries](REPOSITORY_BOUNDARIES.md).
+- Verification: [Verification overview](VERIFICATION_OVERVIEW.md); the
+  EasyCrypt proof lives in
+  [Bitcoin-PIR/protocol-proofs](https://github.com/Bitcoin-PIR/protocol-proofs).
+- Related repositories: [Repository boundaries](REPOSITORY_BOUNDARIES.md).
 
 ## Historical records
 
