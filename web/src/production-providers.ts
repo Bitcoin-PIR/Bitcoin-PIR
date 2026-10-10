@@ -72,7 +72,7 @@ export const ORAM_PROVIDER: ProductionProviderPin | null = {
 
 /** Shown wherever Direct ORAM would otherwise connect. */
 export const ORAM_PAUSED_MESSAGE =
-    'Direct ORAM is paused: it needs a TEE host, and none serves it since pir2 was retired on 2026-10-02.';
+    'Direct ORAM is paused: it needs an attested TEE host, and none is serving it right now.';
 
 /**
  * Direct ORAM request shape used in production. Every lookup is one
