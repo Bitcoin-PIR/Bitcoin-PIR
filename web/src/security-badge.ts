@@ -1,5 +1,5 @@
 /**
- * Text-only rendering for values received before strict server verification.
+ * Text-only rendering for server-supplied attestation and identity strings.
  *
  * Attestation and operator-identity callbacks can contain server-controlled
  * strings.  Rendering them as HTML would let an untrusted endpoint execute in

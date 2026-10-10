@@ -38,16 +38,6 @@ export interface SyncExecuteHooks<T extends SyncableResult> {
   scriptHashes: Uint8Array[];
   /** Run one step of the plan against the backend and return per-scripthash results. */
   queryStep: (step: SyncStep, stepIdx: number) => Promise<(T | null)[]>;
-  /**
-   * Optional fail-closed verification barrier. It runs immediately after the
-   * step query, while that backend session/key is still current, and before
-   * any result is merged or committed to the cache.
-   */
-  verifyStep?: (
-    step: SyncStep,
-    stepResults: (T | null)[],
-    stepIdx: number,
-  ) => Promise<void>;
   /** Merge a delta step's result onto the current snapshot for one scripthash. */
   mergeStep: (snapshot: T | null, delta: T | null) => T | null;
   /** Optional hook run before each step (e.g. HarmonyPIR hint switch / re-download). */
@@ -206,12 +196,6 @@ export class SyncController<T extends SyncableResult> {
         throw new Error(
           `Sync step ${step.dbId} returned ${stepResults.length} results; expected ${N}`,
         );
-      }
-
-      // Verification is part of the transaction. A rejection here leaves the
-      // existing snapshot cache and persisted height untouched.
-      if (hooks.verifyStep) {
-        await hooks.verifyStep(step, stepResults, si);
       }
 
       if (step.dbType === 'full') {

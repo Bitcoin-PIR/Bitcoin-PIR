@@ -125,23 +125,9 @@ describe('OnionPIR cross-language leakage diff (Phase 2.3 step D)', () => {
         // queryBatch takes pre-computed scripthashes as Uint8Array,
         // so we feed our 20-byte fixture hash directly — no address
         // parsing or override hook needed.
-        const results = await client.queryBatch([sh]);
-        // Rust `query_batch` bundles Merkle verification; TS exposes it
-        // as a separate `verifyMerkleBatch` call (production UI chains
-        // them — see web/index.html). Chain it here so the captured
-        // profile shape matches the Rust corpus.
-        //
-        // `queryBatch` returns `(QueryResult | null)[]` for the legacy
-        // null-=-not-found contract. In practice every query resolves
-        // to a non-null result — a not-found query still builds a
-        // QueryResult carrying its probed INDEX Merkle leaves — but the
-        // nullable type signature is preserved for backward
-        // compatibility. Filter nulls before `verifyMerkleBatch`, which
-        // expects `QueryResult[]`.
-        const nonNull = results.filter(
-          (r): r is NonNullable<typeof r> => r !== null,
-        );
-        await client.verifyMerkleBatch(nonNull);
+        // Like Rust `query_batch`, queryBatch verifies the batch's Merkle
+        // proofs before returning, so the captured profile includes them.
+        await client.queryBatch([sh]);
       } finally {
         client.disconnect();
       }
