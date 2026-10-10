@@ -20,7 +20,7 @@ use crate::protocol::{
     decode_catalog, encode_request, REQ_GET_DB_CATALOG, RESP_DB_CATALOG, RESP_ERROR,
 };
 use crate::transport::PirTransport;
-use crate::verified_roots::{RootPolicy, VerifiedRootState};
+use crate::verified_roots::VerifiedRootState;
 #[cfg(target_arch = "wasm32")]
 use crate::wasm_transport::WasmWebSocketTransport;
 use pir_core::params::SCRIPT_HASH_SIZE;
@@ -201,14 +201,6 @@ impl OramClient {
             .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
         let bundle = fetch_database_proof_v2(self.conn_mut()?.as_mut(), db_id).await?;
         verify_database_proof_v2(&db_info, &bundle, policy)
-    }
-
-    pub fn root_policy(&self) -> RootPolicy {
-        self.verified_roots.policy()
-    }
-
-    pub fn set_root_policy(&mut self, policy: RootPolicy) {
-        self.verified_roots.set_policy(policy);
     }
 
     pub fn install_verified_database_roots(

@@ -182,25 +182,6 @@ pub fn verify_database_proof_v2(
     Ok(roots)
 }
 
-/// Decode and verify a raw `RESP_DB_PROOF` payload without owning a
-/// transport or client session.
-///
-/// `response_payload` starts at the response opcode and therefore does not
-/// include the outer four-byte wire length prefix.  This is the synchronous
-/// counterpart of [`fetch_database_proof`], intended for callers that own
-/// their transport separately (for example the standalone browser OnionPIR
-/// client).  Verification is deliberately side-effect free: the returned
-/// roots still have to be installed explicitly by the caller after any
-/// application-level production-pin comparison.
-pub fn verify_database_proof_response(
-    db_info: &DatabaseInfo,
-    response_payload: &[u8],
-    policy: &DatabaseProofPolicy,
-) -> PirResult<VerifiedDatabaseRoots> {
-    let bundle = decode_database_proof_response(response_payload)?;
-    verify_database_proof(db_info, &bundle, policy)
-}
-
 pub fn verify_database_proof_v2_response(
     db_info: &DatabaseInfo,
     response_payload: &[u8],
@@ -887,21 +868,6 @@ mod tests {
     }
 
     #[test]
-    fn verify_database_proof_response_is_stateless() {
-        let (bundle, db_info) = sample_bundle();
-        let response = encode_proof_response(&bundle);
-        let mut policy = DatabaseProofPolicy::mainnet();
-        policy.expected_params_hash = Some([6u8; 32]);
-        policy.allowed_builder_binary_sha256.push([1u8; 32]);
-        policy.allowed_builder_git_commits.push("abc123".into());
-
-        let verified = verify_database_proof_response(&db_info, &response, &policy).unwrap();
-        assert_eq!(verified.db_id, db_info.db_id);
-        assert_eq!(verified.onion_super_root, [8u8; 32]);
-        assert_eq!(verified.onion_entry_size, 3328);
-    }
-
-    #[test]
     fn v2_verifier_recomputes_and_returns_typed_onion_layout() {
         let (bundle, db_info) = sample_bundle_v2();
         let response = encode_proof_response_version(
@@ -955,30 +921,6 @@ mod tests {
             verify_database_proof_v2_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
                 .unwrap_err();
         assert!(err.to_string().contains("params_hash_v2 mismatch"));
-    }
-
-    #[test]
-    fn verify_database_proof_response_rejects_substituted_db_id() {
-        let (mut bundle, db_info) = sample_bundle();
-        bundle.db_id = db_info.db_id.wrapping_add(1);
-        let response = encode_proof_response(&bundle);
-
-        let err =
-            verify_database_proof_response(&db_info, &response, &DatabaseProofPolicy::mainnet())
-                .unwrap_err();
-        assert!(err.to_string().contains("db_id mismatch"));
-    }
-
-    #[test]
-    fn verify_database_proof_response_rejects_wrong_opcode() {
-        let (_, db_info) = sample_bundle();
-        let err = verify_database_proof_response(
-            &db_info,
-            &[RESP_DB_CATALOG],
-            &DatabaseProofPolicy::mainnet(),
-        )
-        .unwrap_err();
-        assert!(matches!(err, PirError::UnexpectedResponse { .. }));
     }
 
     #[tokio::test]

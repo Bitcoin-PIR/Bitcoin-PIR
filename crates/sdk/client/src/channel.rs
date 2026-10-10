@@ -231,10 +231,6 @@ impl<T: PirTransport> PirTransport for SecureChannelTransport<T> {
     fn url(&self) -> &str {
         self.inner.url()
     }
-
-    fn service_authorization_exporter_v1(&self) -> Option<[u8; 32]> {
-        Some(self.session.service_authorization_exporter_v1())
-    }
 }
 
 fn channel_err_to_pir(e: ChannelError) -> PirError {

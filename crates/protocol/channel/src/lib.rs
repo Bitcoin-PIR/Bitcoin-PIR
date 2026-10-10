@@ -89,12 +89,6 @@ pub const ENCRYPTED_FRAME_MAGIC: u8 = 0xfe;
 /// other use of the same handshake primitives.
 pub const HKDF_INFO: &[u8] = b"BPIR-CHANNEL-V1";
 
-/// HKDF `info` used to derive the non-secret channel binding consumed by the
-/// service-authorization protocol. Keeping a fixed label here prevents callers
-/// from inventing incompatible or cross-protocol exporters.
-pub const SERVICE_AUTH_EXPORTER_INFO_V1: &[u8] =
-    b"BitcoinPIR/service-authorization-channel-exporter/v1";
-
 /// Direction byte mixed into the per-frame AEAD nonce. The two sides
 /// of the connection each derive their own nonce stream from the same
 /// session key + their direction byte; that prevents reflection (a
@@ -310,18 +304,6 @@ impl Session {
         }
     }
 
-    /// Derive the stable binding used by payment authorization and free-PoW
-    /// challenges on this encrypted session. The exporter reveals neither the
-    /// session key nor either handshake secret and is identical at both ends of
-    /// the same channel. It MUST NOT be reused as an encryption key.
-    pub fn service_authorization_exporter_v1(&self) -> [u8; SESSION_KEY_LEN] {
-        let hkdf = Hkdf::<Sha256>::new(None, &self.key);
-        let mut exporter = [0u8; SESSION_KEY_LEN];
-        hkdf.expand(SERVICE_AUTH_EXPORTER_INFO_V1, &mut exporter)
-            .expect("HKDF-SHA256 32-byte exporter cannot fail");
-        exporter
-    }
-
     /// Seal `plaintext` for delivery in direction `dir`. Returns the
     /// wire bytes: `[magic][seq:u64 LE][ciphertext+tag]`.
     pub fn seal(&mut self, dir: Direction, plaintext: &[u8]) -> Result<Vec<u8>, ChannelError> {
@@ -447,14 +429,6 @@ mod tests {
 
         // Both sides agree on the session key.
         assert_eq!(client_session.key_bytes(), server_session.key_bytes());
-        assert_eq!(
-            client_session.service_authorization_exporter_v1(),
-            server_session.service_authorization_exporter_v1()
-        );
-        assert_ne!(
-            client_session.service_authorization_exporter_v1(),
-            *client_session.key_bytes()
-        );
     }
 
     #[test]
@@ -480,10 +454,6 @@ mod tests {
             client.complete_handshake(&server_static_pub, &server_eph_pub)
         };
         assert_ne!(session_a.key_bytes(), session_b.key_bytes());
-        assert_ne!(
-            session_a.service_authorization_exporter_v1(),
-            session_b.service_authorization_exporter_v1()
-        );
     }
 
     #[test]

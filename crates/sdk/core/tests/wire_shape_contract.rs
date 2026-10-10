@@ -153,27 +153,3 @@ fn proof_scope_keeps_all_declared_leakage_axes_and_non_claims() {
         ])
     );
 }
-
-#[test]
-fn service_authorization_round_is_removed_with_payment_v1() {
-    // Payment V1 is deleted: free queries are open and the single-issuer
-    // credential presentation rides the pre-existing 0x08/0x09 opcodes, so
-    // there is no authorization exchange left in the wire contract. The
-    // locked EasyCrypt proof is regenerated and pinned without
-    // RServiceAuthorization separately.
-    let contract = contract();
-
-    assert_eq!(contract.pointer("/serviceAuthorization"), None);
-    assert!(!contract["roundKinds"]
-        .as_array()
-        .expect("roundKinds must be an array")
-        .iter()
-        .any(|kind| kind.as_str() == Some("service_authorization")));
-    assert!(!contract["admittedLeakage"]
-        .as_array()
-        .expect("admittedLeakage must be an array")
-        .iter()
-        .any(|axis| axis
-            .as_str()
-            .is_some_and(|axis| axis.starts_with("authorization_"))));
-}

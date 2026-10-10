@@ -843,54 +843,8 @@ impl HarmonyClient {
             };
 
             let plan = self.compute_sync_plan(&catalog, last_height)?;
-            require_sync_base(&plan, script_hashes.len(), None)?;
-
-            self.verified_roots.require_plan(&plan)?;
-
-            let catalog = self
-                .catalog
-                .clone()
-                .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-            for step in &plan.steps {
-                let db = catalog
-                    .get(step.db_id)
-                    .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                    .clone();
-                self.preflight_bucket_tree_tops(&db).await?;
-            }
-
-            let total = plan.steps.len();
-            let mut merged: Vec<Option<QueryResult>> = vec![None; script_hashes.len()];
-            for (step_idx, step) in plan.steps.iter().enumerate() {
-                progress.on_step_start(step_idx, total, &step.name);
-
-                let db_info = catalog
-                    .get(step.db_id)
-                    .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                    .clone();
-
-                let step_results = self.execute_step(script_hashes, step, &db_info).await?;
-
-                // Single coarse tick per step — see doc comment above
-                // for why finer granularity isn't wired yet.
-                progress.on_step_progress(step_idx, 1.0);
-
-                if step.is_full() {
-                    merged = step_results;
-                } else {
-                    merged = merge_delta_batch(&merged, &step_results)?;
-                }
-                progress.on_step_complete(step_idx);
-            }
-
-            let result = SyncResult {
-                results: merged,
-                synced_height: plan.target_height,
-                was_fresh_sync: plan.is_fresh_sync,
-            };
-            progress.on_complete(result.synced_height);
-            Ok(result)
+            self.run_sync_plan(script_hashes, &plan, None, progress)
+                .await
         }
         .await;
 
@@ -898,5 +852,83 @@ impl HarmonyClient {
             progress.on_error(e);
         }
         run
+    }
+
+    /// Run `plan` on top of `cached_results` (see [`require_sync_base`]),
+    /// firing `progress` per step. Shared by `sync`, `sync_with_plan` and
+    /// [`sync_with_progress`](Self::sync_with_progress).
+    pub(super) async fn run_sync_plan(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        plan: &SyncPlan,
+        cached_results: Option<&[Option<QueryResult>]>,
+        progress: &dyn SyncProgress,
+    ) -> PirResult<SyncResult> {
+        require_sync_base(plan, script_hashes.len(), cached_results)?;
+        if plan.is_empty() {
+            progress.on_complete(plan.target_height);
+            return Ok(SyncResult {
+                results: cached_results
+                    .map(|r| r.to_vec())
+                    .unwrap_or_else(|| vec![None; script_hashes.len()]),
+                synced_height: plan.target_height,
+                was_fresh_sync: false,
+            });
+        }
+
+        self.verified_roots.require_plan(plan)?;
+
+        let catalog = self
+            .catalog
+            .clone()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+
+        let mut merged: Vec<Option<QueryResult>> = cached_results
+            .map(|r| r.to_vec())
+            .unwrap_or_else(|| vec![None; script_hashes.len()]);
+
+        for step in &plan.steps {
+            let db = catalog
+                .get(step.db_id)
+                .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                .clone();
+            self.preflight_bucket_tree_tops(&db).await?;
+        }
+
+        let total = plan.steps.len();
+        for (step_idx, step) in plan.steps.iter().enumerate() {
+            progress.on_step_start(step_idx, total, &step.name);
+            log::info!(
+                "[{}/{}] HarmonyPIR querying {} (db_id={}, height={})",
+                step_idx + 1,
+                total,
+                step.name,
+                step.db_id,
+                step.tip_height
+            );
+
+            let db_info = catalog
+                .get(step.db_id)
+                .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                .clone();
+
+            let step_results = self.execute_step(script_hashes, step, &db_info).await?;
+            // Single coarse tick per step: `execute_step` reports no finer progress.
+            progress.on_step_progress(step_idx, 1.0);
+
+            if step.is_full() {
+                merged = step_results;
+            } else {
+                merged = merge_delta_batch(&merged, &step_results)?;
+            }
+            progress.on_step_complete(step_idx);
+        }
+
+        progress.on_complete(plan.target_height);
+        Ok(SyncResult {
+            results: merged,
+            synced_height: plan.target_height,
+            was_fresh_sync: plan.is_fresh_sync,
+        })
     }
 }

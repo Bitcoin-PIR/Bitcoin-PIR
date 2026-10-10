@@ -24,7 +24,7 @@ use libdpf::Dpf;
 use pir_sdk::{
     compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, BucketRef,
     ConnectionState, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant, LeakageRecorder,
-    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
+    NoProgress, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
     RoundProfile, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
     UtxoEntry,
 };
@@ -74,48 +74,6 @@ const RESP_INDEX_BATCH: u8 = 0x11;
 const RESP_CHUNK_BATCH: u8 = 0x21;
 
 // ─── Pure request-shape helpers (extracted for Kani verification) ──────────
-
-/// Build the K × INDEX_CUCKOO_NUM_HASHES matrix of `alpha` values for a
-/// single DPF INDEX request. Each `alpha` is the bin index that
-/// `dpf.gen(alpha, dpf_n)` will hide inside its keys: the assigned
-/// group's cuckoo positions for the real query, fresh random bins for
-/// every other group. The K-padding invariant — every wire request
-/// covers all K groups, regardless of match outcome — is a structural
-/// property of this matrix shape.
-///
-/// Pulled out as a pure function so a Kani harness can prove the
-/// shape exhaustively for every (k, assigned_group, my_locs) shape in
-/// a small bound. The caller (`query_index_level`) feeds each `alpha`
-/// into `dpf.gen` separately; the SHAPE of the resulting key Vec
-/// equals the SHAPE of this alpha matrix.
-///
-/// `next_random_bin` is an `FnMut` returning a u64 in `[0, u64::MAX]`
-/// — the function applies `% bins` itself to bound the alpha into
-/// `[0, bins)`. Production callers wrap their `SimpleRng::next_u64`;
-/// the Kani harness wraps `kani::any::<u64>()`, which sidesteps
-/// modelling `splitmix64` symbolically.
-pub(crate) fn build_index_alphas(
-    k: usize,
-    assigned_group: usize,
-    my_locs: &[u64; INDEX_CUCKOO_NUM_HASHES],
-    bins: usize,
-    mut next_random_bin: impl FnMut() -> u64,
-) -> Vec<Vec<u64>> {
-    let mut alphas = Vec::with_capacity(k);
-    for b in 0..k {
-        let mut group = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
-        for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let alpha = if b == assigned_group {
-                my_locs[h]
-            } else {
-                next_random_bin() % bins as u64
-            };
-            group.push(alpha);
-        }
-        alphas.push(group);
-    }
-    alphas
-}
 
 // ─── Multi-query INDEX PBC plan (Option B index_max closure) ───────────────
 
@@ -1648,329 +1606,6 @@ impl DpfClient {
         Ok(per_query)
     }
 
-    /// Query a single script hash against a database.
-    ///
-    /// Also returns `QueryTraces` describing every INDEX/CHUNK cuckoo bin we
-    /// inspected, so the caller (`execute_step`) can run per-bucket Merkle
-    /// verification if `DatabaseInfo::has_bucket_merkle` is set.
-    // Retained as the reference single-input implementation for protocol-shape
-    // cross-checks; production and inspector batches share the PBC executor.
-    #[allow(dead_code)]
-    async fn query_single(
-        &mut self,
-        script_hash: &ScriptHash,
-        db_info: &DatabaseInfo,
-    ) -> PirResult<(Option<QueryResult>, QueryTraces)> {
-        // Step 1: Index-level PIR query
-        let (found_info, index_bins, matched_idx) =
-            self.query_index_level(script_hash, db_info).await?;
-
-        let mut traces = QueryTraces {
-            index_bins,
-            matched_index_idx: matched_idx,
-            chunk_bins: Vec::new(),
-        };
-
-        let (start_chunk_id, num_chunks, is_whale) = match found_info {
-            Some((start, num, whale)) => (start, num, whale),
-            None => {
-                // 🔒 CHUNK Round-Presence Symmetry (CLAUDE.md): not-found
-                // queries still issue one K_CHUNK-padded CHUNK PIR round so
-                // the server cannot infer found-vs-not-found from CHUNK
-                // round absence. Empty `chunk_ids` triggers the dummy-round
-                // path inside `query_chunk_level`. Returned data is
-                // discarded (no chunk_bins recorded into `traces`, so
-                // CHUNK Merkle items are not synthesised — the residual
-                // Merkle item-count leak is a separately-tracked decision).
-                let _ = self.query_chunk_level(&[], db_info).await?;
-                log::info!(
-                    "[PIR-AUDIT] CHUNK round-presence padding: not-found query issued 1 dummy CHUNK round"
-                );
-                return Ok((None, traces));
-            }
-        };
-
-        if num_chunks == 0 {
-            // Whale (matched tag but no chunks to retrieve). Same padding
-            // as not-found — see invariant comment in the `None` arm above.
-            let _ = self.query_chunk_level(&[], db_info).await?;
-            log::info!(
-                "[PIR-AUDIT] CHUNK round-presence padding: whale query issued 1 dummy CHUNK round"
-            );
-            return Ok((
-                Some(QueryResult {
-                    entries: Vec::new(),
-                    is_whale,
-                    // Optimistic default — `run_merkle_verification` flips
-                    // this to `false` if the INDEX proof fails.
-                    merkle_verified: true,
-                    raw_chunk_data: None,
-                    // Inspector fields stay empty here — only the atomic
-                    // verified-inspector composition populates them from
-                    // `traces`.
-                    index_bins: Vec::new(),
-                    chunk_bins: Vec::new(),
-                    matched_index_idx: None,
-                }),
-                traces,
-            ));
-        }
-
-        // Step 2: Chunk-level PIR queries (multi-round)
-        let end_chunk_id = start_chunk_id
-            .checked_add(num_chunks as u32)
-            .ok_or_else(|| {
-                PirError::Decode(format!(
-                    "chunk id range overflow: start={} count={}",
-                    start_chunk_id, num_chunks
-                ))
-            })?;
-        let chunk_ids: Vec<u32> = (start_chunk_id..end_chunk_id).collect();
-        let (chunk_data, chunk_bins) = self.query_chunk_level(&chunk_ids, db_info).await?;
-        traces.chunk_bins = chunk_bins;
-
-        // Step 3: Decode UTXO entries
-        let entries = decode_utxo_entries(&chunk_data)?;
-
-        Ok((
-            Some(QueryResult {
-                entries,
-                is_whale,
-                // Optimistic default — `run_merkle_verification` flips this
-                // to `false` (and empties `entries`) if INDEX or CHUNK
-                // proofs fail for this query.
-                merkle_verified: true,
-                raw_chunk_data: if db_info.kind.is_delta() {
-                    Some(chunk_data)
-                } else {
-                    None
-                },
-                // Inspector fields stay empty here — only the atomic
-                // verified-inspector composition copies them from `traces`.
-                index_bins: Vec::new(),
-                chunk_bins: Vec::new(),
-                matched_index_idx: None,
-            }),
-            traces,
-        ))
-    }
-
-    /// Execute index-level PIR query.
-    ///
-    /// Returns `(found_info, index_bins, matched_idx)`:
-    /// * `found_info` — `Some((start_chunk, num_chunks, is_whale))` on match.
-    /// * `index_bins` — one trace per cuckoo position we actually inspected.
-    ///   For NOT-FOUND this is always exactly `INDEX_CUCKOO_NUM_HASHES` bins
-    ///   (required for the absence proof). For FOUND we stop probing as soon
-    ///   as the tag is located, matching the TS client.
-    /// * `matched_idx` — index into `index_bins` of the matching bin.
-    ///
-    /// Padding invariant: the underlying PIR batch always covers all K groups
-    /// regardless of match outcome (CLAUDE.md privacy requirement).
-    #[tracing::instrument(
-        level = "trace",
-        skip_all,
-        fields(backend = "dpf", db_id = db_info.db_id)
-    )]
-    async fn query_index_level(
-        &mut self,
-        script_hash: &ScriptHash,
-        db_info: &DatabaseInfo,
-    ) -> PirResult<(Option<(u32, u8, bool)>, Vec<IndexBinTrace>, Option<usize>)> {
-        let k = db_info.index_k as usize;
-        let bins = db_info.index_bins as usize;
-        let dpf_n = db_info.dpf_n_index;
-        let tag_seed = db_info.tag_seed;
-        let master_seed = db_info.index_master_seed;
-
-        // Compute candidate groups for our script hash.
-        //
-        // NOTE: the server REPLICATES every scripthash into all 3 candidate
-        // groups at build time (see `tools/db-builder/src/build_cuckoo_generic.rs:87-90`
-        // and `gen_4_build_merkle.rs:236-239`). Any one of the 3 groups is
-        // therefore sufficient to retrieve an entry. For a single-query round
-        // we just pick the first group — matching the reference Rust client
-        // (`apps/server/src/bin/client.rs:246`), the web TS client
-        // (`web/src/client.ts` via `planRounds` which reduces to `candGroups[0]`
-        // at N=1), and the Python plugin. When this function is ever extended
-        // to batch multiple scripthashes in a single DPF request (like
-        // `OnionClient::query_index_level`), replace this with
-        // `pbc_plan_rounds` to balance load across groups; the padding
-        // invariant (K queries per round) and the Merkle INDEX item-count
-        // symmetry (`INDEX_CUCKOO_NUM_HASHES = 2` items per query) must be
-        // preserved.
-        let my_groups = pir_core::hash::derive_groups_3(script_hash, k);
-        let assigned_group = my_groups[0];
-
-        // Compute cuckoo hash locations in the assigned group
-        let mut my_locs_arr = [0u64; INDEX_CUCKOO_NUM_HASHES];
-        for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let key = pir_core::hash::derive_cuckoo_key(master_seed, assigned_group, h);
-            my_locs_arr[h] = pir_core::hash::cuckoo_hash(script_hash, key, bins) as u64;
-        }
-        let my_locs = my_locs_arr.to_vec();
-
-        log::info!(
-            "[PIR-AUDIT] INDEX query: script_hash={}, assigned_group={}, k={}, bins={}, cuckoo_positions={:?} (K-padded to {} groups)",
-            format_hash_short(script_hash),
-            assigned_group,
-            k,
-            bins,
-            my_locs,
-            k
-        );
-
-        // Build the K × INDEX_CUCKOO_NUM_HASHES alpha matrix via the
-        // pure shape-builder (so a Kani harness can prove the K-padding
-        // invariant exhaustively for every input shape) and feed each
-        // alpha through `dpf.gen` to produce the wire keys.
-        let dpf = Dpf::with_default_key();
-        let mut rng = SimpleRng::new();
-        let alphas = build_index_alphas(k, assigned_group, &my_locs_arr, bins, || rng.next_u64());
-
-        let mut s0_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
-        let mut s1_keys: Vec<Vec<Vec<u8>>> = Vec::with_capacity(k);
-        for group_alphas in &alphas {
-            let mut s0_group = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
-            let mut s1_group = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
-            for &alpha in group_alphas {
-                let (k0, k1) = dpf.gen(alpha, dpf_n);
-                s0_group.push(k0.to_bytes());
-                s1_group.push(k1.to_bytes());
-            }
-            s0_keys.push(s0_group);
-            s1_keys.push(s1_group);
-        }
-
-        // Send to both servers
-        let req0 = encode_batch_query(0x11, 0, 0, db_info.db_id, &s0_keys);
-        let req1 = encode_batch_query(0x11, 0, 0, db_info.db_id, &s1_keys);
-
-        // Capture wire shape before `send` consumes the request buffers.
-        // Per-group item counts come from the actual nested Vec lengths so
-        // the leakage profile reflects the wire payload, not constants the
-        // test might also be wrong about.
-        let req0_bytes = req0.len() as u64;
-        let req1_bytes = req1.len() as u64;
-        let items_s0: Vec<u32> = s0_keys.iter().map(|g| g.len() as u32).collect();
-        let items_s1: Vec<u32> = s1_keys.iter().map(|g| g.len() as u32).collect();
-
-        let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
-        conn0.send(req0).await?;
-
-        let conn1 = self.conn1.as_mut().ok_or(PirError::NotConnected)?;
-        conn1.send(req1).await?;
-
-        // Receive responses
-        let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
-        let resp0 = conn0.recv().await?;
-
-        let conn1 = self.conn1.as_mut().ok_or(PirError::NotConnected)?;
-        let resp1 = conn1.recv().await?;
-
-        self.record_round(RoundProfile {
-            kind: RoundKind::Index,
-            server_id: 0,
-            db_id: Some(db_info.db_id),
-            request_bytes: req0_bytes,
-            response_bytes: resp0.len() as u64,
-            items: items_s0,
-        });
-        self.record_round(RoundProfile {
-            kind: RoundKind::Index,
-            server_id: 1,
-            db_id: Some(db_info.db_id),
-            request_bytes: req1_bytes,
-            response_bytes: resp1.len() as u64,
-            items: items_s1,
-        });
-
-        // Parse responses
-        let results0 = decode_batch_response(
-            &resp0,
-            RESP_INDEX_BATCH,
-            "RESP_INDEX_BATCH (0x11)",
-            0,
-            "INDEX server0",
-        )?;
-        let results1 = decode_batch_response(
-            &resp1,
-            RESP_INDEX_BATCH,
-            "RESP_INDEX_BATCH (0x11)",
-            0,
-            "INDEX server1",
-        )?;
-        // Server-declared shape must cover the K × INDEX_CUCKOO_NUM_HASHES
-        // request before the results[group][h] indexing below.
-        check_batch_response_shape(&results0, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server0")?;
-        check_batch_response_shape(&results1, k, INDEX_CUCKOO_NUM_HASHES, "INDEX server1")?;
-
-        // Compute expected tag
-        let my_tag = pir_core::hash::compute_tag(tag_seed, script_hash);
-
-        // XOR results for assigned group and look for our entry.
-        // Record every bin we inspect so the Merkle verifier can cover both
-        // cuckoo positions uniformly — see CLAUDE.md "Merkle INDEX item-count
-        // symmetry" (we emit INDEX_CUCKOO_NUM_HASHES items per query regardless
-        // of found/not-found to avoid leaking presence via pass count).
-        let mut index_bins: Vec<IndexBinTrace> = Vec::with_capacity(INDEX_CUCKOO_NUM_HASHES);
-        let mut found: Option<(u32, u8, bool)> = None;
-        let mut matched_idx: Option<usize> = None;
-
-        for h in 0..INDEX_CUCKOO_NUM_HASHES {
-            let mut bin_content = results0[assigned_group][h].clone();
-            xor_into(&mut bin_content, &results1[assigned_group][h]);
-
-            let bin_index = my_locs[h] as u32;
-            let pos = index_bins.len();
-            index_bins.push(IndexBinTrace {
-                pbc_group: assigned_group,
-                bin_index,
-                bin_content: bin_content.clone(),
-            });
-
-            if found.is_some() {
-                // Already matched earlier; still probe this position so the
-                // Merkle item count is uniform across found/not-found.
-                log::info!(
-                    "[PIR-AUDIT] INDEX extra probe at cuckoo h={} (group={}, bin={}) — tracked for Merkle uniformity",
-                    h, assigned_group, bin_index
-                );
-                continue;
-            }
-
-            if let Some((start_chunk, num_chunks)) =
-                find_entry_in_index_result(&bin_content, my_tag)
-            {
-                let is_whale = num_chunks == 0;
-                log::info!(
-                    "[PIR-AUDIT] INDEX FOUND at cuckoo h={} (group={}, bin={}): start_chunk={}, num_chunks={}, whale={}",
-                    h, assigned_group, bin_index, start_chunk, num_chunks, is_whale
-                );
-                matched_idx = Some(pos);
-                found = Some((start_chunk, num_chunks as u8, is_whale));
-            } else {
-                log::info!(
-                    "[PIR-AUDIT] INDEX miss at cuckoo h={} (group={}, bin={})",
-                    h,
-                    assigned_group,
-                    bin_index
-                );
-            }
-        }
-
-        if found.is_none() {
-            log::info!(
-                "[PIR-AUDIT] INDEX NOT FOUND: verified {} cuckoo positions at group {} — all {} bins will be Merkle-verified for absence proof",
-                index_bins.len(),
-                assigned_group,
-                index_bins.len()
-            );
-        }
-
-        Ok((found, index_bins, matched_idx))
-    }
-
     /// Batched INDEX phase for Option-B `index_max_items_per_group_per_level`
     /// closure. Drives one or more PBC rounds (each a single K-padded DPF
     /// INDEX request per server) covering `script_hashes.len()` queries
@@ -3039,54 +2674,8 @@ impl DpfClient {
             };
 
             let plan = self.compute_sync_plan(&catalog, last_height)?;
-            require_sync_base(&plan, script_hashes.len(), None)?;
-
-            self.verified_roots.require_plan(&plan)?;
-
-            let catalog = self
-                .catalog
-                .clone()
-                .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-            for step in &plan.steps {
-                let db = catalog
-                    .get(step.db_id)
-                    .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                    .clone();
-                self.preflight_bucket_tree_tops(&db).await?;
-            }
-
-            let total = plan.steps.len();
-            let mut merged: Vec<Option<QueryResult>> = vec![None; script_hashes.len()];
-            for (step_idx, step) in plan.steps.iter().enumerate() {
-                progress.on_step_start(step_idx, total, &step.name);
-
-                let db_info = catalog
-                    .get(step.db_id)
-                    .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                    .clone();
-
-                let step_results = self.execute_step(script_hashes, step, &db_info).await?;
-
-                // Single coarse tick per step — see doc comment above for why
-                // finer granularity isn't wired yet.
-                progress.on_step_progress(step_idx, 1.0);
-
-                if step.is_full() {
-                    merged = step_results;
-                } else {
-                    merged = merge_delta_batch(&merged, &step_results)?;
-                }
-                progress.on_step_complete(step_idx);
-            }
-
-            let result = SyncResult {
-                results: merged,
-                synced_height: plan.target_height,
-                was_fresh_sync: plan.is_fresh_sync,
-            };
-            progress.on_complete(result.synced_height);
-            Ok(result)
+            self.run_sync_plan(script_hashes, &plan, None, progress)
+                .await
         }
         .await;
 
@@ -3094,6 +2683,84 @@ impl DpfClient {
             progress.on_error(e);
         }
         run
+    }
+
+    /// Run `plan` on top of `cached_results` (see [`require_sync_base`]),
+    /// firing `progress` per step. Shared by `sync`, `sync_with_plan` and
+    /// [`sync_with_progress`](Self::sync_with_progress).
+    async fn run_sync_plan(
+        &mut self,
+        script_hashes: &[ScriptHash],
+        plan: &SyncPlan,
+        cached_results: Option<&[Option<QueryResult>]>,
+        progress: &dyn SyncProgress,
+    ) -> PirResult<SyncResult> {
+        require_sync_base(plan, script_hashes.len(), cached_results)?;
+        if plan.is_empty() {
+            progress.on_complete(plan.target_height);
+            return Ok(SyncResult {
+                results: cached_results
+                    .map(|r| r.to_vec())
+                    .unwrap_or_else(|| vec![None; script_hashes.len()]),
+                synced_height: plan.target_height,
+                was_fresh_sync: false,
+            });
+        }
+
+        self.verified_roots.require_plan(plan)?;
+
+        let catalog = self
+            .catalog
+            .clone()
+            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
+
+        let mut merged: Vec<Option<QueryResult>> = cached_results
+            .map(|r| r.to_vec())
+            .unwrap_or_else(|| vec![None; script_hashes.len()]);
+
+        for step in &plan.steps {
+            let db = catalog
+                .get(step.db_id)
+                .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                .clone();
+            self.preflight_bucket_tree_tops(&db).await?;
+        }
+
+        let total = plan.steps.len();
+        for (step_idx, step) in plan.steps.iter().enumerate() {
+            progress.on_step_start(step_idx, total, &step.name);
+            log::info!(
+                "[{}/{}] Querying {} (db_id={}, height={})",
+                step_idx + 1,
+                total,
+                step.name,
+                step.db_id,
+                step.tip_height
+            );
+
+            let db_info = catalog
+                .get(step.db_id)
+                .ok_or(PirError::DatabaseNotFound(step.db_id))?
+                .clone();
+
+            let step_results = self.execute_step(script_hashes, step, &db_info).await?;
+            // Single coarse tick per step: `execute_step` reports no finer progress.
+            progress.on_step_progress(step_idx, 1.0);
+
+            if step.is_full() {
+                merged = step_results;
+            } else {
+                merged = merge_delta_batch(&merged, &step_results)?;
+            }
+            progress.on_step_complete(step_idx);
+        }
+
+        progress.on_complete(plan.target_height);
+        Ok(SyncResult {
+            results: merged,
+            synced_height: plan.target_height,
+            was_fresh_sync: plan.is_fresh_sync,
+        })
     }
 }
 
@@ -3259,18 +2926,8 @@ impl PirClient for DpfClient {
         script_hashes: &[ScriptHash],
         last_height: Option<u32>,
     ) -> PirResult<SyncResult> {
-        require_fresh_sync(last_height)?;
-        if !self.is_connected() {
-            self.connect().await?;
-        }
-
-        let catalog = match &self.catalog {
-            Some(c) => c.clone(),
-            None => self.fetch_catalog().await?,
-        };
-
-        let plan = self.compute_sync_plan(&catalog, last_height)?;
-        self.sync_with_plan(script_hashes, &plan, None).await
+        self.sync_with_progress(script_hashes, last_height, &NoProgress)
+            .await
     }
 
     #[tracing::instrument(
@@ -3290,65 +2947,8 @@ impl PirClient for DpfClient {
         plan: &SyncPlan,
         cached_results: Option<&[Option<QueryResult>]>,
     ) -> PirResult<SyncResult> {
-        require_sync_base(plan, script_hashes.len(), cached_results)?;
-        if plan.is_empty() {
-            return Ok(SyncResult {
-                results: cached_results
-                    .map(|r| r.to_vec())
-                    .unwrap_or_else(|| vec![None; script_hashes.len()]),
-                synced_height: plan.target_height,
-                was_fresh_sync: false,
-            });
-        }
-
-        self.verified_roots.require_plan(plan)?;
-
-        let catalog = self
-            .catalog
-            .clone()
-            .ok_or_else(|| PirError::InvalidState("no catalog".into()))?;
-
-        let mut merged: Vec<Option<QueryResult>> = cached_results
-            .map(|r| r.to_vec())
-            .unwrap_or_else(|| vec![None; script_hashes.len()]);
-
-        for step in &plan.steps {
-            let db = catalog
-                .get(step.db_id)
-                .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                .clone();
-            self.preflight_bucket_tree_tops(&db).await?;
-        }
-
-        for (step_idx, step) in plan.steps.iter().enumerate() {
-            log::info!(
-                "[{}/{}] Querying {} (db_id={}, height={})",
-                step_idx + 1,
-                plan.steps.len(),
-                step.name,
-                step.db_id,
-                step.tip_height
-            );
-
-            let db_info = catalog
-                .get(step.db_id)
-                .ok_or(PirError::DatabaseNotFound(step.db_id))?
-                .clone();
-
-            let step_results = self.execute_step(script_hashes, step, &db_info).await?;
-
-            if step.is_full() {
-                merged = step_results;
-            } else {
-                merged = merge_delta_batch(&merged, &step_results)?;
-            }
-        }
-
-        Ok(SyncResult {
-            results: merged,
-            synced_height: plan.target_height,
-            was_fresh_sync: plan.is_fresh_sync,
-        })
+        self.run_sync_plan(script_hashes, plan, cached_results, &NoProgress)
+            .await
     }
 
     #[tracing::instrument(
@@ -3772,27 +3372,6 @@ fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
     Ok(entries)
 }
 
-/// Hex-format a 20-byte script hash as "aabbcc..eeff" (first and last 4 bytes).
-/// Avoids pulling in the `hex` crate for one audit-log string.
-fn format_hash_short(h: &[u8]) -> String {
-    if h.len() <= 8 {
-        let mut s = String::with_capacity(h.len() * 2);
-        for b in h {
-            s.push_str(&format!("{:02x}", b));
-        }
-        return s;
-    }
-    let mut s = String::with_capacity(22);
-    for b in &h[..4] {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s.push_str("..");
-    for b in &h[h.len() - 4..] {
-        s.push_str(&format!("{:02x}", b));
-    }
-    s
-}
-
 // ─── Simple RNG ─────────────────────────────────────────────────────────────
 
 /// Simple PRNG for generating dummy query indices.
@@ -4097,72 +3676,6 @@ mod kani_harnesses {
             original_len,
             "padding must preserve length when input already non-empty",
         );
-    }
-
-    /// Prove the K-padding invariant for the DPF INDEX request shape
-    /// at `k = 4` (the practical maximum for typical batches in the
-    /// integration tests): `build_index_alphas` emits exactly 4
-    /// outer groups, each with `INDEX_CUCKOO_NUM_HASHES = 2` alphas.
-    /// This is the structural form of CLAUDE.md's "Query Padding":
-    /// within each PIR round, queries are padded to a fixed count
-    /// regardless of how many real queries there are.
-    ///
-    /// Single concrete `k`: the function body is `for b in 0..k {
-    /// fixed-loop-body }` with no early-exit and no branch on `k`
-    /// size, so verifying the shape at `k = 4` covers `k ∈ {1, 2,
-    /// 3}` by induction on loop count (each iteration appends one
-    /// 2-element group; running the loop fewer times produces
-    /// proportionally fewer outer entries with the same inner shape).
-    /// Everything else is concrete (`assigned_group = 0`, `bins = 8`,
-    /// `my_locs = [0, 1]`, random closure returns 0) — symbolic-k
-    /// with dynamic `Vec::with_capacity(k)` blew up CBMC past 31 %
-    /// RAM in the first iteration.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn build_index_alphas_emits_k_groups_two_hashes_each() {
-        let my_locs: [u64; INDEX_CUCKOO_NUM_HASHES] = [0, 1];
-
-        let alphas = build_index_alphas(
-            /* k */ 4,
-            /* assigned_group */ 0,
-            &my_locs,
-            /* bins */ 8,
-            || 0u64,
-        );
-
-        assert_eq!(alphas.len(), 4);
-        for g in 0..4 {
-            assert_eq!(alphas[g].len(), INDEX_CUCKOO_NUM_HASHES);
-        }
-    }
-
-    /// Prove that the real-query group's alphas are exactly `my_locs`
-    /// — i.e. the assigned group carries the precomputed cuckoo
-    /// positions, not random bins. Pinned with `k = 4` and a
-    /// symbolic in-range `assigned_group` so every position
-    /// (0..=3) is exercised.
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn build_index_alphas_real_query_uses_my_locs() {
-        let raw_ag: u8 = kani::any();
-        kani::assume(raw_ag < 4);
-        let assigned_group = raw_ag as usize;
-
-        let my_locs: [u64; INDEX_CUCKOO_NUM_HASHES] = [42, 43];
-
-        let alphas = build_index_alphas(
-            /* k */ 4,
-            assigned_group,
-            &my_locs,
-            /* bins */ 8,
-            || 0u64,
-        );
-
-        // The real-query group carries `my_locs` verbatim (no `% bins`
-        // applied — these are pre-computed cuckoo positions which are
-        // already in [0, bins) by `cuckoo_hash`'s contract).
-        assert_eq!(alphas[assigned_group][0], 42);
-        assert_eq!(alphas[assigned_group][1], 43);
     }
 
     // ─── Option B index_max closure: batched PBC plan ────────────────────
@@ -5216,67 +4729,6 @@ mod tests {
         assert_eq!(items[1].chunk_bin_indices.len(), 0);
     }
 
-    // ─── build_index_alphas: K-padding shape ────────────────────────────────
-
-    /// Concrete sanity check: a 4-group request with assigned_group=2
-    /// produces 4 outer groups of 2 alphas each. The assigned group
-    /// echoes `my_locs`; other groups receive the random-bin closure
-    /// output reduced mod `bins`.
-    #[test]
-    fn build_index_alphas_concrete_shape() {
-        let mut counter: u64 = 1000;
-        let alphas = build_index_alphas(
-            /* k */ 4,
-            /* assigned_group */ 2,
-            &[7, 13],
-            /* bins */ 100,
-            || {
-                let v = counter;
-                counter = counter.wrapping_add(1);
-                v
-            },
-        );
-        assert_eq!(alphas.len(), 4);
-        for g in 0..4 {
-            assert_eq!(alphas[g].len(), INDEX_CUCKOO_NUM_HASHES);
-        }
-        // Real-query group carries my_locs verbatim.
-        assert_eq!(alphas[2], vec![7, 13]);
-        // Padding groups apply `% bins`, so all values are in [0, bins).
-        for g in [0usize, 1, 3] {
-            for &alpha in &alphas[g] {
-                assert!(alpha < 100);
-            }
-        }
-    }
-
-    /// Out-of-range `assigned_group` is degraded but safe: every group
-    /// receives random alphas (no real query), and the K-padding shape
-    /// is preserved. Documents the invariant for the
-    /// `assigned_group >= k` edge case the Kani harness explores.
-    #[test]
-    fn build_index_alphas_out_of_range_assigned_group_keeps_shape() {
-        let mut counter: u64 = 0;
-        let alphas = build_index_alphas(
-            /* k */ 3,
-            /* assigned_group */ 99,
-            &[42, 43],
-            /* bins */ 50,
-            || {
-                let v = counter;
-                counter = counter.wrapping_add(1);
-                v
-            },
-        );
-        assert_eq!(alphas.len(), 3);
-        for g in 0..3 {
-            assert_eq!(alphas[g].len(), INDEX_CUCKOO_NUM_HASHES);
-            for &alpha in &alphas[g] {
-                assert!(alpha < 50);
-            }
-        }
-    }
-
     // ─── Leakage recorder wiring ────────────────────────────────────────────
 
     /// `record_round` emits to an installed buffering recorder. Direct
@@ -5642,30 +5094,6 @@ mod tests {
             anchor_kind: 0,
             anchor_bytes: Vec::new(),
         }
-    }
-
-    /// End-to-end C3 regression: a malicious server answering an INDEX
-    /// query with `num_groups = 1` / `results_per_group = 1` produces a
-    /// `PirError::Decode`, not an out-of-bounds panic.
-    #[tokio::test]
-    async fn query_index_level_short_batch_response_is_decode_error_not_panic() {
-        let db_info = tiny_db_info();
-
-        let frame = make_batch_response_frame(RESP_INDEX_BATCH, 0, 1, 1, &[0u8; 4]);
-
-        let mut mock0 = MockTransport::new("wss://mock-0");
-        let mut mock1 = MockTransport::new("wss://mock-1");
-        mock0.enqueue_response(frame.clone());
-        mock1.enqueue_response(frame);
-
-        let mut client = DpfClient::new("wss://mock-0", "wss://mock-1");
-        client.connect_with_transport(Box::new(mock0), Box::new(mock1));
-
-        let err = client
-            .query_index_level(&[0u8; 20], &db_info)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, PirError::Decode(_)), "got {err:?}");
     }
 }
 

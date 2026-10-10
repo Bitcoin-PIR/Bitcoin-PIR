@@ -1,13 +1,9 @@
 use super::super::*;
 use super::fixtures::*;
 use crate::transport::mock::MockTransport;
-use pir_core::merkle::{compute_bin_leaf_hash, compute_parent_n, sha256, Hash256, ZERO_HASH};
-use pir_db_attest::BuildKind;
-use pir_sdk::BufferingLeakageRecorder;
-use std::collections::VecDeque;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 
 #[tokio::test]

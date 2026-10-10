@@ -49,13 +49,13 @@ pub(crate) use crate::verified_roots::{RootPolicy, VerifiedRootState};
 pub(crate) use async_trait::async_trait;
 pub(crate) use harmonypir::remote::{PrpBackend, RemoteClient as HarmonyGroup};
 pub(crate) use pir_core::params::{
-    CHUNK_CUCKOO_NUM_HASHES, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CHUNK_SLOT_SIZE,
-    INDEX_CUCKOO_NUM_HASHES, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, NUM_HASHES, TAG_SIZE,
+    CHUNK_CUCKOO_NUM_HASHES, CHUNK_SLOTS_PER_BIN, CHUNK_SLOT_SIZE, INDEX_CUCKOO_NUM_HASHES,
+    INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, NUM_HASHES, TAG_SIZE,
 };
 pub(crate) use pir_sdk::{
     compute_sync_plan, merge_delta_batch, require_fresh_sync, require_sync_base, BucketRef,
     ConnectionState, DatabaseCatalog, DatabaseInfo, DatabaseKind, Instant, LeakageRecorder,
-    PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
+    NoProgress, PirBackendType, PirClient, PirError, PirMetrics, PirResult, QueryResult, RoundKind,
     RoundProfile, ScriptHash, StateListener, SyncPlan, SyncProgress, SyncResult, SyncStep,
     UtxoEntry,
 };

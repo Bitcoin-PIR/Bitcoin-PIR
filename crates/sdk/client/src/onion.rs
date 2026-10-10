@@ -51,8 +51,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof, fetch_database_proof_v2, verify_database_proof, verify_database_proof_v2,
-    DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 #[cfg(feature = "onion")]
 use crate::protocol::reject_error_response;
@@ -509,30 +508,6 @@ impl OnionClient {
 
     pub fn set_root_policy(&mut self, policy: RootPolicy) {
         self.verified_roots.set_policy(policy);
-    }
-
-    pub async fn verify_database_proof(
-        &mut self,
-        db_id: u8,
-        policy: &DatabaseProofPolicy,
-    ) -> PirResult<VerifiedDatabaseRoots> {
-        if !self.is_connected() {
-            return Err(PirError::NotConnected);
-        }
-        let query_catalog = match &self.catalog {
-            Some(c) => c.clone(),
-            None => self.fetch_catalog().await?,
-        };
-        // The DB must exist in the catalog that drives this Onion session.
-        // Merely finding it in the standard catalog is not enough to make it
-        // queryable by OnionPIR.
-        query_catalog
-            .get(db_id)
-            .ok_or(PirError::DatabaseNotFound(db_id))?;
-        let db = self.proof_database_info(db_id)?;
-        let conn = self.conn.as_mut().ok_or(PirError::NotConnected)?;
-        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
-        verify_database_proof(&db, &bundle, policy)
     }
 
     /// Fetch and verify the v2 proof without falling back to v1.
@@ -3407,27 +3382,6 @@ mod tests {
             client.onion_params.get(&db.db_id).unwrap().total_packed,
             777
         );
-    }
-
-    #[tokio::test]
-    async fn proof_verification_fails_closed_without_standard_catalog() {
-        use crate::transport::mock::MockTransport;
-
-        let mut mock = MockTransport::new("wss://mock-onion");
-        mock.enqueue_response(onion_info_response(10_273, 20_547));
-        mock.enqueue_response(framed_response(vec![0xff, b'n', b'o']));
-
-        let mut client = OnionClient::new("wss://mock-onion");
-        client.connect_with_transport(Box::new(mock));
-        let query_catalog = client.fetch_catalog().await.unwrap();
-        assert_eq!(query_catalog.get(0).unwrap().index_bins, 10_273);
-
-        let err = client
-            .verify_database_proof(0, &DatabaseProofPolicy::mainnet())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, PirError::VerificationFailed(_)));
-        assert!(err.to_string().contains("requires REQ_GET_DB_CATALOG"));
     }
 
     #[tokio::test]

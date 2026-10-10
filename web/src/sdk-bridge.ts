@@ -121,16 +121,6 @@ interface PirSdkWasm {
    * `pir_sdk_client::announce::parse_announce_response`.
    */
   verifyAnnounceResponse(respPayload: Uint8Array): WasmAnnounceVerification;
-  /** Stateless verification of one complete `[u32 len][RESP_DB_PROOF...]`
-   * frame. This does not install roots or retain session state. */
-  verifyDatabaseProofResponse(
-    responseFrame: Uint8Array,
-    catalog: WasmDatabaseCatalog,
-    expectedDbId: number,
-    expectedParamsHashHex?: string | null,
-    allowedBuilderBinarySha256Hex?: string | null,
-    allowedBuilderGitCommit?: string | null,
-  ): WasmDatabaseProof;
   /** V2-only proof verifier used by strict standalone OnionPIR. */
   verifyDatabaseProofV2Response(
     responseFrame: Uint8Array,
@@ -731,7 +721,6 @@ export interface WasmOramClient {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): Promise<WasmDatabaseProof>;
-  setRequireVerifiedDatabaseRoots(requireVerified: boolean): void;
   installVerifiedDatabaseProof(proof: WasmDatabaseProof): void;
   queryBatch(scriptHashes: Uint8Array, dbId: number): Promise<any[]>;
   queryBatchPadded(scriptHashes: Uint8Array, dbId: number, paddedSlots: number): Promise<any[]>;
