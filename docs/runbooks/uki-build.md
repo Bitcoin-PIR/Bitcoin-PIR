@@ -19,9 +19,8 @@ cargo build --locked --release -p runtime \
 strip --strip-debug target/release/unified_server
 ```
 
-Record the commit and binary SHA-256. `scripts/build_unified_server.sh` and
-`nix build .#unified-server` are reproducibility/development harnesses; neither
-is the production pir2 binary authority.
+Record the commit and binary SHA-256. `nix build .#unified-server` is a
+development harness, not the production binary authority.
 
 ## 2. UKI assembly inputs
 
@@ -39,12 +38,12 @@ the approved Linux build host. Set every release input explicitly:
   SHA-256 (`TIER3_CLOUDFLARED_VERSION`, `TIER3_CLOUDFLARED_SHA256`). It is
   baked into the initramfs and therefore into MEASUREMENT, so the pin moves
   only together with a new image; place the pinned asset on the build host
-  before building, and after the build extract `/usr/bin/cloudflared` from
+  before building, and after the build extract `/usr/local/bin/cloudflared` from
   the candidate UKI's initrd to confirm it is the pinned bytes.
 
 The script pins Zstandard compression, excludes early microcode, GPU firmware,
-and unrelated globally installed BitcoinPIR dracut modules, validates the
-measured inventory, and refuses to archive an EFI larger than 256 MiB. Compare
+and unrelated globally installed BitcoinPIR dracut modules, and validates the
+measured inventory. Compare
 the candidate's file class and size with the retained image-265 release record
 in [`../data-retention/production-release-image-265.env`](../data-retention/production-release-image-265.env).
 An unexplained change from that mature class is a failed build, not a release.

@@ -13,7 +13,7 @@ export PATH
 
 if [ "$EUID" != "0" ]; then
     echo "error: build_uki_attested_builder_tier3.sh must run as root" >&2
-    echo "       re-run on VPSBG Slice 2 as:" >&2
+    echo "       re-run as:" >&2
     echo "         sudo /home/pir/BitcoinPIR/scripts/build_uki_attested_builder_tier3.sh" >&2
     exit 1
 fi

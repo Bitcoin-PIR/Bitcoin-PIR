@@ -184,7 +184,5 @@ fn main() {
     println!("Skipped (>255):  {}", skipped_too_large);
     println!("Time:            {:.1}s", t.elapsed().as_secs_f64());
     println!();
-    println!("Done. Next steps:");
-    println!("  gen_2_build_chunk_cuckoo (on delta_chunks)");
-    println!("  gen_3_build_index_cuckoo (on delta_index)");
+    println!("Done. Next step: build_cuckoo_generic index / chunk (on delta_index / delta_chunks)");
 }

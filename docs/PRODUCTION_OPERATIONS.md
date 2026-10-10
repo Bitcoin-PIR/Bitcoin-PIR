@@ -154,8 +154,7 @@ the deploy job.
    `confirm_production_deploy=true`. Expected 20–60 min, hard stop
    75 min. Progress: wasm-pack, tsc, vitest, `npm run build-web`, then the
    deploy job.
-4. Read — optional live browser check, only if the user asks: the
-   [production-test skill](../.claude/skills/production-test/SKILL.md).
+4. Read — optional live browser check, only if the user asks.
 
 Success: the dispatch run's deploy job is green and the live site
 serves that commit. Updating pins is a separate Human step if the
@@ -166,8 +165,6 @@ check fails.
 pir1 is `root@65.21.91.217`, public `wss://weikeng1.bitcoinpir.org`.
 It serves DPF-0, OnionPIR, and Harmony hints. There is no Hetzner
 script; pin SSH against [`deploy/known_hosts`](../deploy/known_hosts).
-The [hetzner skill](../.claude/skills/hetzner-pir/SKILL.md) still
-contains a stale single-host caveat — ignore that; pir2 is VPSBG.
 
 1. Local — Flow B for the runtime change. Production binary is
    `cargo build --locked --release -p runtime --bin unified_server`

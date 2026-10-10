@@ -59,13 +59,7 @@ LOCAL_PLAN_*.md
 # dream audit-skill working dir (regenerable scratch)
 .dream/
 
-# Deployment artifacts (local configs, secrets, notes, SSH known_hosts)
-deploy/
-
-# Reviewed, secret-free Payment V1 templates are source files, not rendered
-# deployment artifacts. Re-open only their exact paths so a new profile cannot
-# pass local tests while silently disappearing from a commit.
-!deploy/
+# Deployment artifacts (local configs, secrets, notes) stay local.
 deploy/*
 # Secret-free operational facts (host keys, install config, service units)
 # are tracked so a fresh clone can verify hosts and reconstruct services.

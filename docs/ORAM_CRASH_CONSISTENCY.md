@@ -381,8 +381,7 @@ Each test should reopen the ORAM and verify:
 - after restart, old ORAM state/image files are not trusted as live state;
 - regeneration is deterministic in input coverage but fresh in ORAM randomness.
 
-The existing `scripts/oram_local_smoke.sh` uses `--cuckoo-oram-no-save`, so it
-does not cover this. A new restart smoke should cover regeneration:
+No existing smoke covers this. A restart smoke should cover regeneration:
 
 1. Build a tiny ORAM image.
 2. Query found / missing / whale.

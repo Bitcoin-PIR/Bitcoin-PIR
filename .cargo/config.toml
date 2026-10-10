@@ -13,10 +13,10 @@
 rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
 
 # ─── Vendored deps ─────────────────────────────────────────────────────────
-# All crates.io + git deps are mirrored in ./vendor/ via `cargo vendor`
-# (sub-task 4 of docs/PHASE3_SLICE3_REPRO_PLAN.md). This pins exact source
-# bytes for reproducibility and lets `cargo build --offline` succeed
-# without network access. Re-run `cargo vendor` whenever Cargo.lock changes.
+# All crates.io + git deps are mirrored in ./vendor/ via `cargo vendor`.
+# This pins exact source bytes for reproducibility and lets
+# `cargo build --offline` succeed without network access. Re-run
+# `cargo vendor` whenever Cargo.lock changes.
 
 [source.crates-io]
 replace-with = "vendored-sources"
@@ -46,34 +46,9 @@ git = "https://github.com/Bitcoin-PIR/harmonypir.git"
 rev = "97288656b9b8cc393de7a8bc4d30d769404c2f39"
 replace-with = "vendored-sources"
 
-[source."git+https://github.com/Bitcoin-PIR/attested-builder.git?rev=80ad9b185760d2e36fd24baef50dd3030af8e94f"]
-git = "https://github.com/Bitcoin-PIR/attested-builder.git"
-rev = "80ad9b185760d2e36fd24baef50dd3030af8e94f"
-replace-with = "vendored-sources"
-
 [source."git+https://github.com/weikengchen/libdpf.git?rev=8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"]
 git = "https://github.com/weikengchen/libdpf.git"
 rev = "8ceb5903ae38c6f16a5ee92c0706dd50f5a42110"
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=db93517ffcdd81ff2ce3c2422e556f7dc85c404d"]
-git = "https://github.com/Bitcoin-PIR/oram.git"
-rev = "db93517ffcdd81ff2ce3c2422e556f7dc85c404d"
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=9526fc3159a53b2db85f46d640c0035c7d9b42aa"]
-git = "https://github.com/Bitcoin-PIR/oram.git"
-rev = "9526fc3159a53b2db85f46d640c0035c7d9b42aa"
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=33eaaf1c3925b9a8b9d7ea818eb54f9104c8000b"]
-git = "https://github.com/Bitcoin-PIR/oram.git"
-rev = "33eaaf1c3925b9a8b9d7ea818eb54f9104c8000b"
-replace-with = "vendored-sources"
-
-[source."git+https://github.com/Bitcoin-PIR/oram.git?rev=cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b"]
-git = "https://github.com/Bitcoin-PIR/oram.git"
-rev = "cd2c1a224d640a8149cfdd75ef5a4f2579a84d0b"
 replace-with = "vendored-sources"
 
 [source.vendored-sources]
@@ -85,14 +60,13 @@ rev = "de6c1709eee0faa32985d5a452be11904ee95de4"
 replace-with = "vendored-sources"
 
 # ─── Reproducible-build env ────────────────────────────────────────────────
-# Sub-task 2 of docs/PHASE3_SLICE3_REPRO_PLAN.md. SOURCE_DATE_EPOCH=0 makes
-# any timestamp-embedding build.rs scripts use 1970-01-01 instead of the
-# current wall clock. force=true overrides any operator-set SDE so the
-# value is consistent regardless of shell environment.
+# SOURCE_DATE_EPOCH=0 makes any timestamp-embedding build.rs scripts use
+# 1970-01-01 instead of the current wall clock. force=true overrides any
+# operator-set SDE so the value is consistent regardless of shell
+# environment.
 #
 # --remap-path-prefix is NOT in this file — it depends on $PWD/$HOME at
-# build time and TOML can't interpolate. Use scripts/build_unified_server.sh
-# which sets RUSTFLAGS dynamically before invoking cargo build.
+# build time and TOML can't interpolate; pass it through RUSTFLAGS.
 
 [env]
 SOURCE_DATE_EPOCH = { value = "0", force = true }
