@@ -1,4 +1,3 @@
-use crate::unified_server_pir2_sealed::{Pir2SealedCliV1, Pir2SealedStartupPhaseV1};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv6Addr};
 use std::path::PathBuf;
@@ -116,9 +115,6 @@ pub(crate) struct CliArgs {
     /// Operator-issued API keys (`--api-key-file FILE`, docs/CREDITS.md
     /// "API keys"): a connection that presents a listed key is unmetered.
     pub(crate) api_key_file: Option<PathBuf>,
-    /// Measurement-bound pir2 identity dispatcher. This group is
-    /// evaluated before any database, ORAM image, or listener is opened.
-    pub(crate) pir2_sealed: Pir2SealedCliV1,
     /// Hard cap on live TCP/WebSocket tasks. Connections over the cap are
     /// dropped before allocating a WebSocket parser.
     pub(crate) max_connections: usize,
@@ -425,12 +421,6 @@ harmony oram:  --harmony-oram-db ID=DIR  --harmony-oram-dir DIR  --harmony-oram-
                --harmony-oram-cache-levels N  --harmony-oram-encrypted  --harmony-oram-key-hex HEX
                --harmony-oram-state-key-hex HEX  --harmony-oram-auth-store  --harmony-oram-no-save
                --harmony-oram-pack
-pir2 sealed:   --pir2-snp-sealed-release FILE  --pir2-snp-sealed-envelope FILE
-               --pir2-snp-sealed-receipt FILE  --pir2-snp-sealed-marker FILE
-               --pir2-snp-sealed-phase observe|enroll|probe|ready  --pir2-snp-sealed-ordinal N
-               --pir2-snp-sealed-verifier-nonce-hex HEX  --pir2-snp-sealed-current-boot-id-hex HEX
-               --pir2-snp-sealed-current-channel-pubkey-hex HEX  --pir2-snp-sealed-identity-cert FILE
-               --pir2-snp-sealed-preflight-only  --pir2-snp-sealed-require-ready
 development:   --unsafe-debug-query-logging (test-only-unsafe-query-logging builds only)
 ";
 
@@ -494,7 +484,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
     let mut free_threads = crate::access_gate::DEFAULT_FREE_THREADS;
     let mut free_queue_wait_ms = crate::access_gate::DEFAULT_FREE_QUEUE_WAIT.as_millis() as u64;
     let mut api_key_file: Option<PathBuf> = None;
-    let mut pir2_sealed = Pir2SealedCliV1::default();
     let mut max_connections: usize = 128;
     let mut websocket_handshake_timeout_ms: u64 = 10_000;
     let mut connection_idle_timeout_ms: u64 = 30_000;
@@ -724,97 +713,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
             "--oram-only" => {
                 oram_only = true;
             }
-            "--pir2-snp-sealed-preflight-only" => {
-                pir2_sealed.preflight_only = true;
-            }
-            "--pir2-snp-sealed-require-ready" => {
-                pir2_sealed.require_ready = true;
-            }
-            "--pir2-snp-sealed-release" => {
-                pir2_sealed.release_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-release requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-envelope" => {
-                pir2_sealed.envelope_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-envelope requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-receipt" => {
-                pir2_sealed.receipt_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-receipt requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-marker" => {
-                pir2_sealed.marker_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-marker requires a path")
-                    })));
-                i += 1;
-            }
-            "--pir2-snp-sealed-phase" => {
-                pir2_sealed.phase =
-                    Some(
-                        Pir2SealedStartupPhaseV1::parse(args.get(i + 1).unwrap_or_else(|| {
-                            fatal_cli("--pir2-snp-sealed-phase requires a value")
-                        }))
-                        .unwrap_or_else(|error| fatal_cli(error)),
-                    );
-                i += 1;
-            }
-            "--pir2-snp-sealed-ordinal" => {
-                pir2_sealed.ordinal = Some(
-                    args.get(i + 1)
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or_else(|| {
-                            fatal_cli("--pir2-snp-sealed-ordinal requires an integer")
-                        }),
-                );
-                i += 1;
-            }
-            "--pir2-snp-sealed-verifier-nonce-hex" => {
-                pir2_sealed.verifier_nonce_hex = Some(
-                    args.get(i + 1)
-                        .unwrap_or_else(|| {
-                            fatal_cli("--pir2-snp-sealed-verifier-nonce-hex requires hex")
-                        })
-                        .clone(),
-                );
-                i += 1;
-            }
-            "--pir2-snp-sealed-current-boot-id-hex" => {
-                pir2_sealed.current_boot_id_hex = Some(
-                    args.get(i + 1)
-                        .unwrap_or_else(|| {
-                            fatal_cli("--pir2-snp-sealed-current-boot-id-hex requires hex")
-                        })
-                        .clone(),
-                );
-                i += 1;
-            }
-            "--pir2-snp-sealed-current-channel-pubkey-hex" => {
-                pir2_sealed.current_channel_pubkey_hex = Some(
-                    args.get(i + 1)
-                        .unwrap_or_else(|| {
-                            fatal_cli("--pir2-snp-sealed-current-channel-pubkey-hex requires hex")
-                        })
-                        .clone(),
-                );
-                i += 1;
-            }
-            "--pir2-snp-sealed-identity-cert" => {
-                pir2_sealed.identity_cert_path =
-                    Some(PathBuf::from(args.get(i + 1).unwrap_or_else(|| {
-                        fatal_cli("--pir2-snp-sealed-identity-cert requires a path")
-                    })));
-                i += 1;
-            }
             "--identity-key-path" => {
                 if let Some(p) = args.get(i + 1) {
                     identity_key_path = Some(PathBuf::from(p));
@@ -988,7 +886,6 @@ pub(crate) fn parse_args_from(args: Vec<String>) -> CliArgs {
         free_threads,
         free_queue_wait_ms,
         api_key_file,
-        pir2_sealed,
         max_connections,
         websocket_handshake_timeout_ms,
         connection_idle_timeout_ms,

@@ -22,11 +22,16 @@ Each mutation script also has `--help` and, where it can change a host,
 The VPSBG pir2 host was retired on 2026-10-02. The pir2 slot (DPF server 1
 and the HarmonyPIR query server) runs on a MacBook without a TEE (Flow I).
 Direct ORAM runs on a separate VPSBG TEE host since 2026-10-03: server
-26939 (212.73.134.61, AMD EPYC 7713P Milan, `wss://weikeng2.bitcoinpir.org`,
-sealed as `pir2-oram-v1`). It serves Direct ORAM only
-(`unified_server --oram-only`), so its data disk needs each database's
-`MANIFEST.toml`, proof sidecars and `oram-direct-inputs/`, not the DPF or
-OnionPIR table files. Flows E–G and the VPSBG scripts target this host.
+26939 (212.73.134.61, AMD EPYC 7713P Milan, `wss://weikeng2.bitcoinpir.org`).
+It serves Direct ORAM only (`unified_server --oram-only`), so its data disk
+needs each database's `MANIFEST.toml`, proof sidecars and
+`oram-direct-inputs/`, not the DPF or OnionPIR table files. Flows E–F and the
+VPSBG scripts target this host. The live image still runs the retired
+sealed-identity profile; a runtime UKI built from this tree has no server
+identity (a fresh channel key every boot, bound by the attestation report)
+and serves Direct ORAM free on a best-effort lane. Leave
+`/home/pir/data/pir2-sealed/` in place while a rollback to a sealed image is
+possible.
 
 Identity values (hashes, measurements, image IDs) stay in
 [`web/src/attest-pin.ts`](../web/src/attest-pin.ts) or in live command
@@ -92,8 +97,7 @@ stop and report.
 | C | Publish the browser client to GitHub Pages | Flow C below |
 | D | Change the pir1 Hetzner binary or unit | Flow D below |
 | E | Build, upload, switch, or roll back the **runtime** pir2 UKI | [UKI build](runbooks/uki-build.md) then [VPSBG image](runbooks/vpsbg-image.md) |
-| F | Edit `/home/pir/data/` on VPSBG, including `startup.env` | [Key management](KEY_MANAGEMENT.md) |
-| G | pir2 sealed Observe / Enroll / Probe / Ready | [Sealed release](runbooks/pir2-sealed-release.md) |
+| F | Edit `/home/pir/data/` on VPSBG | [Key management](KEY_MANAGEMENT.md) |
 | H | Produce or rotate DPF / Harmony / Onion v2 / ORAM proofs | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
 | I | Rebuild, restart, or re-pin the pir2 MacBook node (no TEE) | Flow I below |
 
@@ -231,30 +235,12 @@ your own `ssh`/`scp` calls beside it during a window.
 2. Auth — `open --server-id 26939 --image-id CURRENT --apply`.
    Hard stop 15 min: `boot_mode=stock` and SSH.
 3. Auth — `put` (writes), or Read `get` / `ssh`. Remote paths must
-   stay under `/home/pir/data/`. A ceremony `startup.env` must land at
-   `/home/pir/data/pir2-sealed/startup.env`.
+   stay under `/home/pir/data/`.
 4. Auth — `close --server-id 26939 --image-id CURRENT --apply`. Same
    image id as step 1 unless the user named a different one.
 5. Read — confirm the expected image is attached. `close` does not start a
    stopped guest; starting it requires its own explicit authorization. Run
    Flow E step 6 only when the guest should be serving again.
-
-## G. pir2 sealed ceremony — Local then Auth
-
-Details: [Sealed release](runbooks/pir2-sealed-release.md).
-
-1. Local — `scripts/pir2-sealed-ceremony.sh phase --phase observe ...`
-   (`--dry-run` first). Inputs (ordinal, nonce) are
-   supplied by the operator; do not invent them.
-2. Auth — Flow F to place that exact file at
-   `/home/pir/data/pir2-sealed/startup.env`, then boot the measured UKI.
-3. Local — after the Observe receipt exists,
-   `scripts/pir2-sealed-ceremony.sh release` (`--dry-run` first).
-4. Repeat steps 1–2 for `enroll`, `probe`, and `ready` with fresh
-   output files, in that order.
-5. Read — Flow E step 6 when Ready is serving.
-
-Success: `PASS sealed_phase_config=<phase>` or `PASS sealed_release`.
 
 ## H. Database, proofs, and pins — Auth
 
@@ -415,12 +401,6 @@ the same way as an upgrade, through a new transition.
 | Open or close a VPSBG data-disk window | [Key management](KEY_MANAGEMENT.md) | `scripts/vpsbg-data-disk.sh` | `PASS action=open\|put\|get\|ssh\|close` |
 | Check pir2 after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/pir2-post-switch-check.sh` | `PASS action=post_switch_check` |
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
-| Run the pir2 sealed release | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh` | `PASS sealed_release` or `PASS sealed_phase_config=...` |
-| Accept an Enroll, Probe, or Ready receipt | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh receipt` | `PASS pir2_sealed_receipt_verify` |
-| Fetch the Ready receipts from the serving pir2 guest | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-ceremony.sh fetch` | `PASS pir2_sealed_receipt_fetch` |
-| Preserve, verify, or restore a pir2 rollback set (guest side, via `vpsbg-data-disk.sh ssh`) | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-rollback-set.sh` | `PASS action=preserve\|verify\|detach-envelope\|restore` |
-| Fetch an Observe/Enroll/Probe receipt from the recovery root | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-recovery-receipt.sh` | `PASS pir2_sealed_recovery_receipt` |
-| Run one pir2 release as five windows (Flows E, F, G) | [Sealed release](runbooks/pir2-sealed-release.md) | `scripts/pir2-sealed-campaign.sh plan\|build\|enroll\|probe\|ready` | `PASS pir2_sealed_campaign action=...` |
 | Check the issuer and mint on pir1 | [Issuer and mint](runbooks/issuer-and-mint.md) | `curl https://issuer.bitcoinpir.org/v2/info`; `bpir-issuer balance` | both units active, `/v2/info` lists the credit pack |
 
 Paid access (credits verified at the issuer, outside the measured image) is

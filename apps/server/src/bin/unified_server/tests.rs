@@ -1878,7 +1878,7 @@ mod cli_informational_tests {
     #[test]
     fn help_and_version_are_answered_only_as_the_sole_argument() {
         let help = informational_argument_v1(&argv(&["--help"])).expect("--help");
-        assert!(help.contains("--serve-queries") && help.contains("--pir2-snp-sealed-release"));
+        assert!(help.contains("--serve-queries"));
         assert_eq!(
             informational_argument_v1(&argv(&["-h"])),
             Some(USAGE_V1.to_owned())

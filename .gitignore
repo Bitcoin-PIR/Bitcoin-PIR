@@ -80,7 +80,6 @@ deploy/systemd/*
 !deploy/systemd/cloudflared.service
 !deploy/systemd/pir-primary.service
 !deploy/systemd/pir-secondary.service
-!deploy/systemd/pir-vpsbg.service
 
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any

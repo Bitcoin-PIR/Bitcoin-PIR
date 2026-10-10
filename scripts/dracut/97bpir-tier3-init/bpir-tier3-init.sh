@@ -134,8 +134,8 @@ blkid 2>&1 || true
 
 mkdir -p /sysroot
 mounted=false
-# Try LABEL first (matches Slice 2's /etc/netplan and build_uki.sh's
-# ROOT_LABEL default). Fall back to common device paths.
+# Try LABEL first (matches Slice 2's /etc/netplan). Fall back to common
+# device paths.
 for src in "LABEL=cloudimg-rootfs" /dev/vda1 /dev/sda1 /dev/vda /dev/sda; do
     case "$src" in LABEL=*) flag="-L ${src#LABEL=}" ;; *) flag="$src" ;; esac
     if mount $flag -o rw /sysroot 2>/dev/null; then

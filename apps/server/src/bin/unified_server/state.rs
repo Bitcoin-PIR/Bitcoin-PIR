@@ -127,9 +127,6 @@ pub(crate) struct UnifiedServerData {
     /// Operator-issued API keys (`--api-key-file`); `None` keeps
     /// `REQ_API_KEY` refused (docs/CREDITS.md "API keys").
     pub(crate) api_keys: Option<crate::api_keys::ApiKeysV1>,
-    /// This boot's Ready receipts and preflight marker, served read-only by
-    /// REQ_PIR2_SEALED_RECEIPT_GET (sealed Ready pir2 guests only).
-    pub(crate) pir2_sealed_receipts: Option<crate::pir2_sealed_receipts::Pir2SealedReadyReceiptsV1>,
     /// Whether this server accepts `REQ_HARMONY_HINTS` /
     /// `REQ_HARMONY_HINTS_V2` opcodes (set via `--serve-hints`).
     /// Mirrors `CliArgs::serve_hints`. Gated in the dispatch loop.

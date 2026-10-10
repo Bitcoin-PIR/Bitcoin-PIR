@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed the public mmap-residency request/response opcode. Opcode `0x04`
   remains retired and must not be reused.
+- Removed the `snp_sealed_secrets` module and the pir2 sealed-receipt opcode
+  (`0x70`). The channel key is generated at every boot; a server identity
+  comes from the `--identity-*` flags.
 
 ## [0.1.0] — initial release (unpublished)
 

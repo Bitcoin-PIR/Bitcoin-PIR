@@ -22,10 +22,8 @@ mod io;
 mod logging;
 mod onion;
 mod oram;
-mod pir2_sealed_receipts;
 mod serve;
 mod state;
-mod unified_server_pir2_sealed;
 
 pub(crate) use cli::*;
 #[allow(unused_imports)]
@@ -42,10 +40,6 @@ use runtime::config::ServerConfig;
 use runtime::db_proof::load_database_proof_bundle;
 use runtime::hint_pool;
 use runtime::table::{DatabaseDescriptor, DatabaseType, MappedDatabase, ServerState};
-use unified_server_pir2_sealed::{
-    dispatch_pir2_sealed_startup_v1, source_pinned_pir2_operator_key_v1,
-    validate_pir2_sealed_cli_v1, Pir2SealedStartupV1, PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1,
-};
 
 use pir_core::params::{self, CHUNK_PARAMS, INDEX_PARAMS};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -104,63 +98,10 @@ async fn main() {
         cli::validate_oram_only_cli_v1(&args).unwrap_or_else(|error| fatal_cli(error));
     }
 
-    validate_pir2_sealed_cli_v1(
-        &args.pir2_sealed,
-        args.identity_key_path.is_some()
-            || args.identity_cert_path.is_some()
-            || args.identity_server_id.is_some(),
-    )
-    .unwrap_or_else(|error| fatal_cli(error));
-    // Generate the boot-fresh channel before sealed preflight so the same raw
-    // public key is committed into the fresh receipt and later announcement.
-    // No database, ORAM image, or listener has been touched at this point.
+    // The channel key is generated fresh at every boot and never touches
+    // disk; the attestation report binds its public half.
     let channel_keypair = pir_runtime_core::channel::ChannelKeypair::generate();
     let channel_pubkey = channel_keypair.public_bytes();
-    let pinned_operator =
-        source_pinned_pir2_operator_key_v1().unwrap_or_else(|error| fatal_cli(error));
-    let sealed_now_unix = current_unix_seconds_v1().unwrap_or_else(|error| fatal_cli(error));
-    let sealed_startup = dispatch_pir2_sealed_startup_v1(
-        &args.pir2_sealed,
-        &pinned_operator,
-        sealed_now_unix,
-        channel_pubkey,
-        &pir_runtime_core::snp_sealed_secrets::LinuxSevSnpDerivedKeyProviderV1,
-    )
-    .unwrap_or_else(|error| fatal_cli(format!("pir2 sealed startup: {error}")));
-    // Only the attestation identity is consumed here.
-    let sealed_identity = match sealed_startup {
-        Pir2SealedStartupV1::Disabled => None,
-        Pir2SealedStartupV1::InertSuccess {
-            phase,
-            receipt_digest,
-        } => {
-            eprintln!(
-                "pir2 sealed {:?} completed inertly; receipt_digest={}",
-                phase,
-                hex::encode(receipt_digest)
-            );
-            std::process::exit(PIR2_SEALED_INERT_SUCCESS_EXIT_CODE_V1);
-        }
-        Pir2SealedStartupV1::Ready {
-            identity_key,
-            identity_cert,
-        } => Some((identity_key, identity_cert)),
-    };
-    // A Ready boot serves its own persisted Ready receipts read-only
-    // (REQ_PIR2_SEALED_RECEIPT_GET) so the operator can accept them offline
-    // without a Flow F window. Loaded before any database is touched; a
-    // failure disables only that opcode and never changes whether we serve.
-    let pir2_sealed_receipts = if sealed_identity.is_some() {
-        match pir2_sealed_receipts::Pir2SealedReadyReceiptsV1::load(&args.pir2_sealed) {
-            Ok(receipts) => Some(receipts),
-            Err(error) => {
-                eprintln!("pir2 sealed Ready receipts: DISABLED — {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
 
     println!("=== Unified PIR Server ({}) ===", role_name);
     println!("  Bind:     {}:{}", args.bind_address, args.port);
@@ -169,9 +110,6 @@ async fn main() {
         if args.serve_hints { "yes" } else { "no" },
         if args.serve_queries { "yes" } else { "no" },
     );
-    if let Some(receipts) = pir2_sealed_receipts.as_ref() {
-        println!("  {}", receipts.startup_log_line());
-    }
     if let Some(ref config_path) = args.config_path {
         println!("  Config:   {}", config_path.display());
     } else {
@@ -687,8 +625,7 @@ async fn main() {
     println!();
 
     // ── Report the boot-fresh channel keypair ───────────────────────────
-    // It was generated before sealed preflight, so receipts and the server
-    // announcement commit to this exact same public key. The secret never
+    // The announcement commits to this public key. The secret never
     // touches disk and remains owned by this process.
     //
     // Why on a non-SEV host (Hetzner) too? The channel layer is hosted
@@ -743,40 +680,8 @@ async fn main() {
     // / query paths are unaffected.
     // The identity key and certificate also sign credit redeem requests
     // (docs/CREDITS.md); keep a copy before the announcement consumes them.
-    let mut credit_identity: Option<(ed25519_dalek::SigningKey, pir_identity::IdentityCert)> =
-        sealed_identity
-            .as_ref()
-            .map(|(key, cert)| (key.clone(), cert.clone()));
-    let announcement_bundle: Option<Vec<u8>> = if let Some((identity_key, identity_cert)) =
-        sealed_identity
-    {
-        let server_id = identity_cert.server_id.clone();
-        let manifest_roots = state::attested_manifest_roots(&all_databases, args.oram_only);
-        let issued_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_secs() as i64)
-            .unwrap_or(0);
-        let identity = pir_runtime_core::identity::build_announcement_bundle(
-            &identity_key,
-            identity_cert,
-            &server_id,
-            channel_pubkey,
-            pir_runtime_core::attest::self_exe_sha256(),
-            pir_runtime_core::attest::GIT_REV,
-            manifest_roots,
-            issued_at,
-        )
-        .unwrap_or_else(|error| {
-            fatal_cli(format!(
-                "sealed pir2 identity cannot build the required announcement: {error}"
-            ))
-        });
-        println!(
-            "  Identity announce: enabled from SNP-sealed key (server_id={}, issued_at={})",
-            server_id, issued_at
-        );
-        Some(identity.encoded_bundle)
-    } else {
+    let mut credit_identity: Option<(ed25519_dalek::SigningKey, pir_identity::IdentityCert)> = None;
+    let announcement_bundle: Option<Vec<u8>> = {
         match (
             args.identity_key_path.as_ref(),
             args.identity_cert_path.as_ref(),
@@ -799,10 +704,8 @@ async fn main() {
                         // Manifest roots in db_id order — same as the V2
                         // attest layout, so the bundle and the SEV report
                         // commit to the same set.
-                        let manifest_roots: Vec<[u8; 32]> = all_databases
-                            .iter()
-                            .map(|db| db.manifest_root.unwrap_or([0u8; 32]))
-                            .collect();
+                        let manifest_roots =
+                            state::attested_manifest_roots(&all_databases, args.oram_only);
                         let binary_sha256 = pir_runtime_core::attest::self_exe_sha256();
                         let git_rev = pir_runtime_core::attest::GIT_REV;
                         let issued_at = std::time::SystemTime::now()
@@ -1044,7 +947,6 @@ async fn main() {
         credits,
         access,
         api_keys,
-        pir2_sealed_receipts,
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
         oram_only: args.oram_only,

@@ -46,12 +46,6 @@
 
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
-mod generation_v2;
-pub use generation_v2::{
-    sign_generation_bound_identity_cert_v2, GenerationBoundIdentityCertV2,
-    GENERATION_BOUND_IDENTITY_CERT_DOMAIN_TAG_V2,
-};
-
 /// Length of an Ed25519 public key (RFC 8032).
 pub const ED25519_PUBKEY_LEN: usize = 32;
 /// Length of an Ed25519 signature (RFC 8032).

@@ -11,5 +11,4 @@ pub mod handler;
 pub mod identity;
 pub mod manifest;
 pub mod protocol;
-pub mod snp_sealed_secrets;
 pub mod table;

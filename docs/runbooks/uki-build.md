@@ -95,7 +95,7 @@ These are distinct claims:
 
 Full cross-host byte reproduction requires the same declared kernel/modules
 and toolchain inputs. A matching binary hash or predicted measurement alone
-does not authorize upload, switch, reboot, sealed release, or activation.
+does not authorize upload, switch, reboot, or activation.
 
 Successful completion prints `PASS uki_build` and `NEXT_STEP`. Record the EFI,
 SHA-256, metadata and both archive locations, then continue with the

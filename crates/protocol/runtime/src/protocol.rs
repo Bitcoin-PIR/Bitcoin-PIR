@@ -162,33 +162,6 @@ pub const REQ_HANDSHAKE: u8 = 0x06;
 // and as defense-in-depth on hosts that do (pir2).
 pub const REQ_ANNOUNCE: u8 = 0x07;
 
-// ─── pir2 sealed Ready evidence (read-only fetch) ──────────────────────────
-//
-//   client → server:  REQ_PIR2_SEALED_RECEIPT_GET { kind: u8 }
-//   server → client:  RESP_PIR2_SEALED_RECEIPT
-//                       { kind: u8, boot_id: [u8; 16], len: u32 LE, bytes }
-//
-// A sealed pir2 guest in the Ready phase persisted two receipts for its
-// own boot before it listened — `ready-preflight-BOOT.bin` (before any
-// ORAM access) and `ready-runtime-BOOT.bin` (the final server opening the
-// sealed keys) — plus the preflight inert-success marker
-// `ready-preflight-BOOT.env`. Unlike Observe, Enroll, and Probe, Ready has
-// no recovery HTTP window, so those files used to be reachable only through
-// a later Flow F data-disk window (a full ORAM rebuild). The unified_server
-// loads the three files once at startup and serves them verbatim, in
-// cleartext, to any client: they are public audit evidence, nothing is
-// signed at request time, and acceptance stays with the offline
-// `bpir-admin pir2-sealed-receipt-verify`. A server that is not a sealed
-// Ready guest (pir1, older images) answers RESP_ERROR.
-pub const REQ_PIR2_SEALED_RECEIPT_GET: u8 = 0x70;
-/// `kind` values for REQ_PIR2_SEALED_RECEIPT_GET.
-pub const PIR2_SEALED_RECEIPT_KIND_READY_PREFLIGHT: u8 = 1;
-pub const PIR2_SEALED_RECEIPT_KIND_READY_RUNTIME: u8 = 2;
-pub const PIR2_SEALED_RECEIPT_KIND_READY_PREFLIGHT_MARKER: u8 = 3;
-/// Upper bound on one served artifact. Receipts are about 1.4 KiB and the
-/// marker is five short lines; a client rejects anything larger unread.
-pub const MAX_PIR2_SEALED_RECEIPT_RESPONSE_LEN: usize = 64 * 1024;
-
 // ─── Admin auth (Slice 3a) ─────────────────────────────────────────────────
 //
 // Challenge/response with ed25519. The server holds the admin's public
@@ -250,7 +223,6 @@ pub const RESP_DB_PROOF_V2: u8 = 0x0c;
 pub const RESP_ATTEST: u8 = 0x05;
 pub const RESP_HANDSHAKE: u8 = 0x06;
 pub const RESP_ANNOUNCE: u8 = 0x07;
-pub const RESP_PIR2_SEALED_RECEIPT: u8 = 0x70;
 pub const RESP_ADMIN_AUTH_CHALLENGE: u8 = 0x80;
 pub const RESP_ADMIN_AUTH_RESPONSE: u8 = 0x81;
 pub const RESP_ADMIN_DB_UPLOAD_BEGIN: u8 = 0x82;
@@ -582,11 +554,6 @@ pub enum Request {
     /// in `Response::Announce`. Servers that lack the on-disk identity
     /// material reply with `Response::Error`.
     Announce,
-    /// Fetch one persisted Ready artifact of the serving sealed pir2 guest's
-    /// current boot (`PIR2_SEALED_RECEIPT_KIND_*`). Cleartext, read-only.
-    Pir2SealedReceiptGet {
-        kind: u8,
-    },
     /// Present credits (docs/CREDITS.md): `kind` names the payload's
     /// format, `payload` is forwarded verbatim to the issuer.
     CreditPresent {
@@ -804,12 +771,6 @@ pub enum Response {
     HarmonyQueryResult(HarmonyQueryResult),
     HarmonyBatchResult(HarmonyBatchResult),
     OramLookupResult(OramLookupResult),
-    /// One Ready artifact of the sealed pir2 guest's current boot, verbatim.
-    Pir2SealedReceipt {
-        kind: u8,
-        boot_id: [u8; 16],
-        bytes: Vec<u8>,
-    },
     /// Credits accepted: `gas_added` gas bought, `gas_balance` the
     /// connection's balance afterwards (negative only transiently, after an
     /// egress charge the balance did not cover).
@@ -961,10 +922,6 @@ impl Request {
             }
             Request::Announce => {
                 payload.push(REQ_ANNOUNCE);
-            }
-            Request::Pir2SealedReceiptGet { kind } => {
-                payload.push(REQ_PIR2_SEALED_RECEIPT_GET);
-                payload.push(*kind);
             }
             Request::CreditPresent {
                 kind,
@@ -1156,15 +1113,6 @@ impl Request {
                 Ok(Request::OramLookup(q))
             }
             REQ_ANNOUNCE => Ok(Request::Announce),
-            REQ_PIR2_SEALED_RECEIPT_GET => {
-                if data.len() != 2 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pir2 sealed receipt request must carry exactly one kind byte",
-                    ));
-                }
-                Ok(Request::Pir2SealedReceiptGet { kind: data[1] })
-            }
             REQ_CREDIT_PRESENT => {
                 // [opcode][kind][len:u32 LE][payload]; exact length.
                 const HEADER: usize = 1 + 1 + 4;
@@ -1328,17 +1276,6 @@ impl Response {
                 payload.push(RESP_ORAM_LOOKUP);
                 encode_oram_lookup_result(&mut payload, r);
             }
-            Response::Pir2SealedReceipt {
-                kind,
-                boot_id,
-                bytes,
-            } => {
-                payload.push(RESP_PIR2_SEALED_RECEIPT);
-                payload.push(*kind);
-                payload.extend_from_slice(boot_id);
-                payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-                payload.extend_from_slice(bytes);
-            }
             Response::CreditOk {
                 gas_added,
                 gas_balance,
@@ -1498,37 +1435,6 @@ impl Response {
             RESP_BUCKET_MERKLE_SIB_BATCH => {
                 let r = decode_batch_result(&data[1..])?;
                 Ok(Response::BucketMerkleSibBatch(r))
-            }
-            RESP_PIR2_SEALED_RECEIPT => {
-                // [opcode][kind][boot_id:16][len:u32 LE][bytes]; exact length.
-                const HEADER: usize = 1 + 1 + 16 + 4;
-                if data.len() < HEADER {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pir2 sealed receipt response header too short",
-                    ));
-                }
-                let kind = data[1];
-                let mut boot_id = [0u8; 16];
-                boot_id.copy_from_slice(&data[2..18]);
-                let len = u32::from_le_bytes(data[18..22].try_into().unwrap()) as usize;
-                if len > MAX_PIR2_SEALED_RECEIPT_RESPONSE_LEN {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pir2 sealed receipt response: artifact length above limit",
-                    ));
-                }
-                if data.len() != HEADER + len {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "pir2 sealed receipt response: artifact length disagrees with buffer",
-                    ));
-                }
-                Ok(Response::Pir2SealedReceipt {
-                    kind,
-                    boot_id,
-                    bytes: data[HEADER..].to_vec(),
-                })
             }
             RESP_CREDIT_OK => {
                 // [opcode][gas_added:u64 LE][gas_balance:i64 LE]; exact length.
@@ -3366,76 +3272,6 @@ mod attest_wire_tests {
             Response::Announce(bytes) => assert_eq!(bytes, bundle_bytes),
             other => panic!("wrong variant: {:?}", other),
         }
-    }
-
-    #[test]
-    fn pir2_sealed_receipt_request_round_trips_and_rejects_bad_lengths() {
-        let encoded = Request::Pir2SealedReceiptGet {
-            kind: PIR2_SEALED_RECEIPT_KIND_READY_RUNTIME,
-        }
-        .encode();
-        assert_eq!(
-            &encoded[4..],
-            &[
-                REQ_PIR2_SEALED_RECEIPT_GET,
-                PIR2_SEALED_RECEIPT_KIND_READY_RUNTIME
-            ]
-        );
-        match Request::decode(&encoded[4..]).unwrap() {
-            Request::Pir2SealedReceiptGet { kind } => {
-                assert_eq!(kind, PIR2_SEALED_RECEIPT_KIND_READY_RUNTIME)
-            }
-            other => panic!("wrong variant: {:?}", other),
-        }
-        assert!(Request::decode(&[REQ_PIR2_SEALED_RECEIPT_GET]).is_err());
-        assert!(Request::decode(&[REQ_PIR2_SEALED_RECEIPT_GET, 1, 2]).is_err());
-    }
-
-    #[test]
-    fn pir2_sealed_receipt_response_round_trips_and_rejects_bad_lengths() {
-        let boot_id = [0x42u8; 16];
-        let bytes = vec![7u8, 8, 9];
-        let encoded = Response::Pir2SealedReceipt {
-            kind: PIR2_SEALED_RECEIPT_KIND_READY_PREFLIGHT,
-            boot_id,
-            bytes: bytes.clone(),
-        }
-        .encode();
-        let mut expected = vec![
-            RESP_PIR2_SEALED_RECEIPT,
-            PIR2_SEALED_RECEIPT_KIND_READY_PREFLIGHT,
-        ];
-        expected.extend_from_slice(&boot_id);
-        expected.extend_from_slice(&3u32.to_le_bytes());
-        expected.extend_from_slice(&bytes);
-        assert_eq!(&encoded[4..], &expected[..]);
-        match Response::decode(&encoded[4..]).unwrap() {
-            Response::Pir2SealedReceipt {
-                kind,
-                boot_id: got_boot_id,
-                bytes: got,
-            } => {
-                assert_eq!(kind, PIR2_SEALED_RECEIPT_KIND_READY_PREFLIGHT);
-                assert_eq!(got_boot_id, boot_id);
-                assert_eq!(got, bytes);
-            }
-            other => panic!("wrong variant: {:?}", other),
-        }
-        // Header cut short.
-        assert!(Response::decode(&encoded[4..20]).is_err());
-        // Declared length longer than the buffer.
-        let mut truncated = encoded[4..].to_vec();
-        truncated.pop();
-        assert!(Response::decode(&truncated).is_err());
-        // Trailing bytes after the artifact.
-        let mut trailing = encoded[4..].to_vec();
-        trailing.push(0);
-        assert!(Response::decode(&trailing).is_err());
-        // Declared length above the client-side limit is rejected unread.
-        let mut huge = vec![RESP_PIR2_SEALED_RECEIPT, 1];
-        huge.extend_from_slice(&boot_id);
-        huge.extend_from_slice(&((MAX_PIR2_SEALED_RECEIPT_RESPONSE_LEN as u32) + 1).to_le_bytes());
-        assert!(Response::decode(&huge).is_err());
     }
 
     #[test]

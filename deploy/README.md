@@ -12,7 +12,7 @@ not listed below is local-only by construction.
 | `installimage.conf` | Hetzner installimage config for the pir1 host (partitioning/RAID; no credentials) |
 | `known_hosts` | Pinned SSH public host keys for the Hetzner host (65.21.91.217) — the host-key-swap defense used by the ops runbooks |
 | `vpsbg_known_hosts` | Pinned SSH public host keys for the VPSBG host (server 26939, 212.73.134.61; stock-rootfs windows only) |
-| `systemd/*.service` | The four host service units: `pir-primary` / `pir-secondary` (Hetzner), `pir-vpsbg` (VPSBG Slice 2), `cloudflared`. Copies of what runs on the hosts; the units contain no secrets (the admin key in `pir-vpsbg.service` is the public half) |
+| `systemd/*.service` | The host service units: `pir-primary` / `pir-secondary` (Hetzner) and `cloudflared`. Copies of what runs on the hosts; the units contain no secrets. The VPSBG ORAM host runs from its measured UKI (`scripts/dracut/97bpir-tier3-init/unified-server-run.sh`) |
 
 These files are *facts about the deployment*, not activation levers: editing
 them here changes nothing on a host. Applying a unit change to a host is a

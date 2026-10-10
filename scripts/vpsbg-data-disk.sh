@@ -98,23 +98,6 @@ require_data_path() {
     exit 2
   }
   [[ "$path" != *..* ]] || { echo "remote path must not contain ..: $path" >&2; exit 2; }
-  if [[ "$(basename "$path")" == startup.env ]]; then
-    [[ "$path" == /home/pir/data/pir2-sealed/startup.env ]] || {
-      echo 'startup.env must be placed at /home/pir/data/pir2-sealed/startup.env' >&2
-      exit 2
-    }
-  fi
-}
-
-require_startup_env_schema() {
-  local path=$1
-  [[ -f "$path" && -s "$path" ]] || { echo "local startup.env is missing or empty: $path" >&2; exit 2; }
-  grep -qx 'schema=bitcoinpir-pir2-sealed-startup-v3' "$path" \
-    || { echo 'startup.env is not a ceremony v2 file' >&2; exit 2; }
-  grep -qx 'profile=pir2-snp-sealed-v1' "$path" \
-    || { echo 'startup.env is not a pir2 sealed profile file' >&2; exit 2; }
-  grep -Eq '^phase=(observe|enroll|probe|ready)$' "$path" \
-    || { echo 'startup.env phase is not observe, enroll, probe, or ready' >&2; exit 2; }
 }
 
 status_field() {
@@ -353,9 +336,6 @@ case "$action" in
     [[ -n "$local_path" && -n "$remote_path" ]] || { echo 'put requires --local FILE and --remote PATH' >&2; exit 2; }
     require_data_path "$remote_path"
     [[ "$local_path" == /* ]] || { echo 'local path must be absolute' >&2; exit 2; }
-    if [[ "$(basename "$remote_path")" == startup.env ]]; then
-      require_startup_env_schema "$local_path"
-    fi
     (( dry_run + apply <= 1 )) || { echo 'put accepts only one of --dry-run or --apply' >&2; exit 2; }
     if ((dry_run || !apply)); then
       echo '[stage] put preview'
