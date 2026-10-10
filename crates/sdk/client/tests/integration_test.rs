@@ -226,7 +226,8 @@ async fn probe_live_credits_required() {
 
     // Each server publishes an access policy per backend, so probe the
     // backend the suite runs on each URL.
-    let targets = vec![
+    #[cfg_attr(not(feature = "onion"), allow(unused_mut))]
+    let mut targets = vec![
         (dpf_server0_url(), Backend::Dpf),
         (dpf_server1_url(), Backend::Dpf),
         (harmony_hint_url(), Backend::Harmony),
