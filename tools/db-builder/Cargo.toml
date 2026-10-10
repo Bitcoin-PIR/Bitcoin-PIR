@@ -12,7 +12,7 @@ publish = false
 # an empty test harness for each one.
 
 # ─── Essential pipeline (required for server/client) ─────────────────────────
-# Run in order: gen_0 → gen_1 → gen_2 → gen_3
+# Order: scripts/build_full.sh
 
 [[bin]]
 name = "gen_0_extract_utxo_set"
@@ -22,16 +22,6 @@ test = false
 [[bin]]
 name = "gen_1_build_utxo_chunks"
 path = "src/build_utxo_chunks.rs"
-test = false
-
-[[bin]]
-name = "gen_2_build_chunk_cuckoo"
-path = "src/build_chunk_cuckoo.rs"
-test = false
-
-[[bin]]
-name = "gen_3_build_index_cuckoo"
-path = "src/main.rs"
 test = false
 
 [[bin]]

@@ -2,9 +2,8 @@
 # Build + install Intel HEXL 1.2.6 + google/cpu_features (HEXL's CMake
 # dependency) to ${PREFIX:-/usr/local}. Bare-metal twin of the `hexl`
 # derivation in flake.nix:37-66 — same git tag (v1.2.6), same six CMake
-# flags — so a unified_server built afterwards via
-# ./scripts/build_unified_server.sh links HEXL identical (at the
-# source/flag level) to the flake's HEXL build.
+# flags — so a unified_server built afterwards links HEXL identical
+# (at the source/flag level) to the flake's HEXL build.
 #
 # Cross-host byte-reproducibility is still NOT achieved: the system
 # gcc/clang, libc, cmake, and linker versions are not pinned. The Nix
@@ -23,9 +22,8 @@
 #   PREFIX=$HOME/.local ./scripts/install_hexl.sh        # user-local, no sudo
 #   PREFIX=/opt/homebrew ./scripts/install_hexl.sh       # Apple Silicon brew prefix
 #
-# After install, ./scripts/build_unified_server.sh detects the install
-# via ${HEXL_PREFIX:-/usr/local} (auto-checks /opt/homebrew on Apple
-# Silicon) and switches to the HEXL-accelerated build path.
+# After install, the OnionPIR CMake build (vendor/onionpir/build.rs)
+# finds the HEXL package and links it.
 #
 # Pin rationale: HEXL v1.2.6 is what flake.nix pins (line 43). The Nix
 # build verifies the source via a content-addressed sha256 hash; here
@@ -173,4 +171,4 @@ echo "    cpu_features: $CF_CONFIG"
 echo
 echo "✓ HEXL 1.2.6 + cpu_features 0.10.1 installed to $PREFIX"
 echo
-echo "Next: ./scripts/build_unified_server.sh    # will now build HEXL-accelerated"
+echo "Next: cargo build --locked --release -p runtime --bin unified_server    # now HEXL-accelerated"

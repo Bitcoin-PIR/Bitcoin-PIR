@@ -24,10 +24,9 @@ run this read-only command first:
 
 That prints pir1 SSH health and then attests the pir2 MacBook node
 against `PIR2_MACBOOK_PIN` (set `BPIR_ADMIN` to reuse a prebuilt
-`bpir-admin`). The VPSBG pir2 host was retired on 2026-10-02;
-`./scripts/vpsbg-production-status.sh` GETs the VPSBG control plane and
-public `/status.json` of a future VPSBG host, never uses SSH, and defaults
-to `.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
+`bpir-admin`). `./scripts/vpsbg-production-status.sh` GETs the VPSBG
+control plane and the public `/status.json` of the Direct ORAM host, never
+uses SSH, and defaults to `.secrets/vpsbg-api-token`. The ORAM endpoint exists only during
 build/switch; after `unified_server` owns 8091, its fields are expected
 to be `unavailable`.
 Do not infer profile, attestation, generation, database identity, or other unavailable fields. `--root` reads an offline evidence directory only. See [`docs/PRODUCTION_OPERATIONS.md`](../docs/PRODUCTION_OPERATIONS.md) for release and canary routing.
@@ -50,7 +49,7 @@ Starts two Batch PIR WebSocket servers for UTXO lookups.
 
 The script builds the `server` binary (`runtime` crate), kills any existing servers on ports 8091/8092, and starts two background server processes. Press Ctrl+C to stop both.
 
-Server logs are written to `/tmp/pir_server1.log` and `/tmp/pir_server2.log`.
+Server logs are written to `/tmp/pir_primary.log` and `/tmp/pir_secondary.log`.
 
 ### `build_full.sh`
 
@@ -110,68 +109,3 @@ in the same `/Volumes/Bitcoin/data/deltas/<start>_<end>/` directory that
 `build_delta.sh` wrote to. Once these exist, the server (re)started via
 `start_pir_servers.sh` will automatically serve the delta via OnionPIR and the
 web client's OnionPIR tab can query `db_id=1`.
-
----
-
-## Regular database refresh runbook (LEGACY — not the production path)
-
-> **Superseded.** This flow (local build → rsync → SSH → restart) predates
-> the attested-builder proof chain, dual-host staging, frontend proof pins,
-> and the fail-closed activation window. For any production rotation use
-> [`docs/DATABASE_ROOT_ROTATION_RUNBOOK.md`](../docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
-> It is retained only as a sketch of the local/dev pipeline stages.
-
-Refresh production with a new full snapshot at height `B` plus a delta
-from the previous full-snapshot height `A` to `B`. Keep the existing
-checkpoint around as a backup until the new one is verified live.
-
-Prerequisites: a local bitcoind synced to ≥ `B` with `txindex=1`, and
-the previous dumptxoutset `utxo_<A>.dat` (kept from the last refresh).
-
-```bash
-# 1. Snapshot the chain at height B (≈5–15 min, locks the node briefly)
-bitcoin-cli -datadir=/Volumes/Bitcoin/bitcoin -rpcclienttimeout=0 \
-    -named dumptxoutset \
-    path=/Volumes/Bitcoin/snapshots/utxo_<B>.dat \
-    type=rollback rollback=<B>
-
-# 2. Build the full snapshot at B (≈1–3 h)
-./scripts/build_full.sh /Volumes/Bitcoin/snapshots/utxo_<B>.dat <B>
-
-# 3. Build the delta A → B (≈10–30 min)
-./scripts/build_delta.sh /Volumes/Bitcoin/snapshots/utxo_<A>.dat \
-    /Volumes/Bitcoin/bitcoin <A> <B>
-./scripts/build_delta_onion.sh <A> <B>
-
-# 4. Hash every file under each new dir into a deterministic MANIFEST.toml
-./scripts/build_db_manifest.sh /Volumes/Bitcoin/data/checkpoints/<B>
-./scripts/build_db_manifest.sh /Volumes/Bitcoin/data/deltas/<A>_<B>
-
-# 5. rsync to the Hetzner server (≈30–90 min depending on link)
-rsync -aP /Volumes/Bitcoin/data/checkpoints/<B>/ \
-    pir-hetzner:/home/pir/data/checkpoints/<B>/
-rsync -aP /Volumes/Bitcoin/data/deltas/<A>_<B>/ \
-    pir-hetzner:/home/pir/data/deltas/<A>_<B>/
-ssh pir-hetzner "chown -R pir:pir /home/pir/data/checkpoints/<B> /home/pir/data/deltas/<A>_<B>"
-
-# 6. Edit /home/pir/data/databases.toml on the host:
-#       main:  height = <B>, path = "checkpoints/<B>"
-#       delta: base_height = <A>, height = <B>, path = "deltas/<A>_<B>"
-#    Restart and verify
-ssh pir-hetzner "systemctl restart pir-primary pir-secondary"
-ssh pir-hetzner 'journalctl -u pir-primary -n 50 --no-pager | grep -E "Loaded|height"'
-```
-
-> **Do not follow this cleanup advice for production data.**
-> [`docs/DATABASE_ARTIFACT_RETENTION.md`](../docs/DATABASE_ARTIFACT_RETENTION.md)
-> requires keeping the prior complete generation until the rollback window
-> closes, both raw Core snapshots permanently (a delta cannot reconstruct
-> the earlier snapshot's spent Coin fields), and the Direct ORAM inputs and
-> exact manifests. Only purely local, non-retained intermediates may be
-> deleted after checking that map.
-
-After verifying live queries against `wss://weikeng1.bitcoinpir.org`, the
-old flow deleted the previous checkpoint dir on the host
-(`/home/pir/data/checkpoints/<A>/`) and the local intermediate dir
-(`/Volumes/Bitcoin/data/intermediate/full_<B>/`) — see the retention
-warning above before deleting anything.

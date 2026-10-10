@@ -46,9 +46,10 @@ secret; `keygen` and `pubkey` print only the public key.
 - pir1: `pir-primary.service` passes `--credit-issuer-url
   https://issuer.bitcoinpir.org` and `--credit-issuer-pubkey
   /etc/bitcoinpir/issuer/grant.pub`.
-- pir2: the same two values live in `unified-server-run.sh` inside the
-  measured UKI (`PIR2_CREDIT_ISSUER_URL`, `PIR2_CREDIT_ISSUER_PUBKEY_HEX`),
-  so a URL or key change is a new image (Flow E/G).
+- pir2 (the MacBook node): the same two flags in its launchd plist
+  ([pir2 MacBook replacement](pir2-macbook-replacement.md)).
+- The Direct ORAM host serves ORAM free (`--access oram=best-effort:2`), so
+  its measured UKI carries no issuer pins.
 - Credits ([Credits and gas](../CREDITS.md)): the issuer's redeem answers
   verify under `grant.pub`, and each server signs its redeem requests with
   its identity key, so the issuer's `operator_pubkeys` must list the
