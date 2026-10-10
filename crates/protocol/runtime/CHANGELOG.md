@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Removed the public mmap-residency request/response opcode. Opcode `0x04`
   remains retired and must not be reused.
+- Removed the unused `handler` module (`RequestHandler`; `unified_server`
+  dispatches on its own), the single HarmonyPIR query opcode `0x42` (clients
+  send the batch query `0x43`), `CuckooTablePair`, and the unused
+  `eval::find_*` result parsers.
 - Removed the `snp_sealed_secrets` module and the pir2 sealed-receipt opcode
   (`0x70`). The channel key is generated at every boot; a server identity
   comes from the `--identity-*` flags.

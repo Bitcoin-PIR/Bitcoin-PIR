@@ -188,59 +188,6 @@ pub(crate) fn compute_hints_for_group(
     Ok((group_id, padded_n, t_val, m as u32, flat))
 }
 
-/// Serve a single HarmonyPIR query against `db`. Free-function seam for
-/// `UnifiedServerData::handle_harmony_query` so the S4/S5 guards are
-/// unit-testable without booting the multi-GB server state (same
-/// pattern as `build_announce_response`).
-pub(crate) fn harmony_query_response(db: &MappedDatabase, query: &HarmonyQuery) -> Response {
-    let (sub_table, entry_size) = match query.level {
-        0 => (&db.index, db.index.params.bin_size()),
-        1 => (&db.chunk, db.chunk.params.bin_size()),
-        _ => return Response::Error("invalid level".into()),
-    };
-    let table = MmapCuckooTable::new(sub_table, entry_size);
-    harmony_query_response_from_table(&table, query)
-}
-
-pub(crate) fn harmony_query_response_from_table<T: CuckooTableAccess>(
-    table: &T,
-    query: &HarmonyQuery,
-) -> Response {
-    // S4: group_id comes straight off the wire — bounds-check it before
-    // slicing the mmap.
-    let group_id = query.group_id as usize;
-    if !table.group_exists(group_id) {
-        return Response::Error(format!("group_id {} out of range", query.group_id));
-    }
-
-    // S5: validate the index count before allocating. A legitimate
-    // query carries T − 1 distinct indices in [0, real_n), so more
-    // indices than bins is invalid — reject it instead of reserving
-    // indices.len() × entry_size bytes for an attacker-sized list.
-    if query.indices.len() > table.bins_per_table() {
-        return Response::Error(format!(
-            "too many indices: {} > bins_per_table {}",
-            query.indices.len(),
-            table.bins_per_table()
-        ));
-    }
-
-    let mut data = Vec::with_capacity(query.indices.len() * table.entry_size());
-    if let Err(msg) = table.append_entries(group_id, &query.indices, false, &mut data) {
-        table.abort_request(&msg);
-        return Response::Error(msg);
-    }
-    if let Err(msg) = table.finish_request() {
-        return Response::Error(msg);
-    }
-
-    Response::HarmonyQueryResult(HarmonyQueryResult {
-        group_id: query.group_id,
-        round_id: query.round_id,
-        data,
-    })
-}
-
 /// Serve a HarmonyPIR batch query against `db`. Free-function seam for
 /// `UnifiedServerData::handle_harmony_batch_query` (see
 /// `harmony_query_response`). Unlike the single-query path this also

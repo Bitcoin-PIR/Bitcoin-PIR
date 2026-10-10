@@ -1,9 +1,7 @@
 //! DPF evaluation for both index-level and chunk-level PIR.
 
 use libdpf::{Block, Dpf, DpfKey};
-use pir_core::params::{
-    CHUNK_SLOTS_PER_BIN, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, TAG_SIZE, UNIT_DATA_SIZE,
-};
+use pir_core::params::{CHUNK_SLOTS_PER_BIN, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, UNIT_DATA_SIZE};
 use std::time::{Duration, Instant};
 
 // ─── Software prefetch intrinsics ────────────────────────────────────────────
@@ -22,14 +20,6 @@ fn prefetch_read(ptr: *const u8) {
         let _ = ptr;
     }
 }
-
-/// DPF domain for index level (legacy constant for the main UTXO database).
-/// New code should use `pir_core::params::compute_dpf_n(bins_per_table)` instead.
-pub const DPF_N: u8 = 20;
-
-/// DPF domain for chunk level (legacy constant for the main UTXO database).
-/// New code should use `pir_core::params::compute_dpf_n(bins_per_table)` instead.
-pub const CHUNK_DPF_N: u8 = 21;
 
 // ─── Index-level constants ──────────────────────────────────────────────────
 
@@ -284,72 +274,6 @@ pub fn process_merkle_sibling_group(
         },
         None,
     )
-}
-
-/// Find a group_id in a Merkle sibling result's slots.
-///
-/// Each slot: [4B group_id LE][arity × 32B child hashes].
-/// Returns the arity child hashes as a flat byte slice if found.
-pub fn find_group_in_sibling_result(
-    result: &[u8],
-    group_id: u32,
-    arity: usize,
-    slots_per_bin: usize,
-) -> Option<Vec<[u8; 32]>> {
-    let slot_size = 4 + arity * 32;
-    let target = group_id.to_le_bytes();
-    for slot in 0..slots_per_bin {
-        let base = slot * slot_size;
-        if base + 4 > result.len() {
-            break;
-        }
-        if result[base..base + 4] == target {
-            let mut children = Vec::with_capacity(arity);
-            for c in 0..arity {
-                let off = base + 4 + c * 32;
-                let mut h = [0u8; 32];
-                h.copy_from_slice(&result[off..off + 32]);
-                children.push(h);
-            }
-            return Some(children);
-        }
-    }
-    None
-}
-
-// ─── Result parsing helpers (client-side) ───────────────────────────────────
-
-/// Find a matching tag in an index-level result's slots.
-/// `expected_tag` is the 8-byte fingerprint computed by the client.
-/// Returns (start_chunk_id, num_chunks) if found.
-pub fn find_entry_in_index_result(result: &[u8], expected_tag: u64) -> Option<(u32, u32)> {
-    for slot in 0..INDEX_SLOTS {
-        let base = slot * INDEX_SLOT_SIZE;
-        let slot_tag = u64::from_le_bytes(result[base..base + TAG_SIZE].try_into().unwrap());
-        if slot_tag == expected_tag {
-            let start_chunk_id = u32::from_le_bytes(
-                result[base + TAG_SIZE..base + TAG_SIZE + 4]
-                    .try_into()
-                    .unwrap(),
-            );
-            let num_chunks = result[base + TAG_SIZE + 4] as u32;
-            return Some((start_chunk_id, num_chunks));
-        }
-    }
-    None
-}
-
-/// Find a chunk_id in a chunk-level result's slots.
-/// Returns the UNIT_DATA_SIZE data if found.
-pub fn find_chunk_in_result(result: &[u8], chunk_id: u32) -> Option<&[u8]> {
-    let target = chunk_id.to_le_bytes();
-    for slot in 0..CHUNK_SLOTS {
-        let base = slot * CHUNK_SLOT_SIZE;
-        if result[base..base + 4] == target {
-            return Some(&result[base + 4..base + CHUNK_SLOT_SIZE]);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

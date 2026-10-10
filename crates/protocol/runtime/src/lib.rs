@@ -7,7 +7,6 @@ pub mod attest;
 pub mod channel;
 pub mod db_proof;
 pub mod eval;
-pub mod handler;
 pub mod identity;
 pub mod manifest;
 pub mod protocol;

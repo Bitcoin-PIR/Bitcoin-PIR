@@ -1,42 +1,14 @@
-//! Shared cuckoo table loading for PIR servers.
-//!
-//! Provides both the legacy `CuckooTablePair` (loads exactly two files)
-//! and the new `MappedSubTable` / `MappedDatabase` types that support
-//! multiple databases with different parameters.
+//! Cuckoo table loading for PIR servers: `MappedSubTable` /
+//! `MappedDatabase`, one per configured database.
 
 use crate::manifest::{hex_encode, DbManifest};
 use crate::protocol::DatabaseProofBundle;
 use memmap2::Mmap;
 use pir_core::merkle::{sha256, Hash256};
-use pir_core::params::{
-    TableParams, CHUNK_CUCKOO_FILE, CHUNK_PARAMS, CHUNK_SIZE, CHUNK_SLOTS_PER_BIN, CUCKOO_FILE,
-    INDEX_PARAMS, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE,
-};
+use pir_core::params::TableParams;
 use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
-
-// Wrappers kept local (moved from the ex-`build::common`) so table.rs's
-// call sites stay readable — `read_cuckoo_header(bytes)` vs the full
-// pir-core signature.
-//
-// Phase C: both accept legacy MAGIC (no anchor) AND v2 MAGIC (anchor
-// appended). The anchor itself is discarded by these signatures —
-// callers that need it should use
-// `pir_core::cuckoo::read_cuckoo_header_with_anchor` directly.
-fn read_cuckoo_header(data: &[u8]) -> (usize, u64) {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &INDEX_PARAMS)
-        .expect("INDEX cuckoo header parse");
-    (h.bins_per_table, h.tag_seed)
-}
-
-fn read_chunk_cuckoo_header(data: &[u8]) -> usize {
-    let h = pir_core::cuckoo::read_cuckoo_header_with_anchor(data, &CHUNK_PARAMS)
-        .expect("CHUNK cuckoo header parse");
-    h.bins_per_table
-}
-
-// ─── New generic types ─────────────────────────────────────────────────────
 
 /// A single memory-mapped cuckoo sub-table with its parameters.
 pub struct MappedSubTable {
@@ -897,110 +869,11 @@ impl ServerState {
     }
 }
 
-// ─── Legacy CuckooTablePair (backward compatible) ──────────────────────────
-
-/// A pair of memory-mapped cuckoo tables (index + chunk).
-///
-/// This is the legacy loading interface. New code should use
-/// `MappedDatabase` instead.
-pub struct CuckooTablePair {
-    /// Memory-mapped index cuckoo table.
-    pub index_cuckoo: Mmap,
-    /// Number of bins per sub-table in the index cuckoo.
-    pub index_bins_per_table: usize,
-    /// Total byte size of one index sub-table (bins × slots_per_bin × slot_size).
-    pub index_table_byte_size: usize,
-    /// Fingerprint tag seed from the index cuckoo header.
-    pub tag_seed: u64,
-
-    /// Memory-mapped chunk cuckoo table.
-    pub chunk_cuckoo: Mmap,
-    /// Number of bins per sub-table in the chunk cuckoo.
-    pub chunk_bins_per_table: usize,
-    /// Total byte size of one chunk sub-table.
-    pub chunk_table_byte_size: usize,
-}
-
-impl CuckooTablePair {
-    /// Load and memory-map both cuckoo table files.
-    ///
-    /// Reads headers to extract layout parameters and applies madvise
-    /// hints for sequential access patterns.
-    pub fn load() -> Self {
-        println!("[1] Loading index cuckoo: {}", CUCKOO_FILE);
-        let f = File::open(CUCKOO_FILE).expect("open index cuckoo");
-        let index_cuckoo = unsafe { Mmap::map(&f) }.expect("mmap index cuckoo");
-        let (index_bins_per_table, tag_seed) = read_cuckoo_header(&index_cuckoo);
-        let index_table_byte_size = index_bins_per_table * INDEX_SLOTS_PER_BIN * INDEX_SLOT_SIZE;
-        println!(
-            "  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
-            index_bins_per_table,
-            INDEX_SLOT_SIZE,
-            index_table_byte_size as f64 / (1024.0 * 1024.0)
-        );
-        println!("  tag_seed = 0x{:016x}", tag_seed);
-        println!(
-            "  total file = {:.2} GB",
-            index_cuckoo.len() as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-
-        #[cfg(unix)]
-        {
-            use libc::{madvise, MADV_SEQUENTIAL};
-            unsafe {
-                madvise(
-                    index_cuckoo.as_ptr() as *mut libc::c_void,
-                    index_cuckoo.len(),
-                    MADV_SEQUENTIAL,
-                );
-            }
-        }
-
-        println!("[2] Loading chunk cuckoo: {}", CHUNK_CUCKOO_FILE);
-        let f = File::open(CHUNK_CUCKOO_FILE).expect("open chunk cuckoo");
-        let chunk_cuckoo = unsafe { Mmap::map(&f) }.expect("mmap chunk cuckoo");
-        let chunk_bins_per_table = read_chunk_cuckoo_header(&chunk_cuckoo);
-        let chunk_slot_size = 4 + CHUNK_SIZE;
-        let chunk_table_byte_size = chunk_bins_per_table * CHUNK_SLOTS_PER_BIN * chunk_slot_size;
-        println!(
-            "  bins_per_table = {}, slot_size = {}B, table_size = {:.1} MB",
-            chunk_bins_per_table,
-            chunk_slot_size,
-            chunk_table_byte_size as f64 / (1024.0 * 1024.0)
-        );
-        println!(
-            "  total file = {:.2} GB",
-            chunk_cuckoo.len() as f64 / (1024.0 * 1024.0 * 1024.0)
-        );
-
-        #[cfg(unix)]
-        {
-            use libc::{madvise, MADV_SEQUENTIAL};
-            unsafe {
-                madvise(
-                    chunk_cuckoo.as_ptr() as *mut libc::c_void,
-                    chunk_cuckoo.len(),
-                    MADV_SEQUENTIAL,
-                );
-            }
-        }
-
-        CuckooTablePair {
-            index_cuckoo,
-            index_bins_per_table,
-            index_table_byte_size,
-            tag_seed,
-            chunk_cuckoo,
-            chunk_bins_per_table,
-            chunk_table_byte_size,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use pir_core::cuckoo::{write_header_with_anchor, HeaderAnchor};
+    use pir_core::params::INDEX_PARAMS;
     use pir_core::seeds::{ChainAnchor, CHAIN_ANCHOR_BYTES};
     use std::io::Write as _;
 

@@ -57,8 +57,6 @@ use std::path::Path;
 pub enum IdentityLoadError {
     /// File read failed (missing, no permission, etc.).
     Io { path: String, source: io::Error },
-    /// Identity-key file's byte length is wrong (must be 32 bytes).
-    KeyLength { path: String, got: usize },
     /// Cert file failed to parse as an [`IdentityCert`].
     CertParse { path: String, source: IdentityError },
     /// Cert's `identity_pubkey` doesn't match the loaded identity key's
@@ -80,11 +78,6 @@ impl std::fmt::Display for IdentityLoadError {
             Self::Io { path, source } => {
                 write!(f, "failed to read {}: {}", path, source)
             }
-            Self::KeyLength { path, got } => write!(
-                f,
-                "identity-key file {} is {} bytes (must be 32)",
-                path, got
-            ),
             Self::CertParse { path, source } => {
                 write!(f, "failed to parse {}: {}", path, source)
             }
@@ -127,25 +120,6 @@ pub struct ServerIdentity {
     pub cert: IdentityCert,
     /// Decoded manifest — same. Includes the issued_at timestamp.
     pub manifest: ChannelManifest,
-}
-
-/// Load the identity Ed25519 keypair from disk. Returns the parsed
-/// [`SigningKey`]. The file must hold exactly 32 raw seed bytes (this
-/// matches `bpir-admin generate-identity --raw` output).
-pub fn load_identity_key(path: &Path) -> Result<SigningKey, IdentityLoadError> {
-    let bytes = fs::read(path).map_err(|e| IdentityLoadError::Io {
-        path: path.display().to_string(),
-        source: e,
-    })?;
-    if bytes.len() != 32 {
-        return Err(IdentityLoadError::KeyLength {
-            path: path.display().to_string(),
-            got: bytes.len(),
-        });
-    }
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&bytes);
-    Ok(SigningKey::from_bytes(&seed))
 }
 
 /// Load the operator-signed [`IdentityCert`] from disk. Verifies the
@@ -256,38 +230,6 @@ mod tests {
 
     fn fake_sk(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
-    }
-
-    #[test]
-    fn load_identity_key_round_trips_raw_32_byte_seed() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("identity.key");
-        let original = fake_sk(0x77);
-        fs::write(&path, original.to_bytes()).unwrap();
-        let loaded = load_identity_key(&path).unwrap();
-        assert_eq!(loaded.to_bytes(), original.to_bytes());
-        // And the pubkey matches — sanity for the deploy invariant.
-        assert_eq!(
-            loaded.verifying_key().to_bytes(),
-            original.verifying_key().to_bytes()
-        );
-    }
-
-    #[test]
-    fn load_identity_key_wrong_length_rejected() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("identity.key");
-        fs::write(&path, b"too short").unwrap();
-        let err = load_identity_key(&path).unwrap_err();
-        assert!(matches!(err, IdentityLoadError::KeyLength { got: 9, .. }));
-    }
-
-    #[test]
-    fn load_identity_key_missing_file_returns_io_error() {
-        let dir = tempdir().unwrap();
-        let path = dir.path().join("absent.key");
-        let err = load_identity_key(&path).unwrap_err();
-        assert!(matches!(err, IdentityLoadError::Io { .. }));
     }
 
     #[test]

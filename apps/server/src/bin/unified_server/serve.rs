@@ -29,7 +29,6 @@ pub(crate) fn is_query_bearing_variant(variant: u8) -> bool {
             | REQ_CHUNK_BATCH
             | REQ_BUCKET_MERKLE_SIB_BATCH
             | REQ_BUCKET_MERKLE_TREE_TOPS
-            | REQ_HARMONY_QUERY
             | REQ_HARMONY_BATCH_QUERY
             | REQ_ORAM_LOOKUP
             | REQ_REGISTER_KEYS

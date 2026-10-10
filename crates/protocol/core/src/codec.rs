@@ -160,97 +160,6 @@ pub fn serialize_utxo_data(entries: &[UtxoEntry]) -> Vec<u8> {
     out
 }
 
-// ─── Delta data parsing ────────────────────────────────────────────────────
-
-/// A spent UTXO reference (txid + vout, no amount).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpentEntry {
-    pub txid: [u8; 32],
-    pub vout: u32,
-}
-
-/// Parsed delta data for a single scripthash.
-#[derive(Clone, Debug)]
-pub struct DeltaData {
-    pub spent: Vec<SpentEntry>,
-    pub new_utxos: Vec<UtxoEntry>,
-}
-
-/// Parse delta data from serialized chunk data.
-///
-/// Format:
-/// ```text
-/// [varint num_spent]
-///   per spent: [32B txid][varint vout]
-/// [varint num_new]
-///   per new: [32B txid][varint vout][varint amount]
-/// ```
-pub fn parse_delta_data(data: &[u8]) -> DeltaData {
-    let mut pos = 0;
-
-    let (num_spent, consumed) = read_varint(&data[pos..]);
-    pos += consumed;
-
-    let mut spent = Vec::with_capacity(num_spent as usize);
-    for _ in 0..num_spent {
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(&data[pos..pos + 32]);
-        pos += 32;
-
-        let (vout, consumed) = read_varint(&data[pos..]);
-        pos += consumed;
-
-        spent.push(SpentEntry {
-            txid,
-            vout: vout as u32,
-        });
-    }
-
-    let (num_new, consumed) = read_varint(&data[pos..]);
-    pos += consumed;
-
-    let mut new_utxos = Vec::with_capacity(num_new as usize);
-    for _ in 0..num_new {
-        let mut txid = [0u8; 32];
-        txid.copy_from_slice(&data[pos..pos + 32]);
-        pos += 32;
-
-        let (vout, consumed) = read_varint(&data[pos..]);
-        pos += consumed;
-
-        let (amount, consumed) = read_varint(&data[pos..]);
-        pos += consumed;
-
-        new_utxos.push(UtxoEntry {
-            txid,
-            vout: vout as u32,
-            amount,
-        });
-    }
-
-    DeltaData { spent, new_utxos }
-}
-
-/// Serialize delta data for a single scripthash.
-pub fn serialize_delta_data(delta: &DeltaData) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    write_varint(delta.spent.len() as u64, &mut out);
-    for entry in &delta.spent {
-        out.extend_from_slice(&entry.txid);
-        write_varint(entry.vout as u64, &mut out);
-    }
-
-    write_varint(delta.new_utxos.len() as u64, &mut out);
-    for entry in &delta.new_utxos {
-        out.extend_from_slice(&entry.txid);
-        write_varint(entry.vout as u64, &mut out);
-        write_varint(entry.amount, &mut out);
-    }
-
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,30 +260,5 @@ mod tests {
         let serialized = serialize_utxo_data(&entries);
         let parsed = parse_utxo_data(&serialized);
         assert_eq!(entries, parsed);
-    }
-
-    #[test]
-    fn test_delta_roundtrip() {
-        let delta = DeltaData {
-            spent: vec![
-                SpentEntry {
-                    txid: [0x11; 32],
-                    vout: 0,
-                },
-                SpentEntry {
-                    txid: [0x22; 32],
-                    vout: 3,
-                },
-            ],
-            new_utxos: vec![UtxoEntry {
-                txid: [0x33; 32],
-                vout: 0,
-                amount: 75000,
-            }],
-        };
-        let serialized = serialize_delta_data(&delta);
-        let parsed = parse_delta_data(&serialized);
-        assert_eq!(delta.spent, parsed.spent);
-        assert_eq!(delta.new_utxos, parsed.new_utxos);
     }
 }
