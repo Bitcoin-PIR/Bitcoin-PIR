@@ -131,7 +131,6 @@ export {
 
 export {
   OnionPirWebClient,
-  createOnionPirWebClient,
   type OnionPirClientConfig,
 } from './onionpir_client.js';
 
@@ -207,11 +206,6 @@ export type {
   QueryInspectorData,
   RoundTimingData,
 } from './harmony-types.js';
-
-export {
-  prepareQueryInspectorRenderDataV1,
-  type QueryInspectorRenderDataV1,
-} from './query-inspector-sanitize.js';
 
 export {
   fetchProofArtifactBytesV1,
@@ -291,12 +285,10 @@ export {
   sdkCuckooHashInt,
 } from './sdk-bridge.js';
 
-export { trustedNowUnixV1 } from './trusted-time.js';
 export { renderSecurityBadgeTextRowsV1 } from './security-badge.js';
 export type { SecurityBadgeTextRowV1 } from './security-badge.js';
 export { type HarmonyHintCacheBindingV1 } from './harmonypir_hint_db.js';
 
-export { requireVerifiedQueryResultsV1 } from './strict-result-release.js';
 
 export {
   STALE_CHUNK_RELOAD_KEY,

@@ -113,17 +113,6 @@ export interface QueryResult {
    * per-group DATA tree; `bin` is the leaf index within it.
    */
   dataBinLeaves?: { hash: Uint8Array; pbcGroup: number; bin: number }[];
-  /** Strict OnionPIR session binding. All three values are immutable for the
-   * query result and must still match when its Merkle proof is checked. */
-  verifiedDbId?: number;
-  verifiedOnionRootHex?: string;
-  verificationGeneration?: number;
-  /**
-   * Opaque, client-owned result handle. While true, user-facing fields are
-   * deliberately blank and may only be released by the same live client's
-   * one-shot inclusion verifier.
-   */
-  verificationPending?: true;
 }
 
 // ─── Connection state ───────────────────────────────────────────────────────

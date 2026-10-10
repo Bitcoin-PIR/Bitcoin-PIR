@@ -356,7 +356,7 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 
-/** Strict v2 pins for the Hetzner OnionPIR service. Unlike the v1 pins above
+/** v2 pins for the Hetzner OnionPIR service. Unlike the v1 pins above
  * (retained for DPF/Harmony compatibility), these bind the complete typed
  * Onion query layout and the reviewed re-attestation producer. */
 export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
@@ -409,7 +409,7 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
   },
 ];
 
-/** Strict v2 pins for the VPSBG Direct ORAM service. The layout and database
+/** v2 pins for the VPSBG Direct ORAM service. The layout and database
  * roots match the Onion service, while the native full-build producer is
  * independently bound to the proof-registry lock. */
 export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
@@ -419,55 +419,3 @@ export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
     builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
     description: `${pin.description}; VPSBG native full-build producer`,
   }));
-
-/**
- * Operator identity pin (Tier-1) for the REQ_ANNOUNCE operator-signed
- * identity flow.
- *
- * The operator's long-term Ed25519 key (generated OFFLINE via
- * `bpir-admin generate-identity --purpose operator`, secret never on a
- * server) signs each server's `IdentityCert`. A client pins the
- * operator's *public* key here and rejects any announce bundle whose
- * cert isn't signed by it. One operator key signs the whole fleet; the
- * per-server `IdentityCert.server_id` (pir1 / pir2) distinguishes them,
- * so this single pin covers both.
- *
- * Pass the decoded bytes to `WasmAnnounceVerification.checkPinnedOperator`
- * (operator pubkey match + cert signature + validity + chain check) —
- * NOT a bare `operatorPubkeyHex` string-compare, which would miss the
- * cert's operator signature.
- *
- * Pinned 2026-05-25. Operator key generated offline via
- * `bpir-admin generate-identity --purpose operator`; the SECRET lives
- * only on the operator's workstation (`~/.config/bpir-admin/operator.key`,
- * backed up out-of-band) and signs the pir1 `IdentityCert`
- * (`bpir-admin sign-identity`, valid_until 2029-05).
- *
- * Since the 2026-08-21 genesis sealed ceremony, pir2's
- * `IdentityCert` is signed by its own per-provider operator key. The
- * product flow takes each provider's operator pin from
- * `functional-beta-trusted-bootstrap.json` (`operatorSigningKeyHex`),
- * so this constant remains only the pir1-era legacy/shared fallback.
- * The "verified operator" badge is wired into the DPF + HarmonyPIR cards
- * (web/index.html) and the playground, gated on `state === 'verified'`.
- * See docs/history/OPERATOR_IDENTITY.md.
- */
-export const PIR_OPERATOR_PUBKEY_HEX =
-  '256fb106c039f8009d3caa431a9634ff3fe5db3b9e4d9ae7282bbde66772c97a';
-
-/** Decoded 32-byte operator pubkey for
- *  `WasmAnnounceVerification.checkPinnedOperator`. See provenance +
- *  the live deployment note on [`PIR_OPERATOR_PUBKEY_HEX`]. */
-export const PIR_OPERATOR_PUBKEY: Uint8Array = (() => {
-  const hex = PIR_OPERATOR_PUBKEY_HEX;
-  if (hex.length !== 64) {
-    throw new Error(
-      `attest-pin: PIR_OPERATOR_PUBKEY_HEX must be 64 hex chars, got ${hex.length}`,
-    );
-  }
-  const out = new Uint8Array(32);
-  for (let i = 0; i < 32; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  }
-  return out;
-})();
