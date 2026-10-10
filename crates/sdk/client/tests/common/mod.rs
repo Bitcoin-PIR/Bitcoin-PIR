@@ -19,49 +19,6 @@
 use pir_sdk::{PirError, PirResult};
 use pir_sdk_client::{DatabaseProofPolicy, DpfClient, HarmonyClient, OnionClient, PirClient};
 
-/// Database-proof policy for the pinned production db0 (main) snapshot.
-/// Mirrors the db0 entry of `PRODUCTION_DATABASE_PINS` in
-/// `tests/integration_test.rs`; the leakage suite uses this for the
-/// session step (the strict clients bind tree-top preflight to installed
-/// verified roots).
-pub fn production_db0_proof_policy() -> DatabaseProofPolicy {
-    let mut policy = DatabaseProofPolicy::mainnet();
-    policy.expected_params_hash = Some(decode_hex_array(
-        "ac364eb24e24ba025e2dcfdd50b9ccf65ffd556488afc076b70b557084c5318e",
-    ));
-    policy.allowed_builder_binary_sha256 = vec![decode_hex_array(
-        "d4da29807e806c8a16eec94b86119bd16df7805a66fa4ff1c187a26832a36427",
-    )];
-    policy.allowed_builder_git_commits =
-        vec!["b692aec18b9c20ac92cb9fe22588e96ff96ad27d".to_owned()];
-    policy
-}
-
-/// Database-proof policy for the pinned production db0 OnionPIR v2 layout.
-/// Mirrors `production_onion_v2_pin(PRODUCTION_DATABASE_PINS[0])` in
-/// `tests/integration_test.rs`: v2 proofs must verify against the exact
-/// OnionPIR builder artifact, not the generic bucket-Merkle builder.
-/// `OnionClient::preflight_verified_database` requires installed verified
-/// roots and the strict canary binds its tree-top preflight to the v2
-/// super-root, so the OnionPIR session path installs the v2 proof.
-pub fn production_db0_onion_v2_proof_policy() -> DatabaseProofPolicy {
-    let mut policy = production_db0_proof_policy();
-    policy.expected_params_hash = Some(decode_hex_array(
-        "a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563",
-    ));
-    policy.allowed_builder_binary_sha256 = vec![decode_hex_array(
-        "1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c",
-    )];
-    policy.allowed_builder_git_commits =
-        vec!["d49a199e290ccbb05b6481c5ba691cb516aa76bb".to_owned()];
-    policy
-}
-
-fn decode_hex_array<const N: usize>(value: &str) -> [u8; N] {
-    let bytes = hex::decode(value).expect("pin must be valid hex");
-    bytes.try_into().expect("pin hex length must match")
-}
-
 fn fresh_32() -> PirResult<[u8; 32]> {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|error| {
