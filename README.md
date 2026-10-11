@@ -56,7 +56,8 @@ Wallet sync typically touches dozens of addresses at once. Bitcoin PIR packs mul
 The server hosts the complete Bitcoin UTXO set (~815K active script types at time of writing), filtered to exclude dust and very heavy addresses. Light wallets see the same data a full node would return.
 
 ### Open and self-hostable
-Anyone can run PIR servers from a public Bitcoin Core snapshot. Free queries
+Anyone can run a node serving the published database generation
+([`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md)). Free queries
 are open; a provider chooses per backend what is free, paid, or free while
 the server has room, and paid queries present credits verified at an issuer
 ([`docs/CREDITS.md`](docs/CREDITS.md)) without giving the PIR host any
@@ -102,9 +103,10 @@ research sources live in separate repositories under the
    cd Bitcoin-PIR && cargo build --release
    ```
 2. **Point clients at the live demo servers** (no database build needed) — see `web/` for the browser client.
-3. **Or host your own**: generate the databases from a Bitcoin Core UTXO
-   snapshot with `scripts/build_full.sh` (takes a few hours), then start the
-   PIR servers with `scripts/start_pir_servers.sh`.
+3. **Or run your own node**: [`docs/OPERATOR_GUIDE.md`](docs/OPERATOR_GUIDE.md).
+   For development, `scripts/build_full.sh` builds databases from a Bitcoin
+   Core UTXO snapshot (a few hours) and `scripts/start_pir_servers.sh` serves
+   them; their proofs do not match the production clients' pins.
 
 For development, see [`docs/TESTING.md`](docs/TESTING.md).
 
