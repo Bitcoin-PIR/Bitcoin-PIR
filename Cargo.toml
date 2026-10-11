@@ -15,6 +15,7 @@ members = [
     "crates/sdk/client",
     "crates/sdk/wasm",
     "apps/admin",
+    "apps/directory-relay",
     "tools/db-builder",
     "apps/server",
 ]
