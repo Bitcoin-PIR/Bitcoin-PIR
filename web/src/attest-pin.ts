@@ -197,9 +197,6 @@ export const PIR1_PIN: ServerAttestPin = {
   // HarmonyPIR hints are free up to 1.5M gas per hour, OnionPIR is paid.
   binarySha256Hex:
     'b9f1be2f56d1d0d6a9f501a259ba118cbce91d66c86537037270cf8976a67a6d',
-  // The 197511f8 build pir1 runs until the Flow D switch.
-  transitionBinarySha256Hex:
-    'f472cff57077201a7e95e3375f1f7e9c7ad291946d44e9a6fdd1df1ded393f91',
   description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 987fad2f: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR paid; operator API keys)',
 };
 
