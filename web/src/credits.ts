@@ -1,19 +1,15 @@
 /**
  * Credits (paid queries, v2), browser side. Design: `docs/CREDITS.md`.
  *
- * - `IssuerClient`: the issuer's `/v2/` contract (`info`, `credentials`).
- * - `CreditStore`: ARC credentials and the in-flight purchase in
- *   `localStorage`, so a reload never loses paid sats or a nonce.
+ * - `IssuerClient`: the issuer's `/v2/` contract (`info`, raw requests for
+ *   x402 in `x402.ts`).
  * - Frame codec for `REQ_CREDIT_PRESENT` / `RESP_CREDIT_OK`.
  * - `serverGasCardFromInfo` and `ConnectionCreditMeter`: price a frame the
  *   way the server does and decide when a top-up is due.
- * - `CreditWallet`: turn credentials into kind-2 payloads, persisting the
- *   nonce before the payload leaves (a reused nonce is a double spend).
- * - `purchaseCredential`: Lightning → ecash → blinded request → credential.
+ * - `CreditedChannel`: keep one OnionPIR connection funded.
  *
- * The ARC cryptography lives in the wasm SDK (`WasmArcCredentialRequest`,
- * `WasmArcCredential`); this module takes those as injected factories so
- * everything here is testable without wasm.
+ * The wallet that pays, Cashu ecash presented as kind 1, is
+ * `cashu-wallet.ts`.
  */
 
 import {
@@ -24,14 +20,10 @@ import {
   RESP_API_KEY_OK,
   RESP_CREDIT_OK,
 } from './constants.js';
-import { mintTokenForQuote, requestLightningQuote, waitForQuotePayment } from './cashu-purchase.js';
 
 const RESP_ERROR = 0xff;
 export const CREDITS_API_VERSION = 2;
 export const CREDIT_PRESENT_KIND_CASHU = 1;
-export const CREDIT_PRESENT_KIND_ARC = 2;
-export const CREDIT_STORAGE_KEY = 'bitcoinpir.credits.v1';
-export const PENDING_CREDENTIAL_STORAGE_KEY = 'bitcoinpir.credits.pending-credential.v1';
 
 // ─── Issuer contract ────────────────────────────────────────────────────────
 
@@ -42,36 +34,12 @@ export interface GasParams {
   egressGasPerMb: number;
 }
 
-export interface ArcInfo {
-  epoch: number;
-  presentationLimit: number;
-  issuerPublicKeyHex: string;
-  presentationContextHex: string;
-  validUntil: number;
-}
-
-export interface CreditOffer {
-  credits: number;
-  sat: number;
-}
-
 export interface IssuerInfo {
   service: string;
   version: number;
   gas: GasParams;
   mints: string[];
-  offers: CreditOffer[];
-  arc: ArcInfo | null;
   rateCard: { flow: string; credits: number }[];
-}
-
-/** `POST /v2/credentials` answer, decoded. */
-export interface IssuedCredential {
-  responseHex: string;
-  epoch: number;
-  presentationLimit: number;
-  issuerPublicKeyHex: string;
-  validUntil: number;
 }
 
 export class IssuerError extends Error {
@@ -118,30 +86,6 @@ export function parseIssuerInfo(raw: unknown): IssuerInfo {
   }
   const gas = parseGasParams(raw);
   const mints = Array.isArray(raw.mints) ? raw.mints.filter((m): m is string => typeof m === 'string') : [];
-  const offers: CreditOffer[] = [];
-  if (Array.isArray(raw.offers)) {
-    for (const offer of raw.offers) {
-      if (!isRecord(offer)) continue;
-      const credits = positiveInt(offer.credits, 'offer credits');
-      const sat = positiveInt(offer.sat, 'offer sat');
-      if (credits > 0 && sat > 0) offers.push({ credits, sat });
-    }
-  }
-  let arc: ArcInfo | null = null;
-  if (isRecord(raw.arc)) {
-    const a = raw.arc;
-    if (typeof a.issuer_public_key_hex !== 'string' || !/^[0-9a-f]{198}$/i.test(a.issuer_public_key_hex)) {
-      throw new IssuerError('issuer info: arc.issuer_public_key_hex must be 99 bytes of hex');
-    }
-    arc = {
-      epoch: positiveInt(a.epoch, 'arc.epoch'),
-      presentationLimit: positiveInt(a.presentation_limit, 'arc.presentation_limit'),
-      issuerPublicKeyHex: a.issuer_public_key_hex.toLowerCase(),
-      presentationContextHex: typeof a.presentation_context_hex === 'string' ? a.presentation_context_hex : '',
-      validUntil: positiveInt(a.valid_until, 'arc.valid_until'),
-    };
-    if (arc.presentationLimit === 0) throw new IssuerError('issuer info: arc.presentation_limit is zero');
-  }
   const rateCard: { flow: string; credits: number }[] = [];
   if (Array.isArray(raw.rate_card)) {
     for (const entry of raw.rate_card) {
@@ -155,26 +99,7 @@ export function parseIssuerInfo(raw: unknown): IssuerInfo {
     version: CREDITS_API_VERSION,
     gas,
     mints,
-    offers,
-    arc,
     rateCard,
-  };
-}
-
-export function parseIssuedCredential(raw: unknown): IssuedCredential {
-  if (!isRecord(raw)) throw new IssuerError('credential response is not an object');
-  if (typeof raw.response_hex !== 'string' || !/^([0-9a-f]{2})+$/i.test(raw.response_hex)) {
-    throw new IssuerError('credential response: response_hex is not hex');
-  }
-  if (typeof raw.issuer_public_key_hex !== 'string' || !/^[0-9a-f]{198}$/i.test(raw.issuer_public_key_hex)) {
-    throw new IssuerError('credential response: issuer_public_key_hex must be 99 bytes of hex');
-  }
-  return {
-    responseHex: raw.response_hex.toLowerCase(),
-    epoch: positiveInt(raw.epoch, 'epoch'),
-    presentationLimit: positiveInt(raw.presentation_limit, 'presentation_limit'),
-    issuerPublicKeyHex: raw.issuer_public_key_hex.toLowerCase(),
-    validUntil: positiveInt(raw.valid_until, 'valid_until'),
   };
 }
 
@@ -191,18 +116,6 @@ export class IssuerClient {
 
   async info(): Promise<IssuerInfo> {
     return parseIssuerInfo(await this.request('GET', '/v2/info'));
-  }
-
-  /** Pay `offer` with `token` for the blinded `requestBytes`. */
-  async buyCredential(offer: CreditOffer, token: string, requestBytes: Uint8Array): Promise<IssuedCredential> {
-    return parseIssuedCredential(
-      await this.request('POST', '/v2/credentials', {
-        credits: offer.credits,
-        sat: offer.sat,
-        token,
-        request_hex: bytesToHex(requestBytes),
-      }),
-    );
   }
 
   /** Raw POST with a caller-controlled body string and headers (x402 needs the exact bytes and the response headers). */
@@ -288,9 +201,7 @@ export function hexToBytes(text: string): Uint8Array {
 
 /** `[len u32 LE][0x12][kind][payload len u32 LE][payload]`, ready to send. */
 export function encodeCreditPresentFrame(kind: number, payload: Uint8Array): Uint8Array {
-  if (kind !== CREDIT_PRESENT_KIND_CASHU && kind !== CREDIT_PRESENT_KIND_ARC) {
-    throw new Error(`unknown credit presentation kind ${kind}`);
-  }
+  if (kind !== CREDIT_PRESENT_KIND_CASHU) throw new Error(`unknown credit presentation kind ${kind}`);
   if (payload.length === 0) throw new Error('empty credit presentation');
   if (payload.length > MAX_CREDIT_PRESENT_PAYLOAD_LEN) {
     throw new Error(`credit presentation is ${payload.length} bytes, the limit is ${MAX_CREDIT_PRESENT_PAYLOAD_LEN}`);
@@ -547,185 +458,6 @@ export class ConnectionCreditMeter {
   }
 }
 
-// ─── Store ──────────────────────────────────────────────────────────────────
-
-export interface StoredCredential {
-  version: 1;
-  issuerUrl: string;
-  epoch: number;
-  presentationLimit: number;
-  /** 131 bytes from `WasmArcCredentialRequest.finalize`, hex. */
-  credentialHex: string;
-  nextNonce: number;
-  issuerPublicKeyHex: string;
-  validUntil: number;
-  boughtAt: number;
-}
-
-/** The x402 leg of a pending purchase (`x402.ts`); absent for the Cashu rail. */
-export interface X402Pending {
-  /** The exact request body bytes, repeated on the paid retry (request binding). */
-  body: string;
-  resource: unknown;
-  accepted: unknown;
-  paymentHash: string | null;
-  invoice: string | null;
-  expiresAt: number | null;
-  preimage: string | null;
-}
-
-/** A purchase in flight, persisted step by step. */
-export interface PendingCredential {
-  version: 1;
-  issuerUrl: string;
-  /** Empty for an x402 purchase (no mint involved). */
-  mintUrl: string;
-  offer: CreditOffer;
-  epoch: number;
-  /** `WasmArcCredentialRequest.secretsBytes()` / `.requestBytes()`, hex. */
-  secretsHex: string;
-  requestHex: string;
-  quoteId: string | null;
-  invoice: string | null;
-  quoteExpiry: number | null;
-  token: string | null;
-  createdAt: number;
-  x402?: X402Pending;
-}
-
-/** The part of `localStorage` the stores use. */
-export interface StorageLike {
-  getItem(key: string): string | null;
-  setItem(key: string, value: string): void;
-  removeItem(key: string): void;
-}
-
-function defaultStorage(): StorageLike | null {
-  try {
-    return (globalThis as { localStorage?: StorageLike }).localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export class CreditStore {
-  private readonly storage: StorageLike | null;
-  private readonly key: string;
-  private readonly pendingKey: string;
-
-  constructor(
-    storage: StorageLike | null = defaultStorage(),
-    key = CREDIT_STORAGE_KEY,
-    pendingKey = PENDING_CREDENTIAL_STORAGE_KEY,
-  ) {
-    this.storage = storage;
-    this.key = key;
-    this.pendingKey = pendingKey;
-  }
-
-  list(): StoredCredential[] {
-    const raw = this.read(this.key);
-    if (!Array.isArray(raw)) return [];
-    return raw.filter(isStoredCredential);
-  }
-
-  /** Credentials with presentations left, most nearly exhausted first. */
-  usable(now: number): StoredCredential[] {
-    return this.list()
-      .filter((c) => c.nextNonce < c.presentationLimit && c.validUntil > now)
-      .sort((a, b) => a.presentationLimit - a.nextNonce - (b.presentationLimit - b.nextNonce));
-  }
-
-  add(credential: StoredCredential): void {
-    const list = this.list().filter((c) => c.credentialHex !== credential.credentialHex);
-    list.push(credential);
-    this.write(this.key, list);
-  }
-
-  /** Persist a new nonce; returns false if the credential is unknown. */
-  advance(credentialHex: string, nextNonce: number): boolean {
-    const list = this.list();
-    const entry = list.find((c) => c.credentialHex === credentialHex);
-    if (!entry) return false;
-    if (nextNonce < entry.nextNonce) throw new Error('credential nonce cannot move backwards');
-    entry.nextNonce = nextNonce;
-    this.write(this.key, list);
-    return true;
-  }
-
-  remove(credentialHex: string): void {
-    this.write(this.key, this.list().filter((c) => c.credentialHex !== credentialHex));
-  }
-
-  /** Credits left across every usable credential. */
-  remainingCredits(now: number): number {
-    return this.usable(now).reduce((sum, c) => sum + (c.presentationLimit - c.nextNonce), 0);
-  }
-
-  pending(): PendingCredential | null {
-    const raw = this.read(this.pendingKey);
-    return isPendingCredential(raw) ? raw : null;
-  }
-
-  setPending(pending: PendingCredential | null): void {
-    if (pending === null) {
-      try {
-        this.storage?.removeItem(this.pendingKey);
-      } catch {
-        /* storage unavailable */
-      }
-      return;
-    }
-    this.write(this.pendingKey, pending);
-  }
-
-  private read(key: string): unknown {
-    try {
-      const text = this.storage?.getItem(key);
-      return text ? JSON.parse(text) : null;
-    } catch {
-      return null;
-    }
-  }
-
-  private write(key: string, value: unknown): void {
-    try {
-      this.storage?.setItem(key, JSON.stringify(value));
-    } catch {
-      /* storage unavailable: the caller keeps working from memory */
-    }
-  }
-}
-
-function isStoredCredential(value: unknown): value is StoredCredential {
-  return (
-    isRecord(value) &&
-    value.version === 1 &&
-    typeof value.issuerUrl === 'string' &&
-    typeof value.epoch === 'number' &&
-    typeof value.presentationLimit === 'number' &&
-    typeof value.credentialHex === 'string' &&
-    typeof value.nextNonce === 'number' &&
-    typeof value.issuerPublicKeyHex === 'string' &&
-    typeof value.validUntil === 'number' &&
-    typeof value.boughtAt === 'number'
-  );
-}
-
-function isPendingCredential(value: unknown): value is PendingCredential {
-  return (
-    isRecord(value) &&
-    value.version === 1 &&
-    typeof value.issuerUrl === 'string' &&
-    typeof value.mintUrl === 'string' &&
-    isRecord(value.offer) &&
-    typeof value.epoch === 'number' &&
-    typeof value.secretsHex === 'string' &&
-    typeof value.requestHex === 'string' &&
-    typeof value.createdAt === 'number'
-  );
-}
-
 // ─── Frame classification (the OnionPIR web client) ─────────────────────────
 
 const REQ_REGISTER_KEYS = 0x50;
@@ -836,7 +568,14 @@ export function expectedResponseBytes(op: MeteredOp): number {
 
 // ─── Credited channel (one connection's balance, round-trip flows) ──────────
 
-/** Hands over up to `credits` credits as one presentation, or `null` when empty. */
+/** A `REQ_CREDIT_PRESENT` payload and the credits it is worth. */
+export interface Presentation {
+  kind: number;
+  payload: Uint8Array;
+  credits: number;
+}
+
+/** Hands over a presentation worth at least `credits` credits, or `null` when the wallet falls short. */
 export type CreditProvider = (credits: number) => Presentation | null;
 
 /** Sends a whole frame (`[len u32][payload]`) and returns the whole response frame. */
@@ -1047,199 +786,4 @@ function errorMessage(payload: Uint8Array): string {
     if (5 + len <= payload.length) return new TextDecoder().decode(payload.subarray(5, 5 + len));
   }
   return new TextDecoder().decode(payload.subarray(1));
-}
-
-// ─── Wallet: credentials → presentations ────────────────────────────────────
-
-/** What the wasm SDK's `WasmArcCredential` provides. */
-export interface ArcCredentialLike {
-  remaining(): number;
-  nextNonce(): number;
-  present(count: number): Uint8Array;
-  free?(): void;
-}
-
-export interface ArcCredentialFactory {
-  open(credential: Uint8Array, epoch: number, presentationLimit: number, nextNonce: number): ArcCredentialLike;
-}
-
-export interface Presentation {
-  kind: number;
-  payload: Uint8Array;
-  credits: number;
-  epoch: number;
-}
-
-export class CreditWallet {
-  constructor(
-    private readonly store: CreditStore,
-    private readonly arc: ArcCredentialFactory,
-    private readonly now: () => number = () => Math.floor(Date.now() / 1000),
-  ) {}
-
-  remainingCredits(): number {
-    return this.store.remainingCredits(this.now());
-  }
-
-  /**
-   * A kind-2 payload worth up to `count` credits from one credential (a
-   * payload carries one epoch). The nonce is persisted before the payload
-   * is returned. `null` when nothing is left.
-   */
-  present(count: number): Presentation | null {
-    if (count < 1) throw new Error('present: count must be at least 1');
-    const candidates = this.store.usable(this.now());
-    if (candidates.length === 0) return null;
-    // Prefer a credential that covers the whole request; else the fullest.
-    const covering = candidates.find((c) => c.presentationLimit - c.nextNonce >= count);
-    const chosen = covering ?? candidates.reduce((a, b) => (a.presentationLimit - a.nextNonce >= b.presentationLimit - b.nextNonce ? a : b));
-    const credits = Math.min(count, chosen.presentationLimit - chosen.nextNonce);
-    const holder = this.arc.open(hexToBytes(chosen.credentialHex), chosen.epoch, chosen.presentationLimit, chosen.nextNonce);
-    try {
-      const payload = holder.present(credits);
-      this.store.advance(chosen.credentialHex, holder.nextNonce());
-      return { kind: CREDIT_PRESENT_KIND_ARC, payload, credits, epoch: chosen.epoch };
-    } finally {
-      holder.free?.();
-    }
-  }
-}
-
-// ─── Purchase flow ──────────────────────────────────────────────────────────
-
-/** What the wasm SDK's `WasmArcCredentialRequest` provides. */
-export interface ArcRequestLike {
-  requestBytes(): Uint8Array;
-  secretsBytes(): Uint8Array;
-  finalize(issuerPublicKeyHex: string, response: Uint8Array): Uint8Array;
-  free?(): void;
-}
-
-export interface ArcRequestFactory {
-  create(epoch: number): ArcRequestLike;
-  restore(epoch: number, secrets: Uint8Array, request: Uint8Array): ArcRequestLike;
-}
-
-/** Lightning → ecash, as `cashu-purchase.ts` implements it. */
-export interface LightningRail {
-  quote(mintUrl: string, amountSat: number, memo: string): Promise<{ quoteId: string; invoice: string; expiry: number | null }>;
-  waitPaid(mintUrl: string, quoteId: string, signal?: AbortSignal): Promise<void>;
-  mint(mintUrl: string, amountSat: number, quoteId: string): Promise<string>;
-}
-
-/**
- * The Lightning → ecash rail of `cashu-purchase.ts` (cashu-ts loaded on
- * demand) in the shape `purchaseCredential` takes.
- */
-export function cashuLightningRail(): LightningRail {
-  const offer = (amountSat: number, credits = 0) => ({ credits, amount: amountSat, unit: 'sat' });
-  return {
-    quote: async (mintUrl, amountSat, memo) => {
-      const credits = Number(/(\d+) credits/.exec(memo)?.[1] ?? 0);
-      const quote = await requestLightningQuote(mintUrl, offer(amountSat, credits));
-      return { quoteId: quote.quoteId, invoice: quote.invoice, expiry: quote.expiry };
-    },
-    waitPaid: async (mintUrl, quoteId, signal) => {
-      await waitForQuotePayment(mintUrl, 'sat', quoteId, { signal });
-    },
-    mint: (mintUrl, amountSat, quoteId) => mintTokenForQuote(mintUrl, offer(amountSat), quoteId),
-  };
-}
-
-export interface PurchaseHooks {
-  onInvoice?: (invoice: string, expiry: number | null) => void;
-  onStatus?: (status: 'quoting' | 'awaiting-payment' | 'minting' | 'issuing' | 'finalizing' | 'stored') => void;
-  signal?: AbortSignal;
-}
-
-/**
- * Buy one credential: pick the issuer's epoch, persist the blinded request
- * first, pay the pack over Lightning at `mintUrl`, hand token and request
- * to the issuer, finish the credential, store it. Resumable: a stored
- * pending purchase is continued from its last completed step.
- */
-export async function purchaseCredential(
-  issuer: IssuerClient,
-  store: CreditStore,
-  arc: ArcRequestFactory,
-  rail: LightningRail,
-  offer: CreditOffer,
-  mintUrl: string,
-  hooks: PurchaseHooks = {},
-  now: () => number = () => Math.floor(Date.now() / 1000),
-): Promise<StoredCredential> {
-  let pending = store.pending();
-  let info: IssuerInfo | null = null;
-  if (!pending || pending.issuerUrl !== issuer.baseUrl) {
-    info = await issuer.info();
-    if (!info.arc) throw new IssuerError('this issuer sells no credentials');
-    if (!info.offers.some((o) => o.credits === offer.credits && o.sat === offer.sat)) {
-      throw new IssuerError('offer is not listed by the issuer');
-    }
-    if (!info.mints.includes(mintUrl)) throw new IssuerError('mint is not accepted by the issuer');
-    const request = arc.create(info.arc.epoch);
-    try {
-      pending = {
-        version: 1,
-        issuerUrl: issuer.baseUrl,
-        mintUrl,
-        offer,
-        epoch: info.arc.epoch,
-        secretsHex: bytesToHex(request.secretsBytes()),
-        requestHex: bytesToHex(request.requestBytes()),
-        quoteId: null,
-        invoice: null,
-        quoteExpiry: null,
-        token: null,
-        createdAt: now(),
-      };
-    } finally {
-      request.free?.();
-    }
-    store.setPending(pending);
-  }
-  if (!pending.token) {
-    if (!pending.quoteId || !pending.invoice || (pending.quoteExpiry !== null && pending.quoteExpiry <= now())) {
-      hooks.onStatus?.('quoting');
-      const quote = await rail.quote(pending.mintUrl, pending.offer.sat, `Bitcoin PIR: ${pending.offer.credits} credits`);
-      pending = { ...pending, quoteId: quote.quoteId, invoice: quote.invoice, quoteExpiry: quote.expiry };
-      store.setPending(pending);
-    }
-    hooks.onInvoice?.(pending.invoice!, pending.quoteExpiry);
-    hooks.onStatus?.('awaiting-payment');
-    await rail.waitPaid(pending.mintUrl, pending.quoteId!, hooks.signal);
-    hooks.onStatus?.('minting');
-    const token = await rail.mint(pending.mintUrl, pending.offer.sat, pending.quoteId!);
-    pending = { ...pending, token };
-    store.setPending(pending);
-  }
-  hooks.onStatus?.('issuing');
-  const token = pending.token;
-  if (!token) throw new IssuerError('purchase has no token to redeem');
-  const request = arc.restore(pending.epoch, hexToBytes(pending.secretsHex), hexToBytes(pending.requestHex));
-  try {
-    const issued = await issuer.buyCredential(pending.offer, token, request.requestBytes());
-    hooks.onStatus?.('finalizing');
-    if (issued.epoch !== pending.epoch) {
-      throw new IssuerError(`issuer answered for epoch ${issued.epoch}, the request was for ${pending.epoch}`);
-    }
-    const credential = request.finalize(issued.issuerPublicKeyHex, hexToBytes(issued.responseHex));
-    const stored: StoredCredential = {
-      version: 1,
-      issuerUrl: issuer.baseUrl,
-      epoch: issued.epoch,
-      presentationLimit: issued.presentationLimit,
-      credentialHex: bytesToHex(credential),
-      nextNonce: 0,
-      issuerPublicKeyHex: issued.issuerPublicKeyHex,
-      validUntil: issued.validUntil,
-      boughtAt: now(),
-    };
-    store.add(stored);
-    store.setPending(null);
-    hooks.onStatus?.('stored');
-    return stored;
-  } finally {
-    request.free?.();
-  }
 }

@@ -4,11 +4,11 @@
  * Every Pages deploy replaces the hashed assets. A page loaded before the
  * deploy — or from a cached `index.html` (Pages serves `max-age=600`) —
  * still references the previous chunk names, so its first lazy import (for
- * example the Cashu library at the start of a credit purchase) fails with
+ * example the Cashu library at the start of a top-up) fails with
  * "Failed to fetch dynamically imported module". Vite reports that as a
  * cancelable `vite:preloadError` event on `window`. Reloading revalidates
- * `index.html` and picks up the new build; state that matters (stored
- * credentials, a pending purchase) lives in `localStorage` and survives.
+ * `index.html` and picks up the new build; state that matters (the ecash
+ * wallet, a pending top-up) lives in `localStorage` and survives.
  *
  * A second failure within `STALE_CHUNK_RELOAD_WINDOW_MS` is not a stale page
  * but a broken deploy: the event is left alone so the error surfaces instead

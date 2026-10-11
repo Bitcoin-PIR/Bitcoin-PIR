@@ -1,42 +1,32 @@
 /**
- * x402 `exact` on Lightning (`lnbtc`) as a second way to buy a credential:
+ * x402 `exact` on Lightning (`lnbtc`) as the issuer's way to sell ecash:
  * x402-foundation/x402 `specs/schemes/exact/scheme_exact_lnbtc.md` and the
  * HTTP transport (`PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` /
  * `PAYMENT-RESPONSE`). The issuer's contract is "Issuer API" in
  * `docs/CREDITS.md`.
  *
- * Flow: `POST /v2/credentials` with the blinded request and no Cashu token
- * → `402` with a fresh invoice bound to that exact request → the user pays
- * it from any wallet (WebLN pays it in place when present) → the page
- * learns the preimage (WebLN, or `GET /v2/x402/invoices/{payment_hash}`)
- * → the byte-identical request is repeated with `PAYMENT-SIGNATURE` → the
- * credential is finished and stored like the Cashu path's.
+ * Flow: `POST /v2/x402/ecash` with `{ sat, outputs }`, blinded outputs for
+ * the mint's active `sat` keyset → `402` with a fresh invoice bound to that
+ * exact request → the user pays it from any wallet (WebLN pays it in place
+ * when present) → the page learns the preimage (WebLN, or
+ * `GET /v2/x402/invoices/{payment_hash}`) → the byte-identical request is
+ * repeated with `PAYMENT-SIGNATURE` → the issuer swaps its own proofs into
+ * exactly those outputs at the mint and returns the blind signatures, which
+ * the wallet unblinds (the issuer never sees the proofs).
  *
  * Before paying, the client performs the scheme's mandatory checks: the
  * requirement's terms, the request binding it recomputes itself, and the
  * decoded invoice (amount, expiry, payee, description hash).
  */
 
-import {
-  bytesToHex,
-  hexToBytes,
-  parseIssuedCredential,
-  IssuerError,
-  type ArcRequestFactory,
-  type CreditOffer,
-  type CreditStore,
-  type IssuedCredential,
-  type IssuerClient,
-  type PendingCredential,
-  type PurchaseHooks,
-  type StoredCredential,
-  type X402Pending,
-} from './credits.js';
+import { createOutputs, mintKeyset, unblindSignatures, type BlindSignatureJson } from './cashu-purchase.js';
+import { issuerMint, planDenominations, sumSat, type CashuStore, type PurchaseHooks } from './cashu-wallet.js';
+import { bytesToHex, hexToBytes, IssuerError, type IssuerClient } from './credits.js';
 
 export const X402_VERSION = 2;
 export const X402_NETWORK_MAINNET = 'lnbtc:000000000019d6689c085ae165831e93';
 export const X402_DOMAIN_HTTP1 = 'x402:exact:lnbtc:bolt11:http:1';
-export const CREDENTIALS_PATH = '/v2/credentials';
+export const ECASH_PATH = '/v2/x402/ecash';
 /** Tolerated clock difference for the invoice creation time (spec default). */
 export const CLOCK_SKEW_SECS = 60;
 
@@ -211,11 +201,11 @@ export async function validateChallenge(
   issuerBaseUrl: string,
   body: string,
   required: PaymentRequired,
-  offer: CreditOffer,
+  sat: number,
   now: number,
   network: string = X402_NETWORK_MAINNET,
 ): Promise<ValidatedChallenge> {
-  const url = issuerBaseUrl + CREDENTIALS_PATH;
+  const url = issuerBaseUrl + ECASH_PATH;
   if (required.resource.url !== url) throw new IssuerError(`x402: resource.url is ${required.resource.url}, expected ${url}`);
   const accepted = required.accepts.find((a) => a.scheme === 'exact' && a.network === network && a.asset === 'BTC');
   if (!accepted) throw new IssuerError('x402: issuer offers no exact/lnbtc requirement for this network');
@@ -225,9 +215,9 @@ export async function validateChallenge(
     throw new IssuerError('x402: assetTransferMethod must be bolt11');
   }
   if (!/^[1-9][0-9]*$/.test(accepted.amount)) throw new IssuerError('x402: amount is not a positive integer');
-  const expectedMsat = BigInt(offer.sat) * 1000n;
+  const expectedMsat = BigInt(sat) * 1000n;
   if (BigInt(accepted.amount) !== expectedMsat) {
-    throw new IssuerError(`x402: issuer asks ${accepted.amount} msat, the pack costs ${offer.sat} sat`);
+    throw new IssuerError(`x402: issuer asks ${accepted.amount} msat for ${sat} sat of ecash`);
   }
   if (!Number.isInteger(accepted.maxTimeoutSeconds) || accepted.maxTimeoutSeconds <= 0) {
     throw new IssuerError('x402: maxTimeoutSeconds must be a positive integer');
@@ -255,9 +245,9 @@ export async function validateChallenge(
   return { resource: required.resource, accepted, invoice, paymentHash: decoded.paymentHashHex, expiresAt };
 }
 
-/** `POST /v2/credentials` without a token: the 402 challenge. */
+/** `POST /v2/x402/ecash` without `PAYMENT-SIGNATURE`: the 402 challenge. */
 export async function requestChallenge(issuer: IssuerClient, body: string): Promise<PaymentRequired> {
-  const response = await issuer.postRaw(CREDENTIALS_PATH, body);
+  const response = await issuer.postRaw(ECASH_PATH, body);
   if (response.status !== 402) {
     const text = await response.text().catch(() => '');
     throw new IssuerError(`x402: expected a 402 challenge, got ${response.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
@@ -277,6 +267,14 @@ async function verifyPreimage(preimage: string, paymentHash: string): Promise<st
   if (!isLowerHex(clean, 64)) throw new IssuerError('x402: preimage is not 32 bytes of hex');
   if ((await sha256Hex(hexToBytes(clean))) !== paymentHash) throw new IssuerError('x402: preimage does not match the payment hash');
   return clean;
+}
+
+/** The preimage of an invoice the issuer's node reports paid, else `null`. */
+async function paidPreimage(issuer: IssuerClient, paymentHash: string): Promise<string | null> {
+  const response = await issuer.getRaw(`/v2/x402/invoices/${paymentHash}`);
+  if (!response.ok) return null;
+  const state = (await response.json()) as { status?: string; preimage?: string | null };
+  return state.status === 'paid' && typeof state.preimage === 'string' ? verifyPreimage(state.preimage, paymentHash) : null;
 }
 
 /**
@@ -325,17 +323,29 @@ export async function waitForPayment(
   }
 }
 
-/** The paid retry: the same body with `PAYMENT-SIGNATURE`. */
+/** The `200` answer: one NUT-00 blind signature per output, in the order of `outputs`. */
+export function parseEcashSignatures(raw: unknown): BlindSignatureJson[] {
+  if (!isRecord(raw) || !Array.isArray(raw.signatures)) throw new IssuerError('x402: the answer carries no signatures');
+  return raw.signatures.map((s: unknown) => {
+    if (!isRecord(s) || typeof s.amount !== 'number' || typeof s.id !== 'string' || typeof s.C_ !== 'string') {
+      throw new IssuerError('x402: malformed blind signature');
+    }
+    const dleq = isRecord(s.dleq) && typeof s.dleq.e === 'string' && typeof s.dleq.s === 'string' ? { e: s.dleq.e, s: s.dleq.s } : undefined;
+    return { amount: s.amount, id: s.id, C_: s.C_, dleq };
+  });
+}
+
+/** The paid retry: the same body with `PAYMENT-SIGNATURE`; the answer signs the request's outputs. */
 export async function settle(
   issuer: IssuerClient,
   body: string,
   resource: unknown,
   accepted: PaymentRequirements,
   preimage: string,
-): Promise<IssuedCredential> {
+): Promise<BlindSignatureJson[]> {
   const payload = { x402Version: X402_VERSION, resource, accepted, payload: { preimage } };
-  const response = await issuer.postRaw(CREDENTIALS_PATH, body, { 'payment-signature': headerValue(payload) });
-  if (response.ok) return parseIssuedCredential(await response.json());
+  const response = await issuer.postRaw(ECASH_PATH, body, { 'payment-signature': headerValue(payload) });
+  if (response.ok) return parseEcashSignatures(await response.json());
   const settlement = response.headers.get('payment-response');
   let reason: string | null = null;
   if (settlement) {
@@ -351,113 +361,96 @@ export async function settle(
 }
 
 /**
- * Buy one credential over x402. Resumable like `purchaseCredential`: the
- * pending record carries the exact body, the challenge, and the preimage
- * once known, so a reload continues from the last completed step.
+ * Top up `sat` of ecash over x402: fresh outputs for the mint's active
+ * keyset go to the issuer, which swaps its own proofs into exactly those
+ * outputs once the invoice is paid; the wallet unblinds the answer.
+ * Resumable like `topUpFromMint`: the pending record (the exact body, each
+ * output's secret and blinding factor, the challenge, and the preimage once
+ * known) is persisted before the invoice is requested, so a reload
+ * continues from the last completed step. Returns the sat added.
  */
-export async function purchaseCredentialX402(
+export async function topUpX402(
   issuer: IssuerClient,
-  store: CreditStore,
-  arc: ArcRequestFactory,
-  offer: CreditOffer,
+  store: CashuStore,
+  sat: number,
   hooks: PurchaseHooks = {},
   now: () => number = () => Math.floor(Date.now() / 1000),
   options: { webln?: WebLnLike | null; pollIntervalMs?: number; network?: string } = {},
-): Promise<StoredCredential> {
+): Promise<number> {
   let pending = store.pending();
-  if (pending && (!pending.x402 || pending.issuerUrl !== issuer.baseUrl)) {
-    throw new IssuerError('finish or cancel the pending purchase first');
+  if (pending && (pending.rail !== 'x402' || pending.issuerUrl !== issuer.baseUrl)) {
+    throw new IssuerError('finish or cancel the pending top-up first');
   }
   if (!pending) {
-    const info = await issuer.info();
-    if (!info.arc) throw new IssuerError('this issuer sells no credentials');
-    if (!info.offers.some((o) => o.credits === offer.credits && o.sat === offer.sat)) {
-      throw new IssuerError('offer is not listed by the issuer');
-    }
-    const request = arc.create(info.arc.epoch);
-    try {
-      const body = JSON.stringify({ credits: offer.credits, sat: offer.sat, request_hex: bytesToHex(request.requestBytes()) });
-      pending = {
-        version: 1,
-        issuerUrl: issuer.baseUrl,
-        mintUrl: '',
-        offer,
-        epoch: info.arc.epoch,
-        secretsHex: bytesToHex(request.secretsBytes()),
-        requestHex: bytesToHex(request.requestBytes()),
-        quoteId: null,
-        invoice: null,
-        quoteExpiry: null,
-        token: null,
-        createdAt: now(),
-        x402: { body, resource: null, accepted: null, paymentHash: null, invoice: null, expiresAt: null, preimage: null },
-      };
-    } finally {
-      request.free?.();
-    }
+    const { mintUrl, creditSat } = await issuerMint(issuer, store);
+    const keyset = await mintKeyset(mintUrl);
+    const outputs = await createOutputs(keyset, planDenominations(sat, creditSat));
+    const body = JSON.stringify({
+      sat,
+      outputs: outputs.map((o) => ({ amount: Number(o.blindedMessage.amount), id: o.blindedMessage.id, B_: o.blindedMessage.B_ })),
+    });
+    pending = {
+      rail: 'x402',
+      issuerUrl: issuer.baseUrl,
+      mintUrl,
+      sat,
+      keysetId: keyset.id,
+      body,
+      outputs,
+      resource: null,
+      accepted: null,
+      paymentHash: null,
+      invoice: null,
+      expiresAt: null,
+      preimage: null,
+      createdAt: now(),
+    };
     store.setPending(pending);
   }
-  let x: X402Pending = pending.x402!;
-  if (!x.preimage) {
-    if (!x.invoice || !x.accepted || !x.paymentHash || (x.expiresAt !== null && x.expiresAt <= now())) {
+  if (!pending.preimage && pending.paymentHash && pending.expiresAt !== null && pending.expiresAt <= now()) {
+    // The invoice may have been paid before it expired (and the page reloaded
+    // since): settle with that payment rather than ask for a second one.
+    const preimage = await paidPreimage(issuer, pending.paymentHash);
+    if (preimage) {
+      pending = { ...pending, preimage };
+      store.setPending(pending);
+    }
+  }
+  if (!pending.preimage) {
+    if (!pending.invoice || !pending.accepted || !pending.paymentHash || (pending.expiresAt !== null && pending.expiresAt <= now())) {
       hooks.onStatus?.('quoting');
-      const required = await requestChallenge(issuer, x.body);
-      const challenge = await validateChallenge(issuer.baseUrl, x.body, required, offer, now(), options.network);
-      x = {
-        ...x,
+      const required = await requestChallenge(issuer, pending.body);
+      const challenge = await validateChallenge(issuer.baseUrl, pending.body, required, pending.sat, now(), options.network);
+      pending = {
+        ...pending,
         resource: challenge.resource,
         accepted: challenge.accepted,
         paymentHash: challenge.paymentHash,
         invoice: challenge.invoice,
         expiresAt: challenge.expiresAt,
       };
-      pending = { ...pending, quoteId: challenge.paymentHash, invoice: challenge.invoice, quoteExpiry: challenge.expiresAt, x402: x };
       store.setPending(pending);
     }
-    hooks.onInvoice?.(x.invoice!, x.expiresAt);
+    hooks.onInvoice?.(pending.invoice!, pending.expiresAt);
     hooks.onStatus?.('awaiting-payment');
     const preimage = await waitForPayment(
       issuer,
       {
-        resource: x.resource as PaymentRequired['resource'],
-        accepted: x.accepted as PaymentRequirements,
-        invoice: x.invoice!,
-        paymentHash: x.paymentHash!,
-        expiresAt: x.expiresAt ?? now() + 3600,
+        resource: pending.resource as PaymentRequired['resource'],
+        accepted: pending.accepted as PaymentRequirements,
+        invoice: pending.invoice!,
+        paymentHash: pending.paymentHash!,
+        expiresAt: pending.expiresAt ?? now() + 3600,
       },
       { signal: hooks.signal, intervalMs: options.pollIntervalMs, webln: options.webln, now },
     );
-    x = { ...x, preimage };
-    pending = { ...pending, x402: x };
+    pending = { ...pending, preimage };
     store.setPending(pending);
   }
-  hooks.onStatus?.('issuing');
-  const request = arc.restore(pending.epoch, hexToBytes(pending.secretsHex), hexToBytes(pending.requestHex));
-  try {
-    const issued = await settle(issuer, x.body, x.resource, x.accepted as PaymentRequirements, x.preimage!);
-    hooks.onStatus?.('finalizing');
-    if (issued.epoch !== pending.epoch) {
-      throw new IssuerError(`issuer answered for epoch ${issued.epoch}, the request was for ${pending.epoch}`);
-    }
-    const credential = request.finalize(issued.issuerPublicKeyHex, hexToBytes(issued.responseHex));
-    const stored: StoredCredential = {
-      version: 1,
-      issuerUrl: issuer.baseUrl,
-      epoch: issued.epoch,
-      presentationLimit: issued.presentationLimit,
-      credentialHex: bytesToHex(credential),
-      nextNonce: 0,
-      issuerPublicKeyHex: issued.issuerPublicKeyHex,
-      validUntil: issued.validUntil,
-      boughtAt: now(),
-    };
-    store.add(stored);
-    store.setPending(null);
-    hooks.onStatus?.('stored');
-    return stored;
-  } finally {
-    request.free?.();
-  }
+  hooks.onStatus?.('minting');
+  const signatures = await settle(issuer, pending.body, pending.resource, pending.accepted as PaymentRequirements, pending.preimage!);
+  const proofs = await unblindSignatures(pending.mintUrl, pending.outputs, signatures);
+  store.receive(proofs);
+  hooks.onStatus?.('stored');
+  return sumSat(proofs);
 }
-
-export type { PendingCredential };
