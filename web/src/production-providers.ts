@@ -20,6 +20,7 @@ import {
     type ServerAttestPin,
 } from './attest-pin.js';
 import { hexToBytes } from './hash.js';
+import type { NostrDirectoryConfigV1 } from './nostr-directory.js';
 import type { OramBatchPlannerConfig } from './oram-adapter.js';
 
 export interface ProductionProviderPin {
@@ -69,6 +70,20 @@ export const ORAM_PROVIDER: ProductionProviderPin | null = {
     ),
     expectedArkFingerprint: AMD_MILAN_ARK_FINGERPRINT,
 };
+
+/**
+ * Production service directory (docs/DIRECTORY_PROTOCOL.md): the
+ * directory-only relay on pir1 (docs/runbooks/directory-relay.md). One relay,
+ * so the explicit centralized mode, whose catalog is always reported
+ * degraded. `directoryPubkeyHex` is the publisher key printed by
+ * `bpir-admin directory-artifact keygen`; it stays `null` until the
+ * deployment that publishes the directory pins it here.
+ */
+export const PRODUCTION_DIRECTORY: Readonly<NostrDirectoryConfigV1> = Object.freeze({
+    mode: 'centralized-single-relay',
+    relays: Object.freeze(['wss://directory.bitcoinpir.org']),
+    directoryPubkeyHex: null,
+});
 
 /** Shown wherever Direct ORAM would otherwise connect. */
 export const ORAM_PAUSED_MESSAGE =
