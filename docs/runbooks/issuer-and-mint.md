@@ -2,8 +2,8 @@
 
 Paid queries are sold outside the PIR hosts' measured images: a Cashu
 **mint** turns Lightning payments into ecash, and the **issuer** — the
-credit issuer — sells ARC credentials for that ecash and verifies every
-presentation a PIR server forwards ([Credits and gas](../CREDITS.md)).
+credit issuer — redeems the ecash every PIR server forwards and sells
+ecash from its own wallet over x402 ([Credits and gas](../CREDITS.md)).
 Both run on pir1. This page is the operator record; the HTTP contract is
 [Credits and gas](../CREDITS.md) "Issuer API" and the issuer's source is
 [Bitcoin-PIR/issuer](https://github.com/Bitcoin-PIR/issuer).
@@ -36,7 +36,7 @@ mint.
 | `/etc/bitcoinpir/issuer/grant.key` | `bpir-issuer`, 0600 | 32-byte Ed25519 issuer seed (`bpir-issuer keygen`; the file name predates credits); signs `/v2/redeem` answers | rotate: new key, re-pin every server |
 | `/etc/bitcoinpir/issuer/wallet.seed` | `bpir-issuer`, 0600 | 64-byte Cashu wallet seed | the issuer's ecash claim on the mint is lost |
 | `/etc/bitcoinpir/issuer/grant.pub` | root, 0644 | 64 hex, the issuer public key servers pin (`--credit-issuer-pubkey`) | regenerate with `bpir-issuer pubkey` |
-| `/etc/bitcoinpir/issuer/arc.seed` | `bpir-issuer`, 0600 | 32-byte ARC master seed (`bpir-issuer arc-seed`); every epoch's issuer keys derive from it | every issued credential becomes unspendable; buyers must be refunded out of band |
+| `/etc/bitcoinpir/issuer/arc.seed` | `bpir-issuer`, 0600 | Retired: the 32-byte ARC master seed of the retired ARC credentials. The ARC-free issuer does not read it; the file stays on pir1 until the operator deletes it (Human) | nothing once the ARC-free issuer runs |
 
 `bpir-issuer keygen`, `wallet-seed`, and `mnemonic` never print the
 secret; `keygen` and `pubkey` print only the public key.
@@ -73,7 +73,7 @@ secret; `keygen` and `pubkey` print only the public key.
 
 ```sh
 ssh root@65.21.91.217 'systemctl is-active bitcoinpir-mint bpir-issuer bitcoinpir-mainnet-lightning'
-curl -sS https://issuer.bitcoinpir.org/v2/info      # gas parameters, mints, packs, ARC epoch
+curl -sS https://issuer.bitcoinpir.org/v2/info      # gas parameters, mints, rate card
 curl -sS https://mint.bitcoinpir.org/v1/info         # mint name, nuts
 curl -sS https://mint.bitcoinpir.org/v1/keysets      # one active sat keyset
 ```
@@ -82,21 +82,25 @@ On pir1, money and ledger:
 
 ```sh
 sudo -u bpir-issuer /opt/bitcoinpir/issuer/current/bpir-issuer balance --config /etc/bitcoinpir/issuer/config.toml
-tail -n 20 /var/lib/bitcoinpir-issuer/grants.jsonl     # pending / credentialed / redeemed / failed per token
+tail -n 20 /var/lib/bitcoinpir-issuer/grants.jsonl     # pending / redeemed / failed per token, x402_ecash_pending / x402_ecash_issued per x402 sale
 CLI=$(ls /opt/bitcoinpir/core-lightning/*/bin/lightning-cli | head -1)
 sudo -u bitcoinpir-mainnet-lightning "$CLI" --lightning-dir=/srv/lightning --network=bitcoin listpeerchannels
 sudo -u bitcoinpir-mainnet-lightning "$CLI" --lightning-dir=/srv/lightning --network=bitcoin listinvoices
 ```
 
-A `pending` line without a later `credentialed`, `redeemed` or `failed`
-line for the same token key means the process died or timed out mid-swap; the issuer
+A `pending` line without a later `redeemed` or `failed` line for the
+same token key means the process died or timed out mid-swap; the issuer
 reports such tokens honestly (402 with a message) and logs at error
-level. Reconcile against the wallet balance before refunding anyone.
+level. Reconcile against the wallet balance before refunding anyone. An
+`x402_ecash_pending` line without a later `x402_ecash_issued` is a paid
+sale whose mint answer is unknown; the buyer's identical retry finishes
+it (NUT-09 restore first).
 
 ## Where the money is
 
-Buyers pay the mint's Lightning invoices, so revenue accumulates as the
-Lightning node's channel balance (`to_us_msat`). The issuer's ecash is
+Buyers pay the mint's Lightning invoices or, over x402, the issuer's on
+the same node, so revenue accumulates as the Lightning node's channel
+balance (`to_us_msat`). The issuer's ecash is
 a claim on the operator's own mint; `pay` is disabled in
 `lightningd.conf`, so the mint cannot melt and nothing pays out through
 the issuer. Moving sats out means enabling `pay` (a reviewed change to
@@ -115,8 +119,7 @@ fee bumping.
 ([Credits and gas](../CREDITS.md)); the session-grant contract under `/v1/`
 is retired.
 Everything credits need is in `config.toml`; an existing file keeps working
-without these tables, which leaves `POST /v2/redeem` refusing every server
-and `/v2/credentials` unsold.
+without these tables, which leaves `POST /v2/redeem` refusing every server.
 
 ```toml
 [gas]                       # docs/CREDITS.md "Rate card"; defaults shown
@@ -131,43 +134,37 @@ egress_gas_per_mb = 1000
 # different operator keys; list both).
 operator_pubkeys = ["<pir1 operator pubkey hex>", "<pir2 operator pubkey hex>"]
 redeem_max_skew_secs = 300
-
-[arc]                       # Human: `bpir-issuer arc-seed --out /etc/bitcoinpir/issuer/arc.seed`
-seed_path = "/etc/bitcoinpir/issuer/arc.seed"
-epoch_secs = 7776000        # 90 days
-grace_secs = 2592000        # 30 days
-presentation_limit = 100
-[[arc.credential_offers]]   # credits must equal presentation_limit
-credits = 100
-sat = 1000
 ```
 
-`chown bpir-issuer:bpir-issuer /etc/bitcoinpir/issuer/arc.seed && chmod
-0600 …`, then `systemctl restart bpir-issuer`; the startup log line says
-`arc=true` and `operator_keys=2`. `GET /v2/info` must then show the `arc`
-section and the pack.
+Then `systemctl restart bpir-issuer`; the startup log line says
+`operator_keys=2`.
+
+ARC credentials are retired. The issuer's config rejects unknown fields,
+so before the ARC-free issuer is deployed, delete the `[arc]` table and
+every `[[arc.credential_offers]]` from the live `config.toml`; with them the
+new binary refuses to start (``unknown field `arc` ``).
 
 - Every redemption is appended to `/var/lib/bitcoinpir-issuer/redeem.jsonl`
-  (the replay index for `(server_id, nonce)` and the per-server ledger with
-  the ARC tags each epoch consumed). `bpir-issuer settlement --config
+  (the replay index for `(server_id, nonce)` and the per-server ledger).
+  `bpir-issuer settlement --config
   /etc/bitcoinpir/issuer/config.toml` prints redemptions, gas, and sat per
   server: what each server earned.
-- `grants.jsonl` records `redeemed` (a token spent through a server) and
-  `credentialed` (a token that bought a credential) states, so a token can
-  never be used twice; `issued` lines are v1 session grants from before
-  the retirement and replay only as spent tokens.
-- Back up `arc.seed` with the other secrets; rotating it is a new epoch's
-  worth of refunds, not a key rotation (issued credentials are bound to the
-  seed's per-epoch keys).
+- `grants.jsonl` records every token spent through a server (`redeemed`),
+  so a token can never be used twice, and every x402 ecash sale
+  (`x402_ecash_pending`, `x402_ecash_issued`); `issued` lines (v1 session
+  grants) and `credentialed` / `x402_credentialed` lines (ARC credentials)
+  are from before those retirements and replay only as spent tokens and
+  claimed payments.
 
-## Change packs or mints
+## Change mints
 
-Edit `/etc/bitcoinpir/issuer/config.toml` (`[[arc.credential_offers]]`,
-`mints`, `cors_origins`) and `systemctl restart bpir-issuer`. The browser
-reads the packs from `/v2/info` on every load; credentials already issued
-keep their presentations. A mint fee (`input_fee_ppk` in the mint config)
-is absorbed by the operator: the issuer validates the token's face value
-and records the amount actually credited.
+Edit `/etc/bitcoinpir/issuer/config.toml` (`mints`, `cors_origins`) and
+`systemctl restart bpir-issuer`. The browser reads the mints from
+`/v2/info` on every load and buys from the first, which is also the one
+the issuer sells from. A mint fee (`input_fee_ppk` in the mint config)
+lowers what a redemption books (the issuer books what the mint actually
+credited); on an ecash sale the issuer pays the input fee of its own
+inputs.
 
 ## Upgrade the issuer
 
@@ -210,17 +207,23 @@ content-addressed directory.
    `max_timeout_secs = 900`, `label_prefix = "bpir-x402-"` (equal to the
    guard's `--label-prefix`). Restart the issuer; the startup log shows
    `x402 exact/lnbtc enabled`.
-4. Check: `curl -si -X POST https://issuer.bitcoinpir.org/v2/credentials -H
-   'content-type: application/json' -d '{"credits":100,"sat":1000,"request_hex":"00"}'`
-   must answer `400` (bad request bytes) rather than `402`, and with a real
-   blinded request the answer is `402` with a `PAYMENT-REQUIRED` header whose
-   invoice decodes to the node key. Pay one invoice from any wallet and
-   confirm `GET /v2/x402/invoices/<payment_hash>` turns `paid`.
+4. Check: `curl -si -X POST https://issuer.bitcoinpir.org/v2/x402/ecash -H
+   'content-type: application/json' -d '{"sat":10,"outputs":[]}'`
+   must answer `400 invalid_request` rather than `402`, and with real
+   blinded outputs (the web client's x402 top-up) the answer is `402` with
+   a `PAYMENT-REQUIRED` header whose invoice decodes to the node key. Pay
+   one invoice from any wallet and confirm
+   `GET /v2/x402/invoices/<payment_hash>` turns `paid`.
 
 Money paid over x402 lands in the node's channel balance, not in the Cashu
-wallet; `bpir-issuer settlement` and `balance` do not include it. Invoice
-creation is limited per client address and globally (`[x402]`), and the
-guard limits it again.
+wallet; `bpir-issuer settlement` and `balance` do not include it. The
+ecash each sale hands out comes from the issuer's Cashu wallet (the first
+mint in `mints`), so keep a float there and watch it with `bpir-issuer
+balance`; tokens redeemed through `/v2/redeem` swap back into the same
+wallet. A sale the wallet cannot cover is answered `503 float_exhausted`
+before any invoice is made. `[x402] ecash_min_sat` and `ecash_max_sat`
+(defaults 10 and 20,000) bound one sale. Invoice creation is limited per
+client address and globally (`[x402]`), and the guard limits it again.
 
 ## Rotate the issuer key
 

@@ -389,7 +389,7 @@ the same way as an upgrade, through a new transition.
 | Open or close a VPSBG data-disk window | [Key management](KEY_MANAGEMENT.md) | `scripts/vpsbg-data-disk.sh` | exit 0 |
 | Check the Direct ORAM host after a switch | [VPSBG image](runbooks/vpsbg-image.md) | `scripts/oram-host-check.sh` | exit 0 |
 | Publish the web client | this page, Flow C | `deploy-web.yml` dispatch | deploy job green |
-| Check the issuer and mint on pir1 | [Issuer and mint](runbooks/issuer-and-mint.md) | `curl https://issuer.bitcoinpir.org/v2/info`; `bpir-issuer balance` | both units active, `/v2/info` lists the credit pack |
+| Check the issuer and mint on pir1 | [Issuer and mint](runbooks/issuer-and-mint.md) | `curl https://issuer.bitcoinpir.org/v2/info`; `bpir-issuer balance` | both units active, `/v2/info` lists the gas parameters and the mint |
 
 Paid access (credits verified at the issuer, outside the measured image) is
 described in [`CREDITS.md`](CREDITS.md) and operated per
