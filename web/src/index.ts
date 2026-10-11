@@ -43,7 +43,6 @@ export {
 
 export {
   checkQuoteStatus,
-  mintTokenForQuote,
   requestLightningQuote,
   waitForQuotePayment,
   type MintPurchase,
@@ -51,28 +50,30 @@ export {
 } from './cashu-purchase.js';
 
 export {
-  CREDIT_PRESENT_KIND_ARC,
+  CashuStore,
+  CashuWallet,
+  IN_FLIGHT_GRACE_SECS,
+  openCashuWallet,
+  sumSat,
+  topUpFromMint,
+  type CashuWalletState,
+  type PendingTopUp,
+  type PurchaseHooks,
+  type StoredProof,
+} from './cashu-wallet.js';
+
+export {
   CREDIT_PRESENT_KIND_CASHU,
-  CreditStore,
-  CreditWallet,
   CreditedChannel,
   ConnectionCreditMeter,
   IssuerClient,
   IssuerError,
-  cashuLightningRail,
   parseIssuerInfo,
-  purchaseCredential,
   serverGasCardFromInfo,
   type CreditEnablement,
-  type CreditOffer,
   type CreditProvider,
-  type IssuedCredential,
   type IssuerInfo,
-  type LightningRail,
-  type PendingCredential,
   type Presentation,
-  type PurchaseHooks,
-  type StoredCredential,
 } from './credits.js';
 
 export {
@@ -201,9 +202,6 @@ export {
 
 export {
   initSdkWasm,
-  sdkArcFactories,
-  type WasmArcCredential,
-  type WasmArcCredentialRequest,
   isSdkWasmReady,
 } from './sdk-bridge.js';
 
@@ -230,7 +228,7 @@ export {
 } from './production-providers.js';
 
 export {
-  purchaseCredentialX402,
+  topUpX402,
   requestChallenge as x402RequestChallenge,
   validateChallenge as x402ValidateChallenge,
   waitForPayment as x402WaitForPayment,

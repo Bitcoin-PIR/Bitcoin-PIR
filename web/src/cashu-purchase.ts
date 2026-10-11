@@ -1,17 +1,21 @@
 /**
- * Lightning → Cashu ecash: the rail `purchaseCredential` (credits.ts) buys
- * credentials with.
+ * Buying Cashu ecash into the wallet's own outputs (`cashu-wallet.ts`):
+ * NUT-04 Lightning quotes at the mint, the mint's active `sat` keyset,
+ * fresh blinded outputs, minting into them (NUT-09 restore when a mint
+ * answer was lost), and unblinding blind signatures with the NUT-12 DLEQ
+ * proof checked when present.
  *
  * `@cashu/cashu-ts` is imported on demand, so the free path never loads it.
  *
- * Flow (against a mint the issuer lists in `GET /v2/info`):
+ * The mint's Lightning rail (`topUpFromMint`):
  *   1. `requestLightningQuote` — bolt11 invoice for `purchase.amount` `unit`.
  *   2. The user pays the invoice with any Lightning wallet.
  *   3. `waitForQuotePayment` — polls the mint until the quote is PAID.
- *   4. `mintTokenForQuote` — mints proofs and encodes a `cashuB…` token.
+ *   4. `mintProofsForQuote` — mints into outputs the wallet persisted first.
  */
 
-import type { Wallet } from '@cashu/cashu-ts';
+import type { HasKeysetKeys, SerializedOutputData, Wallet } from '@cashu/cashu-ts';
+import type { StoredProof } from './cashu-wallet.js';
 
 /** What a mint quote pays for: `amount` of `unit`, which buys `credits`. */
 export interface MintPurchase {
@@ -35,11 +39,19 @@ export interface WaitForPaymentOptions {
   onStatus?: (status: MintQuoteStatus) => void;
 }
 
+/** A blind signature as the mint or the issuer returns it (NUT-00, NUT-12). */
+export interface BlindSignatureJson {
+  amount: number;
+  id: string;
+  C_: string;
+  dleq?: { e: string; s: string };
+}
+
 type CashuModule = typeof import('@cashu/cashu-ts');
 
 let cashuModule: Promise<CashuModule> | null = null;
 
-/** Load cashu-ts once; the chunk is fetched only when a purchase starts. */
+/** Load cashu-ts once; the chunk is fetched only when the wallet is used. */
 export function loadCashu(): Promise<CashuModule> {
   cashuModule ??= import('@cashu/cashu-ts');
   return cashuModule;
@@ -106,16 +118,73 @@ export async function waitForQuotePayment(
   }
 }
 
-/** Mint the paid quote into proofs and encode them as one Cashu token. */
-export async function mintTokenForQuote(
+/** The mint's active `sat` keyset, or keyset `id`; cashu-ts checks the keys derive the id. */
+export async function mintKeyset(mintUrl: string, id?: string): Promise<HasKeysetKeys> {
+  const wallet = await openWallet(mintUrl, 'sat');
+  if (id) await wallet.ensureOperableKeysets([id]);
+  return wallet.getKeyset(id);
+}
+
+/** Fresh random outputs (a secret and a blinding factor each) for `denominations`, ready to persist. */
+export async function createOutputs(keyset: HasKeysetKeys, denominations: number[]): Promise<SerializedOutputData[]> {
+  const { OutputData } = await loadCashu();
+  const total = denominations.reduce((sum, amount) => sum + amount, 0);
+  return OutputData.createRandomData(total, keyset, denominations).map((output) => OutputData.serialize(output));
+}
+
+/** Mint the paid quote into the wallet's own `outputs`. */
+export async function mintProofsForQuote(
   mintUrl: string,
-  purchase: MintPurchase,
+  amount: number,
   quoteId: string,
-): Promise<string> {
-  const wallet = await openWallet(mintUrl, purchase.unit);
-  const proofs = await wallet.mintProofsBolt11(purchase.amount, quoteId);
-  const { getEncodedToken } = await loadCashu();
-  return getEncodedToken({ mint: mintUrl, proofs, unit: purchase.unit });
+  outputs: SerializedOutputData[],
+): Promise<StoredProof[]> {
+  const { OutputData } = await loadCashu();
+  const wallet = await openWallet(mintUrl, 'sat');
+  const proofs = await wallet.mintProofsBolt11(amount, quoteId, undefined, {
+    type: 'custom',
+    data: outputs.map((output) => OutputData.deserialize(output)),
+  });
+  return proofs.map((p) => ({ id: p.id, amount: p.amount.toNumber(), secret: p.secret, C: p.C }));
+}
+
+/** NUT-09: the signatures the mint already made on `outputs` (its mint answer never arrived), unblinded. */
+export async function restoreProofs(mintUrl: string, outputs: SerializedOutputData[]): Promise<StoredProof[]> {
+  const { Amount } = await loadCashu();
+  const wallet = await openWallet(mintUrl, 'sat');
+  const restored = await wallet.mint.restore({
+    outputs: outputs.map((o) => ({ ...o.blindedMessage, amount: Amount.from(o.blindedMessage.amount) })),
+  });
+  const signed = new Map(restored.outputs.map((o, i) => [o.B_, restored.signatures[i]]));
+  const signatures = outputs.map((o) => {
+    const s = signed.get(o.blindedMessage.B_);
+    if (!s) throw new Error('the mint has not signed these outputs: the quote was issued elsewhere');
+    return { amount: s.amount.toNumber(), id: s.id, C_: s.C_, dleq: s.dleq };
+  });
+  return unblindSignatures(mintUrl, outputs, signatures);
+}
+
+/**
+ * Unblind `signatures` (one per output, in order) with each output's
+ * blinding factor and the keyset key for its amount, verifying the DLEQ
+ * proof when present. Throws on any mismatch.
+ */
+export async function unblindSignatures(
+  mintUrl: string,
+  outputs: SerializedOutputData[],
+  signatures: BlindSignatureJson[],
+): Promise<StoredProof[]> {
+  if (signatures.length !== outputs.length) {
+    throw new Error(`expected ${outputs.length} blind signatures, got ${signatures.length}`);
+  }
+  const { Amount, OutputData } = await loadCashu();
+  const keyset = await mintKeyset(mintUrl, outputs[0]?.blindedMessage.id);
+  return outputs.map((output, i) => {
+    const sig = signatures[i];
+    if (String(sig.amount) !== output.blindedMessage.amount) throw new Error(`blind signature ${i} is for another amount`);
+    const proof = OutputData.deserialize(output).toProof({ ...sig, amount: Amount.from(sig.amount) }, keyset);
+    return { id: proof.id, amount: proof.amount.toNumber(), secret: proof.secret, C: proof.C };
+  });
 }
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
