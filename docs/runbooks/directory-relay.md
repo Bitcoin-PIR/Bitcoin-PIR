@@ -31,7 +31,7 @@ is reached only through an SSH port-forward. Templates:
 
 | Key | Where | Used by |
 | --- | --- | --- |
-| Directory publisher key (BIP340) | Mac Studio, `.keys/directory-nostr.key`, made by `bpir-admin directory-artifact keygen --out .keys/directory-nostr.key` | Signs entry, tombstone and checkpoint events offline. Never copied to pir1; the relay only pins its public key. |
+| Directory publisher key (BIP340) | Mac Studio, `.keys/directory/directory-nostr.key`, made by `mkdir -m 700 -p .keys/directory && bpir-admin directory-artifact keygen --out .keys/directory/directory-nostr.key` | Signs entry, tombstone and checkpoint events offline. Never copied to pir1; the relay only pins its public key. |
 | Operator identity key (Ed25519) | Mac Studio, the existing `bpir-admin` operator key that signs the servers' identity certificates | Signs each provider's operator assertion (`--operator-signing-key`). |
 
 The directory public key (`directory_pubkey_xonly=` printed by `keygen`) goes
@@ -54,19 +54,23 @@ install -o bpir-directory-relay -g bpir-directory-relay -m 0400 config.toml /etc
 install -o root -g root -m 0644 deploy/systemd/bpir-directory-relay.service /etc/systemd/system/bpir-directory-relay.service
 ```
 
-Build and install the binary (same pattern as the issuer):
+Build and install the binary (same pattern as the issuer). The relay's
+checkout is `/home/pir/src/BitcoinPIR-directory` (once: `sudo -u pir -H git
+clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git
+/home/pir/src/BitcoinPIR-directory`):
 
 ```sh
-sudo -u pir -H bash -c 'cd /home/pir/src/BitcoinPIR && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
-SRC=/home/pir/src/BitcoinPIR/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
+sudo -u pir -H bash -c '. $HOME/.cargo/env && cd /home/pir/src/BitcoinPIR-directory && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
+SRC=/home/pir/src/BitcoinPIR-directory/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
 install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/directory-relay/$SHA/bitcoinpir-directory-relay
 ln -sfn /opt/bitcoinpir/directory-relay/$SHA /opt/bitcoinpir/directory-relay/current
 systemctl daemon-reload && systemctl enable --now bpir-directory-relay
 ```
 
-Then add the tunnel ingress `directory.bitcoinpir.org → http://127.0.0.1:8096`
-to the pir1 cloudflared configuration (Human; the tunnel config is not in
-this repository) and restart cloudflared.
+Then add the public hostname `directory.bitcoinpir.org → http://localhost:8096`
+to the pir1 tunnel (Human: the tunnel is managed in the Cloudflare dashboard,
+Zero Trust → Networks → Tunnels → Public Hostname; it applies without a
+cloudflared restart).
 
 ## Read — health
 
@@ -94,48 +98,41 @@ side.
 ## Publish or update entries
 
 All signing happens on the Mac Studio; pir1 never sees a private key.
-
-1. Build the artifacts with the commands in
-   [Directory protocol](../DIRECTORY_PROTOCOL.md#publisher-artifacts-and-relay-transport):
-   one `assertion` per server (operator key, the server's identity
-   `server_id`, its public `wss://` endpoint), one `entry` per server
-   (`--role`, `--attestation`, `--backend NAME=ACCESS` mirroring the live
-   `GET_INFO_JSON`), then one `checkpoints` bundle over every current entry
-   and tombstone. Keep the per-provider directory sequence and the last
-   `created_at` per `d` coordinate in a ledger next to the key
-   (`.keys/directory/ledger.txt`): both must strictly increase.
-2. Open the publisher lane and publish through it:
+Entries and checkpoints expire after at most 31 days, so the whole catalog is
+re-signed and republished at least monthly, and after any provider change, by
+[`scripts/directory-publish.sh`](../../scripts/directory-publish.sh). Its
+directory `.keys/directory/` holds the publisher key, `providers.tsv` (one
+line per provider: name, `server_id`, endpoint, role, attestation,
+`NAME=ACCESS` backends mirroring the live `GET_INFO_JSON`, and the operator's
+key file, the operator's own assertion file, or `retired`), the `ledger.tsv`
+the script keeps (per provider the directory sequence and assertion epoch,
+and the checkpoint epoch; all strictly increase) and each run's artifacts.
 
 ```sh
-ssh -N -L 8097:127.0.0.1:8097 pir-hetzner &
-bpir-admin directory-artifact publish \
-  --artifact pir1.entry.event.json \
-  --artifact pir2.entry.event.json \
-  --artifact oram.entry.event.json \
-  --artifact checkpoints.json \
-  --relay ws://127.0.0.1:8097 --loopback-publisher --centralized-single-relay \
-  --directory-pubkey-hex "$DIRECTORY_PUBKEY" \
-  --now-unix "$(date +%s)" \
-  --validate-only
+ssh -N -o UserKnownHostsFile=deploy/known_hosts -o StrictHostKeyChecking=yes \
+  -L 8097:127.0.0.1:8097 root@65.21.91.217 &
+scripts/directory-publish.sh .keys/directory --validate-only   # signs and checks; publishes nothing
+scripts/directory-publish.sh .keys/directory                   # signs again, publishes, records, reads back
+kill %1
 ```
 
-   `--validate-only` checks the frozen artifacts, key pin and relay set
-   without network I/O; rerun without it to publish. The relay answers one
-   positive `OK` per event; replaying an exact artifact is idempotent, a
-   negative `OK` is a failure.
-
-3. Verify the public lane returns the new heads: run the readback above
-   with one `--artifact` per published file. Then record the published
-   sequence/epoch in the ledger.
-
-A retired server gets a `tombstone` at the next sequence and stays in the
-checkpoint set; a replaced key or `server_id` is a new provider id.
+One run signs a fresh assertion for each provider whose operator key is
+local (valid 30 days, `VALID_DAYS`), probes each endpoint for the entry's
+health class, signs the next entry (or a tombstone for `retired`), signs the
+next 16 checkpoints over all of them, publishes everything through the
+publisher lane (one positive `OK` per event; replaying an exact artifact is
+idempotent), writes the ledger, and reads the catalog back from
+`wss://directory.bitcoinpir.org` through the client verifier. A retired
+server stays in the checkpoint set; a replaced key or `server_id` is a new
+provider id. A third-party operator sends their own assertion
+([operator guide](../OPERATOR_GUIDE.md) §8); an
+entry cannot outlive it, so its `valid_until` goes in the line's last column.
 
 ## Upgrade the relay
 
 ```sh
-sudo -u pir -H bash -c 'cd /home/pir/src/BitcoinPIR && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
-SRC=/home/pir/src/BitcoinPIR/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
+sudo -u pir -H bash -c '. $HOME/.cargo/env && cd /home/pir/src/BitcoinPIR-directory && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
+SRC=/home/pir/src/BitcoinPIR-directory/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
 install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/directory-relay/$SHA/bitcoinpir-directory-relay
 ln -sfn /opt/bitcoinpir/directory-relay/$SHA /opt/bitcoinpir/directory-relay/current && systemctl restart bpir-directory-relay
 ```
