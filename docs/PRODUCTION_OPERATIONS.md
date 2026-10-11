@@ -6,6 +6,7 @@ named release (for example R5.1) or one flow A–I. One explicit
 authorization covers that whole campaign. Run the campaign's numbered
 steps in order. Do not invent a second campaign, and do not re-ask
 between steps of the same campaign.
+A release orders these flows in the [release checklist](RELEASE.md).
 
 Live status:
 
