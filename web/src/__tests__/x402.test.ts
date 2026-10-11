@@ -3,7 +3,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { decodeBolt11 } from '../bolt11.js';
-import { CashuStore, type PendingX402TopUp } from '../cashu-wallet.js';
+import { CashuStore, topUpFromMint, type PendingX402TopUp } from '../cashu-wallet.js';
 import { IssuerClient } from '../credits.js';
 import {
   headerValue,
@@ -16,6 +16,7 @@ import {
   validateChallenge,
   X402_NETWORK_MAINNET,
   type PaymentRequired,
+  cancelPendingTopUp,
 } from '../x402.js';
 import { fakeMint, json, routeFetch, type FakeBlindSignature, type FetchHandler } from './fake-mint.js';
 
@@ -366,5 +367,39 @@ describe('topUpX402', () => {
     const hash = await bodyHash(BODY);
     const challenge = await validateChallenge(ISSUER, BODY, required(10, hash, signInvoice(10, hash)), 10, NOW);
     await expect(settle(client, BODY, challenge.resource, challenge.accepted, 'ff'.repeat(32))).rejects.toThrow(/preimage_hash_mismatch/);
+  });
+});
+
+describe('cancelPendingTopUp', () => {
+  /** A pending x402 top-up whose invoice was shown and not yet seen paid. */
+  async function pendingX402(issuer: IssuerClient, storage: ReturnType<typeof memoryStorage>) {
+    const controller = new AbortController();
+    const hooks = { onInvoice: () => controller.abort(), signal: controller.signal };
+    await expect(topUpX402(issuer, new CashuStore(storage), 10, hooks, () => NOW, { webln: null, pollIntervalMs: 1 })).rejects.toThrow(/cancelled/);
+  }
+
+  it('drops an x402 top-up the issuer reports unpaid and keeps one it reports paid', async () => {
+    const mint = stubMint('mint-cancel-x402');
+    const unpaid = memoryStorage();
+    await pendingX402(fakeIssuer(mint, { paidAfterPolls: 5 }).client, unpaid);
+    expect(await cancelPendingTopUp(fakeIssuer(mint, { paidAfterPolls: 5 }).client, new CashuStore(unpaid))).toBe(true);
+    expect(new CashuStore(unpaid).pending()).toBeNull();
+    const paid = memoryStorage();
+    await pendingX402(fakeIssuer(mint, { paidAfterPolls: 5 }).client, paid);
+    expect(await cancelPendingTopUp(fakeIssuer(mint, { paidAfterPolls: 0 }).client, new CashuStore(paid))).toBe(false);
+    expect(new CashuStore(paid).pending()).toMatchObject({ rail: 'x402' });
+  });
+
+  it('drops a mint top-up whose quote is unpaid and keeps one the mint reports paid', async () => {
+    const mint = stubMint('mint-cancel-quote');
+    const issuer = fakeIssuer(mint).client;
+    for (const pay of [false, true]) {
+      const storage = memoryStorage();
+      const controller = new AbortController();
+      const hooks = { onInvoice: (invoice: string) => { if (pay) mint.pay(invoice); controller.abort(); }, signal: controller.signal };
+      await expect(topUpFromMint(issuer, new CashuStore(storage), 10, hooks, () => NOW)).rejects.toThrow(/cancelled/);
+      expect(await cancelPendingTopUp(issuer, new CashuStore(storage))).toBe(!pay);
+      expect(new CashuStore(storage).pending() === null).toBe(!pay);
+    }
   });
 });
