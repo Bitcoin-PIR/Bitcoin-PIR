@@ -22,6 +22,9 @@ status subcommand for the rest.
 
 ## Technical references
 
+- Wire protocol: [Protocol v1](PROTOCOL.md) is the opcode registry: framing,
+  the encrypted channel, each message's wire shape, errors, and the retired
+  opcodes that stay reserved.
 - Paid queries are gas-priced credits verified at the issuer:
   [Credits and gas](CREDITS.md) is the design, the rate card, the
   measurements behind it, the access policy each server publishes, and the

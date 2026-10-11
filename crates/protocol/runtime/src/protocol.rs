@@ -7,6 +7,13 @@
 
 use std::io;
 
+/// Opcode values retired from the protocol: reserved forever, never given to
+/// a new request or response. docs/PROTOCOL.md lists what each one was.
+pub const RETIRED_OPCODES: &[u8] = &[
+    0x04, 0x08, 0x09, 0x0b, 0x0d, 0x0e, 0x0f, 0x10, 0x30, 0x31, 0x32, 0x42, 0x70, 0x80, 0x81, 0x82,
+    0x83, 0x84, 0x85,
+];
+
 // ─── Request variants ───────────────────────────────────────────────────────
 
 pub const REQ_PING: u8 = 0x00;

@@ -118,6 +118,8 @@ For development, see [`docs/TESTING.md`](docs/TESTING.md).
   entry point; every production operation routes through this page
 - [`docs/VERIFICATION_OVERVIEW.md`](docs/VERIFICATION_OVERVIEW.md) — the
   privacy invariants and formal-verification final state
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the wire protocol: framing,
+  opcode registry, message shapes, retired opcodes
 - [`Bitcoin-PIR/whitepaper`](https://github.com/Bitcoin-PIR/whitepaper) — Research paper sources, generated PDF, and benchmark material
 
 ## License
