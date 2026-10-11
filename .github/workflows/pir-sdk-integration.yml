@@ -5,7 +5,9 @@ name: PIR SDK Integration Tests
 # client at https://www.bitcoinpir.org uses) run on the daily schedule or a
 # manual dispatch, so server availability never fails a PR. They run with
 # --test-threads=1 so one runner IP doesn't trip the servers' handshake
-# rate limits.
+# rate limits. DPF-PIR and HarmonyPIR also need server 1, which is run on a
+# best-effort basis: when it does not answer a WebSocket upgrade, their live
+# tests and leakage canary are skipped with a notice.
 
 on:
   push:
@@ -47,6 +49,8 @@ jobs:
     name: pir-sdk-client integration tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      server1_up: ${{ steps.server1.outputs.up }}
     env:
       CARGO_TERM_COLOR: always
       # Operator API key (docs/CREDITS.md "API keys"), presented on every leg
@@ -84,9 +88,31 @@ jobs:
       - name: Run unit tests
         run: cargo test -p pir-sdk-client
 
+      # Server 1 (DPF server 1, HarmonyPIR query) answers 101 to a WebSocket
+      # upgrade when it is up; curl then waits until -m expires (exit 28).
+      - name: Probe server 1 (scheduled/manual only)
+        id: server1
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --http1.1 \
+            -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+            -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+            -m 10 "https://${PIR_DPF_SERVER1_URL#wss://}" || true)
+          if [ "$code" = 101 ]; then
+            echo up=true >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Server 1 ($PIR_DPF_SERVER1_URL) is unreachable (HTTP $code); DPF-PIR and HarmonyPIR live tests and leakage canary skipped."
+          fi
+
+      # Without server 1, only the pir1-only test runs.
       - name: Run ignored integration tests against live PIR servers (scheduled/manual only)
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-        run: cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture
+        env:
+          SERVER1_UP: ${{ steps.server1.outputs.up }}
+        run: |
+          filter=
+          [ "$SERVER1_UP" = true ] || filter=test_wsconnection_reconnect_roundtrip
+          cargo test -p pir-sdk-client --test integration_test -- --ignored --test-threads=1 --nocapture $filter
 
   integration-onion:
     # The `onion` feature builds libonionpir from source (CMake + GCC), a
@@ -143,11 +169,12 @@ jobs:
         run: "cargo test -p pir-sdk-client --features onion --test integration_test -- --ignored --test-threads=1 --nocapture onion_tests::"
 
   leakage-canary:
-    # Many live WebSocket connections: runs after both integration jobs, on
-    # schedule or dispatch only, every invariant serialized in this job.
-    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
-    needs: [integration, integration-onion]
-    name: privacy leakage canary (DPF, HarmonyPIR, OnionPIR)
+    # Many live WebSocket connections: runs after the integration job, only
+    # when its probe reached server 1 (so on schedule or dispatch only), every
+    # invariant serialized in this job.
+    if: ${{ needs.integration.outputs.server1_up == 'true' }}
+    needs: integration
+    name: privacy leakage canary (DPF, HarmonyPIR)
     runs-on: ubuntu-22.04
     timeout-minutes: 90
     env:
@@ -157,7 +184,6 @@ jobs:
       PIR_DPF_SERVER1_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
       PIR_HARMONY_HINT_URL: wss://weikeng1.bitcoinpir.org
       PIR_HARMONY_QUERY_URL: wss://bitcoin-pir-weikeng-laptop.chenweikeng.com
-      PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
 
     steps:
       - name: Checkout
@@ -208,6 +234,40 @@ jobs:
           }
           run_harmony_invariants || run_harmony_invariants
 
+  leakage-canary-onion:
+    # OnionPIR needs only pir1, so its canary runs after the OnionPIR job and
+    # does not wait on server 1.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    needs: integration-onion
+    name: privacy leakage canary (OnionPIR)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      PIR_API_KEY: ${{ secrets.PIR_API_KEY }}
+      PIR_ONION_URL: wss://weikeng1.bitcoinpir.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-sdk-leakage-onion-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-leakage-onion-
+            ${{ runner.os }}-cargo-sdk-onion-
+
       - name: Run OnionPIR leakage invariants
         continue-on-error: true
         run: |
@@ -219,4 +279,53 @@ jobs:
             cargo test -p pir-sdk-client --features onion \
               --test leakage_integration_test --release "$test_name" -- \
               --ignored --exact --test-threads=1 --nocapture
+          done
+
+  oram-live:
+    # The Direct ORAM TEE host: what scripts/oram-host-check.sh runs after its
+    # boot wait, against the pins in web/src.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    name: Direct ORAM live check (attest, channel, queries)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install --profile minimal
+
+      - name: Cache Cargo registry + target
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-sdk-oram-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sdk-oram-
+            ${{ runner.os }}-cargo-sdk-
+
+      - name: Attest Direct ORAM, test the channel, query db 0 and 1
+        run: |
+          pins=$(python3 scripts/production-pins.py)
+          pin() { awk -F= -v key="$1" '$1 == key { print $2 }' <<<"$pins"; }
+          server=$(pin oram_url)
+          [ "$server" != - ] || { echo '::notice::ORAM_PROVIDER is null (Direct ORAM paused)'; exit 0; }
+          cargo run --locked -q -p bpir-admin -- attest "$server" \
+            --expect-measurement "$(pin oram_measurement)" \
+            --expect-binary "$(pin oram_binary)" \
+            --expect-ark-fingerprint "$(pin oram_ark)"
+          cargo run --locked -q -p bpir-admin -- channel-test "$server" \
+            --expect-ark-fingerprint "$(pin oram_ark)"
+          for db_id in 0 1; do
+            cargo run --locked -q -p pir-sdk-client --example oram_local_smoke -- \
+              --server "$server" --db-id "$db_id" \
+              --padded-slots 25 4242424242424242424242424242424242424242
           done

@@ -1,9 +1,11 @@
 # BitcoinPIR project memory
 
-Bitcoin Private Information Retrieval system. Three backends — DPF-PIR
-(2-server), OnionPIR (1-server FHE), HarmonyPIR (stateful hint) — serving
-private UTXO lookups from a snapshot of the Bitcoin UTXO set. Working rules
-for agents are in [`AGENTS.md`](AGENTS.md); read that first.
+Bitcoin Private Information Retrieval system. Four backends in two tiers —
+OnionPIR (1-server FHE) and Direct ORAM (1-server, AMD SEV-SNP TEE) first;
+DPF-PIR (2-server) and HarmonyPIR (stateful hint) optional, needing a
+best-effort server 1 — serving private UTXO lookups from a snapshot of the
+Bitcoin UTXO set. Working rules for agents are in [`AGENTS.md`](AGENTS.md);
+read that first.
 
 ## Where things are decided
 
