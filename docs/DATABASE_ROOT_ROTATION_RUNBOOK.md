@@ -224,7 +224,10 @@ following are ready:
   artifact are identified for rollback.
 
 A data/proof rotation with an unchanged protocol does not by itself require a
-new `unified_server` binary or UKI. A proof-schema or wire-protocol change does;
+new `unified_server` binary. It does require a new Direct ORAM runtime UKI:
+`unified-server-run.sh` bakes the generation into the measured image (Flow E;
+[Database rebuild](DATABASE_REBUILD.md) §8.2). A proof-schema or wire-protocol change
+needs a new binary too;
 in that case, validate and deploy the compatible binary/UKI as a separate gate
 before following the activation steps below.
 
@@ -240,8 +243,8 @@ short maintenance window; clients report mismatches meanwhile:
    provisioner UKI.
 2. Atomically replace each host's active `databases.toml` with the prepared
    version. Restart the normal Hetzner services. On VPSBG, `close` with the
-   same known-good Tier 3 image id; an unchanged data/proof schema needs this
-   config reload but does not require rebuilding the UKI. Do not run a second
+   runtime image built for this generation (Flow E); the previous image serves
+   only the previous generation. Do not run a second
    server that bypasses either deployed supervisor/boot path.
 3. Until both hosts agree, treat the fleet as unavailable. DPF and the
    HarmonyPIR hint/query split must not mix generations.

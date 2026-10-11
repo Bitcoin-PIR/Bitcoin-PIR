@@ -141,10 +141,8 @@ publish. `.github/workflows/deploy-web.yml` deploys only on
 The build job has contents-read only; Pages write/OIDC is confined to
 the deploy job.
 
-1. Local — land the web or pin change through Flow B. Pin edits must
-   keep `web/src/attest-pin.ts` and the duplicate pins in
-   `crates/sdk/client/tests/integration_test.rs` consistent
-   ([rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md) §3).
+1. Local — land the web or pin change through Flow B. Pin edits follow
+   the [rotation runbook](DATABASE_ROOT_ROTATION_RUNBOOK.md) §3.
 2. Local — wait for `web-build.yml` on that `main` commit.
 3. Auth — dispatch `deploy-web.yml` on `main` with
    `confirm_production_deploy=true`. Expected 20–60 min, hard stop
@@ -209,7 +207,10 @@ Details: [UKI build](runbooks/uki-build.md),
 7. Auth — rollback is `switch` with the **previous** image id, then
    step 6 again.
 
-A data/proof-only rotation does not need a new UKI (Flow H).
+A new database generation needs a new runtime UKI: `unified-server-run.sh`
+bakes the generation (its MuHash, Direct input hashes, delta anchor, BHTM root
+and leaf proof) into the measured image
+([Database rebuild](DATABASE_REBUILD.md) §8.2).
 
 ## F. VPSBG data-disk window — Auth
 
@@ -236,7 +237,8 @@ your own `ssh`/`scp` calls beside it during a window.
 
 Follow [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) and
 read [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md)
-before touching artifacts. Producer UKI details:
+before touching artifacts. A generation built from a fresh Core snapshot,
+end to end: [Database rebuild](DATABASE_REBUILD.md). Producer UKI details:
 [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md).
 
 One generation is **one** `server-db` tree plus its evidence. DPF and
@@ -306,8 +308,7 @@ never from a live server or from the proof printing itself.
    Core snapshots.
 5. Human — edit pins in the same change set (rotation §3):
    `PRODUCTION_DB_PROOF_PINS`, `PRODUCTION_ONION_DB_PROOF_V2_PINS`,
-   `PRODUCTION_ORAM_DB_PROOF_V2_PINS`,
-   `crates/sdk/client/tests/integration_test.rs`, and
+   `PRODUCTION_ORAM_DB_PROOF_V2_PINS`, and
    `web/public/proofs/`. Do not recreate
    `PRODUCTION_ONION_QUERY_LAYOUT_PINS`.
 6. Local — Flow B tests for that pin/lock change.

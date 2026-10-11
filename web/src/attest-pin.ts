@@ -328,8 +328,8 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
 ];
 
 /** v2 pins for the VPSBG Direct ORAM service. The layout and database
- * roots match the Onion service, while the native full-build producer is
- * independently bound to the proof-registry lock. */
+ * roots match the Onion service; the native full-build producer has its own
+ * builder identity. */
 export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
   PRODUCTION_ONION_DB_PROOF_V2_PINS.map((pin) => ({
     ...pin,
