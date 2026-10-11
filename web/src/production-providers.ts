@@ -20,6 +20,7 @@ import {
     type ServerAttestPin,
 } from './attest-pin.js';
 import { hexToBytes } from './hash.js';
+import type { NostrDirectoryConfigV1 } from './nostr-directory.js';
 import type { OramBatchPlannerConfig } from './oram-adapter.js';
 
 export interface ProductionProviderPin {
@@ -58,8 +59,9 @@ export const PIR2_PROVIDER: ProductionProviderPin = {
 
 /**
  * Direct ORAM provider: the VPSBG TEE host weikeng2 (server 26939, AMD Milan,
- * Direct ORAM only). Same operator key as the pir2 slot; its own server
- * identity. Set back to `null` to pause Direct ORAM.
+ * Direct ORAM only). Same operator key as the pir2 slot. Since image 375 the
+ * host announces no server identity (the check reports `unconfigured`): its
+ * trust is the SEV-SNP attestation. Set back to `null` to pause Direct ORAM.
  */
 export const ORAM_PROVIDER: ProductionProviderPin | null = {
     endpoint: 'wss://weikeng2.bitcoinpir.org',
@@ -69,6 +71,20 @@ export const ORAM_PROVIDER: ProductionProviderPin | null = {
     ),
     expectedArkFingerprint: AMD_MILAN_ARK_FINGERPRINT,
 };
+
+/**
+ * Production service directory (docs/DIRECTORY_PROTOCOL.md): the
+ * directory-only relay on pir1 (docs/runbooks/directory-relay.md). One relay,
+ * so the explicit centralized mode, whose catalog is always reported
+ * degraded. `directoryPubkeyHex` is the publisher key printed by
+ * `bpir-admin directory-artifact keygen`; it stays `null` until the
+ * deployment that publishes the directory pins it here.
+ */
+export const PRODUCTION_DIRECTORY: Readonly<NostrDirectoryConfigV1> = Object.freeze({
+    mode: 'centralized-single-relay',
+    relays: Object.freeze(['wss://directory.bitcoinpir.org']),
+    directoryPubkeyHex: null,
+});
 
 /** Shown wherever Direct ORAM would otherwise connect. */
 export const ORAM_PAUSED_MESSAGE =

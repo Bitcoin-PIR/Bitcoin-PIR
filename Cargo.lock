@@ -1730,6 +1730,7 @@ name = "pir-sdk-wasm"
 version = "0.1.0"
 dependencies = [
  "console_error_panic_hook",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
  "js-sys",
@@ -1737,6 +1738,7 @@ dependencies = [
  "pir-channel",
  "pir-core",
  "pir-db-attest",
+ "pir-directory-nostr",
  "pir-runtime-core",
  "pir-sdk",
  "pir-sdk-client",

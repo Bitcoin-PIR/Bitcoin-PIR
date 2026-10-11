@@ -32,7 +32,9 @@ status subcommand for the rest.
   checkpoints, operator assertions, client rollback state, relay profile);
   the codec is `crates/directory/nostr`, the operator commands are
   `bpir-admin directory-artifact`, the relay is `apps/directory-relay`
-  ([Directory relay](runbooks/directory-relay.md)).
+  ([Directory relay](runbooks/directory-relay.md)), the browser client is
+  `web/src/nostr-directory.ts` and the operator readback is
+  `scripts/directory-readback.mjs`.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md); the
   EasyCrypt proof lives in
   [Bitcoin-PIR/protocol-proofs](https://github.com/Bitcoin-PIR/protocol-proofs).

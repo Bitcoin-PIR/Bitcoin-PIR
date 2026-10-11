@@ -20,7 +20,8 @@ Directory output is candidate metadata only. It never establishes runtime,
 database, access-policy, payment, or two-provider independence trust: the
 client still runs the full live verification (REQ_ANNOUNCE identity, binary
 or SEV pin, secure channel, database proof) against every discovered
-provider.
+provider; an SEV-SNP provider that announces no identity is bound by its
+pinned attestation instead.
 
 The crate performs no network or storage I/O and owns no randomness
 boundary; callers supply relay bytes, a `DirectoryRollbackStoreV1`

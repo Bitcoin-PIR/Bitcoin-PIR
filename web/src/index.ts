@@ -224,9 +224,26 @@ export {
   ORAM_PROVIDER,
   PIR1_PROVIDER,
   PIR2_PROVIDER,
+  PRODUCTION_DIRECTORY,
   PRODUCTION_ORAM_BATCH_PLANNER,
   type ProductionProviderPin,
 } from './production-providers.js';
+
+export {
+  DIRECTORY_FLOORS_STORAGE_PREFIX,
+  directoryBindingMismatchV1,
+  refreshNostrDirectoryV1,
+  type DirectoryAccessClassV1,
+  type DirectoryCandidateV1,
+  type DirectoryLiveServerV1,
+  type DirectoryProviderV1,
+  type DirectoryRejectionV1,
+  type DirectoryRelayModeV1,
+  type DirectoryTrustTierV1,
+  type NostrDirectoryCatalogV1,
+  type NostrDirectoryConfigV1,
+  type NostrDirectoryRefreshOptionsV1,
+} from './nostr-directory.js';
 
 export {
   topUpX402,

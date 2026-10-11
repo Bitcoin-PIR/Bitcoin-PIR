@@ -52,6 +52,9 @@ pir-attest-verify = { version = "0.1.0", path = "../../trust/attest-verify" }
 # JS-facing DB proof summaries use the same build-kind labels and hash display
 # helpers as the native verifier.
 pir-db-attest = { path = "../../trust/db-attest" }
+# Nostr service-directory codec: the browser verifies relay events,
+# checkpoints and rollback floors with it (`directory` module).
+pir-directory-nostr = { version = "0.1.0", path = "../../directory/nostr" }
 # Per-handshake nonce + ephemeral seed in `WasmDpfClient::attest`. The
 # "js" feature lets it use `crypto.getRandomValues` on wasm32; on
 # native (used only by `cargo test`) it reads /dev/urandom.
@@ -101,6 +104,8 @@ console_error_panic_hook = "0.1"
 # the intent explicit and survives any future resolver shifts.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 pir-runtime-core = { version = "0.1.0", path = "../../protocol/runtime" }
+# Signs the operator assertions of the `directory` tests' catalogs.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 # Per-package profile overrides must live at the workspace root; Cargo
 # ignores `[profile.*]` here and emits a warning on every build. For

@@ -85,6 +85,20 @@ interface PirSdkWasm {
     allowedBuilderBinarySha256Hex?: string | null,
     allowedBuilderGitCommit?: string | null,
   ): WasmDatabaseProof;
+  /** The 16 exact NIP-01 `REQ` messages of a full directory catalog read. */
+  directoryCatalogRequestsV1(directoryPubkey: Uint8Array): string[];
+  /**
+   * Verify complete relay views of the directory catalog (`relaysJson`: one
+   * array of raw `EVENT` messages per relay) against the pinned key,
+   * `nowUnix` and the stored rollback floors (`stateJson`). Returns the
+   * catalog JSON with the advanced floors; see `nostr-directory.ts`.
+   */
+  verifyDirectoryCatalogV1(
+    relaysJson: string,
+    stateJson: string | undefined,
+    directoryPubkey: Uint8Array,
+    nowUnix: bigint,
+  ): string;
 }
 
 interface WasmDatabaseCatalog {

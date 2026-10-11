@@ -44,6 +44,12 @@ pub use merkle_verify::{
     BUCKET_MERKLE_SIB_ROW_SIZE,
 };
 
+/// Nostr service-directory verification (`docs/DIRECTORY_PROTOCOL.md`):
+/// JavaScript fetches the relay events, Rust verifies them, compares relay
+/// views and advances the rollback floors.
+pub mod directory;
+pub use directory::{directory_catalog_requests_v1, verify_directory_catalog_v1};
+
 /// Same-socket attestation and encrypted-frame bridge for the standalone
 /// browser OnionPIR/SEAL implementation.
 pub mod standalone_channel;

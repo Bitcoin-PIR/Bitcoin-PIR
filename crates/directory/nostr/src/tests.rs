@@ -479,6 +479,49 @@ fn canonical_content_rejects_aliases_and_payment_artifact_fields() {
     );
 }
 
+/// One durably accepted shard holding exactly `entry`.
+fn persisted_one_entry_shard(
+    entry: &DirectoryEntryV1,
+) -> (
+    PersistedDirectoryCheckpointV1,
+    [PersistedDirectoryEntryV1; 1],
+) {
+    let publisher = DirectoryPublisherKeyV1::from_secret_bytes([42; 32]).unwrap();
+    let event = signed_entry(&publisher, entry, NOW, 43);
+    let mut store = MemoryRollbackStoreV1::default();
+    let persisted_entry = block_on(verify_and_persist_directory_entry_v1(
+        &mut store,
+        &event.to_json_bytes().unwrap(),
+        publisher.public_key(),
+        NOW,
+    ))
+    .unwrap();
+    let checkpoint = DirectoryCatalogCheckpointV1::new(
+        persisted_entry.verified().shard(),
+        1,
+        1_000,
+        2_500,
+        vec![DirectoryCheckpointEntryV1 {
+            provider_id: *entry.provider_id(),
+            directory_sequence: entry.directory_sequence(),
+            event_id: *event.id(),
+        }],
+        NOW,
+    )
+    .unwrap();
+    let checkpoint_event = publisher
+        .sign_checkpoint_event(&checkpoint, NOW + 1, &[45; 32])
+        .unwrap();
+    let persisted_checkpoint = block_on(verify_and_persist_directory_checkpoint_v1(
+        &mut store,
+        &checkpoint_event.to_json_bytes().unwrap(),
+        publisher.public_key(),
+        NOW + 1,
+    ))
+    .unwrap();
+    (persisted_checkpoint, [persisted_entry])
+}
+
 #[test]
 fn discovery_hints_only_survive_exact_live_identity_binding() {
     let operator_key = SigningKey::from_bytes(&[3; 32]);
@@ -501,40 +544,7 @@ fn discovery_hints_only_survive_exact_live_identity_binding() {
         NOW,
     )
     .unwrap();
-    let publisher = DirectoryPublisherKeyV1::from_secret_bytes([42; 32]).unwrap();
-    let event = signed_entry(&publisher, &entry, NOW, 43);
-    let mut store = MemoryRollbackStoreV1::default();
-    let persisted_entry = block_on(verify_and_persist_directory_entry_v1(
-        &mut store,
-        &event.to_json_bytes().unwrap(),
-        publisher.public_key(),
-        NOW,
-    ))
-    .unwrap();
-    let checkpoint = DirectoryCatalogCheckpointV1::new(
-        persisted_entry.verified().shard(),
-        1,
-        1_000,
-        2_500,
-        vec![DirectoryCheckpointEntryV1 {
-            provider_id,
-            directory_sequence: entry.directory_sequence(),
-            event_id: *event.id(),
-        }],
-        NOW,
-    )
-    .unwrap();
-    let checkpoint_event = publisher
-        .sign_checkpoint_event(&checkpoint, NOW + 1, &[45; 32])
-        .unwrap();
-    let persisted_checkpoint = block_on(verify_and_persist_directory_checkpoint_v1(
-        &mut store,
-        &checkpoint_event.to_json_bytes().unwrap(),
-        publisher.public_key(),
-        NOW + 1,
-    ))
-    .unwrap();
-    let persisted_entries = [persisted_entry];
+    let (persisted_checkpoint, persisted_entries) = persisted_one_entry_shard(&entry);
     let catalog =
         bind_persisted_directory_shard_catalog_v1(&persisted_checkpoint, &persisted_entries)
             .unwrap();
@@ -545,9 +555,12 @@ fn discovery_hints_only_survive_exact_live_identity_binding() {
         (DirectoryBackendV1::Onion, DirectoryAccessClassV1::Paid),
         (DirectoryBackendV1::Oram, DirectoryAccessClassV1::Paid),
     ];
-    let live = LiveProviderIdentityV1 {
+    let announce = LiveAnnounceIdentityV1 {
         operator_pubkey_ed25519: &operator_public,
         stable_server_id: "provider-a",
+    };
+    let live = LiveProviderIdentityV1 {
+        announce: Some(announce),
         role: DirectoryServerRoleV1::Primary,
         attestation: DirectoryAttestationV1::None,
         access: &live_access,
@@ -557,17 +570,21 @@ fn discovery_hints_only_survive_exact_live_identity_binding() {
         binding.directory_entry().verified().discovery_entry(),
         &entry
     );
-    assert_eq!(binding.live_identity().stable_server_id, "provider-a");
+    assert_eq!(binding.live_identity().announce, Some(announce));
 
     // A live server with a different operator key, server id, role,
-    // attestation tier, or access class never matches the directory hint.
+    // attestation tier, or access class never matches the directory hint,
+    // and a server without an announce identity binds only through SEV-SNP.
     let other_public = SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes();
     assert_eq!(
         bind_directory_entry_to_live_identity_v1(
             &catalog,
             &provider_id,
             LiveProviderIdentityV1 {
-                operator_pubkey_ed25519: &other_public,
+                announce: Some(LiveAnnounceIdentityV1 {
+                    operator_pubkey_ed25519: &other_public,
+                    ..announce
+                }),
                 ..live
             },
         ),
@@ -578,7 +595,21 @@ fn discovery_hints_only_survive_exact_live_identity_binding() {
             &catalog,
             &provider_id,
             LiveProviderIdentityV1 {
-                stable_server_id: "provider-b",
+                announce: Some(LiveAnnounceIdentityV1 {
+                    stable_server_id: "provider-b",
+                    ..announce
+                }),
+                ..live
+            },
+        ),
+        Err(DirectoryErrorV1::LiveIdentityMismatch)
+    );
+    assert_eq!(
+        bind_directory_entry_to_live_identity_v1(
+            &catalog,
+            &provider_id,
+            LiveProviderIdentityV1 {
+                announce: None,
                 ..live
             },
         ),
@@ -637,6 +668,68 @@ fn discovery_hints_only_survive_exact_live_identity_binding() {
     unknown_provider[1] ^= 1;
     assert_eq!(
         bind_directory_entry_to_live_identity_v1(&catalog, &unknown_provider, live),
+        Err(DirectoryErrorV1::LiveIdentityMismatch)
+    );
+}
+
+#[test]
+fn sev_snp_provider_without_announce_identity_binds_through_attestation() {
+    let sev_hint = |backend| DirectoryCatalogHintV1 {
+        backend,
+        role: DirectoryServerRoleV1::Primary,
+        access: DirectoryAccessClassV1::Free,
+        attestation: DirectoryAttestationV1::SevSnp,
+    };
+    let assertion = operator_assertion(1, 3);
+    let provider_id = assertion.provider_id;
+    let entry = DirectoryEntryV1::new_active(
+        1,
+        2_500,
+        assertion,
+        vec![sev_hint(DirectoryBackendV1::Oram)],
+        health(DirectoryHealthClassV1::Available),
+        NOW,
+    )
+    .unwrap();
+    let (persisted_checkpoint, persisted_entries) = persisted_one_entry_shard(&entry);
+    let catalog =
+        bind_persisted_directory_shard_catalog_v1(&persisted_checkpoint, &persisted_entries)
+            .unwrap();
+    let live_access = [(DirectoryBackendV1::Oram, DirectoryAccessClassV1::Free)];
+    let live = LiveProviderIdentityV1 {
+        announce: None,
+        role: DirectoryServerRoleV1::Primary,
+        attestation: DirectoryAttestationV1::SevSnp,
+        access: &live_access,
+    };
+    assert!(bind_directory_entry_to_live_identity_v1(&catalog, &provider_id, live).is_ok());
+
+    // Without a pinned SEV-SNP attestation nothing stands in for the identity.
+    assert_eq!(
+        bind_directory_entry_to_live_identity_v1(
+            &catalog,
+            &provider_id,
+            LiveProviderIdentityV1 {
+                attestation: DirectoryAttestationV1::None,
+                ..live
+            },
+        ),
+        Err(DirectoryErrorV1::LiveIdentityMismatch)
+    );
+    // An announced identity is still checked against the assertion.
+    let other_public = SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes();
+    assert_eq!(
+        bind_directory_entry_to_live_identity_v1(
+            &catalog,
+            &provider_id,
+            LiveProviderIdentityV1 {
+                announce: Some(LiveAnnounceIdentityV1 {
+                    operator_pubkey_ed25519: &other_public,
+                    stable_server_id: "provider-a",
+                }),
+                ..live
+            },
+        ),
         Err(DirectoryErrorV1::LiveIdentityMismatch)
     );
 }

@@ -35,9 +35,10 @@ is reached only through an SSH port-forward. Templates:
 | Operator identity key (Ed25519) | Mac Studio, the existing `bpir-admin` operator key that signs the servers' identity certificates | Signs each provider's operator assertion (`--operator-signing-key`). |
 
 The directory public key (`directory_pubkey_xonly=` printed by `keygen`) goes
-into the relay config (`directory_pubkey_hex`) and into the client pin (web
-and SDK, follow-up change). A new publisher key is a new trust namespace:
-rotate it only with a client pin update, never in place.
+into the relay config (`directory_pubkey_hex`) and into the web client pin
+(`PRODUCTION_DIRECTORY` in `web/src/production-providers.ts`). A new
+publisher key is a new trust namespace: rotate it only with a client pin
+update, never in place.
 
 ## Install (first time)
 
@@ -77,9 +78,18 @@ journalctl -u bpir-directory-relay --since -1h --no-pager
 
 The relay logs no event content at any level. A plain HTTPS `GET` on
 `https://directory.bitcoinpir.org` is not a health check (WebSocket-only, like
-the PIR endpoints); read the catalog with the client or the readback tool once
-they are restored, or with `bpir-admin directory-artifact publish
---validate-only` for the artifact side.
+the PIR endpoints); read the catalog back as a client sees it (build the WASM
+package first with `wasm-pack build crates/sdk/wasm --target web --out-dir
+pkg`):
+
+```sh
+node scripts/directory-readback.mjs \
+  --relay wss://directory.bitcoinpir.org --centralized-single-relay \
+  --directory-pubkey-hex "$DIRECTORY_PUBKEY"
+```
+
+`bpir-admin directory-artifact publish --validate-only` checks the artifact
+side.
 
 ## Publish or update entries
 
@@ -114,8 +124,9 @@ bpir-admin directory-artifact publish \
    positive `OK` per event; replaying an exact artifact is idempotent, a
    negative `OK` is a failure.
 
-3. Verify the public lane returns the new heads (client or readback tool),
-   then record the published sequence/epoch in the ledger.
+3. Verify the public lane returns the new heads: run the readback above
+   with one `--artifact` per published file. Then record the published
+   sequence/epoch in the ledger.
 
 A retired server gets a `tombstone` at the next sequence and stays in the
 checkpoint set; a replaced key or `server_id` is a new provider id.
