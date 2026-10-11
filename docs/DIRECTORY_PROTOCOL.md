@@ -354,7 +354,8 @@ relay list and the pinned directory key (`PRODUCTION_DIRECTORY` in
 `web/src/production-providers.ts` for production). It sends the 16 `REQ`
 messages from the WASM export `directoryCatalogRequestsV1`, byte-exact for the
 relay profile, to every relay, and keeps a relay's view only once every
-subscription reached `EOSE`; it then sends `CLOSE` for each. A relay that
+subscription reached `EOSE`; it then closes the connection, which ends the
+subscriptions without a `CLOSE` each (16 relay operations per refresh). A relay that
 times out, closes, answers `CLOSED` or malformed JSON, or sends more than
 16 MiB contributes no view and is reported. The raw `EVENT` messages of the
 complete views go unchanged to `verifyDirectoryCatalogV1`

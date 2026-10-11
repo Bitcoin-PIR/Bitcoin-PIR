@@ -77,7 +77,8 @@ goes no further than that.
 - New tests go in `src/foo/tests.rs` or crate `tests/`, not in the
   implementation file.
 - The Payment V1 `legacy/` tree is deleted. Do not resurrect signed-policy,
-  clearing, directory, or PoW types.
+  clearing, or PoW types. The Nostr service directory was restored without
+  them as `crates/directory/nostr` (#388).
 - Padding / Merkle-symmetry changes must run the existing symmetry tests,
   not just `cargo check`.
 

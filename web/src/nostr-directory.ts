@@ -2,7 +2,7 @@
  * Nostr service directory client (docs/DIRECTORY_PROTOCOL.md).
  *
  * `refreshNostrDirectoryV1` reads the full 16-shard catalog from the
- * configured relays (NIP-01 `REQ` / `EOSE` / `CLOSE`), verifies it in WASM
+ * configured relays (NIP-01 `REQ` / `EOSE`), verifies it in WASM
  * against the pinned directory key and the stored rollback floors, stores
  * the advanced floors, and returns the candidate providers per backend.
  * Every relay, shard or event that fails is reported in `rejected`; whether
@@ -258,8 +258,7 @@ function readCatalog(
   openSocket: (url: string) => WebSocket,
 ): Promise<string[]> {
   return new Promise((resolve, reject) => {
-    const subscriptions = requests.map((request) => JSON.parse(request)[1] as string);
-    const open = new Set(subscriptions);
+    const open = new Set(requests.map((request) => JSON.parse(request)[1] as string));
     const events: string[] = [];
     let bytes = 0;
     let socket: WebSocket;
@@ -272,8 +271,8 @@ function readCatalog(
     const finish = (error: string | null) => {
       clearTimeout(timer);
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      // Closing the connection ends every subscription; no CLOSE frames.
       try {
-        if (error === null) for (const id of subscriptions) socket.send(JSON.stringify(['CLOSE', id]));
         socket.close();
       } catch {
         // The connection is gone either way.

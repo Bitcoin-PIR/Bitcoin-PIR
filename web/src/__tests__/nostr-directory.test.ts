@@ -247,7 +247,7 @@ describe('refreshNostrDirectoryV1', () => {
     expect(requests[0]).toBe(JSON.stringify(['REQ', 'bitcoinpir-directory-v1-shard-0', {
       authors: [DIRECTORY_KEY], kinds: [30078], '#s': ['bitcoinpir-service-directory-shard-v1:0'],
     }]));
-    expect(a.sent.filter((message) => message.startsWith('["CLOSE"'))).toHaveLength(16);
+    expect(a.sent.filter((message) => message.startsWith('["CLOSE"'))).toHaveLength(0);
 
     const summary = (backend: 'dpf' | 'harmony' | 'onion' | 'oram') => result.candidates[backend]
       .map(({ provider, access }) => [provider.serverId, access, provider.trustTier]);

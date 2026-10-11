@@ -22,16 +22,19 @@ directory_pubkey_hex = "DIRECTORY_PUBLISHER_PUBKEY_HEX"
 # writes have exact lane reservations whose sums equal every global cap, so
 # neither lane can occupy the other's connection, operation, rate, or egress
 # allocation. The per-connection egress budget intentionally does not let the
-# count and event-size maxima be saturated together.
+# count and event-size maxima be saturated together. Operations are counted
+# per message in one-second windows: a client refresh is 16 public operations
+# (one REQ per shard), and a publish is one publisher operation per event
+# (the entries plus 16 checkpoints), which must fit in one window.
 max_connections = 52
 max_public_connections = 48
 max_publisher_connections = 4
 max_in_flight_operations = 8
 max_public_in_flight_operations = 6
 max_publisher_in_flight_operations = 2
-max_operations_per_second = 64
-max_public_operations_per_second = 48
-max_publisher_operations_per_second = 16
+max_operations_per_second = 1024
+max_public_operations_per_second = 960
+max_publisher_operations_per_second = 64
 max_egress_bytes_per_second = 16777216
 max_public_egress_bytes_per_second = 12582912
 max_publisher_egress_bytes_per_second = 4194304

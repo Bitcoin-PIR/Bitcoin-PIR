@@ -59,8 +59,9 @@ export const PIR2_PROVIDER: ProductionProviderPin = {
 
 /**
  * Direct ORAM provider: the VPSBG TEE host weikeng2 (server 26939, AMD Milan,
- * Direct ORAM only). Same operator key as the pir2 slot; its own server
- * identity. Set back to `null` to pause Direct ORAM.
+ * Direct ORAM only). Same operator key as the pir2 slot. Since image 375 the
+ * host announces no server identity (the check reports `unconfigured`): its
+ * trust is the SEV-SNP attestation. Set back to `null` to pause Direct ORAM.
  */
 export const ORAM_PROVIDER: ProductionProviderPin | null = {
     endpoint: 'wss://weikeng2.bitcoinpir.org',

@@ -23,15 +23,14 @@ a relay, shard or artifact event is missing or rejected.`;
 
 function readCatalog(url, requests, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const subscriptions = requests.map((request) => JSON.parse(request)[1]);
-    const open = new Set(subscriptions);
+    const open = new Set(requests.map((request) => JSON.parse(request)[1]));
     const events = [];
     const socket = new WebSocket(url);
     const finish = (error) => {
       clearTimeout(timer);
       socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null;
+      // Closing the connection ends every subscription; no CLOSE frames.
       try {
-        if (!error) for (const id of subscriptions) socket.send(JSON.stringify(["CLOSE", id]));
         socket.close();
       } catch {
         // The connection is gone either way.
