@@ -18,7 +18,6 @@ const REQ_CHUNK_BATCH: u8 = 0x21;
 const REQ_BUCKET_MERKLE_SIB_BATCH: u8 = 0x33;
 const REQ_BUCKET_MERKLE_TREE_TOPS: u8 = 0x34;
 const REQ_HARMONY_HINTS: u8 = 0x41;
-const REQ_HARMONY_QUERY: u8 = 0x42;
 const REQ_HARMONY_BATCH_QUERY: u8 = 0x43;
 const REQ_HARMONY_HINTS_V2: u8 = 0x44;
 const REQ_HARMONY_HINTS_V2_HALF: u8 = 0x46;
@@ -154,22 +153,6 @@ pub fn classify_payload(variant: u8, body: &[u8]) -> Option<(MeteredOp, u8)> {
             cursor.skip(16)?; // session token
             cursor.u8()?; // side
             Some((MeteredOp::HarmonyContinuation, cursor.trailing_db_id()?))
-        }
-        REQ_HARMONY_QUERY => {
-            let level = cursor.u8()?;
-            cursor.u8()?; // group_id
-            cursor.u16()?; // round_id
-            let indices = usize::try_from(cursor.u32()?).ok()?;
-            cursor.skip(indices.checked_mul(4)?)?;
-            let db_id = cursor.trailing_db_id()?;
-            harmony_level(level)?;
-            Some((
-                MeteredOp::HarmonyQuery {
-                    level,
-                    sub_queries: 1,
-                },
-                db_id,
-            ))
         }
         REQ_HARMONY_BATCH_QUERY => {
             let level = cursor.u8()?;
@@ -384,21 +367,6 @@ mod tests {
         assert_eq!(
             classify_frame(&frame(REQ_HARMONY_HINTS_V2_HALF, &half)),
             Some((MeteredOp::HarmonyContinuation, 0))
-        );
-        let mut query = vec![1u8, 4];
-        query.extend_from_slice(&0u16.to_le_bytes());
-        query.extend_from_slice(&2u32.to_le_bytes());
-        query.extend_from_slice(&5u32.to_le_bytes());
-        query.extend_from_slice(&6u32.to_le_bytes());
-        assert_eq!(
-            classify_frame(&frame(REQ_HARMONY_QUERY, &query)),
-            Some((
-                MeteredOp::HarmonyQuery {
-                    level: 1,
-                    sub_queries: 1
-                },
-                0
-            ))
         );
         let mut batch = vec![10u8];
         batch.extend_from_slice(&3u16.to_le_bytes());

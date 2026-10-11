@@ -139,15 +139,15 @@ the database, sent only when it is not 0.
 - `0x00`: empty → empty.
 - `0x01` and `0x40`: empty → `[index_bins u32][chunk_bins u32][index_k u8]
   [chunk_k u8][tag_seed u64][index_master_seed u64][chunk_master_seed u64]
-  [anchor]` for the main database (`Response::encode`, protocol.rs:887). An
+  [anchor]` for the main database (`Response::encode`, protocol.rs:880). An
   anchor is `[kind u8]` plus 0, 36 or 72 bytes for none, snapshot or delta
-  (`encode_anchor_ext`, protocol.rs:2022).
+  (`encode_anchor_ext`, protocol.rs:2015).
 - `0x02`: empty → `[n u8]`, n entries `[db_id u8][db_type u8][name_len u8]
   [name][base_height u32][height u32][index_bins u32][chunk_bins u32]
   [index_k u8][chunk_k u8][tag_seed u64][dpf_n_index u8][dpf_n_chunk u8]
   [has_bucket_merkle u8]`, then `[0x01]` and per entry
   `[index_master_seed u64][chunk_master_seed u64][anchor]`
-  (`encode_db_catalog`, protocol.rs:1828).
+  (`encode_db_catalog`, protocol.rs:1821).
 - `0x03`: empty → UTF-8 JSON with the database parameters, OnionPIR
   parameters, Merkle roots, the gas card and the access policy
   (`server_info_json`, state.rs:259).
@@ -155,7 +155,7 @@ the database, sent only when it is not 0.
   [n × manifest_root 32][binary_sha256 32][server_static_pub 32]
   [git_rev_len u16][git_rev]`, then `[len u32][PEM]` for the AMD ARK, ASK and
   VCEK certificates; the report and PEMs are empty where unavailable
-  (`encode_attest_result`, protocol.rs:2076).
+  (`encode_attest_result`, protocol.rs:2069).
 - `0x06`: see [Encrypted channel](#encrypted-channel).
 - `0x07`: empty → `[len u32][bundle]`, the bundle being
   `[cert_len u32][IdentityCert][manifest_len u32][ChannelManifest]`
@@ -165,13 +165,13 @@ the database, sent only when it is not 0.
   (version 1 or 2), then six `[len u32][bytes]` fields: build evidence,
   root-bundle payload, SEV-SNP report, database-manifest SHA-256,
   all-artifacts-manifest SHA-256 and the server-db manifest TOML
-  (`encode_db_proof_bundle`, protocol.rs:1968).
+  (`encode_db_proof_bundle`, protocol.rs:1961).
 
 ### Credits
 
 - `0x12`: `[kind u8][len u32][payload]`, payload at most 256 KiB →
   `RESP_CREDIT_OK` `[gas_added u64][gas_balance i64]` (`Request::encode`,
-  protocol.rs:724). Kind `1` is a Cashu token (`cashuB…` as UTF-8,
+  protocol.rs:717). Kind `1` is a Cashu token (`cashuB…` as UTF-8,
   `CREDIT_PRESENT_KIND_CASHU`); a server refuses any other kind. The gas
   belongs to the connection and ends with it.
 - `0x13`: the key, 1 to 128 bytes → `RESP_API_KEY_OK`, empty.
@@ -180,11 +180,11 @@ the database, sent only when it is not 0.
 
 - `0x11`, `0x21`, `0x33`: `[round_id u16][num_groups u8][keys_per_group u8]`,
   then `[key_len u16][DPF key]` per key of each group, opt `db_id`
-  (`encode_batch_query`, protocol.rs:1198). INDEX groups carry two keys, one
+  (`encode_batch_query`, protocol.rs:1191). INDEX groups carry two keys, one
   per cuckoo position; every key must pass `validate_dpf_key_bytes`. For
   `0x33`, `round_id = table × 100 + level` (table 0 INDEX, 1 CHUNK). Response:
   `[round_id u16][num_groups u8][results_per_group u8]`, then
-  `[len u16][result]` each (`encode_batch_result`, protocol.rs:1297).
+  `[len u16][result]` each (`encode_batch_result`, protocol.rs:1290).
 - `0x34`: optional `[db_id u8]` → the database's
   `merkle_bucket_tree_tops.bin`, verbatim (dispatch.rs:350).
 
@@ -204,10 +204,10 @@ the database, sent only when it is not 0.
   a token, one per side, get the same server-chosen key (dispatch.rs:615).
 - `0x43`: `[level u8][round_id u16][num_groups u16][sub_queries u8]`, then per
   group `[group_id u8]` and per sub-query `[count u32][count × index u32]`,
-  opt `db_id` (`encode_harmony_batch_query`, protocol.rs:1488) →
+  opt `db_id` (`encode_harmony_batch_query`, protocol.rs:1481) →
   `[level u8][round_id u16][num_groups u16][sub_results u8]`, then per group
   `[group_id u8]` and per sub-result `[len u32][bytes]`
-  (`encode_harmony_batch_result`, protocol.rs:1575). Levels: 0 INDEX,
+  (`encode_harmony_batch_result`, protocol.rs:1568). Levels: 0 INDEX,
   1 CHUNK, `10 + l` INDEX sibling level `l`, `20 + l` CHUNK sibling level `l`
   (`pir_credit::gas::harmony_level`).
 
@@ -229,16 +229,16 @@ the database, sent only when it is not 0.
 - `0x60`: `[db_id u8][count u16][count × scripthash 20]`, or with explicit
   empty slots `[db_id u8][0xffff][count u16][count × present u8]
   [count × scripthash 20]`; count at most 256 (`encode_oram_lookup_request`,
-  protocol.rs:1645) → `[db_id u8][count u16]`, per slot
+  protocol.rs:1638) → `[db_id u8][count u16]`, per slot
   `[flags u8: 1 found, 2 whale][start_chunk_id u32][num_chunks u8][len u32]
   [chunk bytes]`, then zero bytes up to a size fixed by the database's
   public access budget and the slot count (`encode_oram_lookup_result`,
-  protocol.rs:1734; `direct_oram_response_padding_bytes`, oram.rs:1026).
+  protocol.rs:1727; `direct_oram_response_padding_bytes`, oram.rs:1026).
 
 ## Errors
 
 `RESP_ERROR` (`0xff`) is `[len u32][UTF-8 message]` (`Response::encode`,
-protocol.rs:936). The text is for people, except two prefixes clients act on:
+protocol.rs:929). The text is for people, except two prefixes clients act on:
 
 - `insufficient gas: this frame needs N and the connection has M;`
   (credit_gate.rs:29): present credits, then resend.
@@ -252,9 +252,7 @@ for `0x05`, `0x11`, `0x21`, `0x33`, `0x41`, `0x43`, `0x51`, `0x52`, `0x53` and
 
 ## Retired (reserved, never reuse)
 
-These values once carried a message. `RETIRED_OPCODES` (protocol.rs:12)
-lists them, and `crates/protocol/runtime/tests/opcode_registry.rs` fails if a
-live opcode takes one or a decoder accepts one.
+These values once carried a message and are never assigned again.
 
 | Op | Former request / response | Removed in |
 |---|---|---|
@@ -283,8 +281,8 @@ the same way.
   error.
 - A changed request or response shape takes a new opcode, as the database
   proof did (`0x0a` bundle v1, `0x0c` bundle v2).
-- A retired value stays reserved: it joins the table above and
-  `RETIRED_OPCODES`, and is never assigned again.
+- A retired value stays reserved: it joins the table above and is never
+  assigned again.
 
 The optional trailing fields that exist today (opt `db_id`, the seeds and
 anchor after `tag_seed` in `0x01`/`0x40`, the `[0x01]` extension of the

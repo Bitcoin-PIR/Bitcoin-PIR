@@ -7,13 +7,6 @@
 
 use std::io;
 
-/// Opcode values retired from the protocol: reserved forever, never given to
-/// a new request or response. docs/PROTOCOL.md lists what each one was.
-pub const RETIRED_OPCODES: &[u8] = &[
-    0x04, 0x08, 0x09, 0x0b, 0x0d, 0x0e, 0x0f, 0x10, 0x30, 0x31, 0x32, 0x42, 0x70, 0x80, 0x81, 0x82,
-    0x83, 0x84, 0x85,
-];
-
 // ─── Request variants ───────────────────────────────────────────────────────
 
 pub const REQ_PING: u8 = 0x00;
@@ -134,10 +127,10 @@ pub const MAX_API_KEY_LEN: usize = 128;
 // pubkey to the chip-signed attestation). With both pubkeys + the
 // nonce, both sides derive a session key via HKDF-SHA256.
 //
-// Cleartext requests (PING, GET_INFO, ATTEST, the handshake itself)
-// remain available pre-handshake. Once the server processes a
-// REQ_HANDSHAKE, the connection enters encrypted mode and any
-// cleartext frame after that is a protocol error.
+// Before the handshake every request but credits, API keys and ORAM
+// lookups works in cleartext. After REQ_HANDSHAKE the server still
+// accepts cleartext requests but seals every record it sends
+// (docs/PROTOCOL.md "Encrypted channel").
 pub const REQ_HANDSHAKE: u8 = 0x06;
 
 // ─── Operator-signed identity announce ─────────────────────────────────────
