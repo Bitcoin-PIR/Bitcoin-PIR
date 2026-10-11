@@ -6,27 +6,28 @@ Today's light wallets leak every address you own to their server, enabling full 
 
 ## Try It
 
-A live demo runs at **[https://www.bitcoinpir.org/](https://www.bitcoinpir.org/)**. You can paste any Bitcoin address in the browser and watch it resolve to UTXOs privately. The servers run on a home machine and load data on demand, so the first query may be slow — please be patient.
+A live demo runs at **[https://www.bitcoinpir.org/](https://www.bitcoinpir.org/)**. You can paste any Bitcoin address in the browser and watch it resolve to UTXOs privately. OnionPIR and Direct ORAM each need one server; DPF-PIR and HarmonyPIR also need a second server, which the demo runs on a home machine on a best-effort basis, so it may be offline. The first query may be slow — please be patient.
 
 ## What It Does
 
 - **Look up any Bitcoin address privately** — balance, UTXOs, and transaction history, with zero leakage to the server
 - **Batch many addresses at once** — wallet sync performs dozens of lookups in a single round
 - **Verify results cryptographically** — each result comes with an optional Merkle proof tying it to the database's Merkle root; together with remote attestation of the server binary, this stops a malicious server from silently returning wrong data (the proof alone establishes consistency with a server-supplied root — see the trust-model note under "Key Features")
-- **Three privacy backends** for different trust and performance trade-offs
+- **Four privacy backends in two tiers** for different trust and performance trade-offs (one server or two; see below)
 - **Works with existing wallets** via plugins and adapters — no need to build a wallet from scratch
 
 ## Privacy Backends
 
-You can pick the backend that matches your threat model and performance needs:
+You can pick the backend that matches your threat model and performance needs. OnionPIR and Direct ORAM are the supported backends; each needs one server. DPF-PIR and HarmonyPIR are optional backends that need a second, independent server.
 
 | Backend | Trust Model | Best For |
 |---------|-------------|----------|
-| **DPF (2-server)** | Privacy holds as long as two servers don't collude | Fast, lightweight queries |
 | **OnionPIR (1-server, FHE)** | Single server, cryptographic privacy from lattice hardness | Strongest single-server guarantee |
+| **Direct ORAM (1-server, TEE)** | Trusts AMD SEV-SNP: queries reach an attested server over an encrypted channel, and ORAM hides the server's access pattern from its host | Low-cost single-server lookups |
+| **DPF (2-server)** | Privacy holds as long as two servers don't collude | Fast, lightweight queries |
 | **HarmonyPIR (1 or 2-server, stateful)** | Offline setup phase; deployed here as 2-server (query server + dedicated hint server) | Fast online queries after initial sync |
 
-All three backends expose the same high-level API — clients can switch between them without changing their code.
+DPF-PIR, HarmonyPIR and OnionPIR implement the same Rust `PirClient` trait (connect, catalog, sync), so a client can switch between them without changing its code. Direct ORAM has its own `OramClient`: the caller attests the server and upgrades to the encrypted channel before any lookup.
 
 ## Supported Wallets and Clients
 
@@ -46,7 +47,7 @@ Each UTXO lookup can be paired with a Merkle proof query that checks the result 
 
 > **Trust-model note on Merkle verification.** Clients check each result's Merkle proof and report the verdict per result (`merkleVerified`); the caller decides what to do with an unverified one. A client can also verify the database proof, install the roots it returns, and have the tree-tops checked against the attested database super-root before querying; the production web client does this for DPF, HarmonyPIR, and standalone OnionPIR, comparing each proof with its production pin. OnionPIR uses the attested `onion_super_root`; its `server-info.super_root` is diagnostic only. On the Direct ORAM host, runtime integrity is backed by SEV-SNP and a verified AMD VCEK chain. pir1 (Hetzner) and pir2 (a MacBook) have no TEE, so their tier is operator identity plus binary pinning, not hardware attestation. See [the database/root rotation runbook](docs/DATABASE_ROOT_ROTATION_RUNBOOK.md).
 
-> **Privacy note on Merkle verification.** Within each PIR round, queries are padded to a fixed count (75 for index, 80 for chunk) so the server cannot tell which group is real. Every query — found, not-found, or whale — performs at least one CHUNK PIR round and at least one CHUNK-Merkle sibling pass, so a not-found query stays indistinguishable from a found one (the **round-presence** invariant). INDEX Merkle items are distributed across PBC groups so the per-level sibling-pass count does not depend on a batch's collision pattern (**INDEX Merkle Group-Symmetry**). **Trade-off (2026-05-17):** all three backends (DPF, HarmonyPIR, OnionPIR) no longer pad each query's CHUNK Merkle items to a fixed `M = 16`; a query now fetches and verifies its *real* chunk count, so the server learns the approximate UTXO count of a found address. This is an admitted leak — mild for the ~99% of addresses with a single chunk. See [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for the full picture.
+> **Privacy note on Merkle verification.** Within each PIR round, queries are padded to a fixed count (75 for index, 80 for chunk) so the server cannot tell which group is real. Every query — found, not-found, or whale — performs at least one CHUNK PIR round and at least one CHUNK-Merkle sibling pass, so a not-found query stays indistinguishable from a found one (the **round-presence** invariant). INDEX Merkle items are distributed across PBC groups so the per-level sibling-pass count does not depend on a batch's collision pattern (**INDEX Merkle Group-Symmetry**). **Trade-off (2026-05-17):** the three PIR backends (DPF, HarmonyPIR, OnionPIR) no longer pad each query's CHUNK Merkle items to a fixed `M = 16`; a query now fetches and verifies its *real* chunk count, so the server learns the approximate UTXO count of a found address. This is an admitted leak — mild for the ~99% of addresses with a single chunk. See [docs/VERIFICATION_OVERVIEW.md](docs/VERIFICATION_OVERVIEW.md) for the full picture.
 
 ### Batch queries
 Wallet sync typically touches dozens of addresses at once. Bitcoin PIR packs multiple addresses into a single PIR round using probabilistic batch codes, so syncing a wallet with 50 addresses takes roughly the same time as syncing one.
