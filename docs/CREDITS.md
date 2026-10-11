@@ -183,12 +183,14 @@ verification data of a backend it runs free.
 
 Examples:
 
-- Reference deployment: DPF and HarmonyPIR free when idle, OnionPIR paid,
-  Direct ORAM free on the VPSBG host (`--access oram=best-effort:2
-  --free-threads 2`, no issuer). pir1:
+- Reference deployment: DPF and HarmonyPIR free when idle, OnionPIR free
+  within an hourly budget, Direct ORAM free on the VPSBG host (`--access
+  oram=best-effort:2 --free-threads 2`, no issuer). pir1:
   `--require-credits --access dpf=best-effort:2 --access
-  harmony=best-effort:1:1500000 --free-threads 2`, so HarmonyPIR hints
-  are free up to 1.5M gas (about ten fresh clients) per hour; the pir2
+  harmony=best-effort:1:1500000 --access onion=best-effort:1:3000000
+  --free-threads 2`, so HarmonyPIR hints are free up to 1.5M gas (about
+  ten fresh clients) per hour and OnionPIR up to 3M gas (about four
+  single-address lookups) per hour, one at a time; the pir2
   MacBook node: `--require-credits --access dpf=best-effort:2 --access
   harmony=best-effort:2 --free-threads 2`. Both also take
   `--api-key-file`.

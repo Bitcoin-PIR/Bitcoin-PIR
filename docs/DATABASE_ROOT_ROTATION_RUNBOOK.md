@@ -162,6 +162,8 @@ In the same change set, update `web/src/attest-pin.ts`:
    Onion and ORAM builder identities into one table.
 4. Update proof artifacts under `web/public/proofs/` and any public block links
    or reproducibility manifests for the new endpoints.
+5. Update the snapshot line above the backend tabs in `web/index.html` (block
+   height and the date that block was mined).
 
 Run the Rust/WASM/web tests that cover proof parsing, full-field pin matching,
 typed installation, tree-top preflight, layout mismatch, found/absent/whale

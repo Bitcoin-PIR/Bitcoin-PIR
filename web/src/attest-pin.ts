@@ -193,11 +193,12 @@ export const PIR1_PIN: ServerAttestPin = {
   // unified_server from the Flow D rebuild of 987fad2f (Phase 1
   // consolidation, #403–#418), `--locked --release` + strip. Access policy
   // --require-credits --access dpf=best-effort:2 --access
-  // harmony=best-effort:1:1500000: DPF is free while pir1 has room,
-  // HarmonyPIR hints are free up to 1.5M gas per hour, OnionPIR is paid.
+  // harmony=best-effort:1:1500000 --access onion=best-effort:1:3000000:
+  // DPF is free while pir1 has room, HarmonyPIR hints are free up to 1.5M
+  // gas per hour, OnionPIR one lookup at a time up to 3M gas per hour.
   binarySha256Hex:
     'b9f1be2f56d1d0d6a9f501a259ba118cbce91d66c86537037270cf8976a67a6d',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 987fad2f: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR paid; operator API keys)',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 987fad2f: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR best-effort free up to 3M gas/hour; operator API keys)',
 };
 
 /**
