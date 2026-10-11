@@ -11,6 +11,7 @@ Both are git-ignored (see `.gitignore`) and must never be committed.
 | `pir1-operator.key` | pir1 provider-operator Ed25519 seed |
 | `pir1-server-identity.key` | pir1 server identity Ed25519 seed |
 | `pir2-operator.key` | pir2 provider-operator Ed25519 seed |
+| `directory-nostr.key` | Nostr service-directory publisher BIP340 key (`bpir-admin directory-artifact keygen`); signs directory entries and checkpoints ([Directory relay](runbooks/directory-relay.md)) |
 | `vpsbg-ssh.key` | SSH Ed25519 key for the VPSBG Ubuntu host |
 
 `.keys/pir2-ceremony/` holds the artifacts of the retired sealed-identity

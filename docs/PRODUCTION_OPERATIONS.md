@@ -343,8 +343,9 @@ work runs on the MacBook; this repository's hosts have no SSH to it.
 
 1. Read — Flow A. Record the live `binary_sha256`.
 2. Local (MacBook) — build the approved commit with runbook step 4 into a
-   new `bin/<SHA>/` directory. Leave the running binary in place. Any
-   rebuild changes the hash, because `git_rev` is compiled in.
+   new `bin/<SHA>/` directory. Leave the running binary in place. A new
+   commit changes the hash: `git_rev` is compiled in (with `-dirty` for an
+   unclean tree).
 3. Auth — Flow B, then Flow C: a PR that sets
    `PIR2_MACBOOK_PIN.binarySha256Hex` to the new `shasum -a 256
    unified_server` and `transitionBinarySha256Hex` to the build the node

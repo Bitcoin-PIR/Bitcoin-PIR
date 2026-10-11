@@ -1,6 +1,12 @@
+# pir1 (Hetzner, no TEE) as it runs: DPF server 0, OnionPIR and HarmonyPIR
+# hints; it also answers HarmonyPIR queries. The binary is installed
+# content-addressed under /opt/bitcoinpir/unified-server/<sha256>/ (Flow D in
+# docs/PRODUCTION_OPERATIONS.md); the identity and database paths keep their
+# Payment V1 names. `--pool-dir` keeps generated hint-pool entries across
+# restarts (each is still served at most once). Startup to `Listening` takes
+# about 2 min 20 s. A node of your own: docs/OPERATOR_GUIDE.md.
 [Unit]
 Description=BitcoinPIR unified server (primary: DPF-0 + OnionPIR + HarmonyPIR hints + HarmonyPIR query)
-Documentation=https://github.com/Bitcoin-PIR/Bitcoin-PIR
 After=network-online.target
 Wants=network-online.target
 
@@ -8,60 +14,37 @@ Wants=network-online.target
 Type=simple
 User=pir
 Group=pir
-WorkingDirectory=/home/pir/BitcoinPIR
-# pir1 (Hetzner, no-SEV) handles both roles: HarmonyPIR V2 hint pool
-# (`--serve-hints` + `--pool-size`) plus DPF server-0 / OnionPIR /
-# HarmonyPIR query phase (`--serve-queries`). Mode flags landed
-# 2026-05-13 — without them, any deployment defaults to "neither" and
-# fails fast at startup, forcing explicit role assignment per host.
-# `--pool-dir` persists each generated V2 pool entry to disk and
-# reloads it on startup (the loader `remove_file`s each disk entry
-# after pushing it into the in-memory queue, so each prp_key is
-# still served at most once — see runtime/src/hint_pool.rs:634).
-# Without `--pool-dir`, after every restart the pool starts cold
-# and the first ~3 minutes of V2 hint requests block on generation.
-#
-# Startup-stagger note (2026-05-15): pir-secondary.service is
-# `After=pir-primary.service` + `ExecStartPre=/bin/sleep 90` so the
-# two unified_server processes don't run their hint-pool generators
-# concurrently. See docs/history/PIR1_STARTUP_HINT_POOL_THRASHING.md.
-ExecStart=/home/pir/BitcoinPIR/target/release/unified_server \
+UMask=0077
+StateDirectory=bitcoinpir-provider-functional-beta
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/bitcoinpir-provider-functional-beta
+ExecStartPre=/usr/bin/test -x /opt/bitcoinpir/unified-server/<sha256>/unified_server
+ExecStart=/opt/bitcoinpir/unified-server/<sha256>/unified_server \
+    --bind-address 127.0.0.1 \
     --port 8091 \
     --role primary \
     --serve-hints \
     --serve-queries \
     --pool-size 8 \
-    --pool-dir /home/pir/data/hint-pool \
-    --config /home/pir/data/databases.toml
+    --pool-dir /var/lib/bitcoinpir-provider-functional-beta/hint-pool \
+    --config /etc/bitcoinpir/payment-v1/functional-beta/provider/databases.toml \
+    --identity-key-path /etc/bitcoinpir/payment-v1/functional-beta/provider/provider-identity.key \
+    --identity-cert-path /etc/bitcoinpir/payment-v1/functional-beta/provider/provider-identity.cert \
+    --identity-server-id pir1-payment-beta \
+    --max-connections 128 \
+    --websocket-handshake-timeout-ms 10000 \
+    --connection-idle-timeout-ms 300000 \
+    --credit-issuer-pubkey /etc/bitcoinpir/issuer/grant.pub \
+    --credit-issuer-url https://cashier.bitcoinpir.org \
+    --require-credits \
+    --access dpf=best-effort:2 \
+    --access harmony=best-effort:1:1500000 \
+    --access onion=best-effort:1:3000000 \
+    --api-key-file /etc/bitcoinpir/api-keys \
+    --free-threads 2
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30
-LimitNOFILE=65535
-
-# Reachability: bound to 0.0.0.0 by the binary; UFW blocks external access.
-# Cloudflare tunnel (run as your own service) connects outbound to 127.0.0.1:8091.
-
-# Security hardening
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/pir/BitcoinPIR /home/pir/data
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=false
-SystemCallArchitectures=native
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=pir-primary
 
 [Install]
 WantedBy=multi-user.target

@@ -1,9 +1,11 @@
 #!/bin/bash
 # Start PIR WebSocket servers for UTXO lookups
 #
-# This script starts two processes:
-#   - Primary server on port 8091: DPF server 0 + OnionPIR + HarmonyPIR query server
-#   - Secondary server on port 8092: DPF server 1 + HarmonyPIR hint server
+# Development only: it serves the databases in --data-dir / --config, whose
+# proofs do not match the production clients' pins (nodes for real clients:
+# docs/OPERATOR_GUIDE.md). It starts two processes, as production splits them:
+#   - Primary server on port 8091: DPF server 0 + OnionPIR + HarmonyPIR hint server
+#   - Secondary server on port 8092: DPF server 1 + HarmonyPIR query server
 #
 # Usage:
 #   ./scripts/start_pir_servers.sh [--data-dir /path/to/data] [--config /path/to/databases.toml]
@@ -82,15 +84,15 @@ else
     SERVER_ARGS="--data-dir $DATA_DIR"
 fi
 
-# Start primary server (all protocols)
+# Start primary server (DPF + OnionPIR queries, HarmonyPIR hints)
 echo "Starting primary server on port $PRIMARY_PORT..."
-./target/release/unified_server --port $PRIMARY_PORT --role primary $SERVER_ARGS > /tmp/pir_primary.log 2>&1 &
+./target/release/unified_server --port $PRIMARY_PORT --role primary --serve-queries --serve-hints $SERVER_ARGS > /tmp/pir_primary.log 2>&1 &
 PRIMARY_PID=$!
 echo "Primary server PID: $PRIMARY_PID"
 
-# Start secondary server (DPF + HarmonyPIR hint)
+# Start secondary server (DPF + HarmonyPIR queries)
 echo "Starting secondary server on port $SECONDARY_PORT..."
-./target/release/unified_server --port $SECONDARY_PORT --role secondary $SERVER_ARGS > /tmp/pir_secondary.log 2>&1 &
+./target/release/unified_server --port $SECONDARY_PORT --role secondary --serve-queries $SERVER_ARGS > /tmp/pir_secondary.log 2>&1 &
 SECONDARY_PID=$!
 echo "Secondary server PID: $SECONDARY_PID"
 
@@ -102,10 +104,10 @@ echo "========================================"
 echo "All servers started!"
 echo "========================================"
 echo ""
-echo "Primary server (DPF-0 + OnionPIR + HarmonyPIR query):"
+echo "Primary server (DPF-0 + OnionPIR + HarmonyPIR hint):"
 echo "  ws://localhost:$PRIMARY_PORT (PID: $PRIMARY_PID)"
 echo ""
-echo "Secondary server (DPF-1 + HarmonyPIR hint):"
+echo "Secondary server (DPF-1 + HarmonyPIR query):"
 echo "  ws://localhost:$SECONDARY_PORT (PID: $SECONDARY_PID)"
 echo ""
 echo "Logs:"
