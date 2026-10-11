@@ -96,9 +96,11 @@ Rollback: none, nothing is deployed.
 ### 3. Builds — nothing that serves changes yet
 
 - **a. pir1 — Auth** ([Flow D](PRODUCTION_OPERATIONS.md#d-pir1-hetzner-binary--auth)
-  steps 1–2): on the host, fast-forward to the release commit, build and
-  strip; do not restart. `unified_server --version` prints the git revision
-  and `binary_sha256`. 2–5 min, stop 15 min.
+  steps 1–2): on the host, check the release commit out into its own tree
+  under `/home/pir/src/`, build and strip, and install the binary as
+  `/opt/bitcoinpir/unified-server/<sha256>/unified_server`; do not touch the
+  unit yet. `unified_server --version` prints the git revision and
+  `binary_sha256`. 2–5 min, stop 15 min.
 - **b. MacBook — Local, by its operator**
   ([runbook step 4](runbooks/pir2-macbook-replacement.md#4-build-in-parallel-with-step-3)):
   build into a new `bin/<SHA>/` beside the running build and report the SHA.
@@ -163,13 +165,15 @@ C again.
 
 ### 8. pir1 switch — Auth (Flow D steps 2–3)
 
-`systemctl restart pir-primary` (restart `cloudflared` only if the tunnel
-itself is broken). About 2 min 20 s to `Listening` (manifest hashing); do not
-call it failed before 3 min. Success: `scripts/production-status.sh` shows
+Back up `pir-primary.service`, point its `ExecStartPre`/`ExecStart` at the
+new `<sha256>/` directory, `systemctl daemon-reload && systemctl restart
+pir-primary` (restart `cloudflared` only if the tunnel itself is broken).
+About 2 min 20 s to `Listening` (manifest hashing); do not call it failed
+before 3 min. Success: `scripts/production-status.sh` shows
 `pir1_primary=active` and `pir1_port_8091=listening`, and
 `bpir-admin attest wss://weikeng1.bitcoinpir.org --expect-binary NEW` passes.
-Rollback: restart on the previous build (rebuild its commit if the build
-replaced it); the transition still accepts it.
+Rollback: restore the unit backup, daemon-reload, restart; the previous
+binary directory stays and the transition still accepts it.
 
 ### 9. MacBook switch — Auth, by its operator ([Flow I](PRODUCTION_OPERATIONS.md#i-pir2-macbook-node--local-then-auth) step 4)
 

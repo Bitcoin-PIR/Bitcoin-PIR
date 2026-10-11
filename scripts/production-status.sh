@@ -13,7 +13,9 @@ shows the Direct ORAM TEE host's VPSBG control-plane status
 (scripts/vpsbg-production-status.sh, default server 26939) and attests the
 host against the pins ORAM_PROVIDER names (MEASUREMENT, binary, AMD ARK).
 Endpoints and pins come from web/src (scripts/production-pins.py); while
-ORAM_PROVIDER is null the ORAM host is skipped. Never restarts a service.
+ORAM_PROVIDER is null the ORAM host is skipped. Every stage runs even when
+an earlier one fails (an offline node does not hide the others); the exit
+status is 1 if any stage failed. Never restarts a service.
 
 BPIR_ADMIN=/absolute/path/to/bpir-admin runs a prebuilt binary; otherwise
 the attests run through `cargo run --release -p bpir-admin`.
@@ -40,8 +42,10 @@ else
   admin=(cargo run --quiet --release --manifest-path "$root/Cargo.toml" -p bpir-admin --)
 fi
 
+status=0
+
 echo '[stage] pir1 Hetzner health'
-ssh -o BatchMode=yes -o ConnectTimeout=20 \
+if ssh -o BatchMode=yes -o ConnectTimeout=20 \
   -o UserKnownHostsFile="$root/deploy/known_hosts" -o StrictHostKeyChecking=yes \
   "root@$HETZNER_HOST" 'bash -s' <<'REMOTE'
 set -euo pipefail
@@ -56,31 +60,34 @@ printf 'pir1_cloudflared=%s\n' "$(systemctl is-active cloudflared 2>/dev/null ||
 printf 'pir1_port_8091=%s\n' "$port"
 printf 'pir1_disk_used=%s\n' "$(df -P /home/pir | awk 'NR==2 { print $5 }')"
 REMOTE
+then :; else echo 'pir1 health failed' >&2; status=1; fi
 
 echo '[stage] pir2 MacBook node attest'
-attest_out=$("${admin[@]}" attest "$(pin pir2_url)" 2>&1) || {
+if attest_out=$("${admin[@]}" attest "$(pin pir2_url)" 2>&1); then
+  printf '%s\n' "$attest_out"
+  running=$(awk '$1 == "binary_sha256:" { print tolower($2) }' <<<"$attest_out")
+  if [[ "$running" == "$(pin pir2_binary)" ]]; then
+    echo '✓ binary_sha256 matches PIR2_MACBOOK_PIN'
+  elif [[ "$running" == "$(pin pir2_transition)" ]]; then
+    echo '✓ binary_sha256 matches the transition build of PIR2_MACBOOK_PIN (switch pending)'
+  else
+    echo "✗ pir2 binary_sha256 ${running:-unavailable} matches neither build PIR2_MACBOOK_PIN accepts" >&2
+    status=1
+  fi
+else
   printf '%s\n' "$attest_out"
   echo 'pir2 attest failed' >&2
-  exit 1
-}
-printf '%s\n' "$attest_out"
-running=$(awk '$1 == "binary_sha256:" { print tolower($2) }' <<<"$attest_out")
-if [[ "$running" == "$(pin pir2_binary)" ]]; then
-  echo '✓ binary_sha256 matches PIR2_MACBOOK_PIN'
-elif [[ "$running" == "$(pin pir2_transition)" ]]; then
-  echo '✓ binary_sha256 matches the transition build of PIR2_MACBOOK_PIN (switch pending)'
-else
-  echo "✗ pir2 binary_sha256 ${running:-unavailable} matches neither build PIR2_MACBOOK_PIN accepts" >&2
-  exit 1
+  status=1
 fi
 
 echo '[stage] Direct ORAM TEE host'
 if [[ "$(pin oram_url)" == - ]]; then
   echo 'oram=paused (ORAM_PROVIDER is null)'
-  exit 0
+else
+  "$root/scripts/vpsbg-production-status.sh" --server-id "$server_id" || status=1
+  "${admin[@]}" attest "$(pin oram_url)" \
+    --expect-measurement "$(pin oram_measurement)" \
+    --expect-binary "$(pin oram_binary)" \
+    --expect-ark-fingerprint "$(pin oram_ark)" || status=1
 fi
-"$root/scripts/vpsbg-production-status.sh" --server-id "$server_id"
-"${admin[@]}" attest "$(pin oram_url)" \
-  --expect-measurement "$(pin oram_measurement)" \
-  --expect-binary "$(pin oram_binary)" \
-  --expect-ark-fingerprint "$(pin oram_ark)"
+exit "$status"
