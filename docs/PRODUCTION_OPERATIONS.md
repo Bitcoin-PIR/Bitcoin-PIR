@@ -111,6 +111,10 @@ image deletion are **not** flows.
    `scripts/vpsbg-measured-boot.sh images`.
 4. Stop. `image_id=unavailable` is a valid observation, not a selection.
 
+Unattended: `.github/workflows/node-monitor.yml` probes each node's
+WebSocket endpoint hourly and keeps one open `node-down` issue per
+unreachable node, closed when it answers again (`scripts/node-monitor.sh`).
+
 Success: the commands exit 0.
 
 ## B. Source change and CI — Local
