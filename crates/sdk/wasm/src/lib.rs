@@ -69,9 +69,8 @@ pub use client::{
 pub mod metrics;
 pub use metrics::WasmAtomicMetrics;
 
-// Credits: ARC credentials (request, finalize, present) for the browser.
-pub mod credit;
-pub use credit::{WasmArcCredential, WasmArcCredentialRequest};
+// Credits: the JavaScript credit provider behind `enableCredits`.
+mod credit;
 
 /// Wire-explorer helpers for HarmonyPIR frames — exposes
 /// [`harmony_decode_counts`] so the public dev-site explorer at

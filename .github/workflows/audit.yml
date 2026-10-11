@@ -13,7 +13,7 @@ name: Security audit
 #      the primary signal; the push/PR runs only catch Cargo.lock
 #      changes that introduce an already-known-vulnerable version.
 #
-# Git dependencies (libdpf, harmonypir, onionpir fork, arc, fastprp) are
+# Git dependencies (libdpf, harmonypir, onionpir fork, fastprp) are
 # not indexed by the advisory DB and are skipped — coverage here is for
 # the crates.io portion of the lockfile.
 

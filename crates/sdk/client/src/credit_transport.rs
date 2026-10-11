@@ -54,7 +54,7 @@ const RESP_ERROR: u8 = 0xff;
 /// Credits a provider hands over for one presentation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Presentation {
-    /// `CREDIT_PRESENT_KIND_CASHU` or `CREDIT_PRESENT_KIND_ARC`.
+    /// `CREDIT_PRESENT_KIND_CASHU`.
     pub kind: u8,
     pub payload: Vec<u8>,
     /// Credits the payload is worth (the balance the server will add is
@@ -62,8 +62,8 @@ pub struct Presentation {
     pub credits: u64,
 }
 
-/// Source of presentations: a wallet of ARC credentials, a Cashu token
-/// store, or anything else that can produce `credits` credits on demand.
+/// Source of presentations: a Cashu token store, or anything else that can
+/// produce `credits` credits on demand.
 /// Shared by every connection of one client, so it takes `&self`.
 pub trait CreditProvider: Send + Sync {
     /// A presentation worth at least `credits` credits, `None` when the
@@ -596,7 +596,7 @@ impl PirTransport for CreditedTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::credits::{CREDIT_PRESENT_KIND_ARC, RESP_CREDIT_OK};
+    use crate::credits::{CREDIT_PRESENT_KIND_CASHU, RESP_CREDIT_OK};
     use std::sync::Mutex;
 
     const INFO: &str = r#"{"role":"primary","gas":{"unit":"cpu_ms_pir1","params":{"credit_sat":10,"gas_per_credit":72000,"base_gas_per_frame":20,"egress_gas_per_mb":1000},"databases":{"0":{"dpf_index_round":1380,"dpf_chunk_round":4550,"dpf_index_sibling_pass":[456,57,7],"dpf_chunk_sibling_pass":[914,114,14],"tree_tops":5,"harmony_pool_entry":129970,"harmony_index_sibling_set":[3780,470,60],"harmony_chunk_sibling_set":[7570,950,120],"harmony_query_index":8,"harmony_query_chunk":12}}},"credits":{"enabled":true,"required":true}}"#;
@@ -743,7 +743,7 @@ mod tests {
             let give = credits.min(*left).min(255);
             *left -= give;
             Ok(Some(Presentation {
-                kind: CREDIT_PRESENT_KIND_ARC,
+                kind: CREDIT_PRESENT_KIND_CASHU,
                 payload: vec![give as u8],
                 credits: give,
             }))

@@ -9,8 +9,8 @@ retired 2026-09; their design is in git history).
 | --- | --- |
 | gas | Work. One gas is one CPU-millisecond on the reference machine (pir1, Intel i7-8700, CPU time summed over all threads). Every metered request kind has a formula in public database geometry (`pir_credit::gas`), so a database of any size prices itself and a provider on other hardware changes only its price per gas. |
 | credit | Money. One credit is `credit_sat` satoshis (10). The issuer publishes `gas_per_credit` (72,000): the one knob that anchors prices to a fiat target. |
-| issuer | The operator-run service that sells credits, verifies every presentation a server forwards, keeps the global double-spend state, and settles with each server in gas. It is the issuer (`Bitcoin-PIR/issuer`), which sold the retired session grants before. |
-| presentation | What a client sends on `REQ_CREDIT_PRESENT`: a Cashu token (proofs in sat) or ARC presentations (one credit each). |
+| issuer | The operator-run service that redeems every presentation a server forwards at the mint (which refuses a spent proof), settles with each server in gas, and sells ecash from its own wallet over x402. It is the issuer (`Bitcoin-PIR/issuer`), which sold the retired session grants before. |
+| presentation | What a client sends on `REQ_CREDIT_PRESENT`: a Cashu token (`cashuB…`, proofs in sat). |
 | meter | The per-server hourly aggregate of gas, CPU, wall time, and egress per opcode (`pir_credit::meter`), the observability that keeps the calibration honest. |
 
 ## Roles
@@ -18,12 +18,12 @@ retired 2026-09; their design is in git history).
 | Role | Holds | Does |
 | --- | --- | --- |
 | Mint (`cdk-mintd`, unchanged) | Lightning backend, ecash keys | Lightning → ecash; double-spend check on swap |
-| Issuer | ARC issuer key per epoch, a mint wallet, the global ARC tag set, the settlement ledger | sells ARC credentials for ecash; answers `POST /v2/redeem` from servers; books gas per server |
+| Issuer | a mint wallet, the settlement ledger | answers `POST /v2/redeem` from servers by swapping the presented proofs into its wallet; books gas per server; sells ecash from the wallet over x402 |
 | PIR server | the issuer URL and TLS pin, its own identity key (already certified by the operator) | derives its gas table at startup, forwards presentations, keeps a per-connection gas balance, meters every frame |
-| Client | ecash, ARC credentials | pays, presents exactly the gas a round needs before sending it |
+| Client | ecash | pays, presents exactly the gas a round needs before sending it |
 
 The PIR host holds no payment secret and no spent set. Two servers can
-share one issuer, and the same credential spends on either: a credit is
+share one issuer, and the same ecash spends on either: a credit is
 global, so a two-server DPF lookup pays both servers from one budget.
 
 ## Rate card
@@ -265,12 +265,13 @@ are queried, and admission still never depends on the query.
 ## Protocol
 
 `REQ_CREDIT_PRESENT` (`0x12`): `[kind u8][len u32 LE][payload]`, at most
-256 KiB (150 ARC presentations of about 1.3 KiB), encrypted channel only (the payload is bearer material). Kinds are
-`pir_credit::issuer::CREDIT_PRESENT_KIND_CASHU` (1, a Cashu token) and
-`CREDIT_PRESENT_KIND_ARC` (2, one or more ARC presentations). The server
-answers `RESP_CREDIT_OK` (`0x12`): `[gas_added u64 LE][gas_balance i64
-LE]`, or `RESP_ERROR` with the issuer's reason. Opcodes `0x08`, `0x09`,
-and `0x0d`–`0x10` stay retired.
+256 KiB, encrypted channel only (the payload is bearer material). The one
+kind is `pir_credit::issuer::CREDIT_PRESENT_KIND_CASHU` (1): the payload is
+a `cashuB…` token as UTF-8. A server refuses any other kind without calling
+the issuer; kind 2 (ARC presentations) is retired. The server answers
+`RESP_CREDIT_OK` (`0x12`): `[gas_added u64 LE][gas_balance i64 LE]`, or
+`RESP_ERROR` with the issuer's reason. Opcodes `0x08`, `0x09`, and
+`0x0d`–`0x10` stay retired.
 
 `REQ_API_KEY` (`0x13`): the key's bytes (1 to 128), encrypted channel only.
 The server answers `RESP_API_KEY_OK` (`0x13`, no body) or `RESP_ERROR`.
@@ -282,81 +283,93 @@ repositories share them. The credits contract is served under `/v2/`
 (`/v1/`, the session-grant contract, is retired).
 
 - `GET /v2/info` → `IssuerInfoV2`: `credit_sat`, `gas_per_credit`,
-  `base_gas_per_frame`, `egress_gas_per_mb`, `mints`, `offers` (credits
-  for sat), `arc` (epoch, presentation limit, issuer public key,
-  presentation context, validity), and an informational `rate_card`.
-- `POST /v2/credentials` (client): pays with a Cashu token and a blinded
-  ARC credential request; returns the credential response. Idempotent per
-  token.
+  `base_gas_per_frame`, `egress_gas_per_mb`, `mints` (the first is the one
+  the issuer sells from and the browser buys from), and an informational
+  `rate_card`.
 - `POST /v2/redeem` (server) → `RedeemRequestV1`: `server_id`, the
   operator-signed identity certificate, a 16-byte nonce, `unix_time`, the
   presented items verbatim, and an Ed25519 signature by the server's
   identity key over `RedeemRequestV1::signing_preimage`. The issuer pins
-  the operator keys allowed to certify servers, verifies each item (swaps
-  Cashu proofs at the mint; verifies ARC presentations under the epoch key
-  and refuses a repeated tag), books `sat_value` to the server's settlement
+  the operator keys allowed to certify servers, redeems each item (swaps
+  the token's proofs at the mint into its own wallet; the mint refuses a
+  spent proof), books `sat_value` to the server's settlement
   account, and answers `RedeemResponseV1 { gas_added, sat_value,
   items_accepted }`. A repeated `(server_id, nonce)` returns the stored
   answer, so a server that lost the response retries safely. Servers never
   forward client addresses.
 - Settlement: the issuer holds the money and a per-server ledger of gas
   and sat; paying a foreign server operator is outside the protocol.
-- `POST /v2/credentials` over **x402** (`exact` on `lnbtc`, x402-foundation
-  `specs/schemes/exact/scheme_exact_lnbtc.md`, merged 2026-09-23; HTTP
-  transport headers `PAYMENT-REQUIRED` / `PAYMENT-SIGNATURE` /
-  `PAYMENT-RESPONSE`): the same body without `token` and without
-  `PAYMENT-SIGNATURE` is answered `402` with a `PaymentRequired` whose one
-  requirement is scheme `exact`, network
+- `POST /v2/x402/ecash` (client) sells Cashu ecash over **x402** (`exact`
+  on `lnbtc`, x402-foundation `specs/schemes/exact/scheme_exact_lnbtc.md`,
+  merged 2026-09-23; HTTP transport headers `PAYMENT-REQUIRED` /
+  `PAYMENT-SIGNATURE` / `PAYMENT-RESPONSE`). The body is `{"sat": 1000,
+  "outputs": [{"amount": 8, "id": "<keyset id>", "B_": "<66 hex>"}, …]}`:
+  1 to 256 NUT-00 blinded outputs of the mint's active `sat` keyset,
+  powers of two the keyset signs, distinct `B_`, summing to `sat` within
+  the issuer's limits (`ecash_min_sat`..`ecash_max_sat`, defaults 10 and
+  20,000); anything else is `400 invalid_request`. Without
+  `PAYMENT-SIGNATURE` the answer is `503 float_exhausted` when the issuer's
+  wallet cannot cover `sat` plus the mint's input fee, and otherwise `402`
+  with a `PaymentRequired` whose one requirement is scheme `exact`, network
   `lnbtc:000000000019d6689c085ae165831e93`, `amount` = `sat × 1000`
   (millisatoshi), `asset` `BTC`, `payTo` = the issuer's Lightning node key,
   `maxTimeoutSeconds` = the invoice expiry, and `extra` = `paymentFlow`
   `upfront`, `requestBindingProfile` `http:1`, `requestBindingParams`
   `{ "headers": ["content-type"] }`, `requestHash`, and a fresh BOLT11
   `invoice` whose description hash is that request hash (JCS of `domain`,
-  `method` `POST`, `url` = the issuer's public URL + `/v2/credentials`,
+  `method` `POST`, `url` = the issuer's public URL + `/v2/x402/ecash`,
   `bodyHash`, bound headers). The client pays, then repeats the
   byte-identical request with `PAYMENT-SIGNATURE` = base64
   `PaymentPayload { accepted, payload: { preimage } }`. The issuer recomputes
   the binding from the actual request, runs the scheme's facilitator checks,
-  issues the credential, and answers `200` with `PAYMENT-RESPONSE`
-  (`transaction` = payment hash, no `payer`). One payment buys one
-  credential: the identical retry replays the answer, another request with
-  the same payment is `duplicate_settlement`; a refused proof is `402` with
-  the spec's `errorReason`. `GET /v2/x402/invoices/{payment_hash}` reports
-  `unpaid` / `paid` / `expired` and, once paid, the preimage, so a browser
-  whose user paid the QR code from a phone finishes the same retry. Only the
-  canonical issuer host works for x402 (the binding names it). The web
-  client offers this rail next to the Cashu one ("Pay via Lightning direct
-  (x402)", `web/src/x402.ts`): it recomputes the binding, decodes and checks
-  the invoice (`web/src/bolt11.ts`: amount, expiry, description hash, payee
-  recovered from the signature), pays through WebLN when a browser wallet
-  is present, otherwise shows the invoice and polls the status endpoint,
-  then repeats the byte-identical request with the preimage.
+  swaps proofs from its own wallet worth exactly `sat` plus the input fee
+  into the client's outputs at the mint, and answers `200` with
+  `PAYMENT-RESPONSE` (`transaction` = payment hash, no `payer`) and
+  `{"signatures": [{"amount", "id", "C_", "dleq": {"e", "s"}}, …]}`: the
+  mint's blind signatures (NUT-00, with NUT-12 DLEQ proofs) in output
+  order, which the client unblinds into proofs the issuer never sees. One
+  payment buys one sale: the identical retry replays the signatures, another
+  request with the same payment is `duplicate_settlement`; a refused
+  payment proof is `402` with the spec's `errorReason`. When the mint
+  cannot be reached or the outcome is unknown after settlement, the answer
+  is `503 retry`; the identical retry asks the mint first (NUT-09 restore)
+  and answers the outputs it already signed, or swaps again.
+  `GET /v2/x402/invoices/{payment_hash}` reports `unpaid` / `paid` /
+  `expired` and, once paid, the preimage, so a browser whose user paid the
+  QR code from a phone finishes the same retry. Only the canonical issuer
+  host works for x402 (the binding names it). The web client offers this rail
+  next to the mint's own Lightning invoice ("x402 from the issuer",
+  `web/src/x402.ts`): it stores its blinded outputs first, recomputes the
+  binding, decodes and checks the invoice (`web/src/bolt11.ts`: amount,
+  expiry, description hash, payee recovered from the signature), pays
+  through WebLN when a browser wallet is present, otherwise shows the
+  invoice and polls the status endpoint, then repeats the byte-identical
+  request with the preimage and unblinds the answer.
 
-ARC parameters (`pir_credit::arc`): the `Bitcoin-PIR/arc` fork (P-256,
-Cloudflare draft ciphersuite), presentation limit 100 per credential (one
-credential per 1,000-sat pack, so the denomination never shows), epochs of
-90 days plus 30 days of grace (`epoch = now / 90 d`; presentations of the
-previous epoch are accepted until 30 days after it ended). Both sides
-derive the contexts from the epoch: `requestContext` (`m2`) is
-`"BitcoinPIR/credits/v1/request/<epoch>"`, `presentationContext` is
-`"BitcoinPIR/credits/v1/presentation/<epoch>"`, fixed per epoch so the
-issuer keeps one global tag set per epoch. A kind-2 `REQ_CREDIT_PRESENT`
-payload is `[epoch u32][count u16]` followed by `count` length-prefixed
-presentations (at most 150, one credit each). Cashu proofs convert at
-`gas_per_credit / credit_sat` gas per sat.
+Cashu proofs convert at `gas_per_credit / credit_sat` gas per sat.
 
 ## Privacy
 
-The mint sees the invoice and the buyer's address; the issuer sees the
-ecash, the blinded ARC request, and the buyer's address at purchase, and
-later `(server_id, time, presentation)` for every redemption; a server sees
-the connection and the presentation. Over x402 the issuer's own node sees
-the Lightning payment instead of the mint, and the invoice binds to the
-blinded request only, never to a lookup. Presentations are unlinkable to
-issuance (blind signatures, ARC), so nothing ties a lookup to a purchase.
-What remains is timing, the client's address at the server, the size of
-the anonymity set, and the possibility of an issuer that tags a user with
-a private key: clients compare the issuer key and epoch against
-`/v2/info` and the SDK's pinned values. Query contents were never visible
-to anyone; PIR hides them regardless of payment.
+A proof is unlinkable to its purchase: the mint signs blinded outputs
+(NUT-00) whose secrets and blinding factors only the wallet knows, so a
+proof it later sees spent matches nothing it signed. Both top-up rails
+keep that. Buying from the mint, the mint sees the Lightning payment, the
+buyer's address, and the blinded outputs. Over x402 the issuer sees the
+buyer's address, the payment on its own node, and the blinded outputs (the
+invoice binds to that request only, never to a lookup), and the mint sees
+the issuer swap its own proofs into them. The wallet stores and sends
+proofs without their DLEQ proofs (NUT-12), whose blinding factor would
+link a proof to its signing.
+
+On a lookup the server sees the connection and the token, the issuer sees
+`(server_id, time, token)` for every redemption, and the mint sees the
+proofs spent when the issuer swaps them. The wallet later asks the mint
+(NUT-07) about the proofs it presented, so that unredeemed ones return to
+it; that check names those proofs to the mint again, from the client's
+address. What remains is timing, the client's address at the server and at
+that check, the size of the anonymity set (everyone holding proofs of the
+same keyset and amounts), and a mint that tags a user with a key or keyset
+of its own: the wallet checks the DLEQ proof of every signature that
+carries one, and a keyset shown to one user only would show as an
+unfamiliar keyset id. Query contents were never visible to anyone; PIR
+hides them regardless of payment.

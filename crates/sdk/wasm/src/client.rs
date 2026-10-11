@@ -1589,8 +1589,7 @@ impl WasmDpfClient {
     }
 
     /// Present credits (docs/CREDITS.md) on one server (`serverIndex` ∈
-    /// {0, 1}): `kind` 1 is a Cashu token, 2 an ARC payload from
-    /// [`crate::WasmArcCredential::present`]. Resolves to
+    /// {0, 1}): `kind` 1 is a Cashu token (`cashuB…` as UTF-8). Resolves to
     /// `{ gasAdded, gasBalance }`. Bearer material: call after
     /// [`Self::upgrade_to_secure_channel`].
     #[wasm_bindgen(js_name = presentCredits)]

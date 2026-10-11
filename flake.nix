@@ -114,8 +114,8 @@
           # package's *Targets*.cmake IMPORTED_LOCATION, split-output
           # safe), so the flake postPatch HEXL-link sed below is dropped.
           # New rev → new content hash (fake-hash cycle).
+          # 2026-10-11: dropped `arc` (ARC credits retired).
           outputHashes = {
-            "arc-0.1.0"        = "sha256-tUyvnyJoNTlrXpudIZ3Er6Mqj8zmltBtY06kF9P6hp0=";
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
             "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";

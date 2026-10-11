@@ -16,7 +16,7 @@ use std::time::Duration;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use pir_credit::issuer::{
     IssuerErrorV1, IssuerInfoV2, RedeemItemV1, RedeemRequestV1, RedeemResponseV1,
-    CREDIT_PRESENT_KIND_ARC, CREDIT_PRESENT_KIND_CASHU, ISSUER_API_VERSION, REDEEM_NONCE_LEN,
+    CREDIT_PRESENT_KIND_CASHU, ISSUER_API_VERSION, REDEEM_NONCE_LEN,
 };
 use pir_identity::IdentityCert;
 use runtime::protocol::MAX_CREDIT_PRESENT_PAYLOAD_LEN;
@@ -117,9 +117,9 @@ impl CreditsV1 {
 
 /// Structural check of a presentation before it costs the issuer a call.
 pub(crate) fn validate_presentation(kind: u8, payload: &[u8]) -> Result<(), String> {
-    if kind != CREDIT_PRESENT_KIND_CASHU && kind != CREDIT_PRESENT_KIND_ARC {
+    if kind != CREDIT_PRESENT_KIND_CASHU {
         return Err(format!(
-            "unknown credit presentation kind {kind} (1 = Cashu token, 2 = ARC presentations)"
+            "unknown credit presentation kind {kind} (1 = Cashu token)"
         ));
     }
     if payload.is_empty() {
@@ -629,12 +629,11 @@ mod tests {
     #[test]
     fn presentations_are_checked_structurally() {
         assert!(validate_presentation(CREDIT_PRESENT_KIND_CASHU, b"cashuB").is_ok());
-        assert!(validate_presentation(CREDIT_PRESENT_KIND_ARC, &[1]).is_ok());
         assert!(validate_presentation(0, &[1]).is_err());
-        assert!(validate_presentation(3, &[1]).is_err());
-        assert!(validate_presentation(CREDIT_PRESENT_KIND_ARC, &[]).is_err());
+        assert!(validate_presentation(2, &[1]).is_err());
+        assert!(validate_presentation(CREDIT_PRESENT_KIND_CASHU, &[]).is_err());
         assert!(validate_presentation(
-            CREDIT_PRESENT_KIND_ARC,
+            CREDIT_PRESENT_KIND_CASHU,
             &vec![0u8; MAX_CREDIT_PRESENT_PAYLOAD_LEN + 1]
         )
         .is_err());
