@@ -6,6 +6,7 @@ named release (for example R5.1) or one flow A–I. One explicit
 authorization covers that whole campaign. Run the campaign's numbered
 steps in order. Do not invent a second campaign, and do not re-ask
 between steps of the same campaign.
+A release orders these flows in the [release checklist](RELEASE.md).
 
 Live status:
 
@@ -167,9 +168,17 @@ script; pin SSH against [`deploy/known_hosts`](../deploy/known_hosts).
 1. Local — Flow B for the runtime change. Production binary is
    `cargo build --locked --release -p runtime --bin unified_server`
    plus `strip --strip-debug`. Nix is not the authority.
-2. Auth — on the host, fast-forward the reviewed commit, build the
-   same command, restart `pir-primary`. Restart `cloudflared` only if
-   the tunnel itself is broken. Build 2–5 min, hard stop 15 min.
+2. Auth — on the host, as `pir` (source `$HOME/.cargo/env` first), check
+   the reviewed commit out into its own tree
+   `/home/pir/src/BitcoinPIR-<release>-<sha8>` and build the same command
+   there. As root, install the binary content-addressed as
+   `/opt/bitcoinpir/unified-server/<sha256>/unified_server`, back up
+   `/etc/systemd/system/pir-primary.service`, point its `ExecStartPre` and
+   `ExecStart` at the new directory, `systemctl daemon-reload`, and restart
+   `pir-primary` (≈2 min 20 s to listening). Rollback: restore the unit
+   backup, daemon-reload, restart; earlier binary directories stay. Restart
+   `cloudflared` only if the tunnel itself is broken. Build 2–5 min, hard
+   stop 15 min.
    `unified_server --version` prints the crate version, git revision,
    and binary sha256 of an installed binary without starting a server;
    `--help` prints the flag reference. So that clients do not report a pir1
@@ -203,8 +212,8 @@ Details: [UKI build](runbooks/uki-build.md),
    attested-builder UKI are not this runtime UKI.
 4. Auth — `scripts/vpsbg-measured-boot.sh upload --uki FILE`.
    Record the returned image id.
-5. Auth — `switch --server-id ID --image-id NEW` only after a separate
-   authorization. This reboots immediately.
+5. Auth — `switch --server-id ID --image-id NEW`. This reboots
+   immediately; it is part of the authorized campaign like `upload`.
 6. Read — `scripts/oram-host-check.sh`. It attests against the pins in
    `web/src/attest-pin.ts` (update them for the new image first) and
    sends one ORAM query per database. Mismatch is a hard stop.

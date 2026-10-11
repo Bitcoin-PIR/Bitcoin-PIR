@@ -262,9 +262,10 @@ short maintenance window; clients report mismatches meanwhile:
    Those stay on the local `db-proof verify` path and the browser/WASM
    check after Flow C.
 
-5. Confirm runtime pin and operator identity on Hetzner, and runtime pin,
-   operator identity, SEV-SNP measurement, AMD certificate chain, and secure
-   channel on VPSBG.
+5. Confirm runtime pin and operator identity on Hetzner (and on server 1
+   when it serves), and runtime pin, SEV-SNP measurement, AMD certificate
+   chain, and secure channel on VPSBG (its runtime image announces no
+   operator identity since image 375).
 6. Merge the already-reviewed frontend proof pins (Flow B), then publish
    them with Flow C in [Production operations](PRODUCTION_OPERATIONS.md).
    Wait for that exact commit's `deploy-web.yml` run to complete
