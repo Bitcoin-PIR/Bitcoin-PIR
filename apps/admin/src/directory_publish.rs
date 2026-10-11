@@ -27,8 +27,8 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::directory_artifact::{
-    encode_json_array, parse_event_message, read_public_bounded, require_private_output_absent_v1,
-    write_atomic_private_no_replace_v1, MAX_CHECKPOINT_BUNDLE_BYTES_V1, MAX_EVENT_MESSAGE_BYTES_V1,
+    encode_json_array, parse_event_message, read_public_bounded, require_output_absent,
+    write_output, MAX_CHECKPOINT_BUNDLE_BYTES_V1, MAX_EVENT_MESSAGE_BYTES_V1,
 };
 
 const MIN_STRICT_RELAYS_V1: usize = 2;
@@ -293,7 +293,7 @@ async fn run_with_publisher_and_invocation_v1<P: RelayPublisherV1>(
     let receipt_output = match (&args.receipt_directory, invocation.as_ref()) {
         (Some(directory), Some(invocation)) => {
             let output = publication_receipt_path_v1(directory, &invocation.invocation_id)?;
-            require_private_output_absent_v1(&output).map_err(|error| {
+            require_output_absent(&output).map_err(|error| {
                 format!(
                     "current systemd invocation receipt preflight failed before relay I/O: {error}"
                 )
@@ -449,7 +449,7 @@ fn write_publication_receipt_v1(
     let mut bytes = serde_json::to_vec(&receipt)
         .map_err(|error| format!("encode publication receipt failed: {error}"))?;
     bytes.push(b'\n');
-    write_atomic_private_no_replace_v1(output, &bytes)
+    write_output(output, &bytes, false)
 }
 
 fn emit_validation_outcomes_v1(
@@ -1446,7 +1446,7 @@ mod tests {
             "unexpected post-relay failure: {error}"
         );
         assert!(
-            error.contains("immutable private output already exists"),
+            error.contains("already exists"),
             "receipt collision was not strict: {error}"
         );
         assert_eq!(publisher_a.attempted_hosts, vec!["one.example"]);

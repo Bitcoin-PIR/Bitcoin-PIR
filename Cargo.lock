@@ -277,6 +277,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "ed25519-dalek",
+ "futures-util",
  "getrandom 0.2.17",
  "hex",
  "k256",
@@ -286,9 +287,13 @@ dependencies = [
  "pir-directory-nostr",
  "pir-identity",
  "pir-sdk-client",
+ "rustls",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "zeroize",
 ]
 
@@ -1265,6 +1270,19 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "k256"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6e3919bbaa2945715f0bb6d3934a173d1e9a59ac23767fbaaef277265a7411b"
+dependencies = [
+ "cfg-if",
+ "ecdsa",
+ "elliptic-curve",
+ "sha2",
+ "signature",
 ]
 
 [[package]]

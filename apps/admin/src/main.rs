@@ -79,6 +79,9 @@ async fn main() {
         Command::Attest(args) => ("attest", attest::run(args).await),
         Command::ChannelTest(args) => ("channel-test", channel_test::run(args).await),
         Command::DbProof(args) => ("db-proof", db_proof::run(args).await),
+        Command::DirectoryArtifact(args) => {
+            ("directory-artifact", directory_artifact::run(args).await)
+        }
     };
     if let Err(e) = result {
         eprintln!("{name}: {e}");
