@@ -408,7 +408,8 @@ issue #429).
    ```
 
 2. Send the publisher, in an issue, `base64 < alice-s1.assertion.bin`, the
-   printed lines, and the entry's claims: `role` (`primary`/`secondary`),
+   printed lines, its `--valid-until` (your entry cannot outlive it), and the
+   entry's claims: `role` (`primary`/`secondary`),
    attestation (`none`/`sev-snp`) and, per backend you serve, its access class
    (`free`, `paid` or `best-effort`, as your `Access:` startup line shows).
 3. The publisher builds your entry with the directory key (`directory-artifact
