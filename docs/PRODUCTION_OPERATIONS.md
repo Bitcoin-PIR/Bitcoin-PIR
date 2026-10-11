@@ -25,12 +25,11 @@ Direct ORAM runs on a separate VPSBG TEE host since 2026-10-03: server
 It serves Direct ORAM only (`unified_server --oram-only`), so its data disk
 needs each database's `MANIFEST.toml`, proof sidecars and
 `oram-direct-inputs/`, not the DPF or OnionPIR table files. Flows E–F and the
-VPSBG scripts target this host. The live image still runs the retired
-sealed-identity profile; a runtime UKI built from this tree has no server
-identity (a fresh channel key every boot, bound by the attestation report)
-and serves Direct ORAM free on a best-effort lane. Leave
-`/home/pir/data/pir2-sealed/` in place while a rollback to a sealed image is
-possible.
+VPSBG scripts target this host. The live runtime image (r11, since
+2026-10-10) has no server identity (a fresh channel key every boot, bound by
+the attestation report) and serves Direct ORAM free on a best-effort lane.
+Leave `/home/pir/data/pir2-sealed/` in place while a rollback to the sealed
+image 359 is possible.
 
 Identity values (hashes, measurements, image IDs) stay in
 [`web/src/attest-pin.ts`](../web/src/attest-pin.ts) or in live command
