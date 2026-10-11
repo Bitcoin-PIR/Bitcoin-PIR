@@ -27,6 +27,8 @@ mod api_key;
 mod attest;
 mod channel_test;
 mod db_proof;
+mod directory_artifact;
+mod directory_publish;
 mod keygen;
 mod sign_identity;
 
@@ -60,6 +62,11 @@ enum Command {
     /// Verify attested-builder database build proof artifacts.
     #[command(name = "db-proof")]
     DbProof(db_proof::DbProofArgs),
+    /// Generate the directory key, build and sign Nostr service-directory
+    /// artifacts (operator assertion, entry, tombstone, checkpoints), and
+    /// publish them unchanged to relays (docs/DIRECTORY_PROTOCOL.md).
+    #[command(name = "directory-artifact")]
+    DirectoryArtifact(directory_artifact::DirectoryArtifactArgs),
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -72,6 +79,9 @@ async fn main() {
         Command::Attest(args) => ("attest", attest::run(args).await),
         Command::ChannelTest(args) => ("channel-test", channel_test::run(args).await),
         Command::DbProof(args) => ("db-proof", db_proof::run(args).await),
+        Command::DirectoryArtifact(args) => {
+            ("directory-artifact", directory_artifact::run(args).await)
+        }
     };
     if let Err(e) = result {
         eprintln!("{name}: {e}");

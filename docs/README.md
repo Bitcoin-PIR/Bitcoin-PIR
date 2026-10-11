@@ -26,6 +26,11 @@ status subcommand for the rest.
   (opcode `0x0b`) are retired. The issuer (payment side) is
   [Bitcoin-PIR/issuer](https://github.com/Bitcoin-PIR/issuer); running it
   and the mint on pir1 is [Issuer and mint](runbooks/issuer-and-mint.md).
+- Provider discovery over Nostr: [Directory protocol](DIRECTORY_PROTOCOL.md)
+  is the contract for the service directory (NIP-01/NIP-78 entries and
+  checkpoints, operator assertions, client rollback state, relay profile);
+  the codec is `crates/directory/nostr`, the operator commands are
+  `bpir-admin directory-artifact`.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md); the
   EasyCrypt proof lives in
   [Bitcoin-PIR/protocol-proofs](https://github.com/Bitcoin-PIR/protocol-proofs).
