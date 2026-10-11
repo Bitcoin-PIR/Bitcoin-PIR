@@ -14,6 +14,7 @@ status subcommand for the rest.
 | Database and root rotation (DPF / Harmony / Onion v2 / ORAM proofs) | [Database root rotation](DATABASE_ROOT_ROTATION_RUNBOOK.md) |
 | Producer (attested-builder) UKI | [Attested-builder Tier 3 UKI](ATTESTED_BUILDER_TIER3_UKI.md); producer *scope* is that repo's README |
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
+| A new database generation from a fresh Core snapshot | [Database rebuild](DATABASE_REBUILD.md) |
 | Development and PR checks | [Testing](TESTING.md) |
 
 ## Technical references
