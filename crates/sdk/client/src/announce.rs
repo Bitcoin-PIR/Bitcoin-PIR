@@ -14,13 +14,11 @@
 //! ## What this does NOT do
 //!
 //! - **Verify the IdentityCert against a pinned operator pubkey.**
-//!   The publishing mechanism for the operator pubkey is being
-//!   designed (eventually Nostr). Until pinning lands, the
-//!   `cert.operator_pubkey` is just what the server claims; clients
-//!   must NOT rely on it for trust. Callers that want full
-//!   authentication should pass an `operator_pubkey` to
-//!   [`announce_with_pinned_operator`] once the publishing path is in
-//!   place — that variant runs the missing check.
+//!   Here `cert.operator_pubkey` is just what the server claims; clients
+//!   must NOT rely on it for trust. Callers that pin an operator key (the
+//!   web client's `production-providers.ts`, or one published in the Nostr
+//!   service directory, `docs/DIRECTORY_PROTOCOL.md`) pass it to
+//!   [`announce_with_pinned_operator`], which runs that check.
 //! - **Know the expected channel key on its own.** This crate doesn't
 //!   track handshake state, so the caller must supply the X25519 key
 //!   the channel actually handshook against (the attested

@@ -8,9 +8,10 @@ Both are git-ignored (see `.gitignore`) and must never be committed.
 
 | File | Purpose |
 | --- | --- |
-| `pir1-operator.key` | pir1 provider-operator Ed25519 seed |
-| `pir1-server-identity.key` | pir1 server identity Ed25519 seed |
-| `pir2-operator.key` | pir2 provider-operator Ed25519 seed |
+| `pir1-operator.key` | Ed25519 seed that nothing pins (no client, issuer or certificate). pir1's live certificate (`server_id` `pir1-payment-beta`) is signed by `~/bitcoin-pir/production-secrets/payment-v1-functional-beta-operator-v1/operator.key` on the Mac Studio, whose public key is `PIR1_PROVIDER.operatorPubkey` and in the issuer's `operator_pubkeys` |
+| `pir1-server-identity.key` | Ed25519 seed not in use: pir1's live identity key stays on pir1 (`/etc/bitcoinpir/payment-v1/functional-beta/provider/provider-identity.key`) |
+| `pir2-operator.key` | Operator Ed25519 seed of the pir2 slot (the MacBook node) and of the Direct ORAM host's directory assertion: `PIR2_PROVIDER` / `ORAM_PROVIDER.operatorPubkey`, and in the issuer's `operator_pubkeys` |
+| `directory/directory-nostr.key` | Nostr service-directory publisher BIP340 key (`bpir-admin directory-artifact keygen`); signs directory entries and checkpoints. `directory/` also holds `providers.tsv`, the ledger and each run's artifacts ([Directory relay](runbooks/directory-relay.md)) |
 | `vpsbg-ssh.key` | SSH Ed25519 key for the VPSBG Ubuntu host |
 
 `.keys/pir2-ceremony/` holds the artifacts of the retired sealed-identity

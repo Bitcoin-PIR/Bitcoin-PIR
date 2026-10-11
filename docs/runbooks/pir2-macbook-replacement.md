@@ -19,10 +19,10 @@ df -h ~
 ```
 
 Required: at least 32 GB RAM and at least 60 GB free disk. If either is
-short, stop and report. Startup reads the 15.5 GB OnionPIR NTT file into
-memory to hash it: the first node (36 GB M3 Max) peaked at a 31.1 GB memory
-footprint and took 196 s to reach `Listening`, so 36 GB has little
-headroom.
+short, stop and report. The first node (36 GB M3 Max) peaked at a 31.1 GB
+memory footprint and took 196 s to reach `Listening`, when startup still read
+the 15.5 GB OnionPIR NTT file whole to hash it; since #362 the hash streams
+through a 1 MiB buffer, and the peak has not been measured again.
 
 The user runs, once (keeps the MacBook awake, including with the lid
 closed); keep it on AC power, Ethernet if possible:

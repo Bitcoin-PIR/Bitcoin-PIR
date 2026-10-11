@@ -16,6 +16,7 @@ status subcommand for the rest.
 | Database source and artifact retention | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
 | A new database generation from a fresh Core snapshot | [Database rebuild](DATABASE_REBUILD.md) |
 | Directory relay on pir1 (install, publish entries, upgrade) | [Directory relay](runbooks/directory-relay.md) |
+| Run a node of your own (other operators) | [Operator guide](OPERATOR_GUIDE.md) |
 | Development and PR checks | [Testing](TESTING.md) |
 
 ## Technical references

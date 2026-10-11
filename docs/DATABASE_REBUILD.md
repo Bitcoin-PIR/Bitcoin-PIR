@@ -60,7 +60,8 @@ the version string goes into `CORE_VERSION` and the evidence.
   intermediates in the development pipeline, [scripts/README.md](../scripts/README.md));
   a delta run that grows with its range. A second disk is unused unless the
   rootfs spans it. `MIN_FREE_KB=50000000` is a floor; size runs with `df`/`du`.
-- RAM: not recorded. Serving the current generation peaks near 31 GB
+- RAM: not recorded. Serving the current generation peaked near 31 GB
+  before #362 streamed the startup hash
   ([MacBook runbook §0](runbooks/pir2-macbook-replacement.md)). The operator's
   earlier plan: VPSBG "RAM-Optimized VDS 64 GB 2x SSD" (4 vCPU, 64 GB, 200 GB).
 
