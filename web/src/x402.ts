@@ -19,7 +19,7 @@
  * decoded invoice (amount, expiry, payee, description hash).
  */
 
-import { createOutputs, mintKeyset, unblindSignatures, type BlindSignatureJson } from './cashu-purchase.js';
+import { checkQuoteStatus, createOutputs, mintKeyset, unblindSignatures, type BlindSignatureJson } from './cashu-purchase.js';
 import { issuerMint, planDenominations, sumSat, type CashuStore, type PurchaseHooks } from './cashu-wallet.js';
 import { bytesToHex, hexToBytes, IssuerError, type IssuerClient } from './credits.js';
 
@@ -267,6 +267,35 @@ async function verifyPreimage(preimage: string, paymentHash: string): Promise<st
   if (!isLowerHex(clean, 64)) throw new IssuerError('x402: preimage is not 32 bytes of hex');
   if ((await sha256Hex(hexToBytes(clean))) !== paymentHash) throw new IssuerError('x402: preimage does not match the payment hash');
   return clean;
+}
+
+/**
+ * Drop the pending top-up unless it may already be paid, in which case it
+ * stays so Resume can finish it: an x402 top-up whose preimage the page
+ * holds or whose invoice the issuer reports paid, or a mint top-up whose
+ * outputs are persisted or whose quote the mint reports paid or issued.
+ * Returns whether it was dropped. A failed check throws and keeps it.
+ */
+export async function cancelPendingTopUp(issuer: IssuerClient, store: CashuStore): Promise<boolean> {
+  const pending = store.pending();
+  if (!pending) return true;
+  let paid: boolean;
+  if (pending.rail === 'x402') {
+    paid = pending.preimage !== null || (pending.paymentHash !== null && (await x402InvoiceStatus(issuer, pending.paymentHash)) === 'paid');
+  } else {
+    paid = pending.outputs !== null || (await checkQuoteStatus(pending.mintUrl, 'sat', pending.quoteId)) !== 'UNPAID';
+  }
+  if (paid) return false;
+  store.setPending(null);
+  return true;
+}
+
+/** The issuer node's view of an x402 invoice; `unknown` when the issuer has no such invoice. */
+async function x402InvoiceStatus(issuer: IssuerClient, paymentHash: string): Promise<string> {
+  const response = await issuer.getRaw(`/v2/x402/invoices/${paymentHash}`);
+  if (response.status === 404) return 'unknown';
+  if (!response.ok) throw new IssuerError(`x402: invoice status ${response.status}`);
+  return ((await response.json()) as { status?: string }).status ?? 'unknown';
 }
 
 /** The preimage of an invoice the issuer's node reports paid, else `null`. */

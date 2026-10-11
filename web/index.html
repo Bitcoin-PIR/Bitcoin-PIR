@@ -1450,7 +1450,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
         import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
-        import { IssuerClient, CashuStore, IN_FLIGHT_GRACE_SECS, openCashuWallet, sumSat, topUpFromMint, topUpX402 } from './src/index.ts';
+        import { IssuerClient, CASHU_WALLET_STORAGE_KEY, CashuStore, IN_FLIGHT_GRACE_SECS, cancelPendingTopUp, openCashuWallet, sumSat, topUpFromMint, topUpX402 } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
         // A page from before the latest deploy reloads once when a lazy chunk it names is gone.
         installStaleChunkReload(window);
@@ -1697,9 +1697,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         });
         paHandle('pa-cancelTopUpBtn', async () => {
             topUpAbort?.abort();
-            const pending = cashuStore.pending();
-            if (pending?.rail === 'mint' ? pending.outputs : pending?.preimage) throw new Error('this top-up is already paid — resume it to receive the ecash; it is not lost');
-            cashuStore.setPending(null);
+            // Asks the mint or the issuer first: a payment the page has not
+            // seen yet keeps the top-up.
+            if (!(await cancelPendingTopUp(issuer, cashuStore))) throw new Error('this top-up is already paid — resume it to receive the ecash; it is not lost');
             document.getElementById('pa-credInvoiceBox').hidden = true;
             renderCredits();
             paStatus('top-up cancelled (an unpaid invoice can simply be ignored)');
@@ -1717,6 +1717,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             paStatus('ecash wallet forgotten');
         });
         if (cashuStore.balance() > 0) cashuWalletReady().catch(e => paStatus(`the ecash wallet failed to load: ${e?.message || e}`, 'error'));
+        // Another tab changed the wallet (a top-up, a presentation, a check with the mint).
+        window.addEventListener('storage', (event) => {
+            if (event.key === CASHU_WALLET_STORAGE_KEY) renderCredits();
+        });
         scheduleReconcile();
         renderCredits();
 

@@ -50,6 +50,7 @@ export {
 } from './cashu-purchase.js';
 
 export {
+  CASHU_WALLET_STORAGE_KEY,
   CashuStore,
   CashuWallet,
   IN_FLIGHT_GRACE_SECS,
@@ -229,6 +230,7 @@ export {
 
 export {
   topUpX402,
+  cancelPendingTopUp,
   requestChallenge as x402RequestChallenge,
   validateChallenge as x402ValidateChallenge,
   waitForPayment as x402WaitForPayment,
