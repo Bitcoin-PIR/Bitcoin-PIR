@@ -1,0 +1,30 @@
+name: Node monitor
+
+# Hourly probe of each production node's WebSocket endpoint; keeps one
+# `node-down` issue per unreachable node and closes it when the node is back
+# (scripts/node-monitor.sh).
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Probe nodes and update issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/node-monitor.sh
