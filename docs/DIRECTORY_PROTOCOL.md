@@ -52,6 +52,17 @@ key. Neither signature replaces the live strict-verification sequence:
    attestation) to be served live, before relying on any hint
    (`bind_directory_entry_to_live_identity_v1`).
 
+A provider whose hints claim `attestation = sev-snp` and whose server
+announces no identity (REQ_ANNOUNCE answers "not configured", as on the
+Direct ORAM TEE host) is bound in step 6 by its attestation instead of an
+identity bundle: the SEV-SNP report binds the channel key (REPORT_DATA), its
+VCEK chain verifies to the AMD root, and its MEASUREMENT matches the client's
+pin. Its operator still signs the inner assertion, but nothing live closes
+that operator key and `server_id`: for such a provider the directory key is
+the trust root for who operates it, while the attestation is the trust root
+for what it runs. A server that does announce an identity is held to it
+whatever its tier.
+
 A mismatch is a hard failure for that discovered entry. It never causes a
 fallback to an unsigned endpoint, plaintext transport, a different access
 class, or a directory-supplied price.
@@ -713,7 +724,9 @@ publisher/readback threat model.
 - NIP-01 later-timestamp/lower-ID replacement ordering and rejection of logical
   revisions with non-increasing timestamps;
 - tombstone precedence and later valid reactivation;
-- live identity/provider/role/attestation/access mismatch overrides discovery;
+- live identity/provider/role/attestation/access mismatch overrides discovery,
+  and a server without an announce identity binds only as an SEV-SNP provider
+  with a pinned attestation;
 - complete shard membership exactly matches a signed checkpoint;
 - unexpected tags and JSON fields capable of carrying payment or peer artifacts
   fail closed;

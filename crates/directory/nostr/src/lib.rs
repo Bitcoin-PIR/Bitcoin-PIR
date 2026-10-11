@@ -58,9 +58,10 @@ pub use state::{
     verify_and_persist_directory_checkpoint_v1, verify_and_persist_directory_entry_v1,
     DirectoryAcceptanceDispositionV1, DirectoryCasOutcomeV1, DirectoryCheckpointRollbackStateV1,
     DirectoryCheckpointStateKeyV1, DirectoryEntryRollbackStateV1, DirectoryEntryStateKeyV1,
-    DirectoryRollbackStoreV1, LiveProviderIdentityV1, PersistedDirectoryCheckpointV1,
-    PersistedDirectoryEntryV1, PersistedDirectoryShardCatalogV1, UnpersistedDirectoryCheckpointV1,
-    UnpersistedDirectoryEntryV1, VerifiedDirectoryIdentityBindingV1,
+    DirectoryRollbackStoreV1, LiveAnnounceIdentityV1, LiveProviderIdentityV1,
+    PersistedDirectoryCheckpointV1, PersistedDirectoryEntryV1, PersistedDirectoryShardCatalogV1,
+    UnpersistedDirectoryCheckpointV1, UnpersistedDirectoryEntryV1,
+    VerifiedDirectoryIdentityBindingV1,
 };
 
 pub const DIRECTORY_SHARD_COUNT_V1: u8 = 16;

@@ -154,12 +154,23 @@ pub struct PersistedDirectoryShardCatalogV1<'a> {
 /// channel, the server's `role`, and its published per-backend access policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LiveProviderIdentityV1<'a> {
-    pub operator_pubkey_ed25519: &'a [u8; 32],
-    pub stable_server_id: &'a str,
+    /// The verified REQ_ANNOUNCE identity, or `None` when the server
+    /// announces none (an SEV-SNP host whose trust is its attestation).
+    pub announce: Option<LiveAnnounceIdentityV1<'a>>,
     pub role: DirectoryServerRoleV1,
+    /// `SevSnp` only when the report binds the channel key, its VCEK chain
+    /// verifies and its MEASUREMENT matches the client's pin.
     pub attestation: DirectoryAttestationV1,
     /// Backends the live server publishes, with their coarse access class.
     pub access: &'a [(DirectoryBackendV1, DirectoryAccessClassV1)],
+}
+
+/// Operator key and `server_id` of a verified REQ_ANNOUNCE identity
+/// certificate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiveAnnounceIdentityV1<'a> {
+    pub operator_pubkey_ed25519: &'a [u8; 32],
+    pub stable_server_id: &'a str,
 }
 
 /// Evidence that one active entry came from a complete, durably accepted
@@ -499,7 +510,9 @@ pub fn bind_persisted_directory_shard_catalog_v1<'a>(
 /// must be active, its provider id must derive from the live operator key and
 /// `server_id`, the inner assertion must name exactly that operator, and every
 /// advertised backend must be served live with the same role, attestation and
-/// access class.
+/// access class. A server that announces no identity binds only as an
+/// SEV-SNP provider verified live as SEV-SNP: its attestation stands in for
+/// the operator identity, which no live check then closes.
 pub fn bind_directory_entry_to_live_identity_v1<'entries, 'live>(
     catalog: &PersistedDirectoryShardCatalogV1<'entries>,
     expected_provider_id: &ProviderId,
@@ -515,13 +528,24 @@ pub fn bind_directory_entry_to_live_identity_v1<'entries, 'live>(
     let assertion = discovery
         .operator_assertion()
         .ok_or(DirectoryErrorV1::LiveIdentityMismatch)?;
-    let live_provider_id = derive_provider_id(live.operator_pubkey_ed25519, live.stable_server_id);
-    if discovery.status() != DirectoryEntryStatusV1::Active
-        || discovery.provider_id() != &live_provider_id
-        || assertion.provider_id != live_provider_id
-        || &assertion.operator_pubkey_ed25519 != live.operator_pubkey_ed25519
-        || assertion.stable_server_id != live.stable_server_id
-    {
+    let identity_bound = match live.announce {
+        Some(announce) => {
+            let live_provider_id =
+                derive_provider_id(announce.operator_pubkey_ed25519, announce.stable_server_id);
+            discovery.provider_id() == &live_provider_id
+                && assertion.provider_id == live_provider_id
+                && &assertion.operator_pubkey_ed25519 == announce.operator_pubkey_ed25519
+                && assertion.stable_server_id == announce.stable_server_id
+        }
+        None => {
+            live.attestation == DirectoryAttestationV1::SevSnp
+                && discovery
+                    .catalog_hints()
+                    .first()
+                    .is_some_and(|hint| hint.attestation == DirectoryAttestationV1::SevSnp)
+        }
+    };
+    if discovery.status() != DirectoryEntryStatusV1::Active || !identity_bound {
         return Err(DirectoryErrorV1::LiveIdentityMismatch);
     }
     for hint in discovery.catalog_hints() {
