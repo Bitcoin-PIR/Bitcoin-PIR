@@ -41,7 +41,6 @@ pir-db-attest = { path = "../../trust/db-attest" }
 onionpir = { git = "...", rev = "...", optional = true }
 
 # crates/sdk/wasm/Cargo.toml
-arc = { git = "...", rev = "..." }
 pir-db-attest = { path = "../../trust/db-attest" }
 pir-sdk-client = { path = "../client", version = "0.1.0" }
 ```
@@ -63,7 +62,7 @@ registry `version` fallback.
 ### Fixes (in increasing order of work)
 
 1. **Publish or replace the external crates.** Publish compatible
-   versions of `libdpf`, `arc`, `harmonypir`, and `onionpir`, then add
+   versions of `libdpf`, `harmonypir`, and `onionpir`, then add
    registry `version` fallbacks to every git dependency. If a crate is
    not intended for crates.io, move the required code behind a
    publishable workspace interface instead.
@@ -86,7 +85,7 @@ the dependency graph:
 1. `pir-core`, `pir-channel`, `pir-identity`, and `pir-attest-verify`
    (registry dependencies only).
 2. `pir-sdk` (depends on `pir-core`).
-3. Registry releases for `libdpf`, `arc`, `harmonypir`, and `onionpir`.
+3. Registry releases for `libdpf`, `harmonypir`, and `onionpir`.
 4. `rootbundle` and `pir-db-attest`, if they remain separate crates rather
    than being folded into publishable parents.
 5. `pir-runtime-core` (depends on `pir-core`, `pir-channel`,
@@ -94,7 +93,7 @@ the dependency graph:
 6. `pir-sdk-client` after its dependency graph is available from
    crates.io.
 7. `pir-sdk-wasm` as a crate (depends on `pir-sdk-client`,
-   `pir-attest-verify`, `pir-db-attest`, and `arc`).
+   `pir-attest-verify`, and `pir-db-attest`).
 
 Between each step, wait ~30 s for crates.io's index propagation
 before the next `cargo publish` so Cargo can resolve the

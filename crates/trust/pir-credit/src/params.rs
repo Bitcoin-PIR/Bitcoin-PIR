@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 /// that issuer, so they are versioned by publication, not by code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GasParams {
-    /// Satoshis one credit costs (and the sat value of one ARC
-    /// presentation). Cashu proofs convert at `gas_per_credit / credit_sat`
-    /// gas per sat, so a proof of any amount can be presented.
+    /// Satoshis one credit costs. Cashu proofs convert at
+    /// `gas_per_credit / credit_sat` gas per sat, so a proof of any amount
+    /// can be presented.
     pub credit_sat: u64,
     /// Gas one credit buys. The single knob that anchors prices to a fiat
     /// target: raise it when BTC falls, lower it when BTC rises.

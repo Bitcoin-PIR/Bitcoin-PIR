@@ -15,9 +15,8 @@
 //!   this connection as far as the client can tell, so the client presents
 //!   exactly what the next frame needs and loses nothing on disconnect.
 //!
-//! What this does NOT do: build presentations. ARC credentials live in the
-//! wasm bindings (`pir-sdk-wasm`) and the browser; Cashu tokens come from a
-//! wallet. The presentation payload arrives here as bytes.
+//! What this does NOT do: build presentations. Cashu tokens come from a
+//! wallet; the presentation payload arrives here as bytes.
 
 use std::collections::BTreeMap;
 
@@ -44,7 +43,7 @@ pub const MAX_API_KEY_LEN: usize = 128;
 /// Generic server-side error envelope.
 const RESP_ERROR: u8 = 0xff;
 
-pub use pir_credit::issuer::{CREDIT_PRESENT_KIND_ARC, CREDIT_PRESENT_KIND_CASHU};
+pub use pir_credit::issuer::CREDIT_PRESENT_KIND_CASHU;
 
 /// What the server answered to a presentation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -366,8 +365,8 @@ mod tests {
 
     #[test]
     fn frame_body_and_response_codecs() {
-        let body = encode_credit_present_body(CREDIT_PRESENT_KIND_ARC, &[1, 2, 3]).unwrap();
-        assert_eq!(body, vec![2, 3, 0, 0, 0, 1, 2, 3]);
+        let body = encode_credit_present_body(CREDIT_PRESENT_KIND_CASHU, &[1, 2, 3]).unwrap();
+        assert_eq!(body, vec![1, 3, 0, 0, 0, 1, 2, 3]);
         assert!(encode_credit_present_body(1, &[]).is_err());
         assert!(
             encode_credit_present_body(1, &vec![0; MAX_CREDIT_PRESENT_PAYLOAD_LEN + 1]).is_err()
