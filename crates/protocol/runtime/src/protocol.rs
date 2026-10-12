@@ -127,10 +127,10 @@ pub const MAX_API_KEY_LEN: usize = 128;
 // pubkey to the chip-signed attestation). With both pubkeys + the
 // nonce, both sides derive a session key via HKDF-SHA256.
 //
-// Cleartext requests (PING, GET_INFO, ATTEST, the handshake itself)
-// remain available pre-handshake. Once the server processes a
-// REQ_HANDSHAKE, the connection enters encrypted mode and any
-// cleartext frame after that is a protocol error.
+// Before the handshake every request but credits, API keys and ORAM
+// lookups works in cleartext. After REQ_HANDSHAKE the server still
+// accepts cleartext requests but seals every record it sends
+// (docs/PROTOCOL.md "Encrypted channel").
 pub const REQ_HANDSHAKE: u8 = 0x06;
 
 // ─── Operator-signed identity announce ─────────────────────────────────────

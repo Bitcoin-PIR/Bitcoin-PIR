@@ -60,9 +60,8 @@ const MAX_WS_FRAME_SIZE: usize = 256 * 1024 * 1024;
 // peers that never receive a large message never see a chunk frame.
 //
 // `CHUNK_MAGIC` sits at byte offset 4 (where a normal message has its
-// variant byte / the 0xfe channel magic). 0xc7 collides with no
-// protocol opcode (0x00-0x09, 0x30-0x34, 0x50-0x56, 0x71, 0xaa-0xcd,
-// 0xfe-0xff are the live values).
+// variant byte / the 0xfe channel magic). 0xc7 is no opcode, live or
+// retired (docs/PROTOCOL.md "Registry").
 pub const CHUNK_MAGIC: u8 = 0xc7;
 /// Max bytes of original message per chunk frame. 256 KiB is far below
 /// any plausible Cloudflare WebSocket message ceiling.

@@ -145,8 +145,7 @@ pub enum MeteredOp {
     /// fresh token takes a whole entry from the pool, so the two halves
     /// of one entry together cost what `REQ_HARMONY_HINTS_V2` costs.
     HarmonyContinuation,
-    /// `REQ_HARMONY_QUERY` / `REQ_HARMONY_BATCH_QUERY` at a wire level,
-    /// `sub_queries` per group (1 for the single-query opcode).
+    /// `REQ_HARMONY_BATCH_QUERY` at a wire level, `sub_queries` per group.
     HarmonyQuery { level: u8, sub_queries: u32 },
     /// `REQ_ORAM_LOOKUP`.
     OramLookup,
