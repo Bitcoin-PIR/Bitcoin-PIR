@@ -5,9 +5,13 @@
 //! operator-published expectations. When `--expect-ark-fingerprint` is
 //! supplied, the same response is also verified through ARK→ASK→VCEK and
 //! its SNP report signature, atomically binding the pinned binary and
-//! MEASUREMENT checks to an AMD-signed report.
+//! MEASUREMENT checks to an AMD-signed report, and the report is held to
+//! the browser's policy (VMPL 0, no debug or migration agent, TCB
+//! monotonic) plus any platform floor passed on the command line.
 
 use clap::Args;
+use pir_attest_verify::policy::{verify_policy, PolicyRequirements};
+use pir_attest_verify::{SnpReport, TcbVersion};
 use pir_sdk_client::attest::{attest, AttestResponse, SevStatus};
 use pir_sdk_client::WsConnection;
 
@@ -40,6 +44,32 @@ pub struct AttestArgs {
     /// treating the report fields as unsigned input.
     #[arg(long = "expect-ark-fingerprint", value_name = "HEX64")]
     pub expect_ark_fingerprint: Option<String>,
+
+    /// Minimum reported TCB as bootloader, TEE, SNP and microcode SVNs
+    /// (`minTcb` of a platform floor in web/src/attest-pin.ts). Every SVN
+    /// must reach its value.
+    #[arg(long, value_name = "B,T,S,M", requires = "expect_ark_fingerprint")]
+    pub min_tcb: Option<String>,
+
+    /// Require platform_info bit 5, alias check complete.
+    #[arg(
+        long,
+        value_name = "BOOL",
+        default_value_t = false,
+        action = clap::ArgAction::Set,
+        requires = "expect_ark_fingerprint"
+    )]
+    pub require_alias_check_complete: bool,
+
+    /// Bits that must be set in both the launch and the current
+    /// mitigation vector; 0 checks none.
+    #[arg(
+        long,
+        value_name = "BITS",
+        default_value_t = 0,
+        requires = "expect_ark_fingerprint"
+    )]
+    pub required_mit_vector_bits: u64,
 }
 
 pub async fn run(args: AttestArgs) -> Result<(), String> {
@@ -48,6 +78,12 @@ pub async fn run(args: AttestArgs) -> Result<(), String> {
         .as_deref()
         .map(|value| parse_hex_array::<32>(value, "--expect-ark-fingerprint"))
         .transpose()?;
+    let requirements = PolicyRequirements {
+        min_tcb: args.min_tcb.as_deref().map(parse_min_tcb).transpose()?,
+        require_alias_check_complete: args.require_alias_check_complete,
+        required_mit_vector_bits: args.required_mit_vector_bits,
+        ..PolicyRequirements::default()
+    };
 
     let mut conn = WsConnection::connect(&args.server)
         .await
@@ -146,9 +182,23 @@ pub async fn run(args: AttestArgs) -> Result<(), String> {
     if let Some(ark_pin) = ark_pin {
         println!();
         match verify_vcek_chain(&v.response, ark_pin) {
-            Ok(()) => println!(
-                "✓ AMD ARK→ASK→VCEK chain and this attestation report's signature verified."
-            ),
+            Ok(report) => {
+                println!(
+                    "✓ AMD ARK→ASK→VCEK chain and this attestation report's signature verified."
+                );
+                let t = report.reported_tcb;
+                println!(
+                    "Reported TCB:      bootloader {} tee {} snp {} microcode {}",
+                    t.bootloader, t.tee, t.snp, t.microcode
+                );
+                match verify_policy(&report, &requirements) {
+                    Ok(()) => println!("✓ Report policy and platform floor hold."),
+                    Err(e) => {
+                        println!("✗ Report policy: {e}");
+                        mismatch = true;
+                    }
+                }
+            }
             Err(e) => {
                 println!("✗ {e}");
                 mismatch = true;
@@ -203,16 +253,31 @@ pub async fn run(args: AttestArgs) -> Result<(), String> {
 const MEASUREMENT: std::ops::Range<usize> = 0x90..0x90 + 48;
 
 /// Verify ARK→ASK→VCEK against the pinned ARK fingerprint, then the
-/// report's signature against that VCEK.
-pub(crate) fn verify_vcek_chain(r: &AttestResponse, ark_pin: [u8; 32]) -> Result<(), String> {
+/// report's signature against that VCEK; returns the verified report.
+pub(crate) fn verify_vcek_chain(
+    r: &AttestResponse,
+    ark_pin: [u8; 32],
+) -> Result<SnpReport, String> {
     if r.ark_pem.is_empty() || r.ask_pem.is_empty() || r.vcek_pem.is_empty() {
         return Err("the server returned no complete ARK/ASK/VCEK chain".into());
     }
     pir_attest_verify::verify_chain(&r.ark_pem, &r.ask_pem, &r.vcek_pem, Some(ark_pin))
         .map_err(|e| format!("AMD certificate-chain validation failed: {e}"))?;
     pir_attest_verify::verify_report_against_vcek(&r.sev_snp_report, &r.vcek_pem)
-        .map_err(|e| format!("SEV-SNP report-signature validation failed: {e}"))?;
-    Ok(())
+        .map_err(|e| format!("SEV-SNP report-signature validation failed: {e}"))
+}
+
+/// `B,T,S,M` as a TCB floor (no FMC: Milan reports carry none).
+fn parse_min_tcb(value: &str) -> Result<TcbVersion, String> {
+    let svns = value
+        .split(',')
+        .map(|svn| svn.trim().parse::<u8>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("--min-tcb takes four SVNs B,T,S,M: {e}"))?;
+    let [bootloader, tee, snp, microcode] = svns[..] else {
+        return Err(format!("--min-tcb takes four SVNs B,T,S,M, got {value}"));
+    };
+    Ok(TcbVersion::new(None, bootloader, tee, snp, microcode))
 }
 
 pub(crate) fn parse_hex_array<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], String> {

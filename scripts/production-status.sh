@@ -11,7 +11,8 @@ Prints pir1 systemd/port/disk health over SSH, then attests the pir2
 MacBook node over its public endpoint against PIR2_MACBOOK_PIN. Then it
 shows the Direct ORAM TEE host's VPSBG control-plane status
 (scripts/vpsbg-production-status.sh, default server 26939) and attests the
-host against the pins ORAM_PROVIDER names (MEASUREMENT, binary, AMD ARK).
+host against the pins ORAM_PROVIDER names (MEASUREMENT, binary, AMD ARK)
+and the platform floor the browser applies to its ARK.
 Endpoints and pins come from web/src (scripts/production-pins.py); while
 ORAM_PROVIDER is null the ORAM host is skipped. Every stage runs even when
 an earlier one fails (an offline node does not hide the others); the exit
@@ -88,6 +89,9 @@ else
   "${admin[@]}" attest "$(pin oram_url)" \
     --expect-measurement "$(pin oram_measurement)" \
     --expect-binary "$(pin oram_binary)" \
-    --expect-ark-fingerprint "$(pin oram_ark)" || status=1
+    --expect-ark-fingerprint "$(pin oram_ark)" \
+    --min-tcb "$(pin oram_min_tcb)" \
+    --require-alias-check-complete "$(pin oram_alias_check)" \
+    --required-mit-vector-bits "$(pin oram_mit_vector_bits)" || status=1
 fi
 exit "$status"
