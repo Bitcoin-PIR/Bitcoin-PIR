@@ -54,11 +54,15 @@ export const AMD_MILAN_ARK_FINGERPRINT: Uint8Array = arkHexToBytes(AMD_MILAN_ARK
  * must pass ([`applySevSnpPlatformFloor`]). Zen 3 has more public SEV-SNP
  * attacks than Turin, each fixed by microcode or firmware.
  *
- * - `minTcb`: VPSBG server 26939's reported TCB, checked 2026-10-02. It meets
- *   every Milan fix an attestation report can show in AMD-SB-3005, 3015,
- *   3019, 3020, 3023, 3027, 3029 and 3033.
+ * - `minTcb`: VPSBG server 26939's reported TCB, checked 2026-10-02. On
+ *   2026-10-12 no Milan bulletin asks for more: it meets the TCB of every
+ *   Milan fix in AMD-SB-3005, 3015, 3016, 3019, 3020, 3023, 3027, 3029 and
+ *   3033. The microcode value is a Milan (B1) one; a Milan-X host reports a
+ *   lower microcode SVN and would fail.
  * - `requireAliasCheckComplete`: platform_info bit 5, for AMD-SB-3015/3033.
  * - `requiredMitVectorBits`: mitigation-vector bit 1, for AMD-SB-3020.
+ *   AMD-SB-3016 defines bit 2, which also needs the host kernel's IOMMU fix;
+ *   server 26939 does not set it (2026-10-12), so the floor leaves it out.
  *
  * A report cannot show fixes that ship only in platform firmware
  * (AMD-SB-3030) or protect against physical attacks (AMD-SB-3028/3032).
