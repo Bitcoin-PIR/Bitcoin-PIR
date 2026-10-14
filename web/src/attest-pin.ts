@@ -171,11 +171,14 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // No measurementHex — no SEV on this host.
-  // unified_server built on the MacBook from main 197511f8 (streaming
-  // manifest hash #362, half-hint pricing #364, operator API keys #365),
-  // `--locked --release`, macOS arm64. Access policy --require-credits
-  // --access dpf=best-effort:2 --access harmony=best-effort:2.
+  // unified_server built on the MacBook from main ce5b4373 (Phase 1
+  // consolidation #403–#418 and later), `--locked --release`, macOS arm64.
+  // Access policy --require-credits --access dpf=best-effort:2 --access
+  // harmony=best-effort:2.
   binarySha256Hex:
+    'db1b0ca821be23abab5859f3e94b39ab172b009eb41701af2de2e20acc84fe13',
+  // The 197511f8 build the node runs until the Flow I switch.
+  transitionBinarySha256Hex:
     '368535896775d9526aa09f6dd4c2c8d6340f76fa82699b88d653acf6067fc591',
   description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys)',
 };
