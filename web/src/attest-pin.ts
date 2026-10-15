@@ -177,9 +177,6 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // harmony=best-effort:2.
   binarySha256Hex:
     'db1b0ca821be23abab5859f3e94b39ab172b009eb41701af2de2e20acc84fe13',
-  // The 197511f8 build the node runs until the Flow I switch.
-  transitionBinarySha256Hex:
-    '368535896775d9526aa09f6dd4c2c8d6340f76fa82699b88d653acf6067fc591',
   description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys)',
 };
 
