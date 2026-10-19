@@ -77,13 +77,15 @@ export const ORAM_PROVIDER: ProductionProviderPin | null = {
  * directory-only relay on pir1 (docs/runbooks/directory-relay.md). One relay,
  * so the explicit centralized mode, whose catalog is always reported
  * degraded. `directoryPubkeyHex` is the publisher key printed by
- * `bpir-admin directory-artifact keygen`; it stays `null` until the
- * deployment that publishes the directory pins it here.
+ * `bpir-admin directory-artifact keygen`, pinned with the first catalog
+ * publish (2026-10-19); a new publisher key is a new trust namespace and
+ * changes here together with the catalog.
  */
 export const PRODUCTION_DIRECTORY: Readonly<NostrDirectoryConfigV1> = Object.freeze({
     mode: 'centralized-single-relay',
     relays: Object.freeze(['wss://directory.bitcoinpir.org']),
-    directoryPubkeyHex: null,
+    directoryPubkeyHex:
+        '5380d2c8679c7766ab5b5d49f040f9ad43bb733451a2f80d24d3bdcb1f1d8245',
 });
 
 /** Shown wherever Direct ORAM would otherwise connect. */
