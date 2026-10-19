@@ -321,8 +321,12 @@ describe('refreshNostrDirectoryV1', () => {
   it('takes the relay count its mode names and a pinned key', async () => {
     await expect(refresh({ ...CENTRAL, relays: [RELAY_A, RELAY_B] }, {})).rejects.toThrow(/exactly one/);
     await expect(refresh({ ...STRICT, relays: [RELAY_A, RELAY_A] }, {})).rejects.toThrow(/two to eight distinct/);
-    // The production directory key is pinned by the deployment that publishes it.
-    await expect(refresh(PRODUCTION_DIRECTORY, {})).rejects.toThrow(/no directory key/);
+    await expect(refresh({ ...CENTRAL, directoryPubkeyHex: null }, {})).rejects.toThrow(/no directory key/);
+    // The production directory: one relay on pir1 and the publisher key pinned
+    // with the first catalog publish (2026-10-19).
+    expect(PRODUCTION_DIRECTORY.mode).toBe('centralized-single-relay');
+    expect(PRODUCTION_DIRECTORY.relays).toEqual(['wss://directory.bitcoinpir.org']);
+    expect(PRODUCTION_DIRECTORY.directoryPubkeyHex).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
