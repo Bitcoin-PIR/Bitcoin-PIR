@@ -1,20 +1,30 @@
 name: Node monitor
 
 # Hourly probe of each production node's WebSocket endpoint; keeps one
-# `node-down` issue per unreachable node and closes it when the node is back
-# (scripts/node-monitor.sh).
+# `node-down` issue per unreachable node and closes it when the node is back.
+# Once a day the run also builds the WASM package and reads the service
+# directory back from its relay, keeping one `directory-stale` issue while
+# the catalog is unreadable, short of 16 shards or within 7 days of expiry
+# (scripts/node-monitor.sh). The catalog changes twice a month and the
+# threshold is 7 days, so one readback a day is enough; building the package
+# in one daily run costs less than restoring a cached one in every hourly run.
 
 on:
   schedule:
-    - cron: '23 * * * *'
+    - cron: '23 * * * *'  # nodes
+    - cron: '41 3 * * *'  # nodes + directory catalog
   workflow_dispatch:
 
 permissions:
   contents: read
   issues: write
 
+# Both jobs edit the same issues: one run at a time.
+concurrency: node-monitor
+
 jobs:
   probe:
+    if: github.event_name == 'schedule' && github.event.schedule != '41 3 * * *'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -24,6 +34,66 @@ jobs:
           persist-credentials: false
 
       - name: Probe nodes and update issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/node-monitor.sh
+
+  directory:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '41 3 * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain (with wasm32 target)
+        run: |
+          rustup toolchain install --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24.18.0'
+
+      # Same tool versions as web-build.yml; the installed wasm-pack and
+      # wasm-bindgen-cli are cached with the Cargo state, so after the first
+      # run `cargo install` finds them already installed.
+      - name: Cache Cargo registry + target + WASM tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            ${{ runner.temp }}/wasm-pack
+          key: ${{ runner.os }}-cargo-node-monitor-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-node-monitor-
+
+      - name: Install pinned WASM tools without executing a remote installer
+        run: |
+          cd "$RUNNER_TEMP"
+          cargo +1.94.1 install wasm-pack \
+            --version 0.14.0 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          cargo +1.94.1 install wasm-bindgen-cli \
+            --version 0.2.114 \
+            --locked \
+            --root "$RUNNER_TEMP/wasm-pack"
+          echo "$RUNNER_TEMP/wasm-pack/bin" >> "$GITHUB_PATH"
+
+      - name: Build pir-sdk-wasm
+        run: >-
+          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
+          --target web --out-dir pkg --mode no-install --no-opt
+          -- --locked --offline
+
+      - name: Probe nodes, read the directory back and update issues
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

@@ -128,6 +128,25 @@ provider id. A third-party operator sends their own assertion
 ([operator guide](../OPERATOR_GUIDE.md) §8); an
 entry cannot outlive it, so its `valid_until` goes in the line's last column.
 
+In production this runs unattended on the Mac Studio: the launchd agent
+`org.bitcoinpir.directory-publish` (template
+[`deploy/launchd/org.bitcoinpir.directory-publish.plist.example`](../../deploy/launchd/org.bitcoinpir.directory-publish.plist.example))
+runs the wrapper
+[`scripts/directory-publish-launchd.sh`](../../scripts/directory-publish-launchd.sh)
+(the live agent keeps its copy beside the key in `.keys/directory/`, outside
+git) on the 1st and 15th at 10:00 local time; it opens the port-forward
+above, runs the publish with the release `bpir-admin` and the nvm Node, and
+closes the forward. The catalog is therefore re-signed every 14–17 days, well
+inside its 30-day validity. Inspect it with
+`launchctl print gui/$UID/org.bitcoinpir.directory-publish` (run count,
+last exit code) and `~/Library/Logs/bitcoinpir-directory-publish.log` (one
+`== <time> directory-publish start` / `done` pair per run, with the readback
+between them); `launchctl kickstart gui/$UID/org.bitcoinpir.directory-publish`
+runs it now. Independently, `.github/workflows/node-monitor.yml` reads the
+live catalog back once a day and opens a `directory-stale` issue when it is
+unreadable, short of 16 shards or within 7 days of expiry; the issue closes
+itself after the next successful publish.
+
 ## Upgrade the relay
 
 ```sh
