@@ -176,11 +176,16 @@ export const PIR2_TIER3_PIN: ServerAttestPin = {
  */
 export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // No measurementHex — no SEV on this host.
-  // unified_server built on the MacBook from main ce5b4373 (Phase 1
-  // consolidation #403–#418 and later), `--locked --release`, macOS arm64.
-  // Access policy --require-credits --access dpf=best-effort:2 --access
-  // harmony=best-effort:2.
+  // unified_server built on the MacBook from the r12 release commit ce2c26ef
+  // (#443: rustls, rustls-webpki and webpki-roots bumps), `--locked
+  // --release`, macOS arm64, rustc 1.94.1, installed under
+  // ~/bpir-node/bin/22149da2… on 2026-10-21 and not yet switched to. The
+  // transition build is the ce5b4373 one the node runs until its operator
+  // switches (Flow I). Access policy --require-credits --access
+  // dpf=best-effort:2 --access harmony=best-effort:2 (unchanged).
   binarySha256Hex:
+    '22149da25de88c726d72f580e79ce5aa06897cf190876cb4bdc68fd09201bf56',
+  transitionBinarySha256Hex:
     'db1b0ca821be23abab5859f3e94b39ab172b009eb41701af2de2e20acc84fe13',
   description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys)',
 };
