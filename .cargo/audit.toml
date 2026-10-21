@@ -15,4 +15,18 @@ ignore = [
     # exploitable here. Re-evaluate if `rsa` ever appears outside the
     # signature-verification path (cargo tree -i rsa).
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0381 — the emSign root in webpki-roots < 1.0.10.
+    # Cargo.lock has webpki-roots 1.0.10, which removed that root. The
+    # advisory still fires on webpki-roots 0.26.11: a shim crate whose
+    # whole source is `pub use parent::TLS_SERVER_ROOTS` over the 1.x
+    # crate, so it carries no roots of its own and serves 1.0.10's. The
+    # patched range (>= 1.0.10) names no 0.26.x version and no 0.26.12
+    # exists. The shim stays in the lockfile because every
+    # tokio-tungstenite release through 0.30 asks for ^0.26 (the
+    # `rustls-tls-webpki-roots` feature in bpir-admin and pir-sdk-client)
+    # and apps/server names 0.26 directly. The entry also silences the
+    # advisory for the 1.x crate, so keep webpki-roots 1.x >= 1.0.10 in
+    # Cargo.lock (cargo tree -i webpki-roots@0.26.11 shows the shim's
+    # users); drop it once the shim has left the lockfile.
+    "RUSTSEC-2026-0381",
 ]

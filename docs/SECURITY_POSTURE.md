@@ -3,7 +3,8 @@
 Where every pin, key and backup lives, who holds it, and what the last
 review found in the dependencies, the TEE platform floor and the hosts.
 Last review: 2026-10-12; the host and key rows were brought up to date on
-2026-10-21. Repeat the review at each release and when AMD, RustSec or
+2026-10-21, and the Rust dependencies were bumped again the same day (below).
+Repeat the review at each release and when AMD, RustSec or
 an upstream publishes an advisory. This page names pins and keys; their
 values stay in the files it names. The privacy invariants and their proofs
 are in [Verification overview](VERIFICATION_OVERVIEW.md).
@@ -15,7 +16,7 @@ How they are watched:
 - **Rust, this repository:** `cargo audit` in
   [`audit.yml`](../.github/workflows/audit.yml), weekly and on every
   `Cargo.lock` change. It reports and never blocks. `.cargo/audit.toml`
-  ignores RUSTSEC-2023-0071 and says why.
+  ignores RUSTSEC-2023-0071 and RUSTSEC-2026-0381 and says why.
 - **Bumping a vendored crate by hand:** `.cargo/config.toml` replaces
   crates.io with `vendor/`, so Dependabot cannot bump Rust crates and
   `cargo update` sees only vendored versions.
@@ -43,6 +44,12 @@ Results on 2026-10-12:
 | `web/`, npm | 0 in runtime dependencies | 4 in the vitest 3 test chain: a tinypool prototype-pollution gadget, @vitest/mocker path traversal, and a source-map-js DoS. All are dev-only; vitest 5 fixes them. |
 | Issuer, Rust (370 crates) | 0 | paste (a proc-macro) is unmaintained. |
 | Playground, npm | next 14 (critical, high), monaco-editor via DOMPurify (moderate), nanoid, postcss, source-map-js | The site is a static export on GitHub Pages and no Next.js server runs, so the Next server advisories (image optimizer, server actions, middleware, RSC) do not reach visitors. DOMPurify is Monaco's internal sanitizer for its hovers and markdown. Next 14 → 16 is a major upgrade that nothing forces now. |
+
+2026-10-21: the advisories of 2026-10-14 to 2026-10-20 moved rustls 0.23.45 →
+0.23.46 (RUSTSEC-2026-0346 to 0349), rustls-webpki 0.103.15 → 0.103.16
+(RUSTSEC-2026-0382) and webpki-roots 1.0.6 → 1.0.10 (RUSTSEC-2026-0381; its
+0.26.11 shim is the one ignore). The ORAM crate's lockfile has none of these
+crates. Every host runs a build from before this bump until the next release.
 
 ## TEE platform floor (Milan)
 

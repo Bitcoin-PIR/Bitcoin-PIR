@@ -11,9 +11,9 @@
 
 [package]
 edition = "2021"
-rust-version = "1.64"
+rust-version = "1.71"
 name = "webpki-roots"
-version = "1.0.6"
+version = "1.0.10"
 build = false
 autolib = false
 autobins = false
@@ -74,4 +74,4 @@ package = "rustls-webpki"
 version = "0.18"
 
 [dev-dependencies.yasna]
-version = "0.5.2"
+version = "0.6"
