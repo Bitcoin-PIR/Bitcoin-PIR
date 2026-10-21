@@ -32,13 +32,29 @@ while :; do
 done
 
 echo '[stage] attest, channel, ORAM queries'
-"${admin[@]}" attest "$server" \
-  --expect-measurement "$(pin oram_measurement)" \
-  --expect-binary "$(pin oram_binary)" \
-  --expect-ark-fingerprint "$(pin oram_ark)" \
-  --min-tcb "$(pin oram_min_tcb)" \
-  --require-alias-check-complete "$(pin oram_alias_check)" \
-  --required-mit-vector-bits "$(pin oram_mit_vector_bits)"
+# VPSBG reports the new image as soon as `switch` returns: the old instance
+# still answers for a few seconds, then the endpoint returns 502 while the new
+# one boots (about 8 min). Retry the attestation against the pins until it
+# passes or ORAM_HOST_CHECK_ATTEST_STOP_SECONDS (default 900) elapse.
+attest() {
+  "${admin[@]}" attest "$server" \
+    --expect-measurement "$(pin oram_measurement)" \
+    --expect-binary "$(pin oram_binary)" \
+    --expect-ark-fingerprint "$(pin oram_ark)" \
+    --min-tcb "$(pin oram_min_tcb)" \
+    --require-alias-check-complete "$(pin oram_alias_check)" \
+    --required-mit-vector-bits "$(pin oram_mit_vector_bits)"
+}
+t1=$(date -u +%s)
+until attest; do
+  elapsed=$(($(date -u +%s) - t1))
+  if ((elapsed >= ${ORAM_HOST_CHECK_ATTEST_STOP_SECONDS:-900})); then
+    echo "attest: no match with the pins after ${elapsed}s" >&2
+    exit 1
+  fi
+  echo "attest: not the pinned image yet (elapsed_seconds=$elapsed); retrying in 30 s"
+  sleep 30
+done
 "${admin[@]}" channel-test "$server" --expect-ark-fingerprint "$(pin oram_ark)"
 for db_id in 0 1; do
   cargo run --locked -q --manifest-path "$root/Cargo.toml" -p pir-sdk-client \

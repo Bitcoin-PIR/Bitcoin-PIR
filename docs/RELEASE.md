@@ -149,9 +149,12 @@ step 6 passes. Rollback: close the PR.
 With the step-5 branch checked out (`oram-host-check.sh` reads this
 checkout's pins), switch, which reboots at once, then check:
 `scripts/vpsbg-measured-boot.sh switch --server-id 26939 --image-id NEW`,
-then `scripts/oram-host-check.sh`. 5–20 min; stop after 15 min without
-`boot_mode=measured`. Success: exit 0 (attest with the predicted
-MEASUREMENT, channel, one ORAM query per database). Rollback: `switch` to the
+then `scripts/oram-host-check.sh`. 5–20 min: VPSBG reports the new image as
+soon as `switch` returns, the old instance answers for a few more seconds,
+then the endpoint returns 502 until the new one serves (about 8 min), so the
+check retries the attestation for 15 min and stops after that. Success: exit
+0 (attest with the predicted MEASUREMENT, channel, one ORAM query per
+database). Rollback: `switch` to the
 recorded `image_id`, run `oram-host-check.sh` on `main`'s pins, and drop
 `PIR2_TIER3_PIN` from the PR.
 
