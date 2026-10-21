@@ -2,7 +2,8 @@
 
 Where every pin, key and backup lives, who holds it, and what the last
 review found in the dependencies, the TEE platform floor and the hosts.
-Last review: 2026-10-12. Repeat it at each release and when AMD, RustSec or
+Last review: 2026-10-12; the host and key rows were brought up to date on
+2026-10-21. Repeat the review at each release and when AMD, RustSec or
 an upstream publishes an advisory. This page names pins and keys; their
 values stay in the files it names. The privacy invariants and their proofs
 are in [Verification overview](VERIFICATION_OVERVIEW.md).
@@ -23,6 +24,9 @@ How they are watched:
      also reads the config files of parent directories.
   2. Run `cargo update -p CRATE@OLD --precise NEW` there.
   3. Vendor the new version and replace its directory in `vendor/`.
+  4. Update `vendor/bitcoinpir-oram/Cargo.lock` as well: that crate is
+     excluded from the workspace and keeps its own lockfile, which the
+     `runtime-features` CI lane tests with `--locked --offline`.
 - **npm (`web/`) and GitHub Actions:** Dependabot, weekly.
 - **No advisory database covers:** the git dependencies (libdpf,
   harmonypir, OnionPIRv2-fork with SEAL, fastprp). They are our own forks.
@@ -91,9 +95,9 @@ Results on 2026-10-12:
 
 | Host | Exposure | State on 2026-10-12 |
 | --- | --- | --- |
-| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04.4, up 21 weeks. **No automatic update since 2026-05-05:** the kernel 7.0.0-15 package was left half-installed, and the broken dpkg state stops unattended-upgrades every day. 99 security updates are pending, among them OpenSSH, OpenSSL, glibc, curl and the kernel. **Core Lightning v26.06.6:** v26.06.7, .8 and .9 fix vulnerabilities in channel reestablishment, HTLC handling, onion handling, onchaind, gossip and several remote crashes; upstream strongly recommends upgrading. cdk-mintd 0.17.3, against 0.18.1 current (0.18.0 bounds untrusted input and redacts secrets from logs). Caddy 2.11.4: one medium advisory, for `forward_auth` setups, fixed in 2.11.5. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
+| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04.4, up 21 weeks. **No automatic update since 2026-05-05:** the kernel 7.0.0-15 package was left half-installed, and the broken dpkg state stops unattended-upgrades every day. 99 security updates are pending, among them OpenSSH, OpenSSL, glibc, curl and the kernel. **Core Lightning v26.06.6:** v26.06.7, .8 and .9 fix vulnerabilities in channel reestablishment, HTLC handling, onion handling, onchaind, gossip and several remote crashes; upstream strongly recommends upgrading. cdk-mintd 0.17.3, against 0.18.1 current (0.18.0 bounds untrusted input and redacts secrets from logs). Caddy 2.11.4: one medium advisory, for `forward_auth` setups, fixed in 2.11.5; stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
 | Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 375 (r11). It meets the Milan floor and the report policy; mitigation-vector bit 2 (AMD-SB-3016) is not set. |
-| MacBook (server 1) | Cloudflare tunnel | Offline for repair (#385). |
+| MacBook (server 1) | Cloudflare tunnel | Offline for repair on 2026-10-12 (#385); back on 2026-10-14 on the ce5b4373 build (#437, #440). |
 
 ## Pins
 
@@ -104,7 +108,7 @@ Results on 2026-10-12:
 | Server binaries, ORAM MEASUREMENT | `attest-pin.ts` `PIR1_PIN`, `PIR2_MACBOOK_PIN`, `PIR2_TIER3_PIN` | each release ([Release checklist](RELEASE.md)) |
 | Database proofs | `attest-pin.ts` `*_DB_PROOF_PIN(S)` | a new generation (Flow H) |
 | Provider endpoints, operator public keys | [`web/src/production-providers.ts`](../web/src/production-providers.ts) | a provider changes (Flow C) |
-| Directory publisher key | `production-providers.ts` `PRODUCTION_DIRECTORY` (null until C2); the relay config on pir1 | the key is generated or rotated |
+| Directory publisher key | `production-providers.ts` `PRODUCTION_DIRECTORY` (pinned 2026-10-19, #441); the relay config on pir1, `/etc/bitcoinpir/directory-relay/config.toml` | the key is rotated |
 | Issuer URL | `web/src/constants.ts` `PRODUCTION_ISSUER_URL` | the issuer moves |
 | Issuer public key | servers: `--credit-issuer-pubkey /etc/bitcoinpir/issuer/grant.pub` (pir1's unit, the MacBook's plist) | issuer key rotation ([Issuer and mint](runbooks/issuer-and-mint.md)) |
 | Operators that may redeem | issuer config `operator_pubkeys` | an operator is added or rotated |
@@ -122,7 +126,7 @@ The workstation files are described per file in
 | --- | --- | --- | --- |
 | pir1 operator key (signs pir1's identity certificate) | Mac Studio, `~/bitcoin-pir/production-secrets/payment-v1-functional-beta-operator-v1/operator.key` | maintainer's own | Lost: a new key, a new pir1 certificate, re-pin `PIR1_PROVIDER` and the issuer's `operator_pubkeys`. Leaked: anyone can certify a server as this operator. |
 | pir2 / ORAM operator key | Mac Studio, `.keys/pir2-operator.key` | maintainer's own | The same, for the MacBook node and the ORAM host's directory assertion. |
-| Directory publisher key | Mac Studio, `.keys/directory/directory-nostr.key` (not yet generated) | — | Lost: a new key, re-pin `PRODUCTION_DIRECTORY`. Leaked: forged directory entries; clients still verify each provider's attestation or operator assertion. |
+| Directory publisher key | Mac Studio, `.keys/directory/directory-nostr.key` (generated 2026-10-19) | maintainer's own | Lost: a new key, re-pin `PRODUCTION_DIRECTORY`. Leaked: forged directory entries; clients still verify each provider's attestation or operator assertion. |
 | Server identity keys | pir1 `/etc/bitcoinpir/payment-v1/functional-beta/provider/provider-identity.key`; the MacBook's `identity/server.key`. The ORAM host has none since image 375. | none; regenerable | A new key and a new certificate from the operator key. |
 | Mint seed | pir1 `/etc/bitcoinpir/mint/seed` | **none** | Every issued ecash becomes unredeemable. |
 | Issuer key (`grant.key`), issuer wallet seed | pir1 `/etc/bitcoinpir/issuer/` | **none** | Key: rotate and re-pin the servers. Wallet seed: the issuer's ecash claim on the mint is lost. |
@@ -164,6 +168,5 @@ As of 2026-10-12, in the order to do them:
      another TEE generation for Direct ORAM.
 6. **Lower priority:**
    - cdk-mintd 0.18;
-   - Caddy, upgrade or stop it (the BHTM leftover);
    - cloudflared 2026.10;
    - a `cargo audit` job in the issuer repository.
