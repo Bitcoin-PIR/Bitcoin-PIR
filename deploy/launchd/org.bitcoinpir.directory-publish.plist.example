@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Unattended republish of the service directory from the publisher's Mac
+  (docs/runbooks/directory-relay.md, "Publish or update entries"): on the 1st
+  and 15th at 10:00 local time launchd runs scripts/directory-publish-launchd.sh,
+  which forwards the pir1 publisher lane and runs scripts/directory-publish.sh
+  on .keys/directory. launchd expands neither `~` nor variables: replace
+  /Users/OPERATOR/BitcoinPIR with the checkout and /Users/OPERATOR with the
+  home directory, then
+    cp org.bitcoinpir.directory-publish.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$UID ~/Library/LaunchAgents/org.bitcoinpir.directory-publish.plist
+  Inspect with `launchctl print gui/$UID/org.bitcoinpir.directory-publish` and
+  the log file; `launchctl kickstart gui/$UID/org.bitcoinpir.directory-publish`
+  runs it now.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>org.bitcoinpir.directory-publish</string>
+  <key>ProgramArguments</key>
+  <array><string>/bin/bash</string><string>/Users/OPERATOR/BitcoinPIR/scripts/directory-publish-launchd.sh</string></array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Day</key><integer>1</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+    <dict><key>Day</key><integer>15</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>RunAtLoad</key><false/>
+  <key>StandardOutPath</key><string>/Users/OPERATOR/Library/Logs/bitcoinpir-directory-publish.log</string>
+  <key>StandardErrorPath</key><string>/Users/OPERATOR/Library/Logs/bitcoinpir-directory-publish.log</string>
+</dict>
+</plist>

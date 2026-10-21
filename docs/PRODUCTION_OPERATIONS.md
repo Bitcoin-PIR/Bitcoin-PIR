@@ -114,7 +114,10 @@ image deletion are **not** flows.
 
 Unattended: `.github/workflows/node-monitor.yml` probes each node's
 WebSocket endpoint hourly and keeps one open `node-down` issue per
-unreachable node, closed when it answers again (`scripts/node-monitor.sh`).
+unreachable node, closed when it answers again; once a day it also reads the
+service directory back and keeps one `directory-stale` issue while the
+catalog is unreadable, short of 16 shards or within 7 days of expiry
+(`scripts/node-monitor.sh`).
 
 Success: the commands exit 0.
 

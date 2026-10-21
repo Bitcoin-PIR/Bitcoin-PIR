@@ -78,6 +78,9 @@ deploy/systemd/*
 !deploy/directory-relay/
 deploy/directory-relay/*
 !deploy/directory-relay/config.toml.example
+!deploy/launchd/
+deploy/launchd/*
+!deploy/launchd/org.bitcoinpir.directory-publish.plist.example
 
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any
