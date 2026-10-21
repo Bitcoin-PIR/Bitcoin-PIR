@@ -40,6 +40,9 @@ status subcommand for the rest.
   ([Directory relay](runbooks/directory-relay.md)), the browser client is
   `web/src/nostr-directory.ts` and the operator readback is
   `scripts/directory-readback.mjs`.
+- Security: [Security posture](SECURITY_POSTURE.md) is where every pin, key
+  and backup lives and who holds it, with the last review of the
+  dependencies, the Milan TEE floor and the hosts.
 - Verification: [Verification overview](VERIFICATION_OVERVIEW.md); the
   EasyCrypt proof lives in
   [Bitcoin-PIR/protocol-proofs](https://github.com/Bitcoin-PIR/protocol-proofs).

@@ -2,8 +2,11 @@
 """Print the production endpoints and pins from web/src as key=value lines.
 
 pir2_url, pir2_binary, pir2_transition, and for the Direct ORAM host
-oram_url, oram_measurement, oram_binary, oram_ark. A missing value prints
-as "-" (all oram_* are "-" while ORAM_PROVIDER is null).
+oram_url, oram_measurement, oram_binary, oram_ark and the platform floor its
+ARK gets in the browser (applySevSnpPlatformFloor): oram_min_tcb (B,T,S,M),
+oram_alias_check, oram_mit_vector_bits; an ARK without a floor prints
+0,0,0,0 / false / 0. A missing value prints as "-" (all oram_* are "-"
+while ORAM_PROVIDER is null).
 """
 import re
 from pathlib import Path
@@ -47,6 +50,22 @@ values.update({
     "oram_binary": field(oram_pin, "binarySha256Hex"),
     "oram_ark": ark.group(1).lower() if ark else "-",
 })
+
+# The browser applies AMD_MILAN_SEV_SNP_FLOOR to every report chained to the
+# Milan ARK; fail rather than print no floor if its shape changes.
+floor = ("0,0,0,0", "false", "0")
+if oram and ident(oram, "expectedArkFingerprint") == "AMD_MILAN_ARK_FINGERPRINT":
+    m = re.search(
+        r"export const AMD_MILAN_SEV_SNP_FLOOR = \{\s*"
+        r"minTcb: \{ bootloader: (\d+), tee: (\d+), snp: (\d+), microcode: (\d+) \},\s*"
+        r"requireAliasCheckComplete: (true|false),\s*"
+        r"requiredMitVectorBits: (0b[01]+|\d+),", pins)
+    if not m:
+        raise SystemExit("production-pins.py: cannot parse AMD_MILAN_SEV_SNP_FLOOR in attest-pin.ts")
+    floor = (",".join(m.group(1, 2, 3, 4)), m.group(5), str(int(m.group(6), 0)))
+elif not oram:
+    floor = ("-", "-", "-")
+values.update(zip(("oram_min_tcb", "oram_alias_check", "oram_mit_vector_bits"), floor))
 
 for key, value in values.items():
     print(f"{key}={value}")

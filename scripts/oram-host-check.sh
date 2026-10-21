@@ -35,7 +35,10 @@ echo '[stage] attest, channel, ORAM queries'
 "${admin[@]}" attest "$server" \
   --expect-measurement "$(pin oram_measurement)" \
   --expect-binary "$(pin oram_binary)" \
-  --expect-ark-fingerprint "$(pin oram_ark)"
+  --expect-ark-fingerprint "$(pin oram_ark)" \
+  --min-tcb "$(pin oram_min_tcb)" \
+  --require-alias-check-complete "$(pin oram_alias_check)" \
+  --required-mit-vector-bits "$(pin oram_mit_vector_bits)"
 "${admin[@]}" channel-test "$server" --expect-ark-fingerprint "$(pin oram_ark)"
 for db_id in 0 1; do
   cargo run --locked -q --manifest-path "$root/Cargo.toml" -p pir-sdk-client \
