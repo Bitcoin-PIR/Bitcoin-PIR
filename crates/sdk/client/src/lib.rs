@@ -69,6 +69,8 @@ pub mod credit_frames;
 pub mod credit_transport;
 pub mod credits;
 pub mod db_proof;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod directory;
 mod dpf;
 mod harmony;
 pub mod hint_cache;

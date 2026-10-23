@@ -205,7 +205,7 @@ pub struct WsConnection {
 /// TLS handshake. We install `ring` (pure-Rust, no C toolchain). Multiple
 /// threads calling `connect()` concurrently are serialized by `OnceLock`;
 /// a pre-installed provider (e.g. by a consumer application) is left alone.
-fn install_default_crypto_provider() {
+pub(crate) fn install_default_crypto_provider() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {

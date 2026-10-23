@@ -21,6 +21,17 @@ pub(crate) fn decode_lower_hex<const N: usize>(value: &str) -> Result<[u8; N], D
     Ok(decoded)
 }
 
+pub(crate) fn decode_lower_hex_vec(value: &str) -> Result<Vec<u8>, DirectoryErrorV1> {
+    if value.len() % 2 != 0 || !value.is_ascii() {
+        return Err(DirectoryErrorV1::InvalidHex);
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| Ok((nibble(pair[0])? << 4) | nibble(pair[1])?))
+        .collect()
+}
+
 fn nibble(value: u8) -> Result<u8, DirectoryErrorV1> {
     match value {
         b'0'..=b'9' => Ok(value - b'0'),

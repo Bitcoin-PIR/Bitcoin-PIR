@@ -19,6 +19,8 @@ pub enum DirectoryEntryStatusV1 {
     Tombstone,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DirectoryHealthClassV1 {
     Unknown,
@@ -36,6 +38,8 @@ pub struct DirectoryHealthV1 {
 
 /// Backend a provider claims to serve. Names match the server's published
 /// access policy (`credits.access` in `GET_INFO_JSON`).
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum DirectoryBackendV1 {
@@ -48,6 +52,8 @@ pub enum DirectoryBackendV1 {
 /// DPF slot of the server (`role` in `GET_INFO_JSON`): the primary serves
 /// DPF server 0 and HarmonyPIR hints, the secondary serves DPF server 1 and
 /// HarmonyPIR queries.
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum DirectoryServerRoleV1 {
@@ -57,27 +63,33 @@ pub enum DirectoryServerRoleV1 {
 
 /// Coarse access class of one backend (`mode` of the published access
 /// policy). Concurrency and gas budgets stay in the live policy only.
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum DirectoryAccessClassV1 {
     Free = 1,
     Paid = 2,
+    #[serde(rename = "best-effort")]
     BestEffort = 3,
 }
 
 /// Hardware attestation the provider claims; verified live through the
 /// secure-channel attestation path, never from the directory.
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
 pub enum DirectoryAttestationV1 {
     None = 1,
+    #[serde(rename = "sev-snp")]
     SevSnp = 2,
 }
 
 /// Bounded, sorted mirror of what the provider serves. Hints only avoid
 /// connecting to obviously unsuitable providers; every hint is compared with
 /// the live identity, role, attestation and access policy before use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub struct DirectoryCatalogHintV1 {
     pub backend: DirectoryBackendV1,
     pub role: DirectoryServerRoleV1,
