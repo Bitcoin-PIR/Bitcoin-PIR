@@ -39,8 +39,10 @@ status subcommand for the rest.
   `bpir-admin directory-artifact`, the relay is `apps/directory-relay`
   ([Directory relay](runbooks/directory-relay.md)), the browser client is
   `web/src/nostr-directory.ts` (catalog) and
-  `web/src/directory-providers.ts` (provider choice per backend), and the
-  operator readback is `scripts/directory-readback.mjs`.
+  `web/src/directory-providers.ts` (provider choice per backend), the native
+  client is `pir_sdk_client::directory` (`discover_directory_v1`), and the
+  operator readbacks are `scripts/directory-readback.mjs` (through the WASM
+  verifier) and `cargo run -p pir-sdk-client --example discover`.
 - Security: [Security posture](SECURITY_POSTURE.md) is where every pin, key
   and backup lives and who holds it, with the last review of the
   dependencies, the Milan TEE floor and the hosts.

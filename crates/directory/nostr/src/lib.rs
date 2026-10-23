@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 mod assertion;
+mod catalog;
 mod checkpoint;
 mod entry;
 mod error;
@@ -27,6 +28,10 @@ pub use assertion::{
     MAX_DIRECTORY_ENDPOINT_LEN_V1, MAX_DIRECTORY_SERVER_ID_LEN_V1, PROVIDER_ID_DOMAIN_V1,
 };
 
+pub use catalog::{
+    verify_directory_catalog_views_v1, DirectoryCatalogEntryV1, DirectoryCatalogRejectionV1,
+    DirectoryCatalogShardV1, DirectoryCatalogV1, DirectoryRollbackFloorsV1,
+};
 pub use checkpoint::{
     catalog_root_v1, checkpoint_d_tag_value_v1, verify_directory_checkpoint_event_v1,
     DirectoryCatalogCheckpointV1, DirectoryCheckpointEntryV1, VerifiedDirectoryCheckpointEventV1,

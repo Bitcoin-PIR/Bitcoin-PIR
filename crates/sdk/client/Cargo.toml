@@ -138,6 +138,12 @@ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 # installed at `WsConnection::connect()` time via
 # `install_default_crypto_provider()`.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+# Service-directory discovery (`directory` module): the codec verifies the
+# relay views; `serde_json` reads the NIP-01 message envelopes. Native-only
+# because the browser fetches the catalog in TypeScript and verifies it
+# through `pir-sdk-wasm`.
+pir-directory-nostr = { version = "0.1.0", path = "../../directory/nostr" }
+serde_json = "1"
 
 # ─── WASM (wasm32-unknown-unknown) target deps ──────────────────────────────
 # Browsers expose `WebSocket` as a callback-driven DOM object; we bridge it

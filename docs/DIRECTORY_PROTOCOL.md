@@ -413,6 +413,23 @@ and the access policy from `GET_INFO_JSON` over a short connection of its
 own (`fetchLiveServerInfoV1`): the result is a badge and a log line, never a
 silent fallback.
 
+### Native SDK
+
+The catalog verification is `verify_directory_catalog_views_v1` in
+`pir-directory-nostr` (`catalog.rs`): relay views in, the newest accepted
+view of every shard, the active entries with their hints, every rejection
+and the advanced floors out. The WASM export above is a JSON wrapper around
+it. `pir_sdk_client::directory::discover_directory_v1` (native targets) is
+the Rust counterpart of `refreshNostrDirectoryV1`: it takes the mode, the
+relay list, the pinned directory key and the caller's stored floors, reads
+each relay over its own WebSocket with the same `REQ`/`EOSE` accounting and
+limits as the browser, verifies the views, and returns the catalog,
+`degraded`, the relays that contributed a view and those that did not, with
+`candidates(backend)` pairing each entry with its hint. Persisting the
+returned floors is the caller's, as is every choice; the
+`discover` example (`cargo run -p pir-sdk-client --example discover`) prints
+the catalog as an operator readback and keeps the floors in a file.
+
 ## Privacy and logging
 
 Directory events contain no invoice, payment hash, preimage, claim key,

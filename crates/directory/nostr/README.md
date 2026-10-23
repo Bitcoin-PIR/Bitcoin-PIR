@@ -14,7 +14,11 @@ crate owns:
 - the per-shard catalog checkpoints (`checkpoint`);
 - the publisher-side signing helpers and `REQ` filters (`publisher`);
 - the durable compare-and-swap rollback state and the live identity binding
-  (`state`).
+  (`state`);
+- the verification of complete relay views of the catalog, shared by the
+  browser (`pir-sdk-wasm`) and the native SDK (`pir-sdk-client::directory`):
+  per shard the newest accepted view, the active entries with their hints,
+  every rejection and the advanced rollback floors (`catalog`).
 
 Directory output is candidate metadata only. It never establishes runtime,
 database, access-policy, payment, or two-provider independence trust: the

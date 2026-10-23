@@ -1705,6 +1705,7 @@ dependencies = [
  "pir-core",
  "pir-credit",
  "pir-db-attest",
+ "pir-directory-nostr",
  "pir-identity",
  "pir-sdk",
  "rand 0.8.6",
