@@ -38,8 +38,9 @@ status subcommand for the rest.
   the codec is `crates/directory/nostr`, the operator commands are
   `bpir-admin directory-artifact`, the relay is `apps/directory-relay`
   ([Directory relay](runbooks/directory-relay.md)), the browser client is
-  `web/src/nostr-directory.ts` and the operator readback is
-  `scripts/directory-readback.mjs`.
+  `web/src/nostr-directory.ts` (catalog) and
+  `web/src/directory-providers.ts` (provider choice per backend), and the
+  operator readback is `scripts/directory-readback.mjs`.
 - Security: [Security posture](SECURITY_POSTURE.md) is where every pin, key
   and backup lives and who holds it, with the last review of the
   dependencies, the Milan TEE floor and the hosts.

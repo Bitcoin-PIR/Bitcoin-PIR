@@ -390,6 +390,29 @@ moment may race; the later write wins. Refresh is explicit and never
 triggered by an address query, provider selection, or payment event; the
 caller refreshes again before the catalog's expiry.
 
+`directoryProviderChoicesV1` (`web/src/directory-providers.ts`) turns the
+catalog into connection parameters per server slot: DPF-PIR and HarmonyPIR
+take a `primary` (server 0, hint) and a `secondary` (server 1, query)
+provider, OnionPIR and Direct ORAM one provider of any role. A candidate
+whose operator key and `server_id` name one of the client's own pinned
+providers connects with that pin (binary hash or MEASUREMENT, operator key),
+the endpoint taken from the directory. Any other candidate is trusted at the
+tier the directory asserts, as the trust model above makes the directory
+key's responsibility: `sev-snp` connects against the client's known-good
+MEASUREMENT and ARK, so a provider on another image reports a measurement
+mismatch and never binds; `operator-identity` connects with the asserted
+operator key and no binary pin, and is shown as such. Choices are ordered
+pinned first, then by health, access class, tier and `server_id`; nothing is
+blocked, the page decides. The production page (`web/index.html`) reads the
+catalog once the SDK is up and on an explicit Refresh, offers each slot's
+choices in a select next to the endpoint field, keeps a manual entry (the
+built-in pin with whatever endpoint is typed) as the bypass when the
+directory is unavailable, and after connecting closes the chosen entry
+against the live server with `directoryBindingMismatchV1`, reading `role`
+and the access policy from `GET_INFO_JSON` over a short connection of its
+own (`fetchLiveServerInfoV1`): the result is a badge and a log line, never a
+silent fallback.
+
 ## Privacy and logging
 
 Directory events contain no invoice, payment hash, preimage, claim key,

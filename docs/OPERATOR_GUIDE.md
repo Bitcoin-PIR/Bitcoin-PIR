@@ -392,8 +392,11 @@ provider and publishes it, with signed checkpoints, to a directory-only relay
 [Directory relay](runbooks/directory-relay.md)). There is one relay, so
 clients use the explicit `centralized-single-relay` mode and show the catalog
 as centralized/degraded. The browser client reads and verifies the catalog
-(`web/src/nostr-directory.ts`); choosing providers from it is planned (C3 in
-issue #429).
+(`web/src/nostr-directory.ts`) and offers its providers per backend
+(`web/src/directory-providers.ts`): a listed server appears in the page's
+provider selects with the trust tier the directory asserts for it
+(operator identity, or SEV-SNP against the client's known-good MEASUREMENT),
+and is closed against the live server after connecting.
 
 1. Sign an operator assertion on the workstation (`--stable-server-id` is the
    certificate's `server_id`). It prints `provider_id`,

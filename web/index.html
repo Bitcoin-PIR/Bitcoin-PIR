@@ -549,6 +549,13 @@
         .attest-badge-chain-verified   { border-left-color: #2e7d32; background: #f0fdf4; }
         .attest-badge-chain-unverified { border-left-color: var(--err); background: #fef2f2; }
         .attest-badge-chain-unavailable { border-left-color: var(--ink-mute); background: var(--bg); color: var(--ink-mute); }
+        /* Service-directory badge: the chosen directory entry, closed against
+           the live server after connecting (docs/DIRECTORY_PROTOCOL.md, trust
+           model step 6). */
+        .attest-badge-dir-bound    { border-left-color: #2e7d32; background: #f0fdf4; }
+        .attest-badge-dir-mismatch { border-left-color: var(--err); background: #fef2f2; }
+        .attest-badge-dir-pending  { border-left-color: var(--ink-mute); background: var(--bg); }
+        .directory-status { font-size: 12px; color: var(--ink-mute); overflow-wrap: anywhere; }
 
         .merkle-result-badge {
             display: inline-flex;
@@ -880,18 +887,33 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div class="verification-details-home">
                             <div id="dpfVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
-                                    <label for="server0Url">Server 0</label>
+                                    <label>Directory</label>
+                                    <span id="dpf-directoryStatus" class="directory-status">Not read yet</span>
+                                    <button type="button" class="btn ghost sm directory-refresh-btn">Refresh</button>
+                                </div>
+                                <div class="status-row">
+                                    <label for="server0Provider">Server 0 provider</label>
+                                    <select id="server0Provider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="server0Url">Server 0 endpoint</label>
                                     <input type="text" id="server0Url" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
                                 </div>
                                 <div id="attestBadge0" class="attest-badge attest-badge-unattested" data-server="0" style="display: none;"></div>
                                 <div id="operatorBadge0" class="attest-badge attest-badge-op-verified" data-server="0" style="display: none;"></div>
+                                <div id="directoryBadge0" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
 
                                 <div class="status-row">
-                                    <label for="server1Url">Server 1</label>
+                                    <label for="server1Provider">Server 1 provider</label>
+                                    <select id="server1Provider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="server1Url">Server 1 endpoint</label>
                                     <input type="text" id="server1Url" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
                                 <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
+                                <div id="directoryBadge1" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
                                 <div id="dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                                 <div id="bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
 
@@ -1056,9 +1078,19 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div class="verification-details-home">
                             <div id="onionVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
-                                    <label for="op-serverUrl">Server</label>
+                                    <label>Directory</label>
+                                    <span id="op-directoryStatus" class="directory-status">Not read yet</span>
+                                    <button type="button" class="btn ghost sm directory-refresh-btn">Refresh</button>
+                                </div>
+                                <div class="status-row">
+                                    <label for="op-provider">Provider</label>
+                                    <select id="op-provider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="op-serverUrl">Server endpoint</label>
                                     <input type="text" id="op-serverUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
                                 </div>
+                                <div id="op-directoryBadge" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
                                 <div id="op-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                                 <div id="op-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
 
@@ -1243,18 +1275,33 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div class="verification-details-home">
                             <div id="harmonyVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
-                                    <label for="hp-hintServerUrl">Hint server</label>
+                                    <label>Directory</label>
+                                    <span id="hp-directoryStatus" class="directory-status">Not read yet</span>
+                                    <button type="button" class="btn ghost sm directory-refresh-btn">Refresh</button>
+                                </div>
+                                <div class="status-row">
+                                    <label for="hp-hintProvider">Hint provider</label>
+                                    <select id="hp-hintProvider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="hp-hintServerUrl">Hint endpoint</label>
                                     <input type="text" id="hp-hintServerUrl" class="input" value="wss://weikeng1.bitcoinpir.org" spellcheck="false">
                                 </div>
                                 <div id="hp-attestBadgeHint" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="hp-operatorBadgeHint" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                                <div id="hp-directoryBadgeHint" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
 
                                 <div class="status-row">
-                                    <label for="hp-queryServerUrl">Query server</label>
+                                    <label for="hp-queryProvider">Query provider</label>
+                                    <select id="hp-queryProvider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="hp-queryServerUrl">Query endpoint</label>
                                     <input type="text" id="hp-queryServerUrl" class="input" value="wss://bitcoin-pir-weikeng-laptop.chenweikeng.com" spellcheck="false">
                                 </div>
                                 <div id="hp-attestBadgeQuery" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="hp-operatorBadgeQuery" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                                <div id="hp-directoryBadgeQuery" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
                                 <div id="hp-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                                 <div id="hp-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
                                 <div class="status-row">
@@ -1378,11 +1425,21 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                         <div class="verification-details-home">
                             <div id="oramVerificationDetails" class="verification-details-source">
                                 <div class="status-row">
-                                    <label for="oram-serverUrl">ORAM server</label>
+                                    <label>Directory</label>
+                                    <span id="oram-directoryStatus" class="directory-status">Not read yet</span>
+                                    <button type="button" class="btn ghost sm directory-refresh-btn">Refresh</button>
+                                </div>
+                                <div class="status-row">
+                                    <label for="oram-provider">Provider</label>
+                                    <select id="oram-provider" class="select"></select>
+                                </div>
+                                <div class="status-row">
+                                    <label for="oram-serverUrl">ORAM endpoint</label>
                                     <input type="text" id="oram-serverUrl" class="input" value="wss://weikeng2.bitcoinpir.org" spellcheck="false">
                                 </div>
                                 <div id="oram-attestBadge" class="attest-badge attest-badge-unattested" style="display: none;"></div>
                                 <div id="oram-operatorBadge" class="attest-badge attest-badge-op-verified" style="display: none;"></div>
+                                <div id="oram-directoryBadge" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
                                 <div id="oram-dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                                 <div id="oram-bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
                                 <div id="oram-sourceProofBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
@@ -1448,7 +1505,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
     <script type="module">
         import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, DELTA_940611_948454_DB_PROOF_PIN, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
-        import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
+        import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_DIRECTORY, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
+        import { DIRECTORY_SLOTS_V1, describeDirectoryCatalogV1, describeDirectoryTrustV1, directoryBindingMismatchV1, directoryProviderChoicesV1, fetchLiveServerInfoV1, refreshNostrDirectoryV1 } from './src/index.ts';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
         import { IssuerClient, CASHU_WALLET_STORAGE_KEY, CashuStore, IN_FLIGHT_GRACE_SECS, cancelPendingTopUp, openCashuWallet, sumSat, topUpFromMint, topUpX402 } from './src/index.ts';
         import { installStaleChunkReload } from './src/index.ts';
@@ -1458,7 +1516,184 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         initSdkWasm().then(ok => {
             if (ok) console.log('[PIR] SDK WASM loaded');
             else console.log('[PIR] SDK WASM unavailable, using TypeScript fallback');
+            if (ok) refreshDirectory();
         });
+
+        // ─── Service directory: one provider choice per server slot ───────
+        // docs/DIRECTORY_PROTOCOL.md "Browser client". The catalog is read
+        // once the SDK is up and on Refresh (never from a query). Each slot's
+        // select lists the directory's candidates for its backend and role,
+        // the pinned providers first (web/src/directory-providers.ts), plus a
+        // manual entry: the built-in pin with whatever endpoint is typed, the
+        // bypass when the directory is unavailable. A directory choice is
+        // closed against the live server right after connecting.
+        const BUILT_IN_PROVIDERS = [PIR1_PROVIDER, PIR2_PROVIDER, ORAM_PROVIDER].filter(Boolean);
+        const PROVIDER_SLOTS = {
+            server0: { select: 'server0Provider', url: 'server0Url', badge: 'directoryBadge0', backend: 'dpf', slot: DIRECTORY_SLOTS_V1.dpf[0], builtIn: PIR1_PROVIDER, drop: () => dropDpfClient() },
+            server1: { select: 'server1Provider', url: 'server1Url', badge: 'directoryBadge1', backend: 'dpf', slot: DIRECTORY_SLOTS_V1.dpf[1], builtIn: PIR2_PROVIDER, drop: () => dropDpfClient() },
+            onion: { select: 'op-provider', url: 'op-serverUrl', badge: 'op-directoryBadge', backend: 'onion', slot: DIRECTORY_SLOTS_V1.onion[0], builtIn: PIR1_PROVIDER, drop: () => dropOnionClient() },
+            hint: { select: 'hp-hintProvider', url: 'hp-hintServerUrl', badge: 'hp-directoryBadgeHint', backend: 'harmony', slot: DIRECTORY_SLOTS_V1.harmony[0], builtIn: PIR1_PROVIDER, drop: () => hpDisconnect(true) },
+            query: { select: 'hp-queryProvider', url: 'hp-queryServerUrl', badge: 'hp-directoryBadgeQuery', backend: 'harmony', slot: DIRECTORY_SLOTS_V1.harmony[1], builtIn: PIR2_PROVIDER, drop: () => hpDisconnect(true) },
+            oram: { select: 'oram-provider', url: 'oram-serverUrl', badge: 'oram-directoryBadge', backend: 'oram', slot: DIRECTORY_SLOTS_V1.oram[0], builtIn: ORAM_PROVIDER, drop: () => dropOramClient() },
+        };
+        let directoryCatalog = null;
+        const directoryChoices = {};
+
+        /** The slot's chosen directory entry (or null for manual) and its connection parameters. */
+        function slotSelection(key) {
+            const slot = PROVIDER_SLOTS[key];
+            const select = document.getElementById(slot.select);
+            const choice = (directoryChoices[key] ?? [])[Number(select.value)] ?? null;
+            if (choice) return { choice, connection: choice.connection };
+            if (!slot.builtIn) return { choice: null, connection: null };
+            const endpoint = (document.getElementById(slot.url).value || '').trim() || slot.builtIn.endpoint;
+            return { choice: null, connection: { ...slot.builtIn, endpoint } };
+        }
+
+        function renderProviderSelect(key) {
+            const slot = PROVIDER_SLOTS[key];
+            const select = document.getElementById(slot.select);
+            const previous = slotSelection(key).choice?.candidate.provider.providerIdHex ?? null;
+            const choices = directoryCatalog
+                ? directoryProviderChoicesV1(directoryCatalog, BUILT_IN_PROVIDERS, slot.backend, slot.slot)
+                : [];
+            directoryChoices[key] = choices;
+            select.replaceChildren();
+            choices.forEach((choice, index) => {
+                const option = document.createElement('option');
+                option.value = String(index);
+                option.textContent = choice.label;
+                option.title = describeDirectoryTrustV1(choice.trust);
+                select.appendChild(option);
+            });
+            const manual = document.createElement('option');
+            manual.value = 'manual';
+            manual.textContent = slot.builtIn
+                ? `Manual endpoint (pinned: ${slot.builtIn.serverId ?? slot.builtIn.endpoint})`
+                : 'Manual endpoint (no pin configured)';
+            select.appendChild(manual);
+            let index = choices.findIndex(choice => choice.candidate.provider.providerIdHex === previous);
+            if (index < 0) index = choices.findIndex(choice => choice.trust === 'pinned-build');
+            if (index < 0 && choices.length > 0) index = 0;
+            select.value = index < 0 ? 'manual' : String(index);
+            applyProviderSelection(key);
+        }
+
+        function applyProviderSelection(key) {
+            const slot = PROVIDER_SLOTS[key];
+            const { choice } = slotSelection(key);
+            const url = document.getElementById(slot.url);
+            if (choice) {
+                url.value = choice.connection.endpoint;
+                url.readOnly = true;
+            } else {
+                url.readOnly = false;
+                if (slot.builtIn && !url.value.trim()) url.value = slot.builtIn.endpoint;
+            }
+            renderDirectoryBadge(slot.badge, choice, null);
+        }
+
+        function renderDirectoryBadge(idElem, choice, binding) {
+            const el = document.getElementById(idElem);
+            if (!el) return;
+            if (!choice) {
+                el.style.display = 'none';
+                return;
+            }
+            const truncate = (hex, n = 16) =>
+                hex && hex.length > n ? `${hex.slice(0, n)}…` : (hex || '—');
+            const provider = choice.candidate.provider;
+            const state = binding === null ? 'pending' : binding.mismatch === null ? 'bound' : 'mismatch';
+            el.className = `attest-badge attest-badge-dir-${state}`;
+            el.style.display = 'block';
+            const stateLabel = state === 'bound' ? `📒 Directory entry bound to the live server — ${provider.serverId}`
+                : state === 'mismatch' ? `⚠ Directory entry NOT bound — ${provider.serverId}`
+                : `📒 Directory entry — ${provider.serverId} (closed against the server on connect)`;
+            const rows = [
+                { label: 'trust', value: `${choice.trust}: ${describeDirectoryTrustV1(choice.trust)}` },
+                { label: 'access', value: `${choice.candidate.access} (${provider.role} server)` },
+                { label: 'operator', value: truncate(provider.operatorPubkeyHex, 24), title: provider.operatorPubkeyHex },
+                { label: 'provider id', value: truncate(provider.providerIdHex, 24), title: provider.providerIdHex },
+                { label: 'health', value: `${provider.health} per the directory; entry valid until ${new Date(provider.validUntil * 1000).toISOString().slice(0, 10)}` },
+            ];
+            if (state === 'mismatch') rows.push({ label: 'mismatch', value: binding.mismatch });
+            renderSecurityBadgeTextRowsV1(el, stateLabel, rows);
+        }
+
+        /** Trust model step 6: the live identity, attestation, role and access must be what the entry says. */
+        async function checkDirectoryBinding(key, identity, attestation) {
+            const slot = PROVIDER_SLOTS[key];
+            const { choice, connection } = slotSelection(key);
+            if (!choice) return;
+            let mismatch;
+            try {
+                const info = await fetchLiveServerInfoV1(connection.endpoint);
+                mismatch = directoryBindingMismatchV1(choice.candidate.provider, { identity, attestation, info });
+            } catch (error) {
+                mismatch = `could not read the live server info: ${error?.message || error}`;
+            }
+            renderDirectoryBadge(slot.badge, choice, { mismatch });
+            const tag = `${choice.candidate.provider.serverId}, ${choice.trust}`;
+            if (mismatch === null) log(`📒 Directory entry bound to the live server (${tag})`, 'success');
+            else log(`⚠ Directory entry (${tag}) is not what the live server is: ${mismatch}`, 'error');
+        }
+
+        function setDirectoryStatus(text) {
+            document.querySelectorAll('.directory-status').forEach(el => { el.textContent = text; });
+        }
+
+        async function refreshDirectory() {
+            setDirectoryStatus('Reading the service directory…');
+            try {
+                const sdkReady = isSdkWasmReady() || await initSdkWasm();
+                if (!sdkReady) throw new Error('PIR SDK WASM failed to load');
+                directoryCatalog = await refreshNostrDirectoryV1(PRODUCTION_DIRECTORY);
+                for (const rejection of directoryCatalog.rejected) {
+                    const where = `${rejection.relay ?? 'every relay'}${rejection.shard === null ? '' : `, shard ${rejection.shard}`}`;
+                    log(`Directory: ${where} rejected — ${rejection.reason}`, 'error');
+                }
+                const summary = describeDirectoryCatalogV1(directoryCatalog);
+                setDirectoryStatus(summary);
+                log(`Directory: ${summary}`, directoryCatalog.validUntil > 0 ? 'info' : 'error');
+            } catch (error) {
+                directoryCatalog = null;
+                setDirectoryStatus(`Unavailable (${error?.message || error}); the pinned providers stay in use`);
+                log(`Directory unavailable: ${error?.message || error}; the pinned providers stay in use`, 'error');
+            }
+            for (const key of Object.keys(PROVIDER_SLOTS)) renderProviderSelect(key);
+        }
+
+        document.querySelectorAll('.directory-refresh-btn').forEach(button => {
+            button.addEventListener('click', () => refreshDirectory());
+        });
+        for (const [key, slot] of Object.entries(PROVIDER_SLOTS)) {
+            document.getElementById(slot.select).addEventListener('change', () => {
+                if (document.getElementById(slot.select).value === 'manual' && slot.builtIn) {
+                    document.getElementById(slot.url).value = slot.builtIn.endpoint;
+                }
+                slot.drop();
+                applyProviderSelection(key);
+            });
+            renderProviderSelect(key);
+        }
+
+        function dropDpfClient() {
+            if (client) client.disconnect();
+            client = null;
+            resetBasicVerification(['dpf0', 'dpf1']);
+        }
+
+        function dropOnionClient() {
+            if (opClient) opClient.disconnect();
+            opClient = null;
+            opRefreshSyncStateUI();
+        }
+
+        function dropOramClient() {
+            if (oramClient) oramClient.disconnect();
+            oramClient = null;
+            resetBasicVerification(['oram']);
+        }
 
         /**
          * Detect well-known script patterns and return a label, or null.
@@ -1762,7 +1997,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function ensureOnionConnection() {
-            if (!opClient || !opClient.isConnected()) await opConnect(PIR1_PROVIDER);
+            if (!opClient || !opClient.isConnected()) await opConnect(slotSelection('onion'));
         }
 
         async function ensureHarmonyConnection() {
@@ -1787,8 +2022,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function ensureOramConnection() {
-            if (!ORAM_PROVIDER) throw new Error(ORAM_PAUSED_MESSAGE);
-            if (!oramClient || !oramClient.isConnected()) await oramConnect(ORAM_PROVIDER);
+            const selection = slotSelection('oram');
+            if (!selection.connection) throw new Error(ORAM_PAUSED_MESSAGE);
+            if (!oramClient || !oramClient.isConnected()) await oramConnect(selection);
         }
 
         async function runProductQuery(kind, ensure, query) {
@@ -2749,8 +2985,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         async function connectDpf() {
-            document.getElementById('server0Url').value = PIR1_PROVIDER.endpoint;
-            document.getElementById('server1Url').value = PIR2_PROVIDER.endpoint;
+            const server0 = slotSelection('server0').connection;
+            const server1 = slotSelection('server1').connection;
+            document.getElementById('server0Url').value = server0.endpoint;
+            document.getElementById('server1Url').value = server1.endpoint;
             resetBasicVerification(['dpf0', 'dpf1']);
             renderBitcoinAnchorBadge('bitcoinAnchorBadge', 'DPF-PIR', {
                 state: 'unavailable',
@@ -2763,13 +3001,13 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 creditProvider: currentCreditProvider,
                 apiKey: currentApiKey(),
                 onCredits: (idx, status) => noteCredits(`DPF server${idx}`, status),
-                server0Url: PIR1_PROVIDER.endpoint,
-                server1Url: PIR2_PROVIDER.endpoint,
-                expectedServer0Pin: PIR1_PROVIDER.serverPin,
-                expectedServer1Pin: PIR2_PROVIDER.serverPin,
-                pinnedOperatorPubkey0: PIR1_PROVIDER.operatorPubkey,
-                pinnedOperatorPubkey1: PIR2_PROVIDER.operatorPubkey,
-                expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                server0Url: server0.endpoint,
+                server1Url: server1.endpoint,
+                expectedServer0Pin: server0.serverPin,
+                expectedServer1Pin: server1.serverPin,
+                pinnedOperatorPubkey0: server0.operatorPubkey,
+                pinnedOperatorPubkey1: server1.operatorPubkey,
+                expectedArkFingerprint: server0.expectedArkFingerprint ?? server1.expectedArkFingerprint ?? AMD_TURIN_ARK_FINGERPRINT,
                 databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                 onDatabaseProof: (dbId, info) => {
                     if (info.state === 'verified') {
@@ -2819,10 +3057,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 await candidate.connect();
             } catch (error) {
                 document.getElementById('resultsContainer').textContent =
-                    `Could not connect to the DPF-PIR servers; DPF-PIR needs both, and server 1 (${PIR2_PROVIDER.endpoint}) is run on a best-effort basis and may be offline.`;
+                    `Could not connect to the DPF-PIR servers; DPF-PIR needs both, and server 1 (${server1.endpoint}) is run on a best-effort basis and may be offline.`;
                 throw error;
             }
             client = candidate;
+            await Promise.all([
+                checkDirectoryBinding('server0', client.operatorIdentity.server0, client.attestation.server0),
+                checkDirectoryBinding('server1', client.operatorIdentity.server1, client.attestation.server1),
+            ]);
             populateDbSelector();
             refreshSyncStateUI();
         }
@@ -3474,7 +3716,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             log(`OnionPIR: Switched to db_id=${newDbId}`, 'info');
         }
 
-        async function opConnect(provider) {
+        async function opConnect(selection) {
+            const provider = selection.connection;
             const serverUrl = provider.endpoint;
             document.getElementById('op-serverUrl').value = serverUrl;
 
@@ -3510,6 +3753,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 await candidate.connect();
                 opClient = candidate;
                 candidate = null;
+                await checkDirectoryBinding('onion', opClient.operatorIdentity, opClient.attestation);
                 opUpdateDataIntegritySummary();
                 opPopulateDbSelector();
                 opRefreshSyncStateUI();
@@ -3991,8 +4235,10 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         async function hpConnect() {
             hpDisconnect(true);
-            document.getElementById('hp-hintServerUrl').value = PIR1_PROVIDER.endpoint;
-            document.getElementById('hp-queryServerUrl').value = PIR2_PROVIDER.endpoint;
+            const hint = slotSelection('hint').connection;
+            const query = slotSelection('query').connection;
+            document.getElementById('hp-hintServerUrl').value = hint.endpoint;
+            document.getElementById('hp-queryServerUrl').value = query.endpoint;
             resetBasicVerification(['hpHint', 'hpQuery']);
             renderBitcoinAnchorBadge('hp-bitcoinAnchorBadge', 'HarmonyPIR', {
                 state: 'unavailable',
@@ -4005,14 +4251,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 creditProvider: currentCreditProvider,
                 apiKey: currentApiKey(),
                 onCredits: (idx, status) => noteCredits(idx === 0 ? 'HarmonyPIR hint' : 'HarmonyPIR query', status),
-                hintServerUrl: PIR1_PROVIDER.endpoint,
-                queryServerUrl: PIR2_PROVIDER.endpoint,
+                hintServerUrl: hint.endpoint,
+                queryServerUrl: query.endpoint,
                 prpBackend: hpCurrentPrp,
-                expectedServer0Pin: PIR1_PROVIDER.serverPin,
-                expectedServer1Pin: PIR2_PROVIDER.serverPin,
-                pinnedHintOperatorPubkey: PIR1_PROVIDER.operatorPubkey,
-                pinnedQueryOperatorPubkey: PIR2_PROVIDER.operatorPubkey,
-                expectedArkFingerprint: AMD_TURIN_ARK_FINGERPRINT,
+                expectedServer0Pin: hint.serverPin,
+                expectedServer1Pin: query.serverPin,
+                pinnedHintOperatorPubkey: hint.operatorPubkey,
+                pinnedQueryOperatorPubkey: query.operatorPubkey,
+                expectedArkFingerprint: hint.expectedArkFingerprint ?? query.expectedArkFingerprint ?? AMD_TURIN_ARK_FINGERPRINT,
                 databaseProofPins: PRODUCTION_DB_PROOF_PINS,
                 onDatabaseProof: (dbId, info) => {
                     if (info.state === 'verified') {
@@ -4089,10 +4335,14 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             } catch (error) {
                 log(`HarmonyPIR connection failed: ${error.message}`, 'error');
                 document.getElementById('hp-resultsContainer').textContent =
-                    `Could not connect to the HarmonyPIR servers; HarmonyPIR needs both, and the query server (${PIR2_PROVIDER.endpoint}) is run on a best-effort basis and may be offline.`;
+                    `Could not connect to the HarmonyPIR servers; HarmonyPIR needs both, and the query server (${query.endpoint}) is run on a best-effort basis and may be offline.`;
                 throw error;
             }
             hpClient = candidate;
+            await Promise.all([
+                checkDirectoryBinding('hint', hpClient.operatorIdentity.hint, hpClient.attestation.hint),
+                checkDirectoryBinding('query', hpClient.operatorIdentity.query, hpClient.attestation.query),
+            ]);
             hpPopulateDbSelector();
             hpRefreshSyncStateUI();
         }
@@ -4522,7 +4772,8 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             advancedDetails.style.display = 'block';
         }
 
-        async function oramConnect(provider) {
+        async function oramConnect(selection) {
+            const provider = selection.connection;
             const serverUrl = provider.endpoint;
             document.getElementById('oram-serverUrl').value = serverUrl;
 
@@ -4593,6 +4844,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 });
 
                 await oramClient.connect();
+                await checkDirectoryBinding('oram', oramClient.operatorIdentity, oramClient.attestation);
                 oramPopulateDbSelector();
                 oramRenderSourceProof();
             } catch (error) {
