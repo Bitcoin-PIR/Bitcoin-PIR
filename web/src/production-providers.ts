@@ -26,6 +26,13 @@ import type { OramBatchPlannerConfig } from './oram-adapter.js';
 export interface ProductionProviderPin {
     /** Canonical WebSocket endpoint of the provider. */
     endpoint: string;
+    /**
+     * The server's stable `server_id` (its identity certificate and its
+     * directory assertion). With `operatorPubkey` it names the provider in
+     * the service directory, so a directory entry for this server connects
+     * with this pin (`web/src/directory-providers.ts`).
+     */
+    serverId?: string;
     /** Binary/SEV pin from `attest-pin.ts`. */
     serverPin: ServerAttestPin;
     /** Raw 32-byte operator identity key for REQ_ANNOUNCE checks. */
@@ -37,6 +44,7 @@ export interface ProductionProviderPin {
 /** pir1 (Hetzner): DPF server0, HarmonyPIR hint, OnionPIR. No SEV. */
 export const PIR1_PROVIDER: ProductionProviderPin = {
     endpoint: 'wss://weikeng1.bitcoinpir.org',
+    serverId: 'pir1-payment-beta',
     serverPin: PIR1_PIN,
     operatorPubkey: hexToBytes(
         'd506c8630f13f31f0648228857c268d17996d600ed7169e091c88aadb5ecb2d4',
@@ -50,6 +58,7 @@ export const PIR1_PROVIDER: ProductionProviderPin = {
  */
 export const PIR2_PROVIDER: ProductionProviderPin = {
     endpoint: 'wss://bitcoin-pir-weikeng-laptop.chenweikeng.com',
+    serverId: 'pir2-macbook-v1',
     serverPin: PIR2_MACBOOK_PIN,
     operatorPubkey: hexToBytes(
         '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',
@@ -61,10 +70,12 @@ export const PIR2_PROVIDER: ProductionProviderPin = {
  * Direct ORAM provider: the VPSBG TEE host weikeng2 (server 26939, AMD Milan,
  * Direct ORAM only). Same operator key as the pir2 slot. Since image 375 the
  * host announces no server identity (the check reports `unconfigured`): its
- * trust is the SEV-SNP attestation. Set back to `null` to pause Direct ORAM.
+ * trust is the SEV-SNP attestation; `serverId` is the one its directory
+ * assertion carries. Set back to `null` to pause Direct ORAM.
  */
 export const ORAM_PROVIDER: ProductionProviderPin | null = {
     endpoint: 'wss://weikeng2.bitcoinpir.org',
+    serverId: 'pir2-vpsbg-oram-v1',
     serverPin: PIR2_TIER3_PIN,
     operatorPubkey: hexToBytes(
         '30e02d80704f77099ae342a428ab22e1176baf61b4a0593b1783289e5cb5b63c',

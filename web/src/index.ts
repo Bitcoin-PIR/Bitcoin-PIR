@@ -246,6 +246,19 @@ export {
 } from './nostr-directory.js';
 
 export {
+  DIRECTORY_SLOTS_V1,
+  builtInProviderForV1,
+  describeDirectoryCatalogV1,
+  describeDirectoryTrustV1,
+  directoryProviderChoicesV1,
+  fetchLiveServerInfoV1,
+  type DirectoryProviderChoiceV1,
+  type DirectoryProviderConnectionV1,
+  type DirectoryProviderTrustV1,
+  type DirectorySlotV1,
+} from './directory-providers.js';
+
+export {
   topUpX402,
   cancelPendingTopUp,
   requestChallenge as x402RequestChallenge,
