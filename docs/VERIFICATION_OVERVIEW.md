@@ -104,6 +104,43 @@ envelope is treated as ideal-primitive uniform randomness. Closing
 this gap formally would be a multi-year research project per
 primitive; not pursued here.
 
+### Outside these proofs: the Direct ORAM TEE
+
+The invariants and proofs above cover the wire shape of the three PIR
+backends. The fourth backend, Direct ORAM, does not hide the query from
+the server by cryptography. It runs the server inside an AMD SEV-SNP
+confidential VM on a VPSBG Milan host, and the client checks the SEV-SNP
+attestation report (launch measurement, binary, TCB floor, mitigation
+bits; [`web/src/attest-pin.ts`](../web/src/attest-pin.ts)) before
+trusting it. That check assumes the report is signed by a key that only
+the AMD Secure Processor holds.
+
+**Accepted residual, decided 2026-10-24: BadFuse.** "Insecure Despite
+Proven Updated" (arXiv 2605.12990, May 2026; reported, not reproduced
+here) describes a software-only chain on EPYC Milan: code execution on
+the AMD Secure Processor (MilanLaunchy, AMD-SB-3045), then extraction of
+the chip's hardware root seed through the fuse controller. The holder of
+the seed derives the VCEK for any TCB version and signs a report with any
+measurement and TCB. Milan's off-chip bootloader has no anti-rollback, so
+patched firmware does not close the entry point. The chain needs root on
+the host and a firmware reflash: the host operator, or someone who has
+fully compromised the host. AMD has published no CVE and no fix. No TCB
+floor or mitigation bit can detect such a report; it chains to the
+genuine AMD keys.
+
+What it means here: a Milan SEV-SNP report proves the measured image to
+everyone except the party that controls the host's firmware. Against
+VPSBG, Direct ORAM is best-effort: the operator could run an unmeasured
+image and observe which addresses a Direct ORAM user looks up. Nothing
+else is exposed there: the database is public, the host has held no
+identity key since runtime image 375, and it holds no funds. The other
+three backends do not depend on this TEE. Moving Direct ORAM to a
+generation with bootloader anti-rollback (Genoa or Turin) was set aside
+on 2026-10-24: a new host, image, measurement and pins are not worth it
+in the project's close-out phase. The platform floor and the review
+behind this decision are in
+[Security posture](SECURITY_POSTURE.md#tee-platform-floor-milan).
+
 ## The four privacy invariants
 
 `CLAUDE.md` lists them as privacy invariants (together with HarmonyPIR's
