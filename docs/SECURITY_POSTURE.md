@@ -4,6 +4,9 @@ Where every pin, key and backup lives, who holds it, and what the last
 review found in the dependencies, the TEE platform floor and the hosts.
 Last review: 2026-10-12; the host and key rows were brought up to date on
 2026-10-21, and the Rust dependencies were bumped again the same day (below).
+The pir1 row, the key and backup rows and the open list were brought up to
+date on 2026-10-24, after the E5 follow-ups (D4 backups, Core Lightning
+v26.06.9, OS updates, `SECURITY.md`).
 Repeat the review at each release and when AMD, RustSec or
 an upstream publishes an advisory. This page names pins and keys; their
 values stay in the files it names. The privacy invariants and their proofs
@@ -102,7 +105,7 @@ crates. Every host runs a build from before this bump until the next release.
 
 | Host | Exposure | State on 2026-10-12 |
 | --- | --- | --- |
-| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04.4, up 21 weeks. **No automatic update since 2026-05-05:** the kernel 7.0.0-15 package was left half-installed, and the broken dpkg state stops unattended-upgrades every day. 99 security updates are pending, among them OpenSSH, OpenSSL, glibc, curl and the kernel. **Core Lightning v26.06.6:** v26.06.7, .8 and .9 fix vulnerabilities in channel reestablishment, HTLC handling, onion handling, onchaind, gossip and several remote crashes; upstream strongly recommends upgrading. cdk-mintd 0.17.3, against 0.18.1 current (0.18.0 bounds untrusted input and redacts secrets from logs). Caddy 2.11.4: one medium advisory, for `forward_auth` setups, fixed in 2.11.5; stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
+| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). `bpir-cln-rpc-guard` runs from the 2026-09-28 issuer release directory, because the issuer releases since 2026-10-11 ship only `bpir-issuer` (found when the restart exposed it). cdk-mintd 0.17.3, against 0.18.1 current. Caddy stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
 | Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 375 (r11). It meets the Milan floor and the report policy; mitigation-vector bit 2 (AMD-SB-3016) is not set. |
 | MacBook (server 1) | Cloudflare tunnel | Offline for repair on 2026-10-12 (#385); back on 2026-10-14 on the ce5b4373 build (#437, #440). |
 
@@ -135,10 +138,10 @@ The workstation files are described per file in
 | pir2 / ORAM operator key | Mac Studio, `.keys/pir2-operator.key` | maintainer's own | The same, for the MacBook node and the ORAM host's directory assertion. |
 | Directory publisher key | Mac Studio, `.keys/directory/directory-nostr.key` (generated 2026-10-19) | maintainer's own | Lost: a new key, re-pin `PRODUCTION_DIRECTORY`. Leaked: forged directory entries; clients still verify each provider's attestation or operator assertion. |
 | Server identity keys | pir1 `/etc/bitcoinpir/payment-v1/functional-beta/provider/provider-identity.key`; the MacBook's `identity/server.key`. The ORAM host has none since image 375. | none; regenerable | A new key and a new certificate from the operator key. |
-| Mint seed | pir1 `/etc/bitcoinpir/mint/seed` | **none** | Every issued ecash becomes unredeemable. |
-| Issuer key (`grant.key`), issuer wallet seed | pir1 `/etc/bitcoinpir/issuer/` | **none** | Key: rotate and re-pin the servers. Wallet seed: the issuer's ecash claim on the mint is lost. |
-| CLN `hsm_secret`, `emergency.recover` | pir1 `/srv/lightning/bitcoin/` | **none** | The node's on-chain funds and channel balance. |
-| API keys | pir1 `/etc/bitcoinpir/api-keys` | none | Reissue to their holders. |
+| Mint seed | pir1 `/etc/bitcoinpir/mint/seed` | offline bundle of 2026-10-23 ([Backups](#backups)) | Every issued ecash becomes unredeemable. |
+| Issuer key (`grant.key`), issuer wallet seed | pir1 `/etc/bitcoinpir/issuer/` | offline bundle of 2026-10-23 ([Backups](#backups)) | Key: rotate and re-pin the servers. Wallet seed: the issuer's ecash claim on the mint is lost. |
+| CLN `hsm_secret`, `emergency.recover` | pir1 `/srv/lightning/bitcoin/` | offline bundle of 2026-10-23 ([Backups](#backups)) | The node's on-chain funds and channel balance. |
+| API keys | pir1 `/etc/bitcoinpir/api-keys` | offline bundle of 2026-10-23 ([Backups](#backups)) | Reissue to their holders. |
 | Cloudflare tunnel tokens | pir1 `/etc/cloudflared/tunnel.env`; the ORAM host's data disk, `/home/pir/data/cloudflared/tunnel.env` (plaintext, outside the measurement); the MacBook | Cloudflare reissues them | A leaked token lets someone add a connector to that tunnel. That costs availability only: an impostor fails attestation. |
 | VPSBG API token, VPSBG SSH key | Mac Studio, `.secrets/vpsbg-api-token`, `.keys/vpsbg-ssh.key` | maintainer's own | The ORAM host's control plane: reboot, image switch, the data disk. |
 | Accounts: GitHub (Bitcoin-PIR org), Cloudflare (DNS, tunnels), Hetzner, VPSBG, Amboss (the liquidity order) | maintainer | — | — |
@@ -148,32 +151,38 @@ The workstation files are described per file in
 
 | What | Backup today |
 | --- | --- |
-| Mint seed and database, issuer key, wallet seed and database, CLN `hsm_secret` and `emergency.recover` | **None.** D4 in #429: an encrypted offline backup and a restore rehearsal. |
+| Mint seed and database, issuer key, wallet seed, database and ledgers, CLN `hsm_secret`, `emergency.recover` and database, API keys, the service configs | One gpg-encrypted bundle (AES-256, passphrase held by the maintainer, never stored) staged in pir1's tmpfs on 2026-10-23 with online-backup snapshots of the live SQLite files, decrypt-verified there, copied to the maintainer's workstation and offline, and removed from pir1. Restore rehearsal on 2026-10-24 on a RAM disk: `hsm_secret` re-derives the live node id, `grant.key` the pinned issuer pubkey, the mint seed the live keyset (all 32 keys, from the seed alone as well), and the issuer wallet the live balance. The record sits next to the bundle, outside this repository. Repeat after any key rotation or issuer/mint change. A CLN database snapshot must not be started while the channel may have advanced: recover from `hsm_secret` + `emergency.recover` instead. |
 | Workstation keys (`.keys/`, `.secrets/`, `production-secrets/`) | Not recorded here: the maintainer's own. |
 | Database artifacts and UKI images | [Database artifact retention](DATABASE_ARTIFACT_RETENTION.md) |
 
 ## Open
 
-As of 2026-10-12, in the order to do them:
+As of 2026-10-24, in the order to do them:
 
-1. **D4 backups** of the money-critical secrets above, before any change
-   on pir1.
-2. **Core Lightning v26.06.9 on pir1.** It carries security fixes for a node
-   that is reachable on 9735 and holds funds.
-3. **pir1 OS updates:**
-   1. Repair dpkg (the half-installed 7.0.0-15 kernel).
-   2. Install the pending security updates.
-   3. Reboot. pir1's services are down for minutes; the PIR server alone
-      needs about 2 min 20 s to start.
-4. **A vulnerability report channel.** No repository has a `SECURITY.md`,
-   and GitHub private vulnerability reporting is off on all three.
-5. **Milan residuals** (see [TEE platform floor](#tee-platform-floor-milan)):
+1. **Enable GitHub private vulnerability reporting** on Bitcoin-PIR/Bitcoin-PIR,
+   Bitcoin-PIR/issuer and Bitcoin-PIR/playground (Settings → Code security
+   and analysis), then merge the `SECURITY.md` pull requests (#450,
+   issuer #14, playground #31). The advisory links in those files work only
+   once reporting is enabled.
+2. **Milan residuals** (see [TEE platform floor](#tee-platform-floor-milan)):
    - Ask VPSBG whether its host kernel carries the AMD-SB-3016 IOMMU fix.
      Once reports set bit 2, require it.
    - Decide whether to record BadFuse as an accepted residual in
      [Verification overview](VERIFICATION_OVERVIEW.md), or to look at
      another TEE generation for Direct ORAM.
-6. **Lower priority:**
+3. **Issuer release layout.** A release must ship `bpir-cln-rpc-guard` next
+   to `bpir-issuer`; the guard unit on pir1 points at the 2026-09-28
+   release directory until it does.
+4. **pir1 leftovers of the May experiment.** `dracut` 110 (not from the noble
+   archive) builds the initramfs with `initramfs-tools` removed; decide
+   whether to return to `initramfs-tools` before the next kernel. Four
+   autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
+   `pigz`) were left in place.
+5. **Lower priority:**
    - cdk-mintd 0.18;
    - cloudflared 2026.10;
    - a `cargo audit` job in the issuer repository.
+
+Done on 2026-10-24 (#429, E5): D4 backups and restore rehearsal; Core
+Lightning v26.06.9 on pir1; pir1 dpkg repair, updates and reboot;
+`SECURITY.md` opened in the three repositories.
