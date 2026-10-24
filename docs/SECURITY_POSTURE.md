@@ -76,9 +76,12 @@ crates. Every host runs a build from before this bump until the next release.
   - The floor's TCB is still the highest any Milan bulletin asks for.
   - **AMD-SB-3016 (IOMMU write buffer) was missing from the list.** The
     floor meets its firmware TCB. Its other half is mitigation-vector bit 2,
-    which needs a fix in the host kernel; server 26939 does not set the bit
-    (launch and current vectors 0xb). Requiring it would reject the
-    production host, so require it once VPSBG's reports carry it.
+    which needs a fix in the host kernel; on 2026-10-12 server 26939 did not
+    set the bit (launch and current vectors 0xb), so requiring it would have
+    rejected the production host. **VPSBG's host kernel update of 2026-10-23
+    set it:** on 2026-10-24 the live report's launch and current vectors are
+    0xf, and `bpir-admin attest --required-mit-vector-bits 6` passes. Raise
+    the floor to `0b110` (Open, below).
   - AMD has withdrawn Milan mitigation-bit and TCB indicators three times:
     3023's bit 3 in April 2026, and 3030's and 3034's on 2026-09-24. Read a
     bulletin's current text before relying on one.
@@ -106,7 +109,7 @@ crates. Every host runs a build from before this bump until the next release.
 | Host | Exposure | State on 2026-10-12 |
 | --- | --- | --- |
 | pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). `bpir-cln-rpc-guard` runs from the 2026-09-28 issuer release directory, because the issuer releases since 2026-10-11 ship only `bpir-issuer` (found when the restart exposed it). cdk-mintd 0.17.3, against 0.18.1 current. Caddy stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
-| Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 375 (r11). It meets the Milan floor and the report policy; mitigation-vector bit 2 (AMD-SB-3016) is not set. |
+| Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 407 (r12, since 2026-10-21). It meets the Milan floor and the report policy. VPSBG restarted the host on 2026-10-23 with a new host kernel and a fixed vCPU model (EPYC-Milan-v3); measurement, TCB and chip ID unchanged, and the report now carries mitigation-vector bit 2 (AMD-SB-3016): launch and current vectors 0xf on 2026-10-24. |
 | MacBook (server 1) | Cloudflare tunnel | Offline for repair on 2026-10-12 (#385); back on 2026-10-14 on the ce5b4373 build (#437, #440). |
 
 ## Pins
@@ -165,8 +168,10 @@ As of 2026-10-24, in the order to do them:
    issuer #14, playground #31). The advisory links in those files work only
    once reporting is enabled.
 2. **Milan residuals** (see [TEE platform floor](#tee-platform-floor-milan)):
-   - Ask VPSBG whether its host kernel carries the AMD-SB-3016 IOMMU fix.
-     Once reports set bit 2, require it.
+   - Raise the floor: `requiredMitVectorBits` `0b10` → `0b110` in
+     `web/src/attest-pin.ts` (the daily CI check and the scripts read the
+     same constant), then Flow C. VPSBG's host kernel update of 2026-10-23
+     set bit 2; verified 2026-10-24. No question to VPSBG is needed.
    - Decide whether to record BadFuse as an accepted residual in
      [Verification overview](VERIFICATION_OVERVIEW.md), or to look at
      another TEE generation for Direct ORAM.
