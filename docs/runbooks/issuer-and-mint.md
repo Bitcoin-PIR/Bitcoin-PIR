@@ -14,7 +14,7 @@ Live state is always queried, never inferred from this page.
 
 | Component | Unit | User | Listens | Config | State |
 | --- | --- | --- | --- | --- | --- |
-| Mint (`cdk-mintd`, CLN backend) | `bitcoinpir-mint.service` | `bitcoinpir-mint` (+ `bitcoinpir-mainnet-cln-guard` for the RPC socket) | `127.0.0.1:8085` | `/etc/bitcoinpir/mint/config.toml` | `/var/lib/bitcoinpir-mint/` (SQLite) |
+| Mint (`cdk-mintd`, CLN backend) | `bitcoinpir-mint.service` | `bitcoinpir-mint` (+ `bitcoinpir-mainnet-cln-guard` for the RPC socket) | `127.0.0.1:8085` | the configuration record in the mint database (`config show`, below); import document `/etc/bitcoinpir/mint/config-0.18.toml` | `/var/lib/bitcoinpir-mint/` (SQLite) |
 | Issuer (`bpir-issuer`) | `bpir-issuer.service` | `bpir-issuer` | `127.0.0.1:8095` | `/etc/bitcoinpir/issuer/config.toml` | `/var/lib/bitcoinpir-issuer/` (`wallet.sqlite`, `grants.jsonl`) |
 | Lightning node | `bitcoinpir-mainnet-lightning.service` | `bitcoinpir-mainnet-lightning` | `0.0.0.0:9735` | `/etc/bitcoinpir/payment-v1/lightning/lightningd.conf` | `/srv/lightning/bitcoin/` |
 
@@ -27,6 +27,29 @@ published through the pir1 Cloudflare tunnel as
 `https://mint.bitcoinpir.org` (→ 8085); the browser pins the issuer
 URL (`PRODUCTION_ISSUER_URL`), and the issuer's `mints` list names the
 mint.
+
+Since 2026-10-24 the mint runs `cdk-mintd` 0.18 (`/opt/bitcoinpir/cdk/be94a652…/`):
+the unit starts it with `--work-dir /var/lib/bitcoinpir-mint` only, and
+the configuration lives in the mint database. The document it was
+initialized from is `/etc/bitcoinpir/mint/config-0.18.toml` (root,
+0640, group `bitcoinpir-mint`); the seed stays in
+`/etc/bitcoinpir/mint/seed` and the document references it as
+`file:`. The legacy `/etc/bitcoinpir/mint/config.toml` is no longer
+read. To change the configuration, edit the document, then as the mint
+user:
+
+```sh
+M=/opt/bitcoinpir/cdk/be94a6526e7ccd4fadbece4239964ec1bb8bbf5b2333c53244ef3cd4b0a42316/cdk-mintd
+sudo -u bitcoinpir-mint $M --work-dir /var/lib/bitcoinpir-mint config validate --file /etc/bitcoinpir/mint/config-0.18.toml
+sudo -u bitcoinpir-mint $M --work-dir /var/lib/bitcoinpir-mint config apply --file /etc/bitcoinpir/mint/config-0.18.toml
+systemctl restart bitcoinpir-mint
+sudo -u bitcoinpir-mint $M --work-dir /var/lib/bitcoinpir-mint config show      # the stored document
+```
+
+`config rollback` stages the previous applied document (one is kept).
+The 0.17.3 bundle (`57ccebba…`) and the pre-upgrade database copy under
+`/root/mint-upgrade-0.18.2-20261024T080640Z/` allow a downgrade; a 0.17
+binary must never run against the 0.18 database.
 
 ## Secrets (Human-only to create; back up offline)
 
@@ -172,8 +195,15 @@ inputs.
 sudo -u pir -H bash -c 'cd /home/pir/src/issuer && git fetch origin && git checkout --detach <rev> && cargo build --locked --release'
 SRC=/home/pir/src/issuer/target/release/bpir-issuer; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
 install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/issuer/$SHA/bpir-issuer
-ln -sfn /opt/bitcoinpir/issuer/$SHA /opt/bitcoinpir/issuer/current && systemctl restart bpir-issuer
+install -D -o root -g root -m 0755 /home/pir/src/issuer/target/release/bpir-cln-rpc-guard /opt/bitcoinpir/issuer/$SHA/bpir-cln-rpc-guard
+ln -sfn /opt/bitcoinpir/issuer/$SHA /opt/bitcoinpir/issuer/current && systemctl restart bpir-issuer bpir-cln-rpc-guard
 ```
+
+Every release directory must hold both binaries: `bpir-cln-rpc-guard.service`
+runs `current/bpir-cln-rpc-guard` too. The releases of 2026-10-11 shipped
+only `bpir-issuer`, so on 2026-10-24 the guard unit was pointed at the
+2026-09-28 directory (`3da0fd57…`); point it back at `current/` with the
+first release that carries the guard again.
 
 The issuer contract types come from `pir-credit`, pinned by git revision
 in the issuer's `Cargo.toml`; bump it together with any change to
@@ -244,6 +274,5 @@ client address and globally (`[x402]`), and the guard limits it again.
 - A public channel is payable only after its announcement (6
   confirmations plus gossip propagation); CLN adds route hints only for
   private channels (`expose_private_channels = true` in the mint config).
-- The mint runs `cdk-mintd` 0.17.3 and the issuer `cdk` 0.18 wallet
-  code; the NUT protocol is compatible, but keep both within one minor
-  version of each other when upgrading.
+- The mint runs `cdk-mintd` 0.18.2 and the issuer `cdk` 0.18 wallet
+  code; keep both within one minor version of each other when upgrading.
