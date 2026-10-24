@@ -173,9 +173,9 @@ As of 2026-10-24, in the order to do them:
      same constant) is #452; after it merges, Flow C and the playground
      re-vendor. VPSBG's host kernel update of 2026-10-23 set bit 2; verified
      2026-10-24. No question to VPSBG is needed.
-   - Decide whether to record BadFuse as an accepted residual in
-     [Verification overview](VERIFICATION_OVERVIEW.md), or to look at
-     another TEE generation for Direct ORAM.
+   - BadFuse: decided 2026-10-24, an accepted residual, recorded in
+     [Verification overview](VERIFICATION_OVERVIEW.md) by #453; another
+     TEE generation for Direct ORAM was set aside.
 3. **Issuer release layout.** A release must ship `bpir-cln-rpc-guard` next
    to `bpir-issuer`; the guard unit on pir1 points at the 2026-09-28
    release directory until it does.
@@ -185,9 +185,11 @@ As of 2026-10-24, in the order to do them:
    autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
    `pigz`) were left in place.
 5. **Lower priority:**
-   - cdk-mintd 0.18 (0.18.2): a breaking release that moves the
-     configuration into the mint database; rehearse the migration on a
-     snapshot before touching the production mint.
+   - cdk-mintd 0.18.2: a breaking release that moves the configuration
+     into the mint database. The migration was rehearsed on 2026-10-24 on a
+     tmpfs snapshot of the live database (same keyset, keys and mint
+     pubkey after `config migrate` → `validate` → `init --existing-mint`);
+     the production switch is a separate operation.
    - The issuer lockfile's rustls, rustls-webpki and webpki-roots advisories
      (the set #443 fixed here), and the `cargo audit` job that will keep
      reporting them (Bitcoin-PIR/issuer#15).
