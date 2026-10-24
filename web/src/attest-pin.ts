@@ -60,9 +60,11 @@ export const AMD_MILAN_ARK_FINGERPRINT: Uint8Array = arkHexToBytes(AMD_MILAN_ARK
  *   3033. The microcode value is a Milan (B1) one; a Milan-X host reports a
  *   lower microcode SVN and would fail.
  * - `requireAliasCheckComplete`: platform_info bit 5, for AMD-SB-3015/3033.
- * - `requiredMitVectorBits`: mitigation-vector bit 1, for AMD-SB-3020.
- *   AMD-SB-3016 defines bit 2, which also needs the host kernel's IOMMU fix;
- *   server 26939 does not set it (2026-10-12), so the floor leaves it out.
+ * - `requiredMitVectorBits`: mitigation-vector bit 1, for AMD-SB-3020, and
+ *   bit 2, for AMD-SB-3016 (IOMMU write buffer), whose other half is a host
+ *   kernel fix. Server 26939 did not set bit 2 on 2026-10-12 (vectors 0xb);
+ *   VPSBG's host kernel update of 2026-10-23 set it (launch and current
+ *   vectors 0xf on 2026-10-24), so the floor requires it since then.
  *
  * A report cannot show fixes that ship only in platform firmware
  * (AMD-SB-3030) or protect against physical attacks (AMD-SB-3028/3032).
@@ -71,7 +73,7 @@ export const AMD_MILAN_ARK_FINGERPRINT: Uint8Array = arkHexToBytes(AMD_MILAN_ARK
 export const AMD_MILAN_SEV_SNP_FLOOR = {
   minTcb: { bootloader: 4, tee: 0, snp: 29, microcode: 222 },
   requireAliasCheckComplete: true,
-  requiredMitVectorBits: 0b10,
+  requiredMitVectorBits: 0b110,
 } as const;
 
 /**
