@@ -170,8 +170,9 @@ As of 2026-10-24, in the order to do them:
 2. **Milan residuals** (see [TEE platform floor](#tee-platform-floor-milan)):
    - Raise the floor: `requiredMitVectorBits` `0b10` → `0b110` in
      `web/src/attest-pin.ts` (the daily CI check and the scripts read the
-     same constant), then Flow C. VPSBG's host kernel update of 2026-10-23
-     set bit 2; verified 2026-10-24. No question to VPSBG is needed.
+     same constant) is #452; after it merges, Flow C and the playground
+     re-vendor. VPSBG's host kernel update of 2026-10-23 set bit 2; verified
+     2026-10-24. No question to VPSBG is needed.
    - Decide whether to record BadFuse as an accepted residual in
      [Verification overview](VERIFICATION_OVERVIEW.md), or to look at
      another TEE generation for Direct ORAM.
@@ -184,9 +185,13 @@ As of 2026-10-24, in the order to do them:
    autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
    `pigz`) were left in place.
 5. **Lower priority:**
-   - cdk-mintd 0.18;
-   - cloudflared 2026.10;
-   - a `cargo audit` job in the issuer repository.
+   - cdk-mintd 0.18 (0.18.2): a breaking release that moves the
+     configuration into the mint database; rehearse the migration on a
+     snapshot before touching the production mint.
+   - The issuer lockfile's rustls, rustls-webpki and webpki-roots advisories
+     (the set #443 fixed here), and the `cargo audit` job that will keep
+     reporting them (Bitcoin-PIR/issuer#15).
+   - Done: cloudflared 2026.10.3 came with the 2026-10-24 dist-upgrade.
 
 Done on 2026-10-24 (#429, E5): D4 backups and restore rehearsal; Core
 Lightning v26.06.9 on pir1; pir1 dpkg repair, updates and reboot;
