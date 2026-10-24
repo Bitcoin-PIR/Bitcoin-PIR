@@ -108,7 +108,7 @@ crates. Every host runs a build from before this bump until the next release.
 
 | Host | Exposure | State on 2026-10-12 |
 | --- | --- | --- |
-| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). `bpir-cln-rpc-guard` runs from the 2026-09-28 issuer release directory, because the issuer releases since 2026-10-11 ship only `bpir-issuer` (found when the restart exposed it). cdk-mintd 0.17.3, against 0.18.1 current. Caddy stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
+| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). `bpir-cln-rpc-guard` runs from the 2026-09-28 issuer release directory, because the issuer releases since 2026-10-11 ship only `bpir-issuer` (found when the restart exposed it). cdk-mintd 0.18.2 since 2026-10-24 (configuration in the mint database; the 0.17.3 bundle and a pre-upgrade database copy stay on the host for rollback). Caddy stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
 | Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 407 (r12, since 2026-10-21). It meets the Milan floor and the report policy. VPSBG restarted the host on 2026-10-23 with a new host kernel and a fixed vCPU model (EPYC-Milan-v3); measurement, TCB and chip ID unchanged, and the report now carries mitigation-vector bit 2 (AMD-SB-3016): launch and current vectors 0xf on 2026-10-24. |
 | MacBook (server 1) | Cloudflare tunnel | Offline for repair on 2026-10-12 (#385); back on 2026-10-14 on the ce5b4373 build (#437, #440). |
 
@@ -185,15 +185,13 @@ As of 2026-10-24, in the order to do them:
    autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
    `pigz`) were left in place.
 5. **Lower priority:**
-   - cdk-mintd 0.18.2: a breaking release that moves the configuration
-     into the mint database. The migration was rehearsed on 2026-10-24 on a
-     tmpfs snapshot of the live database (same keyset, keys and mint
-     pubkey after `config migrate` → `validate` → `init --existing-mint`);
-     the production switch is a separate operation.
    - The issuer lockfile's rustls, rustls-webpki and webpki-roots advisories
      (the set #443 fixed here), and the `cargo audit` job that will keep
      reporting them (Bitcoin-PIR/issuer#15).
-   - Done: cloudflared 2026.10.3 came with the 2026-10-24 dist-upgrade.
+   - Done: cloudflared 2026.10.3 came with the 2026-10-24 dist-upgrade;
+     cdk-mintd 0.18.2 went live on 2026-10-24 after a rehearsal of the
+     configuration migration on a tmpfs snapshot (2 s outage; same keyset,
+     keys and mint pubkey; runbook updated).
 
 Done on 2026-10-24 (#429, E5): D4 backups and restore rehearsal; Core
 Lightning v26.06.9 on pir1; pir1 dpkg repair, updates and reboot;
