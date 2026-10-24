@@ -43,7 +43,7 @@ describe('applySevSnpPlatformFloor', () => {
     applySevSnpPlatformFloor(p, AMD_MILAN_ARK_FINGERPRINT);
     expect(p.setMinTcb).toHaveBeenCalledWith(4, 0, 29, 222);
     expect(p.setRequireAliasCheckComplete).toHaveBeenCalledWith(true);
-    expect(p.setRequiredMitVectorBits).toHaveBeenCalledWith(0b10);
+    expect(p.setRequiredMitVectorBits).toHaveBeenCalledWith(0b110);
   });
 
   it('leaves the Turin and unpinned policies unchanged', () => {
