@@ -201,9 +201,14 @@ ln -sfn /opt/bitcoinpir/issuer/$SHA /opt/bitcoinpir/issuer/current && systemctl 
 
 Every release directory must hold both binaries: `bpir-cln-rpc-guard.service`
 runs `current/bpir-cln-rpc-guard` too. The releases of 2026-10-11 shipped
-only `bpir-issuer`, so on 2026-10-24 the guard unit was pointed at the
-2026-09-28 directory (`3da0fd57…`); point it back at `current/` with the
-first release that carries the guard again.
+only `bpir-issuer`; the running guard survived from memory until the restart
+of 2026-10-24 failed with 203/EXEC. The release of that day (`cec57eba…`)
+carries both binaries again and the guard unit runs `current/` as before.
+After a release, confirm both processes run from the new directory:
+
+```sh
+for u in bpir-issuer bpir-cln-rpc-guard; do readlink /proc/$(systemctl show -p MainPID --value $u)/exe; done
+```
 
 The issuer contract types come from `pir-credit`, pinned by git revision
 in the issuer's `Cargo.toml`; bump it together with any change to

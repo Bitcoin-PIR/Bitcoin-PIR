@@ -6,7 +6,8 @@ Last review: 2026-10-12; the host and key rows were brought up to date on
 2026-10-21, and the Rust dependencies were bumped again the same day (below).
 The pir1 row, the key and backup rows and the open list were brought up to
 date on 2026-10-24, after the E5 follow-ups (D4 backups, Core Lightning
-v26.06.9, OS updates, `SECURITY.md`).
+v26.06.9, OS updates, `SECURITY.md`, the Milan floor at `0b110`, cdk-mintd
+0.18.2, the issuer release).
 Repeat the review at each release and when AMD, RustSec or
 an upstream publishes an advisory. This page names pins and keys; their
 values stay in the files it names. The privacy invariants and their proofs
@@ -34,10 +35,12 @@ How they are watched:
 - **npm (`web/`) and GitHub Actions:** Dependabot, weekly.
 - **No advisory database covers:** the git dependencies (libdpf,
   harmonypir, OnionPIRv2-fork with SEAL, fastprp). They are our own forks.
-- **No automation at all:** the issuer and the playground repositories, and
-  the binaries on pir1 that no lockfile covers (Core Lightning, cdk-mintd,
-  Bitcoin Core, cloudflared, Caddy, the Ubuntu packages). See
-  [Hosts](#hosts).
+- **Rust, the issuer repository:** `cargo audit` weekly
+  (Bitcoin-PIR/issuer `.github/workflows/audit.yml`, since 2026-10-24,
+  issuer #15). It reports and never blocks.
+- **No automation at all:** the playground repository, and the binaries on
+  pir1 that no lockfile covers (Core Lightning, cdk-mintd, Bitcoin Core,
+  cloudflared, Caddy, the Ubuntu packages). See [Hosts](#hosts).
 
 Results on 2026-10-12:
 
@@ -60,8 +63,8 @@ crates. Every host runs a build from before this bump until the next release.
   `AMD_MILAN_SEV_SNP_FLOOR` in
   [`web/src/attest-pin.ts`](../web/src/attest-pin.ts). That means a minimum
   reported TCB per component, the alias-check bit, and mitigation-vector
-  bit 1. The constant's comment lists the AMD bulletins the floor covers
-  and those a report cannot show.
+  bits 1 and 2. The constant's comment lists the AMD bulletins the floor
+  covers and those a report cannot show.
 - **Who checks it:**
   - Browsers, through `applySevSnpPlatformFloor` on every verification.
   - `bpir-admin attest` (`--min-tcb`, `--require-alias-check-complete`,
@@ -80,8 +83,11 @@ crates. Every host runs a build from before this bump until the next release.
     set the bit (launch and current vectors 0xb), so requiring it would have
     rejected the production host. **VPSBG's host kernel update of 2026-10-23
     set it:** on 2026-10-24 the live report's launch and current vectors are
-    0xf, and `bpir-admin attest --required-mit-vector-bits 6` passes. Raise
-    the floor to `0b110` (Open, below).
+    0xf, and `bpir-admin attest --required-mit-vector-bits 6` passes. The
+    floor requires the bit since #452 (`requiredMitVectorBits` `0b110`,
+    2026-10-24): browsers through Flow C, the playground through its
+    re-vendor (playground #32), the daily CI check through the shared
+    constant.
   - AMD has withdrawn Milan mitigation-bit and TCB indicators three times:
     3023's bit 3 in April 2026, and 3030's and 3034's on 2026-09-24. Read a
     bulletin's current text before relying on one.
@@ -108,7 +114,7 @@ crates. Every host runs a build from before this bump until the next release.
 
 | Host | Exposure | State on 2026-10-12 |
 | --- | --- | --- |
-| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). `bpir-cln-rpc-guard` runs from the 2026-09-28 issuer release directory, because the issuer releases since 2026-10-11 ship only `bpir-issuer` (found when the restart exposed it). cdk-mintd 0.18.2 since 2026-10-24 (configuration in the mint database; the 0.17.3 bundle and a pre-upgrade database copy stay on the host for rollback). Caddy stopped on 2026-10-21. cloudflared 2026.8.3, against 2026.10.0. Bitcoin Core v31.1. |
+| pir1 (Hetzner) | ufw denies by default and opens: 22 (key-only root, rate-limited), 80/443 (Caddy, the old BHTM proof endpoint; stopped and disabled on 2026-10-21, nothing listens there now), 8333 (Bitcoin P2P), 9735 (Lightning P2P). The PIR server, issuer, mint and directory relay listen on loopback behind the Cloudflare tunnel. | Ubuntu 24.04, kernel 7.0.0-38 (HWE), rebooted 2026-10-24 after the first full update since 2026-05-05. What had blocked apt and unattended-upgrades for five months: the half-installed 7.0.0-15 kernel and a `libkmod2` 34.2 that is not from the noble archive, both left by a May experiment. dpkg repaired, `libkmod2` back to the noble version, the GA kernel meta `linux-image-generic` and the unused 6.8 kernels purged, 194 packages upgraded; `unattended-upgrade --dry-run` is clean again. Still from that experiment: the initramfs is built by a `dracut` 110 that is not from the noble archive (`initramfs-tools` is removed); it built the 7.0.0-38 initrd that booted. **Core Lightning v26.06.9** since 2026-10-24 (wallet DB schema 284; `database-upgrade=false` again; the v26.06.6 tree stays beside it). Issuer release `cec57eba…` since 2026-10-24 (issuer main eba9ce46: the `cargo audit` workflow and the rustls, rustls-webpki and webpki-roots bumps), which ships `bpir-cln-rpc-guard` next to `bpir-issuer` again, so `bpir-cln-rpc-guard.service` runs `current/bpir-cln-rpc-guard` as intended. The releases of 2026-10-11 had shipped only `bpir-issuer`; the restart of 2026-10-24 exposed it (203/EXEC), and the guard ran from the 2026-09-28 directory for the rest of that day. cdk-mintd 0.18.2 since 2026-10-24 (configuration in the mint database; the 0.17.3 bundle and a pre-upgrade database copy stay on the host for rollback). Caddy stopped on 2026-10-21. cloudflared 2026.10.3 (from the same dist-upgrade). Bitcoin Core v31.1. |
 | Direct ORAM host (VPSBG 26939) | The Cloudflare tunnel only; a measured UKI with no SSH in production | Runtime image 407 (r12, since 2026-10-21). It meets the Milan floor and the report policy. VPSBG restarted the host on 2026-10-23 with a new host kernel and a fixed vCPU model (EPYC-Milan-v3); measurement, TCB and chip ID unchanged, and the report now carries mitigation-vector bit 2 (AMD-SB-3016): launch and current vectors 0xf on 2026-10-24. |
 | MacBook (server 1) | Cloudflare tunnel | Offline for repair on 2026-10-12 (#385); back on 2026-10-14 on the ce5b4373 build (#437, #440). |
 
@@ -160,39 +166,26 @@ The workstation files are described per file in
 
 ## Open
 
-As of 2026-10-24, in the order to do them:
+As of 2026-10-24, after the E5 follow-ups, in the order to do them:
 
 1. **Enable GitHub private vulnerability reporting** on Bitcoin-PIR/Bitcoin-PIR,
    Bitcoin-PIR/issuer and Bitcoin-PIR/playground (Settings → Code security
-   and analysis), then merge the `SECURITY.md` pull requests (#450,
-   issuer #14, playground #31). The advisory links in those files work only
-   once reporting is enabled.
-2. **Milan residuals** (see [TEE platform floor](#tee-platform-floor-milan)):
-   - Raise the floor: `requiredMitVectorBits` `0b10` → `0b110` in
-     `web/src/attest-pin.ts` (the daily CI check and the scripts read the
-     same constant) is #452; after it merges, Flow C and the playground
-     re-vendor. VPSBG's host kernel update of 2026-10-23 set bit 2; verified
-     2026-10-24. No question to VPSBG is needed.
-   - BadFuse: decided 2026-10-24, an accepted residual, recorded in
-     [Verification overview](VERIFICATION_OVERVIEW.md) by #453; another
-     TEE generation for Direct ORAM was set aside.
-3. **Issuer release layout.** A release must ship `bpir-cln-rpc-guard` next
-   to `bpir-issuer`; the guard unit on pir1 points at the 2026-09-28
-   release directory until it does.
-4. **pir1 leftovers of the May experiment.** `dracut` 110 (not from the noble
+   and analysis). Each repository's `SECURITY.md` (#450, issuer #14,
+   playground #31, merged 2026-10-24) links to its advisory form, which
+   answers 404 until reporting is enabled.
+2. **pir1 leftovers of the May experiment.** `dracut` 110 (not from the noble
    archive) builds the initramfs with `initramfs-tools` removed; decide
    whether to return to `initramfs-tools` before the next kernel. Four
    autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
    `pigz`) were left in place.
-5. **Lower priority:**
-   - The issuer lockfile's rustls, rustls-webpki and webpki-roots advisories
-     (the set #443 fixed here), and the `cargo audit` job that will keep
-     reporting them (Bitcoin-PIR/issuer#15).
-   - Done: cloudflared 2026.10.3 came with the 2026-10-24 dist-upgrade;
-     cdk-mintd 0.18.2 went live on 2026-10-24 after a rehearsal of the
-     configuration migration on a tmpfs snapshot (2 s outage; same keyset,
-     keys and mint pubkey; runbook updated).
 
 Done on 2026-10-24 (#429, E5): D4 backups and restore rehearsal; Core
 Lightning v26.06.9 on pir1; pir1 dpkg repair, updates and reboot;
-`SECURITY.md` opened in the three repositories.
+`SECURITY.md` in the three repositories; the Milan floor at `0b110` (#452,
+Flow C, playground #32) and BadFuse recorded as an accepted residual
+(#453, [Verification overview](VERIFICATION_OVERVIEW.md)); the issuer
+release `cec57eba…` with `bpir-cln-rpc-guard` back under `current/`, the
+issuer's `cargo audit` workflow (issuer #15) and its rustls, rustls-webpki
+and webpki-roots bumps (issuer #16, the set #443 fixed here); cdk-mintd
+0.18.2 (configuration migration rehearsed on a tmpfs snapshot; 2 s outage;
+same keyset, keys and mint pubkey); cloudflared 2026.10.3.
