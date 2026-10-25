@@ -1,0 +1,21 @@
+# Reference catalog of generation 948454 with paths relative to this file:
+# the layout of the public data bundle (docs/runbooks/data-bundle.md).
+# Names, types, heights and order are what clients pin per db_id.
+
+[[database]]
+name = "main"
+type = "full"
+path = "checkpoints/948454_deterministic"
+proof_dir = "attestations/mainnet_948454_oram_sev_snp/run"
+proof_v2_dir = "attestations/mainnet_948454_v2_sev_snp"
+base_height = 0
+height = 948454
+
+[[database]]
+name = "delta_940611_948454"
+type = "delta"
+path = "deltas/940611_948454_canonical_20260615"
+proof_dir = "attestations/delta_940611_948454_sev_snp"
+proof_v2_dir = "attestations/delta_940611_948454_v2_sev_snp"
+base_height = 940611
+height = 948454

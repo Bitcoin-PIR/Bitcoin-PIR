@@ -80,10 +80,35 @@ the database pins in `web/src/attest-pin.ts`. Databases built locally
 (`scripts/build_full.sh`, `tools/db-builder`) are for development; their
 proofs do not match those pins.
 
-<!-- C4: bundle location and hash list pending -->
+### 3.1 Download
 
-> **Pending (C4):** where to download a generation and the hash list to check
-> it against. The layout and checks below hold whatever the packaging.
+Generation 948454 is published at `https://data.bitcoinpir.org/948454/`: the
+six directories the catalog names, byte for byte from pir1's data disk, with
+`SHA256SUMS` over all 128 files and the catalog with relative paths at the
+root. The same hash list is committed as
+`deploy/data-bundles/948454/SHA256SUMS`, so a copy can be checked against
+this repository rather than against the bucket it came from. The publishing
+side is [Data bundle](runbooks/data-bundle.md).
+
+| Directory | Size | Read by |
+| --- | --- | --- |
+| `checkpoints/948454_deterministic` | 47.6 GB | every node |
+| `deltas/940611_948454_canonical_20260615` | 5.0 GB | every node |
+| `attestations/mainnet_948454_oram_sev_snp/run` | 4.6 GB, all of it `oram-direct-inputs/` | the proof of `db_id` 0; `oram-direct-inputs/` only by a Direct ORAM node |
+| the other three `attestations/*` | < 1 MB | proofs |
+
+```sh
+scripts/data-bundle.sh fetch https://data.bitcoinpir.org/948454 /srv/bpir/data                     # everything, 57 GB
+scripts/data-bundle.sh fetch https://data.bitcoinpir.org/948454 /srv/bpir/data oram-direct-inputs  # without the 4.6 GB only Direct ORAM reads
+```
+
+`fetch` downloads `SHA256SUMS` and `databases.toml`, then every listed file,
+resumable (re-run after an interruption; files that already match are
+skipped), and ends with `sha256sum -c`. Point the node at
+`/srv/bpir/data/databases.toml`. Any HTTP client does instead: the paths in
+`SHA256SUMS` are the URLs under the generation.
+
+### 3.2 Catalog and checks
 
 `databases.toml` of the reference catalog. Paths are relative to the file.
 Keep names, types, heights and order: the first entry is `db_id` 0, and
@@ -116,15 +141,16 @@ height = 948454
 | `build-evidence.bin`, `build-evidence.sev-snp-report.bin`, `root-bundle-payload.bin`, `database.manifest.sha256`, `all-artifacts.manifest.sha256`, `server-db/MANIFEST.toml` in each of `proof_dir` and `proof_v2_dir` | served as the database proof | a missing file stops startup |
 | `proof_v2_dir/oram-direct-inputs/` | Direct ORAM | checked by the measured image (§6.5) |
 
-A non-ORAM node needs about 50 GB per generation, about 30 GB of it OnionPIR
-files. Startup hashes about 34 GB; a few minutes before `Listening` is normal.
+A non-ORAM node needs 53 GB per generation (57 GB with the Direct ORAM
+inputs), about 30 GB of it OnionPIR files. Startup hashes about 34 GB; a few
+minutes before `Listening` is normal.
 
 Verify a copy:
 
 1. Hash what the server does not: each database's `*_cuckoo.bin` files and
-   `MANIFEST.toml`, against the generation's hash list (C4). For the cuckoo
-   files the attested builder's per-file list is also in this repository:
-   `web/public/proofs/oram-source/<generation>/database.manifest.sha256`.
+   `MANIFEST.toml`, against the generation's `SHA256SUMS` (`fetch` checks
+   every file; `sha256sum -c deploy/data-bundles/<generation>/SHA256SUMS`
+   from the data directory checks a copy against this repository's list).
 2. Verify each proof directory offline with expected values from the matching
    pin in `web/src/attest-pin.ts` (`PRODUCTION_DB_PROOF_PINS` for `proof_dir`,
    `PRODUCTION_ONION_DB_PROOF_V2_PINS` for `proof_v2_dir`), never from a server
@@ -174,6 +200,16 @@ HEXL (`scripts/install_hexl.sh`, x86_64) speeds up OnionPIR when the build
 finds it; otherwise a portable shim is compiled in. Default builds log no
 per-query data (the feature `test-only-unsafe-query-logging` logs peers,
 request shapes and timing). `nix build` is a development harness only.
+
+Reproducing a reference binary: the pins are hashes of the files the hosts
+run, built as above from the commit `web/reproduce.html` names; that page
+keeps the commands and the current hashes. With the toolchain
+`rust-toolchain.toml` pins, `--locked`, and
+`RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build"
+SOURCE_DATE_EPOCH=0`, the Rust objects carry no checkout path, but the
+OnionPIR C++ objects still embed theirs, and the bytes also depend on the
+C++ compiler, the linker, whether HEXL was found, and the `strip` version:
+expect a functional rebuild, and compare `git_rev` and behaviour, not bytes.
 
 ## 5. Identity
 

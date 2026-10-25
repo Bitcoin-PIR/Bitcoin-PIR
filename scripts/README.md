@@ -39,6 +39,15 @@ not checked there first.
 
 ## Scripts
 
+### `data-bundle.sh`
+
+The public data bundle of a generation (Cloudflare R2 behind
+`https://data.bitcoinpir.org/<generation>/`): `hash` the catalog's
+directories on the data host, `upload` them with rclone, `verify` the public
+copy by streaming it back, `fetch` it on a new node. Publishing:
+[`docs/runbooks/data-bundle.md`](../docs/runbooks/data-bundle.md); node side:
+[`docs/OPERATOR_GUIDE.md`](../docs/OPERATOR_GUIDE.md) §3.
+
 ### `start_pir_servers.sh`
 
 Starts two Batch PIR WebSocket servers for UTXO lookups.

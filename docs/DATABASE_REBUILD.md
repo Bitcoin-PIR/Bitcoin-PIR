@@ -261,6 +261,11 @@ also in `scripts/dracut/96bpir-unified-server/module-setup.sh` and
    ([rotation §6](DATABASE_ROOT_ROTATION_RUNBOOK.md#6-post-deployment-acceptance));
    record it under `docs/data-retention/`.
 7. Auth — re-vendor (`npm run sync-vendor`) and redeploy [`Bitcoin-PIR/playground`](https://github.com/Bitcoin-PIR/playground).
+8. Auth — publish the generation's data bundle
+   ([Data bundle](runbooks/data-bundle.md)): hash on pir1, commit
+   `deploy/data-bundles/<generation>/`, upload, verify. Other operators fetch
+   it ([Operator guide §3](OPERATOR_GUIDE.md#3-data)); keep the previous
+   generation's bundle until §8.5's rollback window closes.
 
 ### 8.5 Rollback — Auth ([rotation §7](DATABASE_ROOT_ROTATION_RUNBOOK.md#7-rollback))
 
