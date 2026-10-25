@@ -166,14 +166,9 @@ The workstation files are described per file in
 
 ## Open
 
-As of 2026-10-24, after the E5 follow-ups, in the order to do them:
+As of 2026-10-25, after the E5 follow-ups:
 
-1. **Enable GitHub private vulnerability reporting** on Bitcoin-PIR/Bitcoin-PIR,
-   Bitcoin-PIR/issuer and Bitcoin-PIR/playground (Settings → Code security
-   and analysis). Each repository's `SECURITY.md` (#450, issuer #14,
-   playground #31, merged 2026-10-24) links to its advisory form, which
-   answers 404 until reporting is enabled.
-2. **pir1 leftovers of the May experiment.** `dracut` 110 (not from the noble
+1. **pir1 leftovers of the May experiment.** `dracut` 110 (not from the noble
    archive) builds the initramfs with `initramfs-tools` removed; decide
    whether to return to `initramfs-tools` before the next kernel. Four
    autoremovable packages (`hwdata`, `iputils-arping`, `linux-tools-common`,
@@ -188,4 +183,8 @@ release `cec57eba…` with `bpir-cln-rpc-guard` back under `current/`, the
 issuer's `cargo audit` workflow (issuer #15) and its rustls, rustls-webpki
 and webpki-roots bumps (issuer #16, the set #443 fixed here); cdk-mintd
 0.18.2 (configuration migration rehearsed on a tmpfs snapshot; 2 s outage;
-same keyset, keys and mint pubkey); cloudflared 2026.10.3.
+same keyset, keys and mint pubkey); cloudflared 2026.10.3. On 2026-10-25 the
+maintainer enabled GitHub private vulnerability reporting on
+Bitcoin-PIR/Bitcoin-PIR, Bitcoin-PIR/issuer and Bitcoin-PIR/playground, so
+the advisory links in each repository's `SECURITY.md` (#450, issuer #14,
+playground #31) work.
