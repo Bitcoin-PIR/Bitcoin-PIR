@@ -179,6 +179,28 @@ new binary refuses to start (``unknown field `arc` ``).
   are from before those retirements and replay only as spent tokens and
   claimed payments.
 
+### Admit another operator's servers — Auth
+
+Decided 2026-10-26 (#429, C5): the issuer serves other operators' servers by
+arrangement ([Operator guide §6.3](../OPERATOR_GUIDE.md#63-payments)). The
+request arrives as an issue with the operator public key (64 hex) and the
+`server_id`s.
+
+1. Append the key to `operator_pubkeys` in
+   `/etc/bitcoinpir/issuer/config.toml` and `systemctl restart bpir-issuer`
+   (about 3 s; the startup line says `operator_keys=N`). Nothing else
+   changes: the gas parameters are global, and the key admits every server
+   that operator certifies.
+2. Answer the issue with the issuer URL and public key (the `issuer.pub`
+   value in [pir2 MacBook replacement](pir2-macbook-replacement.md)).
+3. Settlement: `bpir-issuer settlement --config
+   /etc/bitcoinpir/issuer/config.toml` lists redemptions, gas and sat per
+   `server_id`. Pay the operator's share by Lightning at the agreed
+   interval and keep the export with the payment record next to the D4
+   settlement export.
+4. To stop admitting an operator, remove the key and restart; ecash already
+   bought stays spendable on the servers that remain.
+
 ## Change mints
 
 Edit `/etc/bitcoinpir/issuer/config.toml` (`mints`, `cors_origins`) and

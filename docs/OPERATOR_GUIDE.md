@@ -297,22 +297,56 @@ identifies its holder's connections to you.
 
 ### 6.3 Payments
 
-<!-- C5: default payment model pending -->
+The default for a node outside the reference deployment is no payment
+(decided 2026-10-26, #429): no issuer flags, `free` or `best-effort` lanes
+(§6.2) so the host stays responsive, and API keys for the clients you want
+unmetered. There is nothing to fund and nothing to settle; a key holder
+skipping the free queue is the only priority a free node gives.
 
-> **Pending (C5):** the default payment model for nodes outside the reference
-> deployment.
+**Charging through the reference issuer, by arrangement.** The project's
+issuer (`https://issuer.bitcoinpir.org`) books credits for other operators'
+servers on request. It admits a server whose identity certificate (§5) is
+signed by an operator key in its `operator_pubkeys`, keeps a ledger of gas
+and sat per `server_id`, and holds the money in its wallet. Clients need
+nothing new: the web page and the playground buy ecash from that issuer
+already, and a credit spends on every server it serves. To join, open an
+issue (§10) with your operator public key (64 hex, never the key file) and
+your `server_id`s; the project adds the key ([Issuer and
+mint](runbooks/issuer-and-mint.md), "Admit another operator's servers") and
+you start with `--credit-issuer-url https://issuer.bitcoinpir.org
+--credit-issuer-pubkey FILE` (the issuer public key the MacBook node pins,
+[pir2 MacBook replacement](runbooks/pir2-macbook-replacement.md)) and the
+lanes you want to charge: `--access BACKEND=paid`, or `best-effort` with a
+budget, and `--require-credits` when nothing is free. Prices are the
+issuer's gas parameters, the same for every server it serves ([Credits and
+gas](CREDITS.md), "Rate card"). Settlement is a ledger entry: `bpir-issuer
+settlement` on the issuer host shows what each `server_id` earned, and
+paying it out is a Lightning transfer the project makes at the agreed
+interval. The protocol has no automatic payout, so this is an agreement
+between operators, not a market.
 
-What exists ([Credits and gas](CREDITS.md)): without issuer flags a node takes
+**Your own issuer.** Everything the reference deployment runs is open: the
+issuer (`bpir-issuer`, repository `Bitcoin-PIR/issuer`), a Cashu mint
+(`cdk-mintd`) and a Lightning node behind `cln-rpc-guard`; [Issuer and
+mint](runbooks/issuer-and-mint.md) is the complete recipe, and your servers
+then pin your issuer's URL and key. The limit is on the client side: neither
+a server's `GET_INFO_JSON` nor the directory names an issuer, so the
+reference web page and the playground buy only from the reference issuer,
+and the Rust SDK meters and presents ecash it is given without buying any.
+A node with its own issuer is paid only by clients built to buy from it.
+Publishing an issuer per server is a possible extension, not planned.
+
+Mechanics ([Credits and gas](CREDITS.md)): without issuer flags a node takes
 no payment and runs `free` and `best-effort` lanes; `paid` and
-`--require-credits` refuse to start without an issuer. Credits are Cashu ecash:
-the node forwards a presented token to the issuer (`POST /v2/redeem`), which
-redeems it at the mint and answers with signed gas; the node holds no payment
-secret. It needs `--credit-issuer-url https://ISSUER`, `--credit-issuer-pubkey
-FILE` (the issuer's Ed25519 key, 64 hex, from its operator) and the identity
-flags, which sign every redeem request. An issuer accepts only servers
-certified by an operator key in its `operator_pubkeys`, bounds clock skew
-(300 s in the reference configuration) and books gas and sat per `server_id`;
-paying a foreign operator is outside the protocol.
+`--require-credits` refuse to start without an issuer. Credits are Cashu
+ecash: the node forwards a presented token to the issuer (`POST
+/v2/redeem`), which redeems it at the mint and answers with signed gas; the
+node holds no payment secret. It needs `--credit-issuer-url https://ISSUER`,
+`--credit-issuer-pubkey FILE` (the issuer's Ed25519 key, 64 hex) and the
+identity flags, which sign every redeem request. An issuer accepts only
+servers certified by an operator key in its `operator_pubkeys`, bounds clock
+skew (300 s in the reference configuration) and books gas and sat per
+`server_id`.
 
 ### 6.4 Service
 
