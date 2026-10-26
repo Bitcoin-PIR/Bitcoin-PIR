@@ -81,6 +81,7 @@ deploy/directory-relay/*
 !deploy/launchd/
 deploy/launchd/*
 !deploy/launchd/org.bitcoinpir.directory-publish.plist.example
+!deploy/data-bundles/
 
 # vendor/ holds `cargo vendor` output. Each crate ships a
 # `.cargo-checksum.json` listing every file with its hash; dropping any
