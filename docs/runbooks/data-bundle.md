@@ -24,7 +24,11 @@ objects up to 5 TiB, multipart parts up to 10,000, which `upload` uses).
 ## Once: bucket, domain, token — Human
 
 1. Dashboard → R2 → Create bucket `bitcoinpir-data` (Standard storage; the
-   location hint Europe is nearest the hosts; the name is not public).
+   name is not public). The reference bucket is in the EU jurisdiction, so
+   its S3 endpoint is `https://<account id>.eu.r2.cloudflarestorage.com`
+   (the bucket's settings page shows it); a bucket without a jurisdiction
+   drops the `.eu.`. The plain endpoint answers `AccessDenied` for a
+   jurisdiction bucket.
 2. Bucket → Settings → Custom Domains → Connect `data.bitcoinpir.org`.
    Cloudflare adds the CNAME; the status turns Active within minutes. Leave
    the r2.dev subdomain disabled.
@@ -76,13 +80,16 @@ scp scripts/data-bundle.sh pir-hetzner:/root/data-bundle.sh
      export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
        RCLONE_CONFIG_R2_ACCESS_KEY_ID=$R2_ACCESS_KEY_ID \
        RCLONE_CONFIG_R2_SECRET_ACCESS_KEY=$R2_SECRET_ACCESS_KEY \
-       RCLONE_CONFIG_R2_ENDPOINT=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com
+       RCLONE_CONFIG_R2_ENDPOINT=https://$R2_ACCOUNT_ID.eu.r2.cloudflarestorage.com
      /root/data-bundle.sh upload /home/pir/data /root/data-bundle-<gen> r2:bitcoinpir-data/<gen>
      rm /root/r2-bundle.env'
    ```
 
-   `upload` is `rclone copy` per directory: re-run after an interruption and
-   it skips what is already there with the same size and modification time.
+   `upload` is `rclone copy` per directory (with `--s3-no-check-bucket`, the
+   token may not create buckets, and `--s3-no-head`, noble's rclone 1.60
+   otherwise HEADs each new object by a versionId R2 answers with 501):
+   re-run after an interruption and it skips what is already there with the
+   same size and modification time. Step 3 is the integrity check.
 
 3. Verify the public copy from pir1 (streams all 57 GB back through
    `sha256sum`, nothing written; about 10 min):
@@ -101,4 +108,4 @@ scp scripts/data-bundle.sh pir-hetzner:/root/data-bundle.sh
 
 | Generation | Files | Size | Published | Hash list |
 | --- | --- | --- | --- | --- |
-| 948454 (delta 940611→948454) | 128 | 57.3 GB | pending | `deploy/data-bundles/948454/SHA256SUMS` |
+| 948454 (delta 940611→948454) | 128 | 57.3 GB | 2026-10-26 | `deploy/data-bundles/948454/SHA256SUMS` |

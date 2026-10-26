@@ -63,7 +63,13 @@ cmd_hash() {
 
 cmd_upload() {
   local root=${1%/} bundle=$2 remote=${3%/} d
+  # --s3-no-check-bucket: a bucket-scoped token may not HeadBucket or
+  # CreateBucket; without it a single-file copyto (no listing first) fails
+  # with AccessDenied. --s3-no-head: rclone 1.60 (noble) re-reads each new
+  # object by the versionId R2 returns, which R2 answers 501 NotImplemented,
+  # and only its retry finds the object; `verify` is the integrity check.
   local opts=(--s3-chunk-size 128M --s3-upload-cutoff 128M
+    --s3-no-check-bucket --s3-no-head
     --transfers "${BPIR_BUNDLE_TRANSFERS:-2}" --checkers 4
     --bwlimit "${BPIR_BUNDLE_BWLIMIT:-off}" --stats 60s --stats-one-line)
   catalog_dirs "$bundle/databases.toml" "$root" | while read -r d; do
