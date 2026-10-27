@@ -474,7 +474,7 @@
 
                 <section id="runtime-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-pins">
                     <section>
-                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-10-10</span></h2>
+                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-10-27</span></h2>
                         <p>
                             These are the values the browser bundle expects for
                             the Direct ORAM host (<code>PIR2_TIER3_PIN</code>). They
@@ -487,19 +487,19 @@
                             <table class="pin-table">
                                 <tr>
                                     <td>MEASUREMENT</td>
-                                    <td>8ac1a7a596061b36fa484b34762ea6848ea12fb7a5817d8c8244b32ca3ba752353beea173025a6217781c5575e3c30cc</td>
+                                    <td>8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f</td>
                                 </tr>
                                 <tr>
                                     <td>UKI sha256</td>
-                                    <td>7aafdbeae91bde85e0d8b04096711614d2068a3c49dcf06a4ee8129851c1c25e</td>
+                                    <td>c8ad20a293782d106cc44b49fcfa7e2304b24779720edeafc1eddf5cdf194291</td>
                                 </tr>
                                 <tr>
                                     <td>binary sha256</td>
-                                    <td>31e777ec06d55f5d9622dcfad4b44d7c4fd27b8a4bb2df146974d60abebb2d76</td>
+                                    <td>eec60270307c9439f97d6d1b57894d52be2df1b0c008c43fccc34e7bfc73c0ac</td>
                                 </tr>
                                 <tr>
                                     <td>server git rev</td>
-                                    <td>ce2c26ef7e6d4703f85c82acd1200a2ff8eef668</td>
+                                    <td>0ccff37005838c111b3c1198a65d3366cb95b13b</td>
                                 </tr>
                                 <tr>
                                     <td>OVMF sha256</td>
@@ -565,7 +565,7 @@
                                 <h3>Get or rebuild the UKI</h3>
                                 <p>
                                     The current operator-archived artifact is
-                                    <code>tier3-20261021T065838Z-7aafdbeae91b.efi</code>, the
+                                    <code>tier3-20261027T073342Z-c8ad20a29378.efi</code>, the
                                     ORAM-only Tier 3 UKI for the AMD Milan host
                                     (<code>unified_server --oram-only</code>, direct ORAM
                                     lookups for db_id 0/1).
@@ -576,11 +576,11 @@
                                     is not a public download URL.
                                 </p>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Verify: <code>sha256sum tier3-20261021T065838Z-7aafdbeae91b.efi</code> →
-                                    <code>7aafdbeae91bde85e0d8b04096711614d2068a3c49dcf06a4ee8129851c1c25e</code>
+                                    Verify: <code>sha256sum tier3-20261027T073342Z-c8ad20a29378.efi</code> →
+                                    <code>c8ad20a293782d106cc44b49fcfa7e2304b24779720edeafc1eddf5cdf194291</code>
                                 </p>
 <pre><code># Operator-only shortcut: retrieve the exact deployed bytes.
-scp pir-hetzner:/home/pir/uki-archive/tier3/tier3-20261021T065838Z-7aafdbeae91b.efi .</code></pre>
+scp pir-hetzner:/home/pir/uki-archive/tier3/tier3-20261027T073342Z-c8ad20a29378.efi .</code></pre>
                                 <p class="meta" style="margin-top: 6px;">
                                     Or perform a functional source rebuild. This is not
                                     a byte-identical reproduction of the production artifact:
@@ -590,7 +590,7 @@ scp pir-hetzner:/home/pir/uki-archive/tier3/tier3-20261021T065838Z-7aafdbeae91b.
                                 </p>
 <pre><code>git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-runtime-repro
 cd BitcoinPIR-runtime-repro
-git checkout ce2c26ef7e6d4703f85c82acd1200a2ff8eef668
+git checkout 0ccff37005838c111b3c1198a65d3366cb95b13b
 RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
 SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
 strip --strip-debug target/release/unified_server
@@ -601,7 +601,7 @@ strip --strip-debug vendor/bitcoinpir-oram/target/release/oramctl
 sudo env KERNEL=/boot/vmlinuz-6.17.0-23-generic \
 ORAMCTL="$PWD/vendor/bitcoinpir-oram/target/release/oramctl" \
 BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json \
-OUT="$PWD/bpir-tier3-functional-rebuild-ce2c26ef.efi" \
+OUT="$PWD/bpir-tier3-functional-rebuild-0ccff370.efi" \
 BINARY="$PWD/target/release/unified_server" \
 BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 ./scripts/build_uki_tier3.sh</code></pre>
@@ -626,7 +626,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 	    --vcpus 4 \
 	    --vcpu-sig 0x00A00F11 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel tier3-20261021T065838Z-7aafdbeae91b.efi \
+	    --kernel tier3-20261027T073342Z-c8ad20a29378.efi \
 	    --guest-features 0x1</code></pre>
                             </li>
 
@@ -634,8 +634,8 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 <h3>Verify the live report and AMD chain</h3>
 	<pre><code>cargo build --locked --release --bin bpir-admin -p bpir-admin
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 8ac1a7a596061b36fa484b34762ea6848ea12fb7a5817d8c8244b32ca3ba752353beea173025a6217781c5575e3c30cc \
-    --expect-binary      31e777ec06d55f5d9622dcfad4b44d7c4fd27b8a4bb2df146974d60abebb2d76 \
+    --expect-measurement 8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f \
+    --expect-binary      eec60270307c9439f97d6d1b57894d52be2df1b0c008c43fccc34e7bfc73c0ac \
     --expect-ark-fingerprint 69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
     --expect-ark-fingerprint 69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd</code></pre>
