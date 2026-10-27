@@ -149,8 +149,8 @@ export function pinAcceptsBinary(
  * weikeng2.bitcoinpir.org — the Direct ORAM host since 2026-10-02: VPSBG
  * server 26939, an AMD EPYC 7713P (Milan), so its reports chain to the
  * Milan ARK and must meet AMD_MILAN_SEV_SNP_FLOOR. Tier 3 runtime UKI image
- * 407 (r12, source `ce2c26ef`, kernel 6.17.0-23, built on pir1; 375 was r11
- * from `987fad2f`) with no server identity: a fresh channel key every boot, bound by the report. It
+ * 415 (r13, source `0ccff370`, kernel 6.17.0-23, built on pir1; 407 was r12
+ * from `ce2c26ef`) with no server identity: a fresh channel key every boot, bound by the report. It
  * runs `unified_server --oram-only` (no DPF, HarmonyPIR or OnionPIR tables;
  * the attested root is the tagged ORAM-only root), builds Direct ORAM from
  * hash-checked in-memory inputs, and serves it free on a best-effort lane.
@@ -158,13 +158,14 @@ export function pinAcceptsBinary(
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT is the offline sev-snp-measure prediction for this UKI +
   // pinned OVMF on 4 Milan vCPUs, equal to the chip-signed report after the
-  // switch; binary_sha256 is the stripped unified_server baked into image 407
-  // (r12, source ce2c26ef, UKI tier3-20261021T065838Z-7aafdbeae91b.efi).
+  // switch; binary_sha256 is the stripped unified_server baked into image 415
+  // (r13, source 0ccff370: the baked cloudflared moves to 2026.10.4, #460;
+  // UKI tier3-20261027T073342Z-c8ad20a29378.efi).
   measurementHex:
-    '8ac1a7a596061b36fa484b34762ea6848ea12fb7a5817d8c8244b32ca3ba752353beea173025a6217781c5575e3c30cc',
+    '8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f',
   binarySha256Hex:
-    '31e777ec06d55f5d9622dcfad4b44d7c4fd27b8a4bb2df146974d60abebb2d76',
-  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, Tier 3 image 407: Direct ORAM only, best-effort free)',
+    'eec60270307c9439f97d6d1b57894d52be2df1b0c008c43fccc34e7bfc73c0ac',
+  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, Tier 3 image 415: Direct ORAM only, best-effort free)',
 };
 
 /**
