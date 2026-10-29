@@ -447,7 +447,7 @@ at `wss://HOST`.
 A node needs no listing to be used: SDK clients take any endpoint (for example
 `simple_query --server0 URL --server1 URL`). Listing is how clients find it.
 
-**Production client list.** The web client at <https://www.bitcoinpir.org/>
+**Production client list.** The web client at <https://app.bitcoinpir.org/>
 (and the playground, which vendors `web/src`) connects to the providers in
 `web/src/production-providers.ts`, one per slot: server 0 (DPF server 0,
 HarmonyPIR hints, OnionPIR), server 1 (DPF server 1, HarmonyPIR queries) and

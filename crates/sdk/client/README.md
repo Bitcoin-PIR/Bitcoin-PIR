@@ -18,7 +18,7 @@ Three interchangeable backends are provided:
 
 All three implement the shared `PirClient` async trait from `pir-sdk`, so
 switching backends is a one-line change at the call site. A reference deployment
-of compatible servers runs at <https://www.bitcoinpir.org/>.
+of compatible servers runs at <https://app.bitcoinpir.org/>.
 
 ## Features at a glance
 

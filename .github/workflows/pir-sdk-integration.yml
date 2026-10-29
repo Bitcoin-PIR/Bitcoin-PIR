@@ -2,7 +2,7 @@ name: PIR SDK Integration Tests
 
 # Pull requests and main pushes build the SDK and run its unit tests. The
 # `#[ignore]`d tests against the public deployment (the servers the web
-# client at https://www.bitcoinpir.org uses) run on the daily schedule or a
+# client at https://app.bitcoinpir.org uses) run on the daily schedule or a
 # manual dispatch, so server availability never fails a PR. They run with
 # --test-threads=1 so one runner IP doesn't trip the servers' handshake
 # rate limits. DPF-PIR and HarmonyPIR also need server 1, which is run on a
