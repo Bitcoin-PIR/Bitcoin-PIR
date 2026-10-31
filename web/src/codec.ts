@@ -85,6 +85,20 @@ export function decodeUtxoData(
   return { entries, totalSats };
 }
 
+/**
+ * Decode a query result's chunk bytes. A delta record is spent/new
+ * outpoints, not a UTXO list, so it is not decoded here; the merge reads it
+ * with `decodeDeltaData`.
+ */
+export function decodeResultData(
+  fullData: Uint8Array,
+  isDelta: boolean,
+  onError?: (msg: string) => void,
+): { entries: UtxoEntryRaw[]; totalSats: bigint } {
+  if (isDelta) return { entries: [], totalSats: 0n };
+  return decodeUtxoData(fullData, onError);
+}
+
 // ─── Delta data types ──────────────────────────────────────────────────────
 
 /** A spent UTXO reference in a delta (no amount needed). */

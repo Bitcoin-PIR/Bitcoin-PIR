@@ -198,7 +198,13 @@ impl HarmonyClient {
             // we can manually trace the varint parse and confirm the decoder
             // is reading the right bytes. Gated on env to avoid noise.
 
-            let entries = decode_utxo_entries(&real_data)?;
+            // A delta record is spent/new outpoints, not a UTXO list: keep
+            // its bytes for the merge and do not decode them as one.
+            let entries = if db_info.kind.is_delta() {
+                Vec::new()
+            } else {
+                decode_utxo_entries(&real_data)?
+            };
 
             results.push(Some(QueryResult {
                 entries,
