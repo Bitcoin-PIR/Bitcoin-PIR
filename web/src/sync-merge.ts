@@ -34,14 +34,24 @@ export function mergeDeltaIntoSnapshot(
   deltaResult: QueryResult | null,
   onError?: (msg: string) => void,
 ): QueryResult | null {
-  // No snapshot → nothing to merge into. Caller decides what to do.
-  if (!snapshot) return null;
-
   // Whale snapshot → cannot apply a delta meaningfully.
-  if (snapshot.isWhale) return snapshot;
+  if (snapshot?.isWhale) return snapshot;
 
   // No delta result for this scripthash → nothing changed.
-  if (!deltaResult || deltaResult.isWhale) return snapshot;
+  if (!deltaResult) return snapshot;
+
+  // Delta whale: the delta record was too large to store, so the changes
+  // are unknown. Report a whale rather than the old snapshot.
+  if (deltaResult.isWhale) {
+    onError?.('mergeDeltaIntoSnapshot: delta whale; result marked whale, run a fresh sync for its UTXOs');
+    return {
+      ...(snapshot ?? deltaResult),
+      entries: [],
+      totalSats: 0n,
+      isWhale: true,
+      rawChunkData: undefined,
+    };
+  }
 
   // Decode the delta payload from rawChunkData. If absent or empty, no change.
   const rawDelta = deltaResult.rawChunkData;
@@ -55,6 +65,11 @@ export function mergeDeltaIntoSnapshot(
     return snapshot;
   }
 
+  // No snapshot entry: the script hash is new in the delta, so its UTXOs
+  // are the delta's new ones.
+  if (!snapshot) {
+    return applyDeltaData({ ...deltaResult, entries: [], rawChunkData: undefined }, delta);
+  }
   return applyDeltaData(snapshot, delta);
 }
 
@@ -119,14 +134,17 @@ export function mergeDeltaIntoHarmonySnapshot(
   deltaResult: HarmonyQueryResult | null,
   onError?: (msg: string) => void,
 ): HarmonyQueryResult | null {
-  // No snapshot → nothing to merge into.
-  if (!snapshot) return null;
-
   // Whale snapshot → cannot apply a delta meaningfully.
-  if (snapshot.whale) return snapshot;
+  if (snapshot?.whale) return snapshot;
 
   // No delta result for this scripthash → nothing changed.
-  if (!deltaResult || deltaResult.whale) return snapshot;
+  if (!deltaResult) return snapshot;
+
+  // Delta whale: the changes are unknown, so report a whale.
+  if (deltaResult.whale) {
+    onError?.('mergeDeltaIntoHarmonySnapshot: delta whale; result marked whale, run a fresh sync for its UTXOs');
+    return { ...(snapshot ?? deltaResult), utxos: [], whale: true, rawChunkData: undefined };
+  }
 
   // Decode the delta payload from rawChunkData. If absent or empty, no change.
   const rawDelta = deltaResult.rawChunkData;
@@ -147,8 +165,9 @@ export function mergeDeltaIntoHarmonySnapshot(
     spentKeys.add(`${bytesToHex(s.txid)}:${s.vout}`);
   }
 
+  // No snapshot entry: the script hash is new in the delta.
   const remaining: HarmonyUtxoEntry[] = [];
-  for (const u of snapshot.utxos) {
+  for (const u of snapshot?.utxos ?? []) {
     if (!spentKeys.has(`${u.txid}:${u.vout}`)) {
       remaining.push(u);
     }
@@ -164,7 +183,7 @@ export function mergeDeltaIntoHarmonySnapshot(
     });
   }
 
-  return { ...snapshot, utxos: remaining };
+  return { ...(snapshot ?? { ...deltaResult, rawChunkData: undefined }), utxos: remaining };
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

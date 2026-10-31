@@ -83,6 +83,17 @@ function encodeDelta(
 }
 
 /** Build a QueryResult holding raw delta-encoded bytes (as queryDelta returns). */
+function whaleDeltaResult(): QueryResult {
+  return {
+    entries: [],
+    totalSats: 0n,
+    startChunkId: 0,
+    numChunks: 0,
+    numRounds: 0,
+    isWhale: true,
+  };
+}
+
 function deltaResult(deltaBytes: Uint8Array): QueryResult {
   return {
     entries: [],
@@ -247,9 +258,56 @@ describe('mergeDeltaIntoSnapshot', () => {
     expect(merged!.totalSats).toBe(2500n);
   });
 
-  it('returns null when snapshot is null', () => {
-    const dr = deltaResult(encodeDelta([], []));
-    expect(mergeDeltaIntoSnapshot(null, dr)).toBeNull();
+  it('returns the delta\'s new UTXOs when snapshot is null', () => {
+    const dr = deltaResult(encodeDelta([], [
+      { txid: fakeTxid(7), vout: 1, amount: 700n },
+    ]));
+    const merged = mergeDeltaIntoSnapshot(null, dr);
+    expect(merged!.isWhale).toBe(false);
+    expect(merged!.entries).toEqual([{ txid: fakeTxid(7), vout: 1, amount: 700n }]);
+    expect(merged!.totalSats).toBe(700n);
+    expect(merged!.rawChunkData).toBeUndefined();
+  });
+
+  it('returns null when snapshot is null and the delta has no data', () => {
+    expect(mergeDeltaIntoSnapshot(null, null)).toBeNull();
+    expect(mergeDeltaIntoSnapshot(null, deltaResult(new Uint8Array(0)))).toBeNull();
+  });
+
+  it('marks the result whale for a delta whale', () => {
+    const snap = snapshot([utxo(1, 0, 1000n)]);
+    const onError = vi.fn();
+    const merged = mergeDeltaIntoSnapshot(snap, whaleDeltaResult(), onError);
+    expect(merged!.isWhale).toBe(true);
+    expect(merged!.entries).toEqual([]);
+    expect(merged!.totalSats).toBe(0n);
+    expect(merged!.rawChunkData).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the result whale for a delta whale with no snapshot', () => {
+    const merged = mergeDeltaIntoSnapshot(null, whaleDeltaResult());
+    expect(merged!.isWhale).toBe(true);
+    expect(merged!.entries).toEqual([]);
+    expect(merged!.totalSats).toBe(0n);
+  });
+
+  it('leaves a whale snapshot unchanged for a delta whale', () => {
+    const whaleSnap = whaleDeltaResult();
+    expect(mergeDeltaIntoSnapshot(whaleSnap, whaleDeltaResult())).toBe(whaleSnap);
+  });
+
+  it('changes only the delta whale in a mixed batch', () => {
+    const snaps = [snapshot([utxo(1, 0, 1000n)]), snapshot([utxo(2, 0, 2000n)]), snapshot([utxo(3, 0, 3000n)])];
+    const deltas = [
+      deltaResult(encodeDelta([], [{ txid: fakeTxid(4), vout: 0, amount: 400n }])),
+      whaleDeltaResult(),
+      null,
+    ];
+    const merged = snaps.map((s, i) => mergeDeltaIntoSnapshot(s, deltas[i]));
+    expect(merged[0]!.totalSats).toBe(1400n);
+    expect(merged[1]!.isWhale).toBe(true);
+    expect(merged[2]).toBe(snaps[2]);
   });
 
   it('returns snapshot unchanged when delta result is null', () => {
@@ -428,9 +486,19 @@ describe('mergeDeltaIntoHarmonySnapshot', () => {
     expect(mergeDeltaIntoHarmonySnapshot(snap, null)).toBe(snap);
   });
 
-  it('returns null for null snapshot (page-refresh case)', () => {
-    const delta = hDeltaResult(encodeDelta([], []));
-    expect(mergeDeltaIntoHarmonySnapshot(null, delta)).toBeNull();
+  it('returns the delta\'s new UTXOs for a null snapshot', () => {
+    const delta = hDeltaResult(encodeDelta([], [
+      { txid: fakeTxid(7), vout: 1, amount: 700n },
+    ]));
+    const merged = mergeDeltaIntoHarmonySnapshot(null, delta);
+    expect(merged!.whale).toBe(false);
+    expect(merged!.utxos).toEqual([hUtxo(7, 1, 700)]);
+    expect(merged!.rawChunkData).toBeUndefined();
+  });
+
+  it('returns null for a null snapshot and a delta without data', () => {
+    expect(mergeDeltaIntoHarmonySnapshot(null, null)).toBeNull();
+    expect(mergeDeltaIntoHarmonySnapshot(null, hDeltaResult(new Uint8Array(0)))).toBeNull();
   });
 
   it('leaves whale snapshots untouched', () => {
@@ -446,7 +514,7 @@ describe('mergeDeltaIntoHarmonySnapshot', () => {
     expect(mergeDeltaIntoHarmonySnapshot(whale, delta)).toBe(whale);
   });
 
-  it('ignores whale delta results', () => {
+  it('marks the result whale for a delta whale', () => {
     const snap = hSnapshot([hUtxo(1, 0, 1000)]);
     const whaleDelta: HarmonyQueryResult = {
       address: '1Test',
@@ -454,7 +522,19 @@ describe('mergeDeltaIntoHarmonySnapshot', () => {
       utxos: [],
       whale: true,
     };
-    expect(mergeDeltaIntoHarmonySnapshot(snap, whaleDelta)).toBe(snap);
+    const onError = vi.fn();
+    const merged = mergeDeltaIntoHarmonySnapshot(snap, whaleDelta, onError);
+    expect(merged!.whale).toBe(true);
+    expect(merged!.utxos).toEqual([]);
+    expect(merged!.rawChunkData).toBeUndefined();
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    const noSnap = mergeDeltaIntoHarmonySnapshot(null, whaleDelta);
+    expect(noSnap!.whale).toBe(true);
+    expect(noSnap!.utxos).toEqual([]);
+
+    const whaleSnap = { ...whaleDelta, address: '1Whale' };
+    expect(mergeDeltaIntoHarmonySnapshot(whaleSnap, whaleDelta)).toBe(whaleSnap);
   });
 
   it('returns snapshot unchanged for empty rawChunkData', () => {

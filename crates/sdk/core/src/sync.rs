@@ -338,7 +338,9 @@ fn read_varint(buf: &[u8]) -> PirResult<(u64, usize)> {
 ///
 /// A new QueryResult with the delta applied.
 pub fn merge_delta(snapshot: &QueryResult, delta_raw: &[u8]) -> PirResult<QueryResult> {
-    if delta_raw.is_empty() {
+    // A whale snapshot has no entries to apply the delta to; applying it
+    // anyway would report only the delta's new UTXOs as the balance.
+    if snapshot.is_whale || delta_raw.is_empty() {
         return Ok(snapshot.clone());
     }
 
@@ -408,6 +410,12 @@ pub fn merge_delta_batch(
 
     for (snapshot, delta) in snapshots.iter().zip(delta_results.iter()) {
         let result = match (snapshot, delta) {
+            // The delta record was too large to store, so the changes are
+            // unknown: the merged result is a whale, not the old snapshot.
+            (Some(snap), Some(del)) if del.is_whale && !snap.is_whale => {
+                Some(delta_whale(snap.merkle_verified && del.merkle_verified))
+            }
+            (None, Some(del)) if del.is_whale => Some(delta_whale(del.merkle_verified)),
             (Some(snap), Some(del)) => {
                 // A merged result is Merkle-verified iff BOTH inputs were.
                 // One untrusted source taints the merge.
@@ -453,6 +461,17 @@ pub fn merge_delta_batch(
 
     Ok(merged)
 }
+
+fn delta_whale(merkle_verified: bool) -> QueryResult {
+    QueryResult {
+        is_whale: true,
+        merkle_verified,
+        ..QueryResult::empty()
+    }
+}
+
+#[cfg(test)]
+mod whale_merge_tests;
 
 #[cfg(test)]
 mod tests {
