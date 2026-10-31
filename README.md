@@ -6,7 +6,7 @@ Today's light wallets leak every address you own to their server, enabling full 
 
 ## Try It
 
-A live demo runs at **[https://www.bitcoinpir.org/](https://www.bitcoinpir.org/)**. You can paste any Bitcoin address in the browser and watch it resolve to UTXOs privately. OnionPIR and Direct ORAM each need one server; DPF-PIR and HarmonyPIR also need a second server, which the demo runs on a home machine on a best-effort basis, so it may be offline. The first query may be slow — please be patient.
+A live demo runs at **[https://app.bitcoinpir.org/](https://app.bitcoinpir.org/)**. You can paste any Bitcoin address in the browser and watch it resolve to UTXOs privately. OnionPIR and Direct ORAM each need one server; DPF-PIR and HarmonyPIR also need a second server, which the demo runs on a home machine on a best-effort basis, so it may be offline. The first query may be slow — please be patient.
 
 ## What It Does
 

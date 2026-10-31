@@ -143,7 +143,9 @@ Usual PR workflows, when their paths match:
 
 ## C. Web / GitHub Pages — Local then Auth
 
-The site is `https://www.bitcoinpir.org/`. A push to `main` does **not**
+The web client is `https://app.bitcoinpir.org/`; the landing page at
+`https://www.bitcoinpir.org/` is the separate `Bitcoin-PIR/bitcoinpir.org`
+repository. A push to `main` does **not**
 publish. `.github/workflows/deploy-web.yml` deploys only on
 `workflow_dispatch` from `main` with `confirm_production_deploy=true`.
 The build job has contents-read only; Pages write/OIDC is confined to

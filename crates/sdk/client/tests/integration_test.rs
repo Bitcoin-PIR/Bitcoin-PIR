@@ -35,7 +35,7 @@ use pir_sdk_client::{
 /// Default to the public deployment so CI — and contributors who haven't
 /// stood up a fixture server — can exercise the full stack against
 /// real data. The public servers are the same ones the web client at
-/// https://www.bitcoinpir.org uses.
+/// https://app.bitcoinpir.org uses.
 const DEFAULT_DPF_SERVER0: &str = "wss://weikeng1.bitcoinpir.org";
 const DEFAULT_DPF_SERVER1: &str = "wss://bitcoin-pir-weikeng-laptop.chenweikeng.com";
 // Production topology (memory: project_pir1_hint_pir2_query_split.md):
