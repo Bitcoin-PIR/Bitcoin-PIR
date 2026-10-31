@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { decodeDeltaData, decodeUtxoData, readVarint } from '../codec.js';
+import { decodeDeltaData, decodeResultData, decodeUtxoData, readVarint } from '../codec.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -239,5 +239,30 @@ describe('decodeUtxoData', () => {
     const { entries, totalSats } = decodeUtxoData(data);
     expect(entries).toHaveLength(0);
     expect(totalSats).toBe(0n);
+  });
+});
+
+describe('decodeResultData', () => {
+  // Two spent outpoints, nothing new. The second txid starts with ten bytes
+  // >= 0x80, which the UTXO-list decoder reads as an over-long varint.
+  const secondTxid = new Uint8Array(32).fill(0);
+  secondTxid.fill(0xff, 0, 10);
+  const twoSpent = new Uint8Array([
+    2, ...new Uint8Array(32).fill(2), 0, ...secondTxid, 0, 0,
+  ]);
+
+  it('does not decode a delta record as a UTXO list', () => {
+    expect(() => decodeUtxoData(twoSpent)).toThrow();
+    expect(decodeResultData(twoSpent, true)).toEqual({ entries: [], totalSats: 0n });
+    expect(decodeDeltaData(twoSpent).spent).toHaveLength(2);
+  });
+
+  it('still decodes a full-database result', () => {
+    const txid = new Uint8Array(32).fill(0xab);
+    const data = new Uint8Array([1, ...txid, 2, 0x50]);
+    expect(decodeResultData(data, false)).toEqual({
+      entries: [{ txid, vout: 2, amount: 0x50n }],
+      totalSats: 0x50n,
+    });
   });
 });

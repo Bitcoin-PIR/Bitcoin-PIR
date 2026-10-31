@@ -377,9 +377,10 @@ impl OramClient {
                 script_hashes.len()
             )));
         }
+        let is_delta = self.is_delta_db(db_id);
         raw.items
             .into_iter()
-            .map(lookup_item_to_query_result)
+            .map(|item| lookup_item_to_query_result(item, is_delta))
             .collect()
     }
 
@@ -412,11 +413,23 @@ impl OramClient {
                 padded_slots
             )));
         }
+        let is_delta = self.is_delta_db(db_id);
         raw.items
             .into_iter()
             .take(script_hashes.len())
-            .map(lookup_item_to_query_result)
+            .map(|item| lookup_item_to_query_result(item, is_delta))
             .collect()
+    }
+
+    /// Whether the cached catalog lists `db_id` as a delta database. With no
+    /// catalog the results are decoded as UTXO lists.
+    fn is_delta_db(&self, db_id: u8) -> bool {
+        self.catalog.as_ref().is_some_and(|catalog| {
+            catalog
+                .databases
+                .iter()
+                .any(|db| db.db_id == db_id && db.kind.is_delta())
+        })
     }
 
     fn conn_mut(&mut self) -> PirResult<&mut Box<dyn PirTransport>> {
@@ -576,7 +589,12 @@ fn decode_oram_lookup_result(data: &[u8]) -> PirResult<OramLookupResult> {
     Ok(OramLookupResult { db_id, items })
 }
 
-fn lookup_item_to_query_result(item: OramLookupItem) -> PirResult<Option<QueryResult>> {
+/// A delta record is spent/new outpoints, not a UTXO list: for a delta
+/// database the bytes are kept for the merge and not decoded as one.
+fn lookup_item_to_query_result(
+    item: OramLookupItem,
+    is_delta: bool,
+) -> PirResult<Option<QueryResult>> {
     if !item.found {
         return Ok(None);
     }
@@ -585,7 +603,11 @@ fn lookup_item_to_query_result(item: OramLookupItem) -> PirResult<Option<QueryRe
         qr.is_whale = true;
         return Ok(Some(qr));
     }
-    let entries = decode_utxo_entries(&item.raw_chunk_data)?;
+    let entries = if is_delta {
+        Vec::new()
+    } else {
+        decode_utxo_entries(&item.raw_chunk_data)?
+    };
     let mut qr = QueryResult::with_entries(entries);
     qr.raw_chunk_data = Some(item.raw_chunk_data);
     Ok(Some(qr))
@@ -643,6 +665,8 @@ fn decode_error_response(response: &[u8]) -> PirError {
 mod tests {
     use super::*;
     use crate::transport::mock::MockTransport;
+
+    mod delta_tests;
     use pir_sdk::AtomicMetrics;
     use std::sync::Arc;
 

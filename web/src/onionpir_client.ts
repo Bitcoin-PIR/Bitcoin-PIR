@@ -23,7 +23,7 @@ import {
 } from './hash.js';
 
 import { planRounds } from './pbc.js';
-import { decodeUtxoData, DummyRng } from './codec.js';
+import { decodeResultData, DummyRng } from './codec.js';
 import { unpackOnionPlaintext } from './onion-unpack.js';
 import { findEntryInOnionPirIndexResult } from './scan.js';
 import { ManagedWebSocket } from './ws.js';
@@ -1294,8 +1294,12 @@ export class OnionPirWebClient {
 
   // ─── UTXO decoder (delegates to shared codec.ts) ────────────────────────
 
-  private decodeUtxoData(fullData: Uint8Array): { entries: UtxoEntry[]; totalSats: bigint } {
-    return decodeUtxoData(fullData, (msg) => this.log(msg, 'error'));
+  private decodeUtxoData(
+    fullData: Uint8Array,
+    dbId: number,
+  ): { entries: UtxoEntry[]; totalSats: bigint } {
+    const isDelta = this.catalog?.databases.find((db) => db.dbId === dbId)?.dbType === 1;
+    return decodeResultData(fullData, isDelta, (msg) => this.log(msg, 'error'));
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -1889,7 +1893,7 @@ export class OnionPirWebClient {
           decryptedEntries,
         );
 
-        const { entries, totalSats } = this.decodeUtxoData(fullData);
+        const { entries, totalSats } = this.decodeUtxoData(fullData, dbId);
         results[qi] = {
           entries,
           totalSats,
@@ -1906,7 +1910,7 @@ export class OnionPirWebClient {
           // One per-group DATA Merkle leaf per real chunk entry_id.
           dataBinLeaves: ownedLeaves,
           scriptHash: scriptHashes[qi],
-          // Preserve raw bytes so delta-DB queries can be re-decoded via
+          // Preserve raw bytes so delta-DB queries can be decoded via
           // decodeDeltaData in the sync-merge flow. For main DB this is just
           // the same bytes that decodeUtxoData already consumed above.
           rawChunkData: fullData,

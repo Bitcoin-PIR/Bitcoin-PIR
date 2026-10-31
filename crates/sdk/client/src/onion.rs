@@ -1079,7 +1079,14 @@ impl OnionClient {
                 }
                 Some(ir) => {
                     let raw = assemble_entry_bytes(ir, &chunk_data, db_info.db_id)?;
-                    let entries = decode_utxo_entries(&raw)?;
+                    // A delta record is spent/new outpoints, not a UTXO
+                    // list: keep its bytes for the merge and do not decode
+                    // them as one.
+                    let entries = if db_info.kind.is_delta() {
+                        Vec::new()
+                    } else {
+                        decode_utxo_entries(&raw)?
+                    };
                     log::info!(
                         "[PIR-AUDIT] OnionPIR scripthash {}: FOUND {} UTXOs \
                          (entry_id={}, num_entries={}, byte_offset={})",

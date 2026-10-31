@@ -71,6 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A delta-database result is no longer decoded as a UTXO list (DPF,
+  HarmonyPIR, OnionPIR, and Direct ORAM when the catalog is cached): its
+  `entries` are empty and `raw_chunk_data` keeps the record for the merge.
+  A record with two or more spent outpoints could read as an over-long
+  varint and fail the whole step for every address in the batch.
 - `sync` (all three clients) and `sync_with_progress` (DPF, HarmonyPIR) now
   reject `last_height = Some(h)` with `PirError::InvalidState` before any
   network I/O, and `sync_with_plan` rejects a delta-only or at-tip plan

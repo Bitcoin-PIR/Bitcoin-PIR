@@ -893,7 +893,13 @@ impl DpfClient {
 
             // [DBG_HEX] Hex-dump raw bytes for offline varint trace.
 
-            let entries = decode_utxo_entries(&real_data)?;
+            // A delta record is spent/new outpoints, not a UTXO list: keep
+            // its bytes for the merge and do not decode them as one.
+            let entries = if db_info.kind.is_delta() {
+                Vec::new()
+            } else {
+                decode_utxo_entries(&real_data)?
+            };
 
             results.push(Some(QueryResult {
                 entries,
@@ -3915,3 +3921,6 @@ mod tests {
 
 #[cfg(test)]
 mod sync_base_tests;
+
+#[cfg(test)]
+mod delta_tests;
