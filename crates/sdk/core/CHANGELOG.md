@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `merge_delta_batch` marks a script hash whose delta record is a whale
+  (too large to store) as a whale with no entries. It used to keep the old
+  snapshot, or return `None` when there was none, as if nothing changed.
+- `merge_delta` leaves a whale snapshot unchanged instead of reporting only
+  the delta's new UTXOs.
+
 ### Security
 
 - `QueryResult::empty`, `with_entries`, and `Default` start with
