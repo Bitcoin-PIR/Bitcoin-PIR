@@ -544,3 +544,76 @@ fn parallel_answer_query_via_shared_keystore() {
     // Keystore still has exactly one client after all the parallel touches.
     assert_eq!(store.size(), 1);
 }
+
+/// The shared-store batch path (prepare_query, one shared_first_dim pass,
+/// finish_query) must return the same bytes as answer_query on each server,
+/// and those must decrypt to the store entry the server's index table maps.
+#[test]
+fn shared_first_dim_batch_matches_answer_query() {
+    let info = params_info(0);
+    if info.rns_mod_count != 1 {
+        eprintln!("skipping: shared_database isn't supported for K != 1 yet");
+        return;
+    }
+    let entries = 4096u64;
+    let num_pt = params_info(entries).num_plaintexts as u32;
+    let (a, b) = (3u32, 17u32);
+    let mut builder = Server::new(entries);
+    builder.gen_data(&[a as u64, b as u64, (num_pt - 1 - a) as u64]);
+    let tmp_path = std::env::temp_dir().join(
+        format!("onionpir-batch-test-{}.bin", std::process::id()));
+    assert!(builder.save_db(tmp_path.to_str().unwrap()));
+    let raw = std::fs::read(&tmp_path).expect("read saved DB");
+    // An owned copy of the DB answers through the unchanged level_mat_mat path.
+    let mut owned = Server::new(entries);
+    assert!(owned.load_db(tmp_path.to_str().unwrap()));
+    let _ = std::fs::remove_file(&tmp_path);
+    let store: Vec<u64> = raw[48..]
+        .chunks_exact(8)
+        .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+
+    let identity: Vec<u32> = (0..num_pt).collect();
+    let reversed: Vec<u32> = (0..num_pt).rev().collect();
+    let tables = [&identity, &reversed, &identity];
+    let targets = [b, a, a];
+    let client = Client::new(entries);
+    let mut servers: Vec<Server> = tables
+        .iter()
+        .map(|t| {
+            let mut s = Server::new(entries);
+            // SAFETY: `store` and the tables outlive the servers.
+            assert!(unsafe { s.set_shared_database(&store, num_pt as u64, t) });
+            s.set_galois_keys(client.id(), &client.galois_keys());
+            s.set_gsw_key(client.id(), &client.gsw_key());
+            s
+        })
+        .collect();
+    let queries: Vec<Vec<u8>> = targets.iter().map(|&t| client.generate_query(t as u64)).collect();
+
+    let single: Vec<Vec<u8>> = servers
+        .iter_mut()
+        .zip(&queries)
+        .map(|(s, q)| s.answer_query(client.id(), q))
+        .collect();
+    let prepared: Vec<_> = servers
+        .iter_mut()
+        .zip(&queries)
+        .map(|(s, q)| s.prepare_query(client.id(), q).expect("prepare_query"))
+        .collect();
+    assert!(onionpir::shared_first_dim(&mut servers, &prepared, 3));
+    let batched: Vec<Vec<u8>> = servers
+        .iter_mut()
+        .zip(&prepared)
+        .map(|(s, p)| s.finish_query(p))
+        .collect();
+
+    assert_eq!(single, batched);
+    owned.set_galois_keys(client.id(), &client.galois_keys());
+    owned.set_gsw_key(client.id(), &client.gsw_key());
+    assert_eq!(owned.answer_query(client.id(), &queries[0]), single[0]);
+    for (i, resp) in batched.iter().enumerate() {
+        let entry = tables[i][targets[i] as usize] as u64;
+        assert_eq!(client.decrypt_response(resp), builder.get_original_plaintext(entry));
+    }
+}
