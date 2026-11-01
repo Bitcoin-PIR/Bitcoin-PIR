@@ -62,7 +62,7 @@ derived values.
 
 | Node | RAM | Disk | CPU per single-address lookup | Egress per lookup |
 | --- | --- | --- | --- | --- |
-| Server 1 (DPF + HarmonyPIR query) | ≥ 32 GB (server-1 runbook floor); a DPF lookup scans 18.4 GB of tables, best kept in page cache | ≥ 60 GB free per generation | DPF 7.7 CPU-s; HarmonyPIR query ≈ 50 ms (analytical) | DPF 9.6 MB; HarmonyPIR 46 MB |
+| Server 1 (DPF + HarmonyPIR query) | ≥ 32 GB (server-1 runbook floor); a DPF lookup scans 18.4 GB of tables, read from disk when they are not in page cache; concurrent lookups share one scan | ≥ 60 GB free per generation | DPF 7.7 CPU-s; HarmonyPIR query ≈ 50 ms (analytical) | DPF 9.6 MB; HarmonyPIR 46 MB |
 | OnionPIR | a few GB to run (*estimate*); a lookup reads ≈ 28 GB of NTT data in sequential passes (the CHUNK step one pass over the 15.5 GB shared store), and RAM beyond that only caches it | same | 664 CPU-s, ≈ 55 s on 12 threads | 6.5 MB down, 15 MB up |
 | Server 0 + hint server | as OnionPIR when combined | same, plus the pool directory | DPF 7.7 CPU-s; 130 CPU-s per hint-pool entry, 142 per fresh HarmonyPIR client | 131 MB per fresh HarmonyPIR client |
 | Direct ORAM | 8 GB SEV-SNP guest, 4 vCPU (reference: AMD EPYC Milan) | proofs, ≈ 5 GB of `oram-direct-inputs/`, the ORAM pages | gas model 2 ms per padded slot (provisional) | small |

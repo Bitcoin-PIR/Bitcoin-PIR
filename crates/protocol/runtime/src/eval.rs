@@ -1,7 +1,7 @@
-//! DPF evaluation for both index-level and chunk-level PIR.
+//! DPF evaluation over the cuckoo tables of every DPF level (INDEX, CHUNK,
+//! Merkle siblings).
 
 use libdpf::{Block, Dpf, DpfKey};
-use pir_core::params::{CHUNK_SLOTS_PER_BIN, INDEX_SLOTS_PER_BIN, INDEX_SLOT_SIZE, UNIT_DATA_SIZE};
 use std::time::{Duration, Instant};
 
 // ─── Software prefetch intrinsics ────────────────────────────────────────────
@@ -20,19 +20,6 @@ fn prefetch_read(ptr: *const u8) {
         let _ = ptr;
     }
 }
-
-// ─── Index-level constants ──────────────────────────────────────────────────
-
-/// Each cuckoo bin has INDEX_SLOTS_PER_BIN (4) slots, each INDEX_SLOT_SIZE (13) bytes.
-pub const INDEX_SLOTS: usize = INDEX_SLOTS_PER_BIN; // 4
-pub const INDEX_RESULT_SIZE: usize = INDEX_SLOTS * INDEX_SLOT_SIZE; // 4 * 13 = 52
-
-// ─── Chunk-level constants ──────────────────────────────────────────────────
-
-/// Each slot: [4B chunk_id LE | UNIT_DATA_SIZE data]
-pub const CHUNK_SLOT_SIZE: usize = 4 + UNIT_DATA_SIZE;
-pub const CHUNK_SLOTS: usize = CHUNK_SLOTS_PER_BIN; // 3
-pub const CHUNK_RESULT_SIZE: usize = CHUNK_SLOTS * CHUNK_SLOT_SIZE;
 
 // ─── DPF bit extraction ────────────────────────────────────────────────────
 
@@ -61,58 +48,55 @@ pub fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-// ─── Generic DPF evaluation (supports N queries) ──────────────────────────
+// ─── DPF evaluation over one group's table ──────────────────────────────────
 
 /// Lookahead distance for software prefetching (in bins).
 /// Issue prefetch for bin N+LOOKAHEAD while processing bin N.
 const PREFETCH_LOOKAHEAD: usize = 4;
 
-/// Maximum number of DPF keys a single group may carry.
-///
-/// `process_group_generic` tracks per-key DPF bits in a fixed
-/// `[bool; MAX_KEYS_PER_GROUP]` on the hot path (no per-bin heap
-/// allocation), so any larger count would write out of bounds.
-/// `protocol::decode_batch_query` rejects frames above this cap;
-/// legitimate clients send at most INDEX/CHUNK_CUCKOO_NUM_HASHES (2)
-/// keys per group, and 1 for Merkle sibling batches.
+/// Keys evaluated per pass over a group's table. The hot loop tracks per-key
+/// DPF bits in a fixed `[bool; MAX_KEYS_PER_GROUP]` (no per-bin heap
+/// allocation); `process_table_group` splits larger key sets into passes.
+/// `protocol::decode_batch_query` also caps one frame's keys per group here.
 pub const MAX_KEYS_PER_GROUP: usize = 8;
 
 /// Per-group timing breakdown.
+#[derive(Default)]
 pub struct GroupTiming {
     pub dpf_eval: Duration,
     pub fetch_xor: Duration,
 }
 
-/// Evaluate N DPF keys over a table, XOR-accumulating results.
-/// Returns Vec of N accumulators, each `result_size` bytes, plus timing.
-/// `prefetch_bin` is an optional callback to prefetch data for an upcoming bin.
-#[allow(clippy::type_complexity)]
-fn process_group_generic(
+/// Evaluate DPF keys over one group's table of `bins_per_table` bins, each
+/// `result_size` bytes, XOR-accumulating the bins each key selects. Returns
+/// one accumulator per key. Each accumulator depends only on its own key, so
+/// keys from different queries can share the scan; they are evaluated
+/// MAX_KEYS_PER_GROUP per pass over the table.
+pub fn process_table_group(
     keys: &[&DpfKey],
     table_bytes: &[u8],
     bins_per_table: usize,
     result_size: usize,
-    fetch_bin: &dyn Fn(&[u8], usize, &mut [u8]),
-    prefetch_bin: Option<&dyn Fn(&[u8], usize)>,
+) -> (Vec<Vec<u8>>, GroupTiming) {
+    let mut accs = Vec::with_capacity(keys.len());
+    let mut timing = GroupTiming::default();
+    for pass in keys.chunks(MAX_KEYS_PER_GROUP) {
+        let (r, t) = process_pass(pass, table_bytes, bins_per_table, result_size);
+        accs.extend(r);
+        timing.dpf_eval += t.dpf_eval;
+        timing.fetch_xor += t.fetch_xor;
+    }
+    (accs, timing)
+}
+
+fn process_pass(
+    keys: &[&DpfKey],
+    table_bytes: &[u8],
+    bins_per_table: usize,
+    result_size: usize,
 ) -> (Vec<Vec<u8>>, GroupTiming) {
     let dpf = Dpf::with_default_key();
     let num_keys = keys.len();
-
-    // Defense-in-depth (S2): never read `evals[0]` of an empty batch or
-    // index `bits[i]` past the fixed array below. Decode + handler
-    // validation make these unreachable from the wire; programmatic
-    // callers get zero-filled accumulators instead of a panic
-    // (the release profile's panic = 'abort' would kill the whole server).
-    if num_keys == 0 || num_keys > MAX_KEYS_PER_GROUP {
-        let accs = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
-        return (
-            accs,
-            GroupTiming {
-                dpf_eval: Duration::ZERO,
-                fetch_xor: Duration::ZERO,
-            },
-        );
-    }
 
     let t_dpf = Instant::now();
     let evals: Vec<Vec<Block>> = keys
@@ -121,21 +105,21 @@ fn process_group_generic(
         .collect();
     let dpf_eval = t_dpf.elapsed();
 
-    // Use the shortest eval vector: a key declaring a smaller DPF domain
-    // than the table's yields fewer blocks, and indexing
-    // `evals[i][block_idx]` beyond it would panic. Legitimate keys all
-    // share the table's domain, so this equals `evals[0].len()` for them.
-    let num_blocks = evals.iter().map(|e| e.len()).min().unwrap_or(0);
+    // A key declaring a smaller DPF domain than the table's yields fewer
+    // blocks. Its bits past its own blocks count as zero, so the other keys
+    // of the pass still cover the whole table.
+    let num_blocks = evals.iter().map(|e| e.len()).max().unwrap_or(0);
 
     let t_fetch = Instant::now();
     let mut accs: Vec<Vec<u8>> = (0..num_keys).map(|_| vec![0u8; result_size]).collect();
     let mut bin_buf = vec![0u8; result_size];
 
-    #[allow(clippy::needless_range_loop)] // `evals[i][block_idx]` across all keys
     for block_idx in 0..num_blocks {
-        // Skip if all blocks are zero
-        let all_zero = (0..num_keys).all(|i| evals[i][block_idx].is_equal(&Block::zero()));
-        if all_zero {
+        let blocks: Vec<Option<&Block>> = evals.iter().map(|e| e.get(block_idx)).collect();
+        if blocks
+            .iter()
+            .all(|b| b.map_or(true, |b| b.is_equal(&Block::zero())))
+        {
             continue;
         }
 
@@ -145,33 +129,23 @@ fn process_group_generic(
         for bin in base_bin..end_bin {
             let bit_within = bin - base_bin;
 
-            // Software prefetch: issue read for a future bin's data
-            if let Some(pf) = prefetch_bin {
-                let ahead = bin + PREFETCH_LOOKAHEAD;
-                if ahead < end_bin {
-                    pf(table_bytes, ahead);
-                }
+            let ahead = bin + PREFETCH_LOOKAHEAD;
+            if ahead < end_bin {
+                prefetch_read(table_bytes[ahead * result_size..].as_ptr());
             }
 
-            // Check which keys have bit set
             let mut any_set = false;
             let mut bits = [false; MAX_KEYS_PER_GROUP];
-            for i in 0..num_keys {
-                bits[i] = get_dpf_bit(&evals[i][block_idx], bit_within);
-                if bits[i] {
-                    any_set = true;
-                }
+            for (i, block) in blocks.iter().enumerate() {
+                bits[i] = block.is_some_and(|b| get_dpf_bit(b, bit_within));
+                any_set |= bits[i];
             }
-
             if !any_set {
                 continue;
             }
 
-            for v in bin_buf.iter_mut() {
-                *v = 0;
-            }
-            fetch_bin(table_bytes, bin, &mut bin_buf);
-
+            let src = bin * result_size;
+            bin_buf.copy_from_slice(&table_bytes[src..src + result_size]);
             for i in 0..num_keys {
                 if bits[i] {
                     xor_into(&mut accs[i], &bin_buf);
@@ -190,94 +164,6 @@ fn process_group_generic(
     )
 }
 
-// ─── Index-level evaluation (inlined cuckoo tables) ─────────────────────────
-
-/// Fetch INDEX_SLOTS inlined index entries at `bin` directly from the table.
-/// Each slot is INDEX_SLOT_SIZE (17) bytes, stored contiguously.
-#[inline]
-fn fetch_index_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
-    let src_offset = bin * INDEX_RESULT_SIZE;
-    out.copy_from_slice(&table_bytes[src_offset..src_offset + INDEX_RESULT_SIZE]);
-}
-
-/// Process one index-level group: evaluate two DPF keys, XOR-accumulate.
-/// Returns (result_q0, result_q1, timing).
-pub fn process_index_group(
-    key_q0: &DpfKey,
-    key_q1: &DpfKey,
-    table_bytes: &[u8],
-    bins_per_table: usize,
-) -> (Vec<u8>, Vec<u8>, GroupTiming) {
-    let (results, timing) = process_group_generic(
-        &[key_q0, key_q1],
-        table_bytes,
-        bins_per_table,
-        INDEX_RESULT_SIZE,
-        &|tbl, bin, out| fetch_index_bin(tbl, bin, out),
-        None,
-    );
-    (results[0].clone(), results[1].clone(), timing)
-}
-
-// ─── Chunk-level evaluation (inlined cuckoo tables) ─────────────────────────
-
-/// Prefetch inlined chunk data for a future bin so it's in cache when we need it.
-#[inline]
-fn prefetch_chunk_bin(table_bytes: &[u8], bin: usize) {
-    let src_offset = bin * CHUNK_RESULT_SIZE;
-    if src_offset < table_bytes.len() {
-        prefetch_read(table_bytes[src_offset..].as_ptr());
-    }
-}
-
-/// Fetch CHUNK_SLOTS inlined slots at `bin` directly from the table.
-/// Each slot is CHUNK_SLOT_SIZE (44) bytes: [4B chunk_id | 40B data], stored contiguously.
-#[inline]
-fn fetch_chunk_bin(table_bytes: &[u8], bin: usize, out: &mut [u8]) {
-    let src_offset = bin * CHUNK_RESULT_SIZE;
-    out.copy_from_slice(&table_bytes[src_offset..src_offset + CHUNK_RESULT_SIZE]);
-}
-
-/// Process one chunk-level group: evaluate CHUNK_CUCKOO_NUM_HASHES (2) DPF keys, XOR-accumulate.
-/// Returns Vec of 2 results, each CHUNK_RESULT_SIZE bytes, plus timing.
-pub fn process_chunk_group(
-    keys: &[&DpfKey],
-    table_bytes: &[u8],
-    bins_per_table: usize,
-) -> (Vec<Vec<u8>>, GroupTiming) {
-    process_group_generic(
-        keys,
-        table_bytes,
-        bins_per_table,
-        CHUNK_RESULT_SIZE,
-        &|tbl, bin, out| fetch_chunk_bin(tbl, bin, out),
-        Some(&|tbl, bin| prefetch_chunk_bin(tbl, bin)),
-    )
-}
-
-// ─── Merkle sibling evaluation ────────────────────────────────────────────
-
-/// Process one Merkle sibling group: evaluate 2 DPF keys, XOR-accumulate.
-/// `result_size` = slots_per_bin × slot_size (e.g. 4 × 260 = 1040 for arity=8).
-pub fn process_merkle_sibling_group(
-    keys: &[&DpfKey],
-    table_bytes: &[u8],
-    bins_per_table: usize,
-    result_size: usize,
-) -> (Vec<Vec<u8>>, GroupTiming) {
-    process_group_generic(
-        keys,
-        table_bytes,
-        bins_per_table,
-        result_size,
-        &|tbl, bin, out| {
-            let src = bin * result_size;
-            out.copy_from_slice(&tbl[src..src + result_size]);
-        },
-        None,
-    )
-}
-
 #[cfg(test)]
 mod dpf_eval_guard_tests {
     use super::*;
@@ -285,48 +171,51 @@ mod dpf_eval_guard_tests {
 
     /// 256 bins → DPF domain n = 8, two 128-bin eval blocks.
     const BINS: usize = 256;
+    const RESULT_SIZE: usize = 132;
 
-    fn chunk_table() -> Vec<u8> {
-        vec![0xA5u8; BINS * CHUNK_RESULT_SIZE]
+    fn table() -> Vec<u8> {
+        (0..BINS * RESULT_SIZE).map(|i| (i % 251) as u8).collect()
     }
 
-    /// S2 regression: `evals[0]` used to panic on an empty key list.
+    fn alone(key: &DpfKey, table: &[u8]) -> Vec<u8> {
+        process_table_group(&[key], table, BINS, RESULT_SIZE)
+            .0
+            .remove(0)
+    }
+
     #[test]
-    fn process_chunk_group_with_zero_keys_returns_empty() {
-        let table = chunk_table();
-        let (accs, _t) = process_chunk_group(&[], &table, BINS);
+    fn zero_keys_return_empty() {
+        let (accs, _t) = process_table_group(&[], &table(), BINS, RESULT_SIZE);
         assert!(accs.is_empty());
     }
 
-    /// S2 regression: more than MAX_KEYS_PER_GROUP keys used to write
-    /// past the fixed `bits` array. Now yields zero-filled accumulators.
+    /// More keys than one pass holds: every accumulator equals the key's
+    /// result evaluated alone, which is what lets queries share a scan.
     #[test]
-    fn process_chunk_group_with_too_many_keys_returns_zero_fills() {
+    fn shared_scan_matches_each_key_alone() {
         let dpf = Dpf::with_default_key();
-        let keys: Vec<DpfKey> = (0..(MAX_KEYS_PER_GROUP as u64 + 1))
-            .map(|i| dpf.gen(i, 8).0)
+        let keys: Vec<DpfKey> = (0..(2 * MAX_KEYS_PER_GROUP as u64 + 3))
+            .map(|i| dpf.gen(i * 7 % BINS as u64, 8).0)
             .collect();
         let refs: Vec<&DpfKey> = keys.iter().collect();
-        let table = chunk_table();
-        let (accs, _t) = process_chunk_group(&refs, &table, BINS);
-        assert_eq!(accs.len(), MAX_KEYS_PER_GROUP + 1);
-        assert!(accs.iter().all(|a| a.len() == CHUNK_RESULT_SIZE));
-        assert!(accs.iter().all(|a| a.iter().all(|&b| b == 0)));
+        let table = table();
+        let (accs, _t) = process_table_group(&refs, &table, BINS, RESULT_SIZE);
+        assert_eq!(accs.len(), keys.len());
+        for (key, acc) in keys.iter().zip(&accs) {
+            assert_eq!(acc, &alone(key, &table));
+        }
     }
 
-    /// Keys with mismatched DPF domains produce eval vectors of
-    /// different lengths: n=8 yields 2 blocks for 256 bins, n=7 yields 1.
-    /// The old `evals[0].len()` block count indexed past the short key's
-    /// vector.
+    /// A key with a smaller DPF domain (n=7 yields 1 block for 256 bins,
+    /// n=8 yields 2) neither panics nor truncates the other keys' scan.
     #[test]
-    fn ragged_key_domains_do_not_panic() {
+    fn ragged_key_domains_stay_independent() {
         let dpf = Dpf::with_default_key();
-        let k_long = dpf.gen(5, 8).0;
+        let k_long = dpf.gen(200, 8).0;
         let k_short = dpf.gen(5, 7).0;
-        let refs = [&k_long, &k_short];
-        let table = chunk_table();
-        let (accs, _t) = process_chunk_group(&refs[..], &table, BINS);
-        assert_eq!(accs.len(), 2);
-        assert!(accs.iter().all(|a| a.len() == CHUNK_RESULT_SIZE));
+        let table = table();
+        let (accs, _t) = process_table_group(&[&k_long, &k_short], &table, BINS, RESULT_SIZE);
+        assert_eq!(accs[0], alone(&k_long, &table));
+        assert_eq!(accs[1], alone(&k_short, &table));
     }
 }
