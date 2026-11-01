@@ -7,8 +7,6 @@ use crate::oram::{direct_oram_response_padding_bytes, DirectOramTables};
 use crate::unsafe_debug_log;
 use libdpf::DpfKey;
 use pir_core::params;
-use rayon::prelude::*;
-use runtime::eval::{self, GroupTiming};
 use runtime::hint_pool;
 use runtime::protocol::*;
 use runtime::table::{DatabaseType, MappedDatabase, MappedSubTable, ServerState};
@@ -54,6 +52,8 @@ pub(crate) struct V2HalfPending {
 pub(crate) const V2_HALF_PENDING_TTL_SECS: u64 = 30;
 
 pub(crate) struct UnifiedServerData {
+    /// Shares one table scan among concurrent DPF queries.
+    pub(crate) dpf_scans: crate::scan_batch::ScanBatcher,
     pub(crate) state: ServerState,
     pub(crate) role: ServerRole,
     /// OnionPIR worker channels indexed by db_id.
@@ -404,90 +404,41 @@ impl UnifiedServerData {
         }
     }
 
+    /// DPF keys of a batch query, `keys[g]` for each group the table has.
+    fn dpf_keys(query: &BatchQuery, table: &MappedSubTable, per_group: usize) -> Vec<Vec<DpfKey>> {
+        query
+            .keys
+            .iter()
+            .take(table.params.k)
+            .map(|group| {
+                group
+                    .iter()
+                    .take(per_group)
+                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// INDEX batch: two keys per group (the cuckoo positions).
     pub(crate) fn process_index_batch(
         &self,
         query: &BatchQuery,
         db: &MappedDatabase,
+        free: bool,
     ) -> (BatchResult, std::time::Duration, std::time::Duration) {
-        let k = db.index.params.k;
-        let num_groups = query.keys.len().min(k);
-        let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
-            .into_par_iter()
-            .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
-                let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
-                let table_bytes = db.index.group_bytes(b);
-                let (r0, r1, timing) = eval::process_index_group(
-                    key_refs[0],
-                    key_refs[1],
-                    table_bytes,
-                    db.index.bins_per_table,
-                );
-                (vec![r0, r1], timing)
-            })
-            .collect();
-
-        let mut total_dpf = std::time::Duration::ZERO;
-        let mut total_fetch = std::time::Duration::ZERO;
-        let mut results = Vec::with_capacity(num_groups);
-        for (r, t) in group_results {
-            total_dpf += t.dpf_eval;
-            total_fetch += t.fetch_xor;
-            results.push(r);
-        }
-        (
-            BatchResult {
-                level: 0,
-                round_id: 0,
-                results,
-            },
-            total_dpf,
-            total_fetch,
-        )
+        let keys = Self::dpf_keys(query, &db.index, params::INDEX_CUCKOO_NUM_HASHES);
+        self.scan_batch(&db.index, free, keys, 0, 0)
     }
 
     pub(crate) fn process_chunk_batch(
         &self,
         query: &BatchQuery,
         db: &MappedDatabase,
+        free: bool,
     ) -> (BatchResult, std::time::Duration, std::time::Duration) {
-        let k = db.chunk.params.k;
-        let num_groups = query.keys.len().min(k);
-        let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
-            .into_par_iter()
-            .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
-                let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
-                let table_bytes = db.chunk.group_bytes(b);
-                let (r, timing) =
-                    eval::process_chunk_group(&key_refs, table_bytes, db.chunk.bins_per_table);
-                (r, timing)
-            })
-            .collect();
-
-        let mut total_dpf = std::time::Duration::ZERO;
-        let mut total_fetch = std::time::Duration::ZERO;
-        let mut results = Vec::with_capacity(num_groups);
-        for (r, t) in group_results {
-            total_dpf += t.dpf_eval;
-            total_fetch += t.fetch_xor;
-            results.push(r);
-        }
-        (
-            BatchResult {
-                level: 1,
-                round_id: query.round_id,
-                results,
-            },
-            total_dpf,
-            total_fetch,
-        )
+        let keys = Self::dpf_keys(query, &db.chunk, usize::MAX);
+        self.scan_batch(&db.chunk, free, keys, 1, query.round_id)
     }
 
     /// Generic DPF batch evaluation against any MappedSubTable.
@@ -495,46 +446,29 @@ impl UnifiedServerData {
         &self,
         query: &BatchQuery,
         table: &MappedSubTable,
+        free: bool,
     ) -> (BatchResult, std::time::Duration, std::time::Duration) {
-        let k = table.params.k;
-        let result_size = table.params.bin_size();
-        let num_groups = query.keys.len().min(k);
+        let keys = Self::dpf_keys(query, table, usize::MAX);
+        self.scan_batch(table, free, keys, query.level, query.round_id)
+    }
 
-        let group_results: Vec<(Vec<Vec<u8>>, GroupTiming)> = (0..num_groups)
-            .into_par_iter()
-            .map(|b| {
-                let dpf_keys: Vec<DpfKey> = query.keys[b]
-                    .iter()
-                    .map(|k| DpfKey::from_bytes(k).expect("bad dpf key"))
-                    .collect();
-                let key_refs: Vec<&DpfKey> = dpf_keys.iter().collect();
-                let table_bytes = table.group_bytes(b);
-                let (r, timing) = eval::process_merkle_sibling_group(
-                    &key_refs,
-                    table_bytes,
-                    table.bins_per_table,
-                    result_size,
-                );
-                (r, timing)
-            })
-            .collect();
-
-        let mut total_dpf = std::time::Duration::ZERO;
-        let mut total_fetch = std::time::Duration::ZERO;
-        let mut results = Vec::with_capacity(num_groups);
-        for (r, t) in group_results {
-            total_dpf += t.dpf_eval;
-            total_fetch += t.fetch_xor;
-            results.push(r);
-        }
+    fn scan_batch(
+        &self,
+        table: &MappedSubTable,
+        free: bool,
+        keys: Vec<Vec<DpfKey>>,
+        level: u8,
+        round_id: u16,
+    ) -> (BatchResult, std::time::Duration, std::time::Duration) {
+        let r = self.dpf_scans.scan(table, free, keys);
         (
             BatchResult {
-                level: query.level,
-                round_id: query.round_id,
-                results,
+                level,
+                round_id,
+                results: r.groups,
             },
-            total_dpf,
-            total_fetch,
+            r.timing.dpf_eval,
+            r.timing.fetch_xor,
         )
     }
 

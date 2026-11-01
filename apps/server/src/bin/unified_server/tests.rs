@@ -1077,3 +1077,77 @@ mod oram_only_tests {
         );
     }
 }
+
+mod scan_batch_tests {
+    //! Concurrent DPF queries on one table share a scan; each must still get
+    //! exactly the results of evaluating its own keys alone.
+    use crate::scan_batch::ScanBatcher;
+    use libdpf::{Dpf, DpfKey};
+    use runtime::eval::process_table_group;
+    use runtime::table::MappedSubTable;
+    use std::sync::Arc;
+
+    const BINS: usize = 256;
+
+    fn table() -> MappedSubTable {
+        let params = pir_core::params::TableParams {
+            k: 3,
+            ..pir_core::params::CHUNK_PARAMS
+        };
+        let len = params.k * params.table_byte_size(BINS);
+        let mut map = memmap2::MmapMut::map_anon(len).unwrap();
+        for (i, b) in map.iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        MappedSubTable {
+            mmap: Arc::new(map.make_read_only().unwrap()),
+            table_byte_size: params.table_byte_size(BINS),
+            params,
+            bins_per_table: BINS,
+            data_offset: 0,
+            tag_seed: 0,
+            master_seed: 0,
+            anchor: None,
+        }
+    }
+
+    #[test]
+    fn concurrent_scans_match_solo_evaluation() {
+        let table = table();
+        let batcher = ScanBatcher::default();
+        let dpf = Dpf::with_default_key();
+        // Queries differ in key count and group count, like real INDEX,
+        // CHUNK and sibling batches.
+        let queries: Vec<Vec<Vec<DpfKey>>> = (0..6u64)
+            .map(|q| {
+                (0..(1 + q as usize % 3))
+                    .map(|g| {
+                        (0..(1 + q % 2))
+                            .map(|i| dpf.gen((q * 31 + g as u64 * 7 + i) % 256, 8).0)
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = queries
+                .iter()
+                .map(|keys| {
+                    let (table, batcher) = (&table, &batcher);
+                    s.spawn(move || batcher.scan(table, false, keys.clone()).groups)
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for (keys, groups) in queries.iter().zip(&results) {
+            assert_eq!(groups.len(), keys.len());
+            for (g, (group_keys, accs)) in keys.iter().zip(groups).enumerate() {
+                let refs: Vec<&DpfKey> = group_keys.iter().collect();
+                let solo =
+                    process_table_group(&refs, table.group_bytes(g), BINS, table.params.bin_size())
+                        .0;
+                assert_eq!(accs, &solo);
+            }
+        }
+    }
+}

@@ -274,6 +274,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_INDEX_BATCH => {
                         if let Ok(Request::IndexBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
+                            let free = free_pool.is_some();
                             let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) => db,
@@ -281,7 +282,7 @@ pub(crate) async fn handle_variant<S>(
                                 };
                                 let t = Instant::now();
                                 let n = q.keys.len();
-                                let (batch, dpf_sum, fetch_sum) = s.process_index_batch(&q, db);
+                                let (batch, dpf_sum, fetch_sum) = s.process_index_batch(&q, db, free);
                                 let wall = t.elapsed();
                                 unsafe_debug_log!("[index] db={} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, n, wall, dpf_sum, fetch_sum);
                                 Response::IndexBatch(batch)
@@ -292,6 +293,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_CHUNK_BATCH => {
                         if let Ok(Request::ChunkBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
+                            let free = free_pool.is_some();
                             let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) => db,
@@ -300,7 +302,7 @@ pub(crate) async fn handle_variant<S>(
                                 let t = Instant::now();
                                 let n = q.keys.len();
                                 let round = q.round_id;
-                                let (batch, dpf_sum, fetch_sum) = s.process_chunk_batch(&q, db);
+                                let (batch, dpf_sum, fetch_sum) = s.process_chunk_batch(&q, db, free);
                                 let wall = t.elapsed();
                                 unsafe_debug_log!("[chunk] db={} r{} {} groups {:.2?} | dpf {:.2?} fetch+xor {:.2?}", q.db_id, round, n, wall, dpf_sum, fetch_sum);
                                 Response::ChunkBatch(batch)
@@ -317,6 +319,7 @@ pub(crate) async fn handle_variant<S>(
                     REQ_BUCKET_MERKLE_SIB_BATCH => {
                         if let Ok(Request::BucketMerkleSibBatch(q)) = Request::decode(payload) {
                             let s = Arc::clone(&server);
+                            let free = free_pool.is_some();
                             let resp = spawn_heavy(&free_pool, move || {
                                 let db = match s.state.get_db(q.db_id) {
                                     Some(db) if db.has_bucket_merkle() => db,
@@ -336,7 +339,7 @@ pub(crate) async fn handle_variant<S>(
                                     return Response::Error(format!("bucket merkle: invalid level {}", level));
                                 }
                                 let sib = &sib_tables[level];
-                                let (batch, dpf_sum, fetch_sum) = s.process_generic_batch(&q, sib);
+                                let (batch, dpf_sum, fetch_sum) = s.process_generic_batch(&q, sib, free);
                                 let wall = t.elapsed();
                                 unsafe_debug_log!("[bkt-merkle-sib] db={} T{} L{} {} groups {:.2?} | dpf {:.2?} fetch {:.2?}",
                                     q.db_id, table_type, level, n, wall, dpf_sum, fetch_sum);

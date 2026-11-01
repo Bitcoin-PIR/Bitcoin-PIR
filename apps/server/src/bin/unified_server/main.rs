@@ -18,6 +18,7 @@ mod io;
 mod logging;
 mod onion;
 mod oram;
+mod scan_batch;
 mod serve;
 mod state;
 
@@ -578,6 +579,7 @@ async fn main() {
         serve_hints: args.serve_hints,
         serve_queries: args.serve_queries,
         oram_only: args.oram_only,
+        dpf_scans: Default::default(),
     });
     // Background task: garbage-collect V2-half pending entries whose
     // matching second half never arrived. Runs every 10 s; entries
