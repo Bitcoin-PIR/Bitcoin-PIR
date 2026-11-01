@@ -64,4 +64,13 @@ describe('findEntryInOnionPirIndexResult', () => {
     const result = findEntryInOnionPirIndexResult(data, 0x9999n, testBucketSize, SLOT_SIZE);
     expect(result).toBeNull();
   });
+
+  it('reads the builder whale flag as a whale (numEntries 0)', () => {
+    const data = new Uint8Array(SLOT_SIZE);
+    writeU64LE(data, 0, 0xabcdn);
+    data[14] = 0x40; // builder whale marker, entryId and byteOffset are 0
+
+    const result = findEntryInOnionPirIndexResult(data, 0xabcdn, 1, SLOT_SIZE);
+    expect(result).toEqual({ entryId: 0, byteOffset: 0, numEntries: 0 });
+  });
 });

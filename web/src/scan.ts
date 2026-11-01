@@ -1,5 +1,14 @@
 /**
+ * `numEntries` byte the OnionPIR builder writes for a whale (more than 100
+ * UTXOs, excluded from the CHUNK level), with entryId = 0 and byteOffset = 0
+ * (tools/db-builder/src/gen_1_onion.rs). A real group spans at most a few
+ * packed entries, so the value is unambiguous.
+ */
+export const ONION_WHALE_NUM_ENTRIES = 0x40;
+
+/**
  * Scan an OnionPIR index result for a matching tag.
+ * A whale slot comes back with numEntries = 0, the whale case in the client.
  *
  * OnionPIR slot layout: [8B tag LE][4B entryId LE][2B byteOffset LE][1B numEntries]
  * 15 bytes per slot, 256 slots per bin = 3840B.
@@ -24,7 +33,7 @@ export function findEntryInOnionPirIndexResult(
       return {
         entryId: dv.getUint32(off + 8, true),
         byteOffset: dv.getUint16(off + 12, true),
-        numEntries: data[off + 14],
+        numEntries: data[off + 14] === ONION_WHALE_NUM_ENTRIES ? 0 : data[off + 14],
       };
     }
   }
