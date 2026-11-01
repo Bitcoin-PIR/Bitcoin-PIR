@@ -55,6 +55,27 @@ public:
 
   // Given the client id and a packed client query, this function first unpacks the query, then returns the retrieved encrypted result.
   RlweCt make_query(const size_t client_id, RlweCt &query);
+
+  /**
+   * Shared-store batch path. make_query split in three so that one pass over
+   * the shared store answers the first dimension of many servers at once:
+   * prepare_query on each server, shared_first_dim_levels over all levels
+   * (disjoint level ranges may run concurrently), then finish_query on each.
+   * The responses are byte-identical to make_query.
+   */
+  struct PreparedQuery {
+    size_t client_id = 0;
+    std::vector<db_coeff_t> query_data;  // [level][fst_dim][2], NTT form
+    std::vector<GSWCt> gsw_vec;
+  };
+  void prepare_query(size_t client_id, RlweCt &query, PreparedQuery &out);
+  // First dimension for levels [l0, l1) of servers[i] with queries[i]. Every
+  // server must be in shared-store mode. Reads each level row of the store
+  // once per call and writes only those levels of each server's inter_res_.
+  static void shared_first_dim_levels(PirServer *const *servers,
+                                      const PreparedQuery *const *queries,
+                                      size_t count, size_t l0, size_t l1);
+  RlweCt finish_query(PreparedQuery &pq);
   // return the number of bits needed to represent the server reponse
   size_t save_resp_to_stream(const RlweCt &response, std::stringstream &resp_stream);
   void set_client_bv_galois_key(const size_t client_id, bvks::BvGaloisKeys bv_keys);
@@ -188,6 +209,11 @@ private:
 
   // Fill the intermediate_db_ with some ciphertext. We just need to allocate the memory.
   void fill_inter_res();
+  std::vector<RlweCt> expand_query(size_t client_id, RlweCt &query,
+                                   std::vector<GSWCt> &gsw_vec);
+  RlweCt finish_other_dims(std::vector<RlweCt> &mid_db, std::vector<GSWCt> &gsw_vec);
+  void shared_first_dim_level(const db_coeff_t *query_data, size_t level,
+                              db_coeff_t *row);
 
   void prep_query(std::vector<RlweCt> &fst_dim_query, std::vector<db_coeff_t>& query_data);
 

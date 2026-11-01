@@ -59,6 +59,7 @@ type ClientHandle = *mut c_void;
 type ServerHandle = *mut c_void;
 type KeyStoreHandle = *mut c_void;
 type QueueHandle = *mut c_void;
+type PreparedHandle = *mut c_void;
 
 #[link(name = "onionpir", kind = "static")]
 extern "C" {
@@ -93,6 +94,15 @@ extern "C" {
         query: *const u8,
         query_len: usize,
     ) -> COnionBuf;
+
+    fn onion_server_prepare_query(h: ServerHandle, client_id: u64,
+                                  query: *const u8, query_len: usize) -> PreparedHandle;
+    fn onion_prepared_free(p: PreparedHandle);
+    fn onion_server_shared_first_dim_levels(servers: *const ServerHandle,
+                                            prepared: *const PreparedHandle,
+                                            count: usize, level_begin: usize,
+                                            level_end: usize) -> i32;
+    fn onion_server_finish_query(h: ServerHandle, p: PreparedHandle) -> COnionBuf;
 
     fn onion_server_save_db(h: ServerHandle, path: *const c_char) -> i32;
     fn onion_server_load_db(h: ServerHandle, path: *const c_char) -> i32;
@@ -376,6 +386,75 @@ impl Server {
         );
         len != 0
     }
+}
+
+/// A query after expansion and RGSW conversion, waiting for its first
+/// dimension. See [`shared_first_dim`].
+pub struct PreparedQuery {
+    h: PreparedHandle,
+}
+
+unsafe impl Send for PreparedQuery {}
+unsafe impl Sync for PreparedQuery {}
+
+impl Drop for PreparedQuery {
+    fn drop(&mut self) {
+        unsafe { onion_prepared_free(self.h) };
+    }
+}
+
+impl Server {
+    /// First step of the shared-store batch path: expand `query` and convert
+    /// its selectors. `None` if the engine rejected the query.
+    pub fn prepare_query(&mut self, client_id: u64, query: &[u8]) -> Option<PreparedQuery> {
+        let h = unsafe {
+            onion_server_prepare_query(self.h, client_id, query.as_ptr(), query.len())
+        };
+        if h.is_null() { None } else { Some(PreparedQuery { h }) }
+    }
+
+    /// Last step of the shared-store batch path: the remaining dimensions on
+    /// the first-dimension result [`shared_first_dim`] left in this server.
+    /// Returns the same bytes as [`Server::answer_query`]; empty on failure.
+    pub fn finish_query(&mut self, prepared: &PreparedQuery) -> Vec<u8> {
+        buf_to_vec(unsafe { onion_server_finish_query(self.h, prepared.h) })
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Handles(*const ServerHandle, *const PreparedHandle);
+unsafe impl Send for Handles {}
+unsafe impl Sync for Handles {}
+
+/// First dimension of `prepared[i]` on `servers[i]`, all in shared-store
+/// mode, in one pass over the shared store: `threads` threads each read a
+/// contiguous range of the store's level rows once and feed every server.
+/// Returns `false` if a server has no shared store or the slices differ in
+/// length.
+pub fn shared_first_dim(servers: &mut [Server], prepared: &[PreparedQuery], threads: usize) -> bool {
+    if servers.len() != prepared.len() {
+        return false;
+    }
+    let levels = params_info(0).coeff_val_cnt as usize;
+    let threads = threads.clamp(1, levels);
+    let hs: Vec<ServerHandle> = servers.iter().map(|s| s.h).collect();
+    let ps: Vec<PreparedHandle> = prepared.iter().map(|p| p.h).collect();
+    let handles = Handles(hs.as_ptr(), ps.as_ptr());
+    let count = hs.len();
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|t| {
+                let (begin, end) = (levels * t / threads, levels * (t + 1) / threads);
+                scope.spawn(move || {
+                    let h = handles;
+                    // SAFETY: `servers` is borrowed mutably for the whole call and
+                    // each thread writes a disjoint level range of every server.
+                    unsafe { onion_server_shared_first_dim_levels(h.0, h.1, count, begin, end) != 0 }
+                })
+            })
+            .collect();
+        workers.into_iter().all(|w| w.join().unwrap_or(false))
+    })
 }
 
 impl Drop for Server {

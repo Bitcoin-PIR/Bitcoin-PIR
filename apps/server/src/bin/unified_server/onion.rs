@@ -721,13 +721,33 @@ pub(crate) fn setup_onionpir_workers(
                                     .collect();
                                 ("index", results)
                             } else if level == 1 {
-                                let results: Vec<Vec<u8>> = chunk_servers
+                                // Every CHUNK group gathers from the one shared NTT
+                                // store, so a single pass over it answers all groups:
+                                // RAM stays at the per-group results and the store is
+                                // read sequentially once per batch.
+                                let prepared: Option<Vec<onionpir::PreparedQuery>> = chunk_servers
                                     .par_iter_mut()
                                     .enumerate()
                                     .map(|(b, server)| {
-                                        server.answer_query(client_id, &queries_ref[b])
+                                        server.prepare_query(client_id, &queries_ref[b])
                                     })
                                     .collect();
+                                let results: Vec<Vec<u8>> = match prepared {
+                                    Some(prepared)
+                                        if onionpir::shared_first_dim(
+                                            &mut chunk_servers,
+                                            &prepared,
+                                            rayon::current_num_threads(),
+                                        ) =>
+                                    {
+                                        chunk_servers
+                                            .par_iter_mut()
+                                            .zip(prepared.par_iter())
+                                            .map(|(server, p)| server.finish_query(p))
+                                            .collect()
+                                    }
+                                    _ => vec![Vec::new(); chunk_servers.len()],
+                                };
                                 ("chunk", results)
                             } else if level == 10 || level == 11 {
                                 // Per-group OnionPIR Merkle siblings:
