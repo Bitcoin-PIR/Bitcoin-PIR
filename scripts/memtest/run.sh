@@ -11,6 +11,9 @@
 #   WORK   worktrees, builds and reports           (default ~/bpir-memtest)
 #   ONLY   dpf or onion, to run one backend only
 #   FETCH  1 to (re)run the resumable download even if DATA has databases.toml
+#   PRS    branches merged into main for the "pr" build (default: #466 and
+#          #467); empty (PRS=) builds main only
+#   CLIENT_REF  branch the bench client is built from (default main)
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -18,8 +21,8 @@ REPO=${REPO:-$(git -C "$HERE" rev-parse --show-toplevel)}
 DATA=${DATA:-$HOME/bpir-data/948454}
 WORK=${WORK:-$HOME/bpir-memtest}
 URL=https://data.bitcoinpir.org/948454
-PR466=codex/onionpir-chunk-single-pass
-PR467=codex/dpf-shared-scan
+PRS=${PRS-codex/onionpir-chunk-single-pass codex/dpf-shared-scan}
+CLIENT_REF=${CLIENT_REF:-main}
 
 say() { printf '\n== %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -50,45 +53,57 @@ if [[ ! -f $DATA/databases.toml || ${FETCH:-0} == 1 ]]; then
   "$REPO/scripts/data-bundle.sh" fetch "$URL" "$DATA" oram-direct-inputs
 fi
 
-say "sources: main, and main + #466 + #467"
-git -C "$REPO" fetch origin $(for b in main "$PR466" "$PR467"; do printf "+refs/heads/%s:refs/remotes/origin/%s " "$b" "$b"; done)
+say "sources: main${PRS:+, main + $PRS}; client from $CLIENT_REF"
+refs=""
+for b in main $PRS $CLIENT_REF; do refs+="+refs/heads/$b:refs/remotes/origin/$b "; done
+# shellcheck disable=SC2086
+git -C "$REPO" fetch origin $refs
 git -C "$REPO" worktree prune
-for wt in main pr; do
-  if [[ -d $WORK/src-$wt ]]; then
-    git -C "$WORK/src-$wt" checkout -q --detach origin/main
-    git -C "$WORK/src-$wt" reset -q --hard origin/main
-    git -C "$WORK/src-$wt" clean -qfd
+worktree() {  # worktree NAME REF: a clean detached checkout of REF
+  if [[ -d $WORK/src-$1 ]]; then
+    git -C "$WORK/src-$1" checkout -q --detach "$2"
+    git -C "$WORK/src-$1" reset -q --hard "$2"
+    git -C "$WORK/src-$1" clean -qfd
   else
-    git -C "$REPO" worktree add -q --detach "$WORK/src-$wt" origin/main
+    git -C "$REPO" worktree add -q --detach "$WORK/src-$1" "$2"
   fi
-done
-# The two PRs only overlap in one table of docs/OPERATOR_GUIDE.md; -X ours
-# keeps #466's line there. Code is unaffected.
-git -C "$WORK/src-pr" -c user.name=memtest -c user.email=memtest@localhost \
-  merge -q --no-edit "origin/$PR466"
-git -C "$WORK/src-pr" -c user.name=memtest -c user.email=memtest@localhost \
-  merge -q --no-edit -X ours "origin/$PR467"
+}
+worktree main origin/main
+worktree client "origin/$CLIENT_REF"
+BUILDS=(main)
 REV_MAIN=$(git -C "$WORK/src-main" rev-parse --short HEAD)
-REV_PR="$REV_MAIN + $(git -C "$REPO" rev-parse --short "origin/$PR466") (#466) + $(git -C "$REPO" rev-parse --short "origin/$PR467") (#467)"
+REVS=(--rev "main=$REV_MAIN")
+if [[ -n $PRS ]]; then
+  worktree pr origin/main
+  REV_PR=$REV_MAIN
+  for b in $PRS; do
+    # -X ours: PRs that only overlap in docs keep the first one's lines.
+    git -C "$WORK/src-pr" -c user.name=memtest -c user.email=memtest@localhost \
+      merge -q --no-edit -X ours "origin/$b"
+    REV_PR+=" + $b@$(git -C "$REPO" rev-parse --short "origin/$b")"
+  done
+  BUILDS+=(pr)
+  REVS+=(--rev "pr=$REV_PR")
+fi
 
-for wt in main pr; do
+BUILD_ARGS=()
+for wt in "${BUILDS[@]}"; do
   say "build unified_server ($wt)"
   (cd "$WORK/src-$wt" && CARGO_TARGET_DIR=$WORK/target-$wt \
     cargo build --locked --offline --release -p runtime --bin unified_server)
+  BUILD_ARGS+=(--build "$wt=$WORK/target-$wt/release/unified_server")
 done
-say "build bench_client (from main; the client is the same in both)"
-cp "$HERE/bench_client.rs" "$WORK/src-main/crates/sdk/client/examples/bench_client.rs"
-(cd "$WORK/src-main" && CARGO_TARGET_DIR=$WORK/target-main \
+say "build bench_client (from $CLIENT_REF)"
+cp "$HERE/bench_client.rs" "$WORK/src-client/crates/sdk/client/examples/bench_client.rs"
+(cd "$WORK/src-client" && CARGO_TARGET_DIR=$WORK/target-client \
   cargo build --locked --offline --release -p pir-sdk-client --features onion --example bench_client)
 
 OUT=$WORK/report-$(date +%Y%m%d-%H%M%S)
 say "measure (writes $OUT)"
 python3 "$HERE/bench.py" \
   --config "$DATA/databases.toml" \
-  --client "$WORK/target-main/release/examples/bench_client" \
-  --build "main=$WORK/target-main/release/unified_server" \
-  --build "pr=$WORK/target-pr/release/unified_server" \
-  --rev "main=$REV_MAIN" --rev "pr=$REV_PR" \
+  --client "$WORK/target-client/release/examples/bench_client" \
+  "${BUILD_ARGS[@]}" "${REVS[@]}" --rev "client=$CLIENT_REF@$(git -C "$WORK/src-client" rev-parse --short HEAD)" \
   ${ONLY:+--only "$ONLY"} \
   --out "$OUT"
 say "report: $OUT/report.md"

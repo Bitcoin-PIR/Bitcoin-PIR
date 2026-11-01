@@ -49,6 +49,14 @@ DATA=~/bpir-data/948454 WORK=~/bpir-memtest bash scripts/memtest/run.sh
 
 - `DATA` 下没有 `databases.toml` 就会用 `scripts/data-bundle.sh` 下载（可断点续传，结束时校验 SHA256）。已有数据就指过去。
 - `ONLY=dpf` 或 `ONLY=onion` 只测一种后端。
+- `PRS=` （留空）只编 main，不编 pr；`PRS="分支1 分支2"` 换成别的分支合进 main。
+- `CLIENT_REF=分支` 用那个分支编测试客户端（默认 main），比如验证 #468：
+
+```sh
+PRS= CLIENT_REF=codex/onion-chunk-master-seed DATA=~/bpir-data/948454 WORK=~/bpir-memtest bash scripts/memtest/run.sh
+```
+
+报告第 1b 节逐个地址比较同一构建里 OnionPIR 和 DPF 的结果，两者应该一致。
 
 ## 输出
 

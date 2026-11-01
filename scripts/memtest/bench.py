@@ -312,6 +312,26 @@ def report(results, path):
                 L.append("| %s | %s | %s | %s | %s |" % (b, kind, name, same, "; ".join(probs)[:300] or "无"))
     L.append("")
 
+    L.append("## 1b. OnionPIR 和 DPF 的结果是否一致（同一构建、warm_1，完整快照）\n")
+    L.append("| 构建 | 地址 | DPF | OnionPIR | 一致 |")
+    L.append("| --- | --- | --- | --- | --- |")
+    for b in builds:
+        try:
+            d = results["builds"][b]["dpf"]["runs"]["warm_1"]["clients"][0]["full"]["results"]
+            o = results["builds"][b]["onion"]["runs"]["warm_1"]["clients"][0]["full"]["results"]
+        except (KeyError, IndexError, TypeError):
+            continue
+        for dr, orr in zip(d, o):
+            def show(r):
+                r = r["result"]
+                if r is None:
+                    return "未找到"
+                return "whale" if r["is_whale"] else "%d 条" % len(r["entries"])
+            same = (dr["result"] or {}).get("entries") == (orr["result"] or {}).get("entries") and \
+                (dr["result"] or {}).get("is_whale") == (orr["result"] or {}).get("is_whale")
+            L.append("| %s | %s | %s | %s | %s |" % (b, dr["address"], show(dr), show(orr), "是" if same else "**否**"))
+    L.append("")
+
     L.append("## 2. 内存（被测节点：DPF 取 server 1，OnionPIR 取唯一一台）\n")
     L.append("footprint 是进程自己必须占的内存（不含 mmap 文件的页缓存），决定机器最少要多大内存；RSS 含页缓存，只作参考。\n")
     L.append("| 构建 | 节点 | 启动耗时 | 启动后 footprint | 启动峰值 footprint | 全程峰值 footprint | 全程最大 RSS |")
