@@ -2199,8 +2199,17 @@ struct IndexBinMerkle {
     bin_hash: Hash256,
 }
 
+/// `num_entries` byte the OnionPIR builder writes for a whale (more than
+/// 100 UTXOs, excluded from the CHUNK level), with `entry_id = 0` and
+/// `byte_offset = 0` (`tools/db-builder/src/gen_1_onion.rs`). A real group
+/// spans at most a few packed entries, so the value is unambiguous.
+#[cfg(feature = "onion")]
+const ONION_WHALE_NUM_ENTRIES: u8 = 0x40;
+
 /// Scan a decrypted INDEX bin (slots_per_bin × slot_size bytes) for a tag.
 /// OnionPIR slot layout: `tag(8) | entry_id(4) | byte_offset(2) | num_entries(1)`.
+/// A whale slot comes back with `num_entries = 0`, the whale case everywhere
+/// else in the client.
 #[cfg(feature = "onion")]
 fn scan_index_bin(
     entry_bytes: &[u8],
@@ -2217,7 +2226,10 @@ fn scan_index_bin(
         if slot_tag == tag && slot_tag != 0 {
             let entry_id = u32::from_le_bytes(entry_bytes[off + 8..off + 12].try_into().ok()?);
             let byte_offset = u16::from_le_bytes(entry_bytes[off + 12..off + 14].try_into().ok()?);
-            let num_entries = entry_bytes[off + 14];
+            let num_entries = match entry_bytes[off + 14] {
+                ONION_WHALE_NUM_ENTRIES => 0,
+                n => n,
+            };
             return Some(IndexResult {
                 entry_id,
                 byte_offset,
@@ -3732,6 +3744,19 @@ mod tests {
         assert_eq!(ir.entry_id, 7);
         assert_eq!(ir.byte_offset, 100);
         assert_eq!(ir.num_entries, 3);
+    }
+
+    /// The builder marks a whale with `num_entries = 0x40`; the client must
+    /// read it as a whale, not as 64 packed entries starting at entry 0.
+    #[cfg(feature = "onion")]
+    #[test]
+    fn test_scan_index_bin_whale_flag() {
+        let mut entry = vec![0u8; 15];
+        entry[0..8].copy_from_slice(&0x42u64.to_le_bytes());
+        entry[14] = 0x40;
+        let ir = scan_index_bin(&entry, 0x42, 1, 15).expect("should find");
+        assert_eq!(ir.entry_id, 0);
+        assert_eq!(ir.num_entries, 0);
     }
 
     #[cfg(feature = "onion")]
