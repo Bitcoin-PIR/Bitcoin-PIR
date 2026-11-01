@@ -214,10 +214,6 @@ const CHUNK_CUCKOO_NUM_HASHES: usize = 6;
 #[cfg(feature = "onion")]
 const CHUNK_CUCKOO_MAX_KICKS: usize = 10000;
 
-/// Master seed for CHUNK cuckoo derivation (must match server).
-#[cfg(feature = "onion")]
-const CHUNK_CUCKOO_SEED: u64 = 0xa3f7c2d918e4b065;
-
 /// Sentinel for empty cuckoo slots.
 #[cfg(feature = "onion")]
 const EMPTY: u32 = u32::MAX;
@@ -1851,10 +1847,15 @@ impl OnionClient {
             for &(ei, group) in round {
                 let eid = unique[ei];
                 cuckoo_cache.entry(group).or_insert_with(|| {
-                    build_chunk_cuckoo_for_group(group, &reverse_index, chunk_bins)
+                    build_chunk_cuckoo_for_group(
+                        db_info.chunk_master_seed,
+                        group,
+                        &reverse_index,
+                        chunk_bins,
+                    )
                 });
 
-                let keys = chunk_derive_keys(group);
+                let keys = chunk_derive_keys(db_info.chunk_master_seed, group);
                 let bin =
                     find_in_chunk_cuckoo(cuckoo_cache.get(&group).unwrap(), eid, &keys, chunk_bins)
                         .ok_or_else(|| {
@@ -2314,14 +2315,12 @@ fn decode_utxo_entries(data: &[u8]) -> PirResult<Vec<UtxoEntry>> {
 // ─── Client-side CHUNK cuckoo (6-hash, slots_per_bin=1) ─────────────────────
 
 #[cfg(feature = "onion")]
-fn chunk_derive_keys(group_id: usize) -> [u64; CHUNK_CUCKOO_NUM_HASHES] {
+/// The CHUNK cuckoo keys of `group_id`, from the database's chunk master
+/// seed (chain-derived for anchored builds, the legacy constant before).
+fn chunk_derive_keys(master_seed: u64, group_id: usize) -> [u64; CHUNK_CUCKOO_NUM_HASHES] {
     let mut keys = [0u64; CHUNK_CUCKOO_NUM_HASHES];
     for (h, k) in keys.iter_mut().enumerate() {
-        *k = pir_core::hash::splitmix64(
-            CHUNK_CUCKOO_SEED
-                .wrapping_add((group_id as u64).wrapping_mul(pir_core::hash::GOLDEN_RATIO))
-                .wrapping_add((h as u64).wrapping_mul(pir_core::hash::CUCKOO_KEY_MIX)),
-        );
+        *k = pir_core::hash::derive_cuckoo_key(master_seed, group_id, h);
     }
     keys
 }
@@ -2346,12 +2345,13 @@ fn build_chunk_reverse_index(total_entries: usize, k_chunk: usize) -> Vec<Vec<u3
 
 #[cfg(feature = "onion")]
 fn build_chunk_cuckoo_for_group(
+    master_seed: u64,
     group_id: usize,
     reverse_index: &[Vec<u32>],
     bins_per_table: usize,
 ) -> Vec<u32> {
     let entries = &reverse_index[group_id];
-    let keys = chunk_derive_keys(group_id);
+    let keys = chunk_derive_keys(master_seed, group_id);
     let mut table = vec![EMPTY; bins_per_table];
 
     for &entry_id in entries {
@@ -2802,6 +2802,9 @@ fn build_catalog(
                     top_chunk_k,
                     top_tag_seed,
                 );
+            // The server's OnionPIR seeds win; the catalog entry's
+            // chain-derived seeds are the fallback (as in the web client).
+            let (opi_index_seed, opi_chunk_seed) = onion_master_seeds(json, d.db_id);
             dbs.push(DatabaseInfo {
                 db_id: d.db_id,
                 kind: d.kind,
@@ -2815,11 +2818,8 @@ fn build_catalog(
                 dpf_n_index: pir_core::params::compute_dpf_n(opi_bins_idx as usize),
                 dpf_n_chunk: pir_core::params::compute_dpf_n(opi_bins_chunk as usize),
                 has_bucket_merkle: false,
-                // OnionPIR INDEX cuckoo uses the same INDEX_CUCKOO_MASTER
-                // domain + anchor as the main DB, so the catalog entry's
-                // master seed + anchor carry through unchanged.
-                index_master_seed: d.index_master_seed,
-                chunk_master_seed: d.chunk_master_seed,
+                index_master_seed: opi_index_seed.unwrap_or(d.index_master_seed),
+                chunk_master_seed: opi_chunk_seed.unwrap_or(d.chunk_master_seed),
                 anchor_kind: d.anchor_kind,
                 anchor_bytes: d.anchor_bytes.clone(),
             });
@@ -2827,6 +2827,33 @@ fn build_catalog(
     }
 
     DatabaseCatalog { databases: dbs }
+}
+
+/// The `onionpir` object of a db_id in the info JSON: top level for db 0,
+/// else the matching entry of the `databases` array.
+fn onion_section(json: &str, db_id: u8) -> Option<&str> {
+    if db_id == 0 {
+        extract_json_object(json, "onionpir")
+    } else {
+        extract_json_object_array(json, "databases")
+            .and_then(|entries| {
+                entries
+                    .into_iter()
+                    .find(|e| json_u64(e, "db_id") == Some(db_id as u64))
+            })
+            .and_then(|e| extract_json_object(e, "onionpir"))
+    }
+}
+
+/// The OnionPIR INDEX and CHUNK master seeds a server reports for a db_id
+/// (the main database's `onionpir` object carries them; per-database
+/// entries do not). Zero counts as absent, as in the web client.
+fn onion_master_seeds(json: &str, db_id: u8) -> (Option<u64>, Option<u64>) {
+    let Some(opi) = onion_section(json, db_id) else {
+        return (None, None);
+    };
+    let seed = |key| json_u64(opi, key).filter(|&v| v != 0);
+    (seed("index_master_seed"), seed("chunk_master_seed"))
 }
 
 /// Pick OnionPIR level params for a db_id, falling back to top-level defaults.
@@ -2839,19 +2866,7 @@ fn onion_level_params(
     fallback_chunk_k: u8,
     fallback_tag_seed: u64,
 ) -> (u32, u32, u8, u8, u64) {
-    let opi_section = if db_id == 0 {
-        extract_json_object(json, "onionpir")
-    } else {
-        // Look for the matching entry in the databases array.
-        extract_json_object_array(json, "databases")
-            .and_then(|entries| {
-                entries
-                    .into_iter()
-                    .find(|e| json_u64(e, "db_id") == Some(db_id as u64))
-            })
-            .and_then(|e| extract_json_object(e, "onionpir"))
-    };
-    if let Some(opi) = opi_section {
+    if let Some(opi) = onion_section(json, db_id) {
         let ib = json_u64(opi, "index_bins_per_table").unwrap_or(fallback_index_bins as u64) as u32;
         let cb = json_u64(opi, "chunk_bins_per_table").unwrap_or(fallback_chunk_bins as u64) as u32;
         let ik = json_u64(opi, "index_k").unwrap_or(fallback_index_k as u64) as u8;
@@ -3301,6 +3316,53 @@ mod tests {
         assert!(matches!(db.kind, DatabaseKind::Full));
     }
 
+    #[test]
+    fn test_build_catalog_takes_onion_master_seeds() {
+        // The main database's `onionpir` object carries the seeds the
+        // OnionPIR tables were built with; a delta's entry does not, so it
+        // keeps the catalog's chain-derived seeds. Zero means absent.
+        let j = r#"{"onionpir":{"total_packed_entries":1000,"index_bins_per_table":100,"chunk_bins_per_table":200,"tag_seed":"0x1","index_master_seed":"0x00000000000000aa","chunk_master_seed":"0x00000000000000bb","index_k":75,"chunk_k":80,"index_slots_per_bin":256,"index_slot_size":15,"chunk_slots_per_bin":1,"chunk_slot_size":3840},"databases":[{"db_id":0,"onionpir":{"total_packed_entries":1000,"index_bins_per_table":100,"chunk_bins_per_table":200,"tag_seed":"0x1","index_k":75,"chunk_k":80,"index_slots_per_bin":256,"index_slot_size":15}},{"db_id":1,"onionpir":{"total_packed_entries":50,"index_bins_per_table":10,"chunk_bins_per_table":20,"tag_seed":"0x2","index_k":75,"chunk_k":80,"index_slots_per_bin":128,"index_slot_size":15}}]}"#;
+        let params = parse_onion_params_per_db(j);
+        let mut main = proof_test_db(1, 2, 948_454);
+        main.index_master_seed = 0x11;
+        main.chunk_master_seed = 0x22;
+        let mut delta = proof_test_db(1, 2, 948_454);
+        delta.db_id = 1;
+        delta.kind = DatabaseKind::Delta {
+            base_height: 940_611,
+        };
+        delta.index_master_seed = 0x33;
+        delta.chunk_master_seed = 0x44;
+        let catalog = build_catalog(
+            j,
+            &params,
+            &DatabaseCatalog {
+                databases: vec![main, delta],
+            },
+        );
+        let seeds: Vec<(u64, u64)> = catalog
+            .databases
+            .iter()
+            .map(|d| (d.index_master_seed, d.chunk_master_seed))
+            .collect();
+        assert_eq!(seeds, vec![(0xaa, 0xbb), (0x33, 0x44)]);
+
+        let zero = j.replace("0x00000000000000aa", "0x0000000000000000");
+        let catalog = build_catalog(
+            &zero,
+            &params,
+            &DatabaseCatalog {
+                databases: vec![{
+                    let mut d = proof_test_db(1, 2, 948_454);
+                    d.index_master_seed = 0x11;
+                    d
+                }],
+            },
+        );
+        assert_eq!(catalog.databases[0].index_master_seed, 0x11);
+        assert_eq!(catalog.databases[0].chunk_master_seed, 0xbb);
+    }
+
     #[tokio::test]
     async fn proof_verification_uses_standard_catalog_not_onion_query_geometry() {
         use crate::transport::mock::MockTransport;
@@ -3679,6 +3741,40 @@ mod tests {
         assert!(scan_index_bin(&entry, 0x42, 1, 15).is_none());
     }
 
+    /// The pre-chain-anchor CHUNK master seed.
+    #[cfg(feature = "onion")]
+    const LEGACY_CHUNK_SEED: u64 = 0xa3f7c2d918e4b065;
+
+    #[cfg(feature = "onion")]
+    #[test]
+    fn chunk_keys_follow_the_database_seed() {
+        // An anchored build (generation 948454 and later) derives its CHUNK
+        // cuckoo keys from the chain-derived master seed, exactly as the
+        // builder and the web client do. Keys from the legacy constant
+        // place entries in other bins, so the client fetched another
+        // entry's chunk and decoded it as this address's UTXOs.
+        let chain_seed = 0x5eed_0000_1234_abcd_u64;
+        for group in [0usize, 7, 79] {
+            let keys = chunk_derive_keys(chain_seed, group);
+            for (h, key) in keys.iter().enumerate() {
+                assert_eq!(
+                    *key,
+                    pir_core::hash::derive_cuckoo_key(chain_seed, group, h)
+                );
+            }
+            assert_ne!(keys, chunk_derive_keys(LEGACY_CHUNK_SEED, group));
+        }
+        let (total, k_chunk, bins) = (200usize, 10usize, 256usize);
+        let rev = build_chunk_reverse_index(total, k_chunk);
+        let group = 3;
+        let table = build_chunk_cuckoo_for_group(chain_seed, group, &rev, bins);
+        let keys = chunk_derive_keys(chain_seed, group);
+        for &eid in &rev[group] {
+            let bin = find_in_chunk_cuckoo(&table, eid, &keys, bins).expect("placed");
+            assert!(keys.iter().any(|&k| chunk_cuckoo_hash(eid, k, bins) == bin));
+        }
+    }
+
     #[cfg(feature = "onion")]
     #[test]
     fn test_chunk_cuckoo_roundtrip() {
@@ -3696,8 +3792,8 @@ mod tests {
             if entries.is_empty() {
                 continue;
             }
-            let table = build_chunk_cuckoo_for_group(group, &rev, bins);
-            let keys = chunk_derive_keys(group);
+            let table = build_chunk_cuckoo_for_group(LEGACY_CHUNK_SEED, group, &rev, bins);
+            let keys = chunk_derive_keys(LEGACY_CHUNK_SEED, group);
             for &eid in entries {
                 let bin = find_in_chunk_cuckoo(&table, eid, &keys, bins);
                 assert!(
