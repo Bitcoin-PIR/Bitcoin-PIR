@@ -461,6 +461,16 @@ them on restart, so operators republish daily. One `REQ` reads them all:
 ["REQ","bitcoinpir-node-announcements",{"kinds":[30078],"#t":["bitcoinpir-node"]}]
 ```
 
+Once a day the publisher reads them (`bpir-admin directory-artifact
+announcements`) and lists a node only when it answers as a wallet would check
+it: its REQ_ANNOUNCE certificate names the asserted operator key and
+`server_id`, and its GET_INFO_JSON serves every announced backend with the
+announced role and access class. Announced nodes list with attestation
+`none`. A node keeps its listing only while it keeps passing; a node that
+stops is published as a tombstone, and is listed again only with a higher
+`assertion_epoch`. A new assertion always needs a higher epoch, because
+wallets reject a second assertion at an epoch they already hold.
+
 ## Privacy and logging
 
 Directory events contain no invoice, payment hash, preimage, claim key,

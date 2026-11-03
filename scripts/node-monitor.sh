@@ -111,7 +111,7 @@ else
   if [[ -z "$issue" ]]; then
     body="The service directory at \`$DIRECTORY_RELAY\` is stale: $reason at $now.
 
-Republish it (\`docs/runbooks/directory-relay.md\`, \"Publish or update entries\"); the launchd agent on the Mac Studio normally does so on the 1st and 15th. This issue closes itself when the readback is healthy again (\`scripts/node-monitor.sh\`, run daily).
+Republish it (\`docs/runbooks/directory-relay.md\`, \"Publish or update entries\"); the launchd agent on the Mac Studio normally does so daily. This issue closes itself when the readback is healthy again (\`scripts/node-monitor.sh\`, run daily).
 
 <details><summary>Readback</summary>
 

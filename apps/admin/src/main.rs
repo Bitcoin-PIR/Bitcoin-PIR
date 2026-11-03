@@ -27,6 +27,7 @@ mod api_key;
 mod attest;
 mod channel_test;
 mod db_proof;
+mod directory_announce;
 mod directory_artifact;
 mod directory_publish;
 mod keygen;

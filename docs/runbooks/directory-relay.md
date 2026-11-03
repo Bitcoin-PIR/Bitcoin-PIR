@@ -127,6 +127,12 @@ server stays in the checkpoint set; a replaced key or `server_id` is a new
 provider id. A third-party operator sends their own assertion
 ([operator guide](../OPERATOR_GUIDE.md) §8); an
 entry cannot outlive it, so its `valid_until` goes in the line's last column.
+Most operators announce instead: each run first reads the relay's node
+announcements (`bpir-admin directory-artifact announcements`), checks each
+node live as a wallet would, and adds the nodes that pass as `node-<provider
+id>` providers; a node listed before that no longer passes is published as
+retired. `.keys/directory/announced/` keeps the assertion each node was last
+listed with, so a node cannot fork its own epoch.
 
 In production this runs unattended on the Mac Studio: the launchd agent
 `org.bitcoinpir.directory-publish` (template
@@ -134,10 +140,10 @@ In production this runs unattended on the Mac Studio: the launchd agent
 runs the wrapper
 [`scripts/directory-publish-launchd.sh`](../../scripts/directory-publish-launchd.sh)
 (the live agent keeps its copy beside the key in `.keys/directory/`, outside
-git) on the 1st and 15th at 10:00 local time; it opens the port-forward
+git) every day at 10:00 local time; it opens the port-forward
 above, runs the publish with the release `bpir-admin` and the nvm Node, and
-closes the forward. The catalog is therefore re-signed every 14–17 days, well
-inside its 30-day validity. Inspect it with
+closes the forward. Announced nodes are therefore listed within a day, and
+the catalog is re-signed well inside its 30-day validity. Inspect it with
 `launchctl print gui/$UID/org.bitcoinpir.directory-publish` (run count,
 last exit code) and `~/Library/Logs/bitcoinpir-directory-publish.log` (one
 `== <time> directory-publish start` / `done` pair per run, with the readback

@@ -19,6 +19,7 @@ pir-identity = { path = "../../crates/trust/identity" }
 pir-attest-verify = { path = "../../crates/trust/attest-verify" }
 pir-db-attest = { path = "../../crates/trust/db-attest" }
 pir-directory-nostr = { path = "../../crates/directory/nostr" }
+pir-credit = { path = "../../crates/trust/pir-credit" }
 
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }

@@ -1011,7 +1011,7 @@ fn decode_lower_fixed_hex<const N: usize>(value: &str, label: &str) -> Result<[u
         .map_err(|_| format!("{label} must be exactly {N} bytes"))
 }
 
-fn install_default_crypto_provider() {
+pub(crate) fn install_default_crypto_provider() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
