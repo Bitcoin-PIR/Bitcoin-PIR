@@ -26,6 +26,7 @@ import type { AccessBackend } from './credits.js';
 import { bytesToHex, hexToBytes } from './hash.js';
 import type {
   DirectoryCandidateV1,
+  DirectoryProviderV1,
   NostrDirectoryCatalogV1,
 } from './nostr-directory.js';
 import type { ProductionProviderPin } from './production-providers.js';
@@ -184,6 +185,18 @@ export function describeDirectoryCatalogV1(
     : 'no shard accepted';
   const rejected = catalog.rejected.length > 0 ? `, ${catalog.rejected.length} rejected` : '';
   return `${providers.size} provider${providers.size === 1 ? '' : 's'} · ${mode} · ${expiry}${rejected}`;
+}
+
+/** Every provider of the catalog once, by `server_id`. */
+export function directoryProvidersV1(
+  catalog: Pick<NostrDirectoryCatalogV1, 'candidates'>,
+): DirectoryProviderV1[] {
+  const providers = new Map<string, DirectoryProviderV1>();
+  for (const candidates of Object.values(catalog.candidates)) {
+    for (const { provider } of candidates) providers.set(provider.providerIdHex, provider);
+  }
+  return [...providers.values()].sort((a, b) =>
+    a.serverId < b.serverId ? -1 : a.serverId > b.serverId ? 1 : 0);
 }
 
 /**

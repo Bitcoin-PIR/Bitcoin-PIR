@@ -7,6 +7,7 @@ import {
   describeDirectoryCatalogV1,
   describeDirectoryTrustV1,
   directoryProviderChoicesV1,
+  directoryProvidersV1,
 } from '../directory-providers.js';
 import { bytesToHex } from '../hash.js';
 import type {
@@ -176,5 +177,12 @@ describe('describeDirectoryTrustV1 / describeDirectoryCatalogV1', () => {
       candidates: { dpf: [], harmony: [], onion: [], oram: [] },
       rejected: [{ relay: 'wss://r.example', shard: null, reason: 'timeout' }],
     })).toBe('0 providers · relays agree · no shard accepted, 1 rejected');
+  });
+});
+
+describe('directoryProvidersV1', () => {
+  it('lists each provider once, by server_id', () => {
+    expect(directoryProvidersV1(CATALOG).map((entry) => entry.serverId))
+      .toEqual(['down-elsewhere', 'oram-elsewhere', 'pir1-like', 'pir2-like', 'sev-elsewhere']);
   });
 });

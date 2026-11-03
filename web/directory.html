@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; object-src 'none'; frame-src 'none'; form-action 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' wss:">
+    <title>Service directory — Bitcoin PIR</title>
+    <link rel="icon" href="/brand/bitcoinpir-mark.svg" type="image/svg+xml" />
+    <style>
+        :root {
+            --bg:       oklch(98.2% 0.004 80);
+            --panel:    oklch(99.5% 0.003 80);
+            --sunken:   oklch(96.2% 0.005 80);
+            --ink:      oklch(22% 0.01 80);
+            --ink-soft: oklch(40% 0.01 80);
+            --ink-mute: oklch(58% 0.008 80);
+            --line:     oklch(91% 0.006 80);
+            --ok:       oklch(52% 0.12 155);
+            --warn:     oklch(55% 0.12 65);
+            --bad:      oklch(52% 0.15 25);
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--ink);
+            font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+            font-size: 15px;
+            line-height: 1.55;
+        }
+        .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+        a { color: var(--ink-soft); }
+        .topbar {
+            display: flex; align-items: center; gap: 14px;
+            padding: 12px 24px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+        }
+        .brand { display: flex; align-items: center; gap: 8px; color: var(--ink); text-decoration: none; }
+        .brand-logo { display: block; width: 130px; height: auto; }
+        .brand small { color: var(--ink-mute); }
+        .spacer { flex: 1; }
+        button, .topbar a.button {
+            padding: 6px 10px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            color: var(--ink-soft);
+            cursor: pointer;
+            font: inherit;
+            font-size: 13px;
+            text-decoration: none;
+        }
+        button:hover { background: var(--sunken); }
+        main { max-width: 1120px; margin: 28px auto; padding: 0 24px 64px; }
+        h1 { font-size: 24px; margin: 0 0 6px; }
+        .lead { color: var(--ink-soft); margin: 0 0 18px; max-width: 72ch; }
+        .status { color: var(--ink-mute); font-size: 13px; margin: 0 0 12px; }
+        .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 9px 12px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+        th { font-size: 12px; font-weight: 600; color: var(--ink-mute); text-transform: uppercase; letter-spacing: .04em; }
+        tr:last-child td { border-bottom: 0; }
+        .health.available { color: var(--ok); }
+        .health.degraded, .health.unknown { color: var(--warn); }
+        .health.unavailable { color: var(--bad); }
+    </style>
+</head>
+<body>
+    <header class="topbar">
+        <a class="brand" href="/" aria-label="BitcoinPIR home">
+            <img class="brand-logo" src="/brand/bitcoinpir-logo.svg" width="430" height="128" alt="BitcoinPIR" />
+            <small>directory</small>
+        </a>
+        <div class="spacer"></div>
+        <button id="refresh" type="button">Refresh</button>
+        <a class="button" href="/">← Back to app</a>
+    </header>
+    <main>
+        <h1>Service directory</h1>
+        <p class="lead">
+            The nodes the BitcoinPIR directory lists and what each one offers, read
+            from <span class="mono">wss://directory.bitcoinpir.org</span> and verified
+            against the directory key this site pins. A wallet still checks each node
+            live before it uses it. To list your own node, see the
+            <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/OPERATOR_GUIDE.md#8-get-listed" rel="noopener">operator guide</a>.
+        </p>
+        <p class="status" id="status">Loading…</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server</th><th>Role</th><th>Trust</th><th>Backends · access</th>
+                        <th>Endpoint</th><th>Health</th><th>Valid until</th>
+                    </tr>
+                </thead>
+                <tbody id="rows"></tbody>
+            </table>
+        </div>
+    </main>
+    <script type="module" src="./src/directory-page.ts"></script>
+</body>
+</html>
