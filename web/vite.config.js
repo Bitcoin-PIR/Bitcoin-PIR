@@ -35,6 +35,8 @@ export default defineConfig({
         // to verify the SEV-SNP MEASUREMENT pin against the chip-signed
         // value via sev-snp-measure + bpir-admin attest.
         reproduce: 'reproduce.html',
+        // The service directory's providers and what each offers.
+        directory: 'directory.html',
       },
     },
   },
