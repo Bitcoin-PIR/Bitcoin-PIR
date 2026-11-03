@@ -29,4 +29,23 @@ ignore = [
     # Cargo.lock (cargo tree -i webpki-roots@0.26.11 shows the shim's
     # users); drop it once the shim has left the lockfile.
     "RUSTSEC-2026-0381",
+    # RUSTSEC-2026-0387 — timing variability in crypto-bigint < 0.7.6
+    # (sub, division, Montgomery mul could branch on secrets depending on
+    # compiler/CPU). The only fix is crypto-bigint 0.7.6+, which needs the
+    # elliptic-curve 0.14 generation; Cargo.lock has crypto-bigint 0.5.5
+    # via elliptic-curve 0.13 on two paths:
+    #   - p384 0.13 ← sev 7 ← pir-attest-verify: verify-only (public AMD
+    #     SEV-SNP cert chain), no secret operands. sev 8.0.0, the latest
+    #     release, still requires p384 ^0.13, so no upgrade exists yet.
+    #   - k256 0.13 ← pir-directory-nostr / bpir-admin: verification, plus
+    #     BIP-340 signing with the directory publisher key. That signing
+    #     runs as a local batch job on the operator's own machine, not as
+    #     a service an outsider can query and time, so the leak needs a
+    #     co-located attacker. k256 0.14 (crypto-bigint 0.7) is the fix
+    #     for this path; it is a breaking API + vendor/ change, deferred
+    #     until the open directory PRs land.
+    # Re-check: move k256 to 0.14 when convenient, and drop this entry once
+    # sev ships on p384 0.14 and `cargo tree -i crypto-bigint@0.5.5` is
+    # empty.
+    "RUSTSEC-2026-0387",
 ]
