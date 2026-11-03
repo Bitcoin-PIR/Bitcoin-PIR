@@ -14,6 +14,7 @@ use clap::Parser;
 use pir_directory_nostr::validate_directory_xonly_public_key_v1;
 use serde::Deserialize;
 
+pub mod announcements;
 pub mod server;
 pub mod store;
 pub mod wire;

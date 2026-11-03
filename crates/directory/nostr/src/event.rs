@@ -124,10 +124,16 @@ impl NostrEventV1 {
         &self,
         pinned_directory_pubkey: &[u8; 32],
     ) -> Result<(), DirectoryErrorV1> {
-        self.validate_bounds()?;
         if &self.pubkey != pinned_directory_pubkey {
             return Err(DirectoryErrorV1::WrongDirectoryKey);
         }
+        self.verify_own_signature()
+    }
+
+    /// Verify the event id and the BIP340 signature against the event's own
+    /// `pubkey`, whoever that is. Node announcements are signed by any key.
+    pub fn verify_own_signature(&self) -> Result<(), DirectoryErrorV1> {
+        self.validate_bounds()?;
         if self.kind != BITCOINPIR_DIRECTORY_KIND_V1 {
             return Err(DirectoryErrorV1::WrongEventKind);
         }

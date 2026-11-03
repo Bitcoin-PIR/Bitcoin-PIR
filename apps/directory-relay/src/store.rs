@@ -314,6 +314,7 @@ impl DirectoryStore {
         match filter {
             RequestFilter::Catalog { shard } => self.catalog_snapshot_ids(*shard),
             RequestFilter::Ids(ids) => self.readback_snapshot_ids(ids),
+            RequestFilter::Announcements => Err("announcements are not archived".to_owned()),
         }
     }
 

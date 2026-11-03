@@ -4,8 +4,9 @@ use std::collections::BTreeSet;
 
 use pir_directory_nostr::{
     shard_tag_value_v1, verify_directory_checkpoint_event_v1, verify_directory_entry_event_v1,
-    NostrEventV1, BITCOINPIR_DIRECTORY_KIND_V1, DIRECTORY_CHECKPOINT_D_PREFIX_V1,
-    DIRECTORY_ENTRY_D_PREFIX_V1, DIRECTORY_SHARD_COUNT_V1, MAX_NOSTR_EVENT_BYTES_V1,
+    verify_node_announcement_event_v1, NostrEventV1, BITCOINPIR_DIRECTORY_KIND_V1,
+    DIRECTORY_CHECKPOINT_D_PREFIX_V1, DIRECTORY_ENTRY_D_PREFIX_V1, DIRECTORY_SHARD_COUNT_V1,
+    MAX_NOSTR_EVENT_BYTES_V1, NODE_ANNOUNCEMENT_T_TAG_V1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -37,15 +38,28 @@ pub struct ValidatedEvent {
     pub profile: DirectoryEventProfile,
 }
 
+/// A verified node announcement (docs/DIRECTORY_PROTOCOL.md "Node
+/// announcements"), accepted from anyone on the public lane.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedAnnouncement {
+    pub provider_id: [u8; 32],
+    pub event_id: [u8; 32],
+    pub created_at: u64,
+    pub expiration: u64,
+    pub canonical_json: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RequestFilter {
     Catalog { shard: u8 },
     Ids(Vec<[u8; 32]>),
+    Announcements,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ClientMessage {
     Event(Box<ValidatedEvent>),
+    Announce(Box<ValidatedAnnouncement>),
     Req {
         subscription_id: String,
         filter: RequestFilter,
@@ -62,6 +76,14 @@ struct CatalogFilterWire {
     kinds: Vec<u16>,
     #[serde(rename = "#s")]
     shard: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct AnnouncementFilterWire {
+    kinds: Vec<u16>,
+    #[serde(rename = "#t")]
+    t: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -91,11 +113,28 @@ pub fn parse_client_message(
             if values.len() != 2 || bytes.len() > MAX_EVENT_MESSAGE_BYTES {
                 return Err("EVENT must contain exactly one event object".to_owned());
             }
-            let event = validate_event_json(
-                values[1].get().as_bytes(),
-                pinned_directory_pubkey,
-                now_unix,
-            )?;
+            let event_json = values[1].get().as_bytes();
+            if let Ok(verified) = verify_node_announcement_event_v1(event_json, now_unix) {
+                let event = verified.event();
+                if event
+                    .to_event_message_json_bytes()
+                    .map_err(|_| "EVENT envelope canonicalization failed".to_owned())?
+                    != bytes
+                {
+                    return Err("EVENT envelope is not the exact canonical encoding".to_owned());
+                }
+                let assertion = verified.announcement().operator_assertion();
+                return Ok(ClientMessage::Announce(Box::new(ValidatedAnnouncement {
+                    provider_id: assertion.provider_id,
+                    event_id: *event.id(),
+                    created_at: event.created_at(),
+                    expiration: assertion.valid_until,
+                    canonical_json: event
+                        .to_json_bytes()
+                        .map_err(|_| "EVENT canonical encoding failed".to_owned())?,
+                })));
+            }
+            let event = validate_event_json(event_json, pinned_directory_pubkey, now_unix)?;
             if event
                 .event
                 .to_event_message_json_bytes()
@@ -161,6 +200,14 @@ fn canonical_req_message(
             subscription_id,
             IdFilterWire {
                 ids: ids.iter().map(hex::encode).collect(),
+            },
+        )),
+        RequestFilter::Announcements => serde_json::to_vec(&(
+            "REQ",
+            subscription_id,
+            AnnouncementFilterWire {
+                kinds: vec![BITCOINPIR_DIRECTORY_KIND_V1],
+                t: vec![NODE_ANNOUNCEMENT_T_TAG_V1.to_owned()],
             },
         )),
     }
@@ -269,6 +316,15 @@ fn parse_request_filter(
         return Ok(RequestFilter::Catalog {
             shard: parse_shard_tag(&filter.shard[0])?,
         });
+    }
+
+    if let Ok(filter) = serde_json::from_str::<AnnouncementFilterWire>(raw) {
+        if filter.kinds.as_slice() != [BITCOINPIR_DIRECTORY_KIND_V1]
+            || filter.t.as_slice() != [NODE_ANNOUNCEMENT_T_TAG_V1]
+        {
+            return Err("announcement REQ is not the exact announcement filter".to_owned());
+        }
+        return Ok(RequestFilter::Announcements);
     }
 
     let filter: IdFilterWire = serde_json::from_str(raw)
