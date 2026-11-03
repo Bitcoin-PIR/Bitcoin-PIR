@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+mod announce;
 mod assertion;
 mod catalog;
 mod checkpoint;
@@ -17,6 +18,12 @@ mod hex;
 mod publisher;
 mod state;
 
+pub use announce::{
+    node_announcement_provider_id_v1, node_announcement_tags_v1, node_announcements_req_json_v1,
+    verify_node_announcement_event_v1, NodeAnnouncementV1, VerifiedNodeAnnouncementEventV1,
+    MAX_NODE_ANNOUNCEMENT_EVENT_BYTES_V1, NODE_ANNOUNCEMENT_D_PREFIX_V1,
+    NODE_ANNOUNCEMENT_REQ_SUBSCRIPTION_V1, NODE_ANNOUNCEMENT_T_TAG_V1,
+};
 pub use assertion::{
     derive_provider_id, is_canonical_public_wss_endpoint_v1, is_canonical_public_wss_origin_v1,
     DirectoryAssertionErrorV1, DirectoryAssertionRollbackGuardV1, DirectoryEndpointV1,

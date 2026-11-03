@@ -27,6 +27,7 @@ tokio-tungstenite = "0.26"
 toml = "0.8"
 
 [dev-dependencies]
+ed25519-dalek = "2"
 tempfile = "3"
 
 [lints.rust]

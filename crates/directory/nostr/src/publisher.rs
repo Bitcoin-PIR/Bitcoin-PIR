@@ -9,6 +9,7 @@ use core::fmt;
 use k256::{elliptic_curve::zeroize::Zeroize, schnorr::SigningKey};
 use serde::Serialize;
 
+use crate::announce::{node_announcement_tags_v1, NodeAnnouncementV1};
 use crate::checkpoint::{checkpoint_d_tag_value_v1, DirectoryCatalogCheckpointV1};
 use crate::entry::{entry_d_tag_value_v1, DirectoryEntryV1};
 use crate::event::{canonical_event_id_for_parts, NostrEventV1};
@@ -114,6 +115,26 @@ impl DirectoryPublisherKeyV1 {
                 vec!["s".to_owned(), shard_tag_value_v1(checkpoint.shard())],
             ],
             checkpoint.canonical_json_bytes()?,
+            auxiliary_randomness,
+        )
+    }
+
+    /// Sign a node announcement. Any Nostr key may announce a node; the
+    /// operator identity is the announcement's inner operator assertion.
+    pub fn sign_node_announcement_event(
+        &self,
+        announcement: &NodeAnnouncementV1,
+        created_at: u64,
+        auxiliary_randomness: &[u8; 32],
+    ) -> Result<NostrEventV1, DirectoryErrorV1> {
+        let assertion = announcement.operator_assertion();
+        if created_at < assertion.not_before || created_at > assertion.valid_until {
+            return Err(DirectoryErrorV1::InvalidOperatorAssertion);
+        }
+        self.sign_content(
+            created_at,
+            node_announcement_tags_v1(&assertion.provider_id, assertion.valid_until),
+            announcement.canonical_json_bytes()?,
             auxiliary_randomness,
         )
     }

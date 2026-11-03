@@ -3,8 +3,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 use pir_directory_nostr::{
-    catalog_req_json_v1, verify_directory_entry_event_v1, DirectoryEntryV1,
-    DirectoryHealthClassV1, DirectoryHealthV1, DirectoryPublisherKeyV1, NostrEventV1,
+    catalog_req_json_v1, verify_directory_entry_event_v1, DirectoryEntryV1, DirectoryHealthClassV1,
+    DirectoryHealthV1, DirectoryPublisherKeyV1, NostrEventV1,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -694,5 +694,86 @@ async fn absolute_connection_timeout_closes_idle_socket() {
     let handle = start(config).await.unwrap();
     let mut client = connect_public(&handle).await;
     expect_connection_failure(&mut client).await;
+    handle.shutdown().await.unwrap();
+}
+
+fn signed_announcement(now: u64, seed: u8) -> NostrEventV1 {
+    use pir_directory_nostr::{
+        DirectoryAccessClassV1, DirectoryAttestationV1, DirectoryBackendV1, DirectoryCatalogHintV1,
+        DirectoryEndpointV1, DirectoryOperatorAssertionV1, DirectoryServerRoleV1,
+        DirectoryTransportV1, NodeAnnouncementV1,
+    };
+    let assertion = DirectoryOperatorAssertionV1::sign(
+        format!("home-{seed}"),
+        1,
+        now - 10,
+        now + 86_400,
+        vec![DirectoryEndpointV1 {
+            transport: DirectoryTransportV1::Wss,
+            url: "wss://pir.home.example".to_owned(),
+        }],
+        &ed25519_dalek::SigningKey::from_bytes(&[seed; 32]),
+    )
+    .unwrap();
+    let hints = vec![DirectoryCatalogHintV1 {
+        backend: DirectoryBackendV1::Dpf,
+        role: DirectoryServerRoleV1::Secondary,
+        access: DirectoryAccessClassV1::Free,
+        attestation: DirectoryAttestationV1::None,
+    }];
+    let announcement = NodeAnnouncementV1::new(assertion, hints, now).unwrap();
+    DirectoryPublisherKeyV1::from_secret_bytes([seed; 32])
+        .unwrap()
+        .sign_node_announcement_event(&announcement, now, &[seed; 32])
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn anyone_announces_on_the_public_lane_and_reads_announcements_back() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let publisher = DirectoryPublisherKeyV1::from_secret_bytes([61; 32]).unwrap();
+    let handle = start(test_config(
+        directory.path().join("announce.sqlite"),
+        *publisher.public_key(),
+    ))
+    .await
+    .unwrap();
+    let now = now_unix().unwrap();
+    let first = signed_announcement(now, 5);
+    let second = signed_announcement(now, 6);
+
+    let mut announcer = connect_public(&handle).await;
+    assert_eq!(
+        publish(&mut announcer, &first).await,
+        (true, "saved: announcement held".to_owned())
+    );
+    assert!(publish(&mut announcer, &first).await.0);
+    assert!(publish(&mut announcer, &second).await.0);
+
+    let request =
+        String::from_utf8(pir_directory_nostr::node_announcements_req_json_v1().unwrap()).unwrap();
+    let mut ids = receive_catalog(
+        &mut announcer,
+        &request,
+        pir_directory_nostr::NODE_ANNOUNCEMENT_REQ_SUBSCRIPTION_V1,
+    )
+    .await;
+    ids.sort();
+    let mut expected = vec![hex::encode(first.id()), hex::encode(second.id())];
+    expected.sort();
+    assert_eq!(ids, expected);
+
+    // Announcements are not directory events: the publisher lane refuses them.
+    let mut publisher_writer = connect_publisher(&handle).await;
+    publisher_writer
+        .send(Message::Text(
+            String::from_utf8(first.to_event_message_json_bytes().unwrap())
+                .unwrap()
+                .into(),
+        ))
+        .await
+        .unwrap();
+    expect_connection_failure(&mut publisher_writer).await;
     handle.shutdown().await.unwrap();
 }

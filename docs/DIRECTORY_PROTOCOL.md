@@ -430,6 +430,37 @@ returned floors is the caller's, as is every choice; the
 `discover` example (`cargo run -p pir-sdk-client --example discover`) prints
 the catalog as an operator readback and keeps the floors in a file.
 
+## Node announcements
+
+An operator asks to be listed by publishing a node announcement to the
+directory relay's public lane, instead of sending its assertion in an issue.
+An announcement is a request, not a directory entry: wallets never read
+announcements, and the publisher still signs the ordinary entry above for
+each node it lists (`crates/directory/nostr/src/announce.rs`).
+
+```text
+kind = 30078
+pubkey = any Nostr key; it only carries the event
+tags, exactly these three, in this order:
+  ["d", "bitcoinpir-node-announce-v1:<provider_id-lower-hex>"]
+  ["expiration", "<operator assertion valid_until>"]   (NIP-40)
+  ["t", "bitcoinpir-node"]
+content = {"v":1,"operator_assertion":{...},"catalog_hints":[...]}
+```
+
+The content carries the same operator assertion and catalog hints as an
+active entry, canonical JSON, at least one hint. The operator identity is the
+assertion's Ed25519 key, so any Nostr key may sign the event; the `d` tag
+names the assertion's `provider_id`. An event is at most 16 KiB.
+
+The relay keeps, in memory, the newest unexpired announcement per
+`provider_id` (NIP-01 replacement order), up to 1,024 providers; it forgets
+them on restart, so operators republish daily. One `REQ` reads them all:
+
+```json
+["REQ","bitcoinpir-node-announcements",{"kinds":[30078],"#t":["bitcoinpir-node"]}]
+```
+
 ## Privacy and logging
 
 Directory events contain no invoice, payment hash, preimage, claim key,
@@ -480,8 +511,9 @@ valid signature, canonical JSON, and the exact `d`/`s` namespaces. There is no
 generic subscription language, live push, NIP-42 AUTH, NOTICE, or application
 heartbeat path. A reverse proxy may handle WebSocket control frames, but it
 must not log frames or silently transform application messages.
-The public listener accepts only `REQ`/`CLOSE`; the publisher listener accepts
-only `EVENT`. Each connection or operation acquires its lane reservation before
+The public listener accepts `REQ`/`CLOSE` and node-announcement `EVENT`s
+([Node announcements](#node-announcements)); the publisher listener accepts
+only directory `EVENT`s. Each connection or operation acquires its lane reservation before
 the shared global reservation, and rate/egress gates apply at both levels.
 These reservations preserve publisher admission capacity under public load,
 but both lanes share the process and mutex-protected SQLite store, so they are

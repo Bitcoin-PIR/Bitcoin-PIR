@@ -131,7 +131,7 @@ struct DirectoryEntryJsonV1 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct DirectoryOperatorAssertionJsonV1 {
+pub(crate) struct DirectoryOperatorAssertionJsonV1 {
     v: u8,
     operator_pubkey_ed25519: String,
     stable_server_id: String,
@@ -152,7 +152,7 @@ struct DirectoryEndpointJsonV1 {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct DirectoryCatalogHintJsonV1 {
+pub(crate) struct DirectoryCatalogHintJsonV1 {
     backend: String,
     role: String,
     access: String,
@@ -480,7 +480,7 @@ pub fn entry_d_tag_value_v1(provider_id: &[u8; 32]) -> String {
     format!("{DIRECTORY_ENTRY_D_PREFIX_V1}{}", lower_hex(provider_id))
 }
 
-fn operator_assertion_from_wire(
+pub(crate) fn operator_assertion_from_wire(
     wire: DirectoryOperatorAssertionJsonV1,
 ) -> Result<DirectoryOperatorAssertionV1, DirectoryErrorV1> {
     if wire.v != 1 {
@@ -510,7 +510,7 @@ fn operator_assertion_from_wire(
     })
 }
 
-fn operator_assertion_to_wire(
+pub(crate) fn operator_assertion_to_wire(
     assertion: &DirectoryOperatorAssertionV1,
 ) -> Result<DirectoryOperatorAssertionJsonV1, DirectoryErrorV1> {
     assertion
@@ -538,7 +538,7 @@ fn operator_assertion_to_wire(
     })
 }
 
-fn catalog_hint_from_wire(
+pub(crate) fn catalog_hint_from_wire(
     wire: DirectoryCatalogHintJsonV1,
 ) -> Result<DirectoryCatalogHintV1, DirectoryErrorV1> {
     Ok(DirectoryCatalogHintV1 {
@@ -549,7 +549,7 @@ fn catalog_hint_from_wire(
     })
 }
 
-fn catalog_hint_to_wire(hint: &DirectoryCatalogHintV1) -> DirectoryCatalogHintJsonV1 {
+pub(crate) fn catalog_hint_to_wire(hint: &DirectoryCatalogHintV1) -> DirectoryCatalogHintJsonV1 {
     DirectoryCatalogHintJsonV1 {
         backend: hint.backend.name().to_owned(),
         role: hint.role.name().to_owned(),
@@ -561,7 +561,9 @@ fn catalog_hint_to_wire(hint: &DirectoryCatalogHintV1) -> DirectoryCatalogHintJs
 /// Hints are strictly sorted by `(backend, access)`, unique per backend, and
 /// carry one role and one attestation claim for the whole entry: a server has
 /// exactly one DPF slot and one attestation tier.
-fn validate_catalog_hints(hints: &[DirectoryCatalogHintV1]) -> Result<(), DirectoryErrorV1> {
+pub(crate) fn validate_catalog_hints(
+    hints: &[DirectoryCatalogHintV1],
+) -> Result<(), DirectoryErrorV1> {
     if hints.len() > MAX_DIRECTORY_CATALOG_HINTS_V1 {
         return Err(DirectoryErrorV1::InvalidCatalogHints);
     }

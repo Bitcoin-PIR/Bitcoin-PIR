@@ -13,6 +13,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::announcements::{AnnounceDisposition, AnnouncementBoard};
 use crate::store::{DirectoryStore, IngestDisposition, SnapshotPlan, StoreLimits};
 use crate::wire::{
     best_effort_event_id, best_effort_subscription_id, closed_message, eose_message, event_message,
@@ -32,6 +33,7 @@ pub const MAX_LEGAL_READBACK_EGRESS_BYTES: u64 =
 
 struct ServerState {
     store: Arc<Mutex<DirectoryStore>>,
+    announcements: Arc<Mutex<AnnouncementBoard>>,
     directory_pubkey: [u8; 32],
     lane: RelayLane,
     operation_slots: Arc<Semaphore>,
@@ -189,7 +191,7 @@ impl ConnectionWorkBudget {
 
 fn request_work_units(filter: &RequestFilter) -> u32 {
     match filter {
-        RequestFilter::Catalog { .. } => 1,
+        RequestFilter::Catalog { .. } | RequestFilter::Announcements => 1,
         RequestFilter::Ids(ids) => {
             let units = ids.len().div_ceil(READBACK_IDS_PER_WORK_UNIT);
             u32::try_from(units).unwrap_or(u32::MAX).max(1)
@@ -279,11 +281,13 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
         return Err("bound directory relay sockets are not distinct loopback addresses".to_owned());
     }
     let store = Arc::new(Mutex::new(store));
+    let announcements = Arc::new(Mutex::new(AnnouncementBoard::default()));
     let global_operation_slots = Arc::new(Semaphore::new(config.max_in_flight_operations));
     let global_rate_gate = Arc::new(RateGate::new(config.max_operations_per_second));
     let global_egress_rate_gate = Arc::new(ByteRateGate::new(config.max_egress_bytes_per_second));
     let public_state = Arc::new(ServerState {
         store: store.clone(),
+        announcements: announcements.clone(),
         directory_pubkey: config.directory_pubkey,
         lane: RelayLane::Public,
         operation_slots: Arc::new(Semaphore::new(config.max_public_in_flight_operations)),
@@ -298,6 +302,7 @@ pub async fn start(config: RelayConfig) -> Result<RelayHandle, String> {
     });
     let publisher_state = Arc::new(ServerState {
         store,
+        announcements,
         directory_pubkey: config.directory_pubkey,
         lane: RelayLane::Publisher,
         operation_slots: Arc::new(Semaphore::new(config.max_publisher_in_flight_operations)),
@@ -514,17 +519,8 @@ async fn handle_connection(
             return Err("connection message bound exceeded".to_owned());
         }
         let bytes = text.as_str().as_bytes();
-        match state.lane {
-            RelayLane::Public if best_effort_event_id(bytes).is_some() => {
-                // This signed event may already be durable from a private
-                // publish whose ACK was lost. Do not contradict it with a
-                // negative acknowledgement from the public lane.
-                return Err("EVENT rejected on public directory lane".to_owned());
-            }
-            RelayLane::Publisher if best_effort_event_id(bytes).is_none() => {
-                return Err("non-EVENT rejected on directory publisher lane".to_owned());
-            }
-            RelayLane::Public | RelayLane::Publisher => {}
+        if state.lane == RelayLane::Publisher && best_effort_event_id(bytes).is_none() {
+            return Err("non-EVENT rejected on directory publisher lane".to_owned());
         }
         work_budget.reserve(1)?;
         if !admit_rate(&state, 1) {
@@ -551,6 +547,12 @@ async fn handle_connection(
         let now = now_unix()?;
         let message = match parse_client_message(bytes, &state.directory_pubkey, now) {
             Ok(message) => message,
+            // An invalid EVENT on the public lane may be a directory event
+            // whose private publish is already durable: close without an ACK
+            // rather than contradict it.
+            Err(_) if state.lane == RelayLane::Public && best_effort_event_id(bytes).is_some() => {
+                return Err("invalid EVENT rejected on public directory lane".to_owned());
+            }
             Err(_) => {
                 if !send_bounded_rejection(
                     &mut websocket,
@@ -570,11 +572,35 @@ async fn handle_connection(
             (state.lane, &message),
             (RelayLane::Public, ClientMessage::Req { .. })
                 | (RelayLane::Public, ClientMessage::Close { .. })
+                | (RelayLane::Public, ClientMessage::Announce(_))
                 | (RelayLane::Publisher, ClientMessage::Event(_))
         ) {
             return Err("message rejected on wrong directory lane".to_owned());
         }
         match message {
+            ClientMessage::Announce(announcement) => {
+                let event_id = announcement.event_id;
+                let disposition = state
+                    .announcements
+                    .lock()
+                    .map_err(|_| "announcement board lock poisoned".to_owned())?
+                    .offer(*announcement, now);
+                let response = match disposition {
+                    AnnounceDisposition::Saved => {
+                        ok_message(&event_id, true, "saved: announcement held")
+                    }
+                    AnnounceDisposition::Duplicate => {
+                        ok_message(&event_id, true, "duplicate: announcement already held")
+                    }
+                    AnnounceDisposition::ReplacedByNewer => {
+                        ok_message(&event_id, false, "replaced: newer announcement retained")
+                    }
+                    AnnounceDisposition::CapacityExceeded => {
+                        ok_message(&event_id, false, "blocked: announcement capacity exceeded")
+                    }
+                };
+                send_text(&mut websocket, response, &state, &mut egress_budget).await?;
+            }
             ClientMessage::Event(event) => {
                 let event_id = *event.event.id();
                 let response = match ingest_operation(state.clone(), *event, now).await {
@@ -634,6 +660,22 @@ async fn handle_connection(
                     let closed =
                         closed_message(&subscription_id, "duplicate: subscription id in use");
                     send_text(&mut websocket, closed, &state, &mut egress_budget).await?;
+                    continue;
+                }
+                if filter == RequestFilter::Announcements {
+                    let events = state
+                        .announcements
+                        .lock()
+                        .map_err(|_| "announcement board lock poisoned".to_owned())?
+                        .current(now);
+                    send_announcements(
+                        &mut websocket,
+                        &subscription_id,
+                        events,
+                        &state,
+                        &mut egress_budget,
+                    )
+                    .await?;
                     continue;
                 }
                 let snapshot = match freeze_snapshot_operation(state.clone(), filter).await {
@@ -786,6 +828,29 @@ where
         }
     }
     send_text_reserved(websocket, eose_message(subscription_id), &state).await
+}
+
+async fn send_announcements<S>(
+    websocket: &mut tokio_tungstenite::WebSocketStream<S>,
+    subscription_id: &str,
+    events: Vec<Vec<u8>>,
+    state: &ServerState,
+    egress_budget: &mut ConnectionEgressBudget,
+) -> Result<(), String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let messages = events
+        .iter()
+        .map(|event| event_message(subscription_id, event))
+        .chain(std::iter::once(Ok(eose_message(subscription_id))))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Reserve the whole response first, as for a catalog snapshot.
+    egress_budget.reserve(messages.iter().map(String::len).sum())?;
+    for message in messages {
+        send_text_reserved(websocket, message, state).await?;
+    }
+    Ok(())
 }
 
 async fn send_text<S>(
