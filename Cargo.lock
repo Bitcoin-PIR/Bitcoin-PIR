@@ -303,6 +303,7 @@ dependencies = [
  "k256",
  "pir-attest-verify",
  "pir-core",
+ "pir-credit",
  "pir-db-attest",
  "pir-directory-nostr",
  "pir-identity",

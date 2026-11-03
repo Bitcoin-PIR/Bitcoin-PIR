@@ -480,16 +480,27 @@ and is closed against the live server after connecting.
      --now-unix "$NOW" --out alice-s1.assertion.bin
    ```
 
-2. Send the publisher, in an issue, `base64 < alice-s1.assertion.bin`, the
-   printed lines, its `--valid-until` (your entry cannot outlive it), and the
-   entry's claims: `role` (`primary`/`secondary`),
-   attestation (`none`/`sev-snp`) and, per backend you serve, its access class
-   (`free`, `paid` or `best-effort`, as your `Access:` startup line shows).
-3. The publisher builds your entry with the directory key (`directory-artifact
-   entry`), rebuilds the 16 shard checkpoints and publishes them.
+2. Announce the node: `role` is `primary` or `secondary`, and each
+   `--backend` you serve takes its access class (`free`, `paid` or
+   `best-effort`, as your `Access:` startup line shows). Repeat this daily
+   (cron or launchd): the relay forgets announcements when it restarts.
+
+   ```sh
+   bpir-admin directory-artifact announce --assertion alice-s1.assertion.bin \
+     --role primary --backend dpf=best-effort --now-unix "$(date +%s)"
+   ```
+
+3. Once a day the publisher checks your node as a wallet would (identity
+   certificate, `role`, access per backend) and, if it passes, signs your
+   entry with the directory key and publishes it with the 16 shard
+   checkpoints. A node that stops passing is dropped (a tombstone).
 4. An assertion lasts at most 31 days. Before it lapses, sign the next one with
-   `--assertion-epoch` one higher and send it; likewise when an endpoint, role,
-   backend or access class changes. To leave, ask for a tombstone.
+   `--assertion-epoch` one higher and announce it; likewise when an endpoint,
+   role, backend or access class changes, and after you were dropped. A new
+   assertion at the same epoch is refused. To leave, stop announcing.
+   SEV-SNP nodes are listed by hand: send the publisher the assertion
+   (`base64 < alice-s1.assertion.bin`), its `--valid-until` and the claims
+   above in an issue.
 
 A client fetches all 16 shards, requires complete signed checkpoints, verifies
 your assertion, runs the checks of §1 against your endpoint, and requires your

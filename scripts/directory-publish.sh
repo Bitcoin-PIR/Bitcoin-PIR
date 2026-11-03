@@ -21,18 +21,25 @@
 #                        valid_until in the last column: an entry cannot
 #                        outlive its assertion), or `retired` (publishes a
 #                        tombstone; the provider stays in the checkpoints)
+#                        Nodes that list themselves (`bpir-admin
+#                        directory-artifact announce`) join as `node-<id>`
+#                        lines when they pass the live check; a listed node
+#                        that no longer passes is published as retired
+#   announced/           written after each publish: the assertion each
+#                        announced node was last listed with
 #   ledger.tsv           written after each publish: name provider_id
 #                        sequence assertion_epoch, and a `checkpoints` line
 #   runs/<unix time>-*/  the artifacts of each run
 #
 # Environment: BPIR_ADMIN (bpir-admin), PUBLISHER_RELAY (ws://127.0.0.1:8097,
 # the pir1 publisher lane through `ssh -N -L 8097:127.0.0.1:8097 <pir1>`),
-# PUBLIC_RELAY (wss://directory.bitcoinpir.org), VALID_DAYS (30). The
+# PUBLIC_RELAY (wss://directory.bitcoinpir.org), ANNOUNCE_RELAY (where nodes
+# announce, PUBLIC_RELAY), VALID_DAYS (30). The
 # readback needs the WASM package (`wasm-pack build crates/sdk/wasm --target
 # web --out-dir pkg`).
 set -euo pipefail
 
-usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,37p' "$0" | sed 's/^# \{0,1\}//'; }
 [[ "${1:-}" == -h || "${1:-}" == --help ]] && { usage; exit 0; }
 [[ $# -ge 1 ]] || { usage >&2; exit 2; }
 DIR=$1
@@ -42,6 +49,7 @@ VALIDATE=()
 ADMIN=${BPIR_ADMIN:-bpir-admin}
 PUBLISHER_RELAY=${PUBLISHER_RELAY:-ws://127.0.0.1:8097}
 PUBLIC_RELAY=${PUBLIC_RELAY:-wss://directory.bitcoinpir.org}
+ANNOUNCE_RELAY=${ANNOUNCE_RELAY:-$PUBLIC_RELAY}
 VALID_DAYS=${VALID_DAYS:-30}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 KEY=$DIR/directory-nostr.key
@@ -69,6 +77,22 @@ health() {
     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "https://${1#wss://}" || true)
   [[ "$code" == 101 ]] && echo available || echo unavailable
 }
+
+# Announced nodes that pass the live check, then every node listed earlier
+# that no longer does, as retired: its entry stays in the checkpoints.
+skip=()
+while IFS=$'\t' read -r name provider_id _; do
+  [[ "$name" == node-* || "$name" == checkpoints || -z "$provider_id" ]] && continue
+  skip+=(--skip-provider-id "$provider_id")
+done <"$LEDGER"
+"$ADMIN" directory-artifact announcements --relay "$ANNOUNCE_RELAY" --now-unix "$NOW" \
+  --state-dir "$DIR/announced" --out-dir "$RUN/announced" ${skip[@]+"${skip[@]}"}
+{
+  cat "$DIR/providers.tsv" "$RUN/announced/announced.tsv"
+  awk -F'\t' 'FILENAME == ARGV[1] { seen[$1] = 1; next }
+    $1 ~ /^node-/ && !seen[$1] { printf "%s\t-\t-\t-\t-\t-\tretired\n", $1 }' \
+    "$RUN/announced/announced.tsv" "$LEDGER"
+} >"$RUN/providers.tsv"
 
 events=()
 new_ledger=()
@@ -121,8 +145,8 @@ while IFS=$'\t' read -r name server_id endpoint role attestation backends source
   key_hex=$(field directory_pubkey_xonly "$out")
   [[ -z "$key_hex" ]] || directory_pubkey=$key_hex
   new_ledger+=("$name"$'\t'"$provider_id"$'\t'"$sequence"$'\t'"$epoch")
-done <"$DIR/providers.tsv"
-[[ ${#events[@]} -gt 0 ]] || { echo "no providers in $DIR/providers.tsv" >&2; exit 1; }
+done <"$RUN/providers.tsv"
+[[ ${#events[@]} -gt 0 ]] || { echo "no providers in $RUN/providers.tsv" >&2; exit 1; }
 
 checkpoint_epoch=$(( $(ledger checkpoints 3 0) + 1 ))
 entry_args=()
@@ -143,5 +167,7 @@ for event in "${events[@]}" "$RUN/checkpoints.json"; do artifact_args+=(--artifa
   printf '%s\n' "${new_ledger[@]}"
   printf 'checkpoints\t-\t%s\t-\n' "$checkpoint_epoch"
 } >"$LEDGER"
+rm -rf "$DIR/announced"
+cp -R "$RUN/announced" "$DIR/announced"
 node "$REPO/scripts/directory-readback.mjs" --relay "$PUBLIC_RELAY" --centralized-single-relay \
   --directory-pubkey-hex "$directory_pubkey" "${artifact_args[@]}"

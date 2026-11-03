@@ -49,6 +49,11 @@ enum DirectoryArtifactCommand {
     Checkpoints(CheckpointArgs),
     /// Publish already-signed EVENT artifacts unchanged to every relay.
     Publish(crate::directory_publish::DirectoryPublishArgs),
+    /// List your own node: send its announcement to the relay's public lane.
+    Announce(crate::directory_announce::AnnounceArgs),
+    /// Read node announcements, check each node live, and write the ones
+    /// that pass as providers.tsv lines for scripts/directory-publish.sh.
+    Announcements(crate::directory_announce::AnnouncementsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -104,7 +109,7 @@ impl From<HealthClassArg> for DirectoryHealthClassV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum RoleArg {
+pub(crate) enum RoleArg {
     Primary,
     Secondary,
 }
@@ -119,7 +124,7 @@ impl From<RoleArg> for DirectoryServerRoleV1 {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-enum AttestationArg {
+pub(crate) enum AttestationArg {
     None,
     SevSnp,
 }
@@ -235,6 +240,12 @@ pub async fn run(args: DirectoryArtifactArgs) -> Result<(), String> {
         DirectoryArtifactCommand::Tombstone(args) => build_tombstone(args),
         DirectoryArtifactCommand::Checkpoints(args) => build_checkpoints(args),
         DirectoryArtifactCommand::Publish(args) => crate::directory_publish::run(args).await,
+        DirectoryArtifactCommand::Announce(args) => {
+            crate::directory_announce::run_announce(args).await
+        }
+        DirectoryArtifactCommand::Announcements(args) => {
+            crate::directory_announce::run_announcements(args).await
+        }
     }
 }
 
@@ -546,7 +557,7 @@ fn build_checkpoints(args: CheckpointArgs) -> Result<(), String> {
 /// Parse repeated `BACKEND=ACCESS` flags into the sorted, per-backend-unique
 /// hint list the entry codec requires. Every hint carries the server's one
 /// role and one attestation tier.
-fn parse_backend_hints(
+pub(crate) fn parse_backend_hints(
     values: &[String],
     role: DirectoryServerRoleV1,
     attestation: DirectoryAttestationV1,
