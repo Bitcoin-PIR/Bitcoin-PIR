@@ -22,11 +22,13 @@ on:
     branches: [main]
     paths:
       - 'Cargo.lock'
+      - '.cargo/audit.toml'
       - '.github/workflows/audit.yml'
   pull_request:
     branches: [main]
     paths:
       - 'Cargo.lock'
+      - '.cargo/audit.toml'
       - '.github/workflows/audit.yml'
   workflow_dispatch:
   # Weekly sweep — catches advisories published against versions already
