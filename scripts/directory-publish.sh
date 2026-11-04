@@ -99,7 +99,13 @@ new_ledger=()
 directory_pubkey=
 while IFS=$'\t' read -r name server_id endpoint role attestation backends source assertion_until; do
   [[ -z "$name" || "$name" == \#* ]] && continue
-  sequence=$(( $(ledger "$name" 3 0) + 1 ))
+  prev=$(ledger "$name" 3 "")
+  # A hand-listed node that starts announcing itself keeps its sequence under
+  # its new `node-<id>` name: clients reject a lower one as a rollback.
+  if [[ -z "$prev" && "$name" == node-* ]]; then
+    prev=$(awk -F'\t' -v p="${name#node-}" '$2 == p && $3 != "-" { v = $3 } END { print v }' "$LEDGER")
+  fi
+  sequence=$(( ${prev:-0} + 1 ))
   epoch=$(ledger "$name" 4 -)
   if [[ "$source" == retired ]]; then
     provider_id=$(ledger "$name" 2 "")
