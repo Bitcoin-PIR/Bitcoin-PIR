@@ -200,16 +200,19 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
  */
 export const PIR1_PIN: ServerAttestPin = {
   // No measurementHex — Hetzner has no SEV.
-  // unified_server from the r12 Flow D rebuild of ce2c26ef (#443: rustls,
-  // rustls-webpki and webpki-roots bumps), `--locked --release` + strip,
-  // switched to on 2026-10-21. Access policy
+  // unified_server from the r14 pir1-only Flow D build of 0f57b114
+  // (#466: single-pass OnionPIR CHUNK; #467: shared concurrent DPF scans),
+  // `--locked --offline --release` + strip --strip-debug, rustc 1.94.1.
+  // The running r12 build remains accepted until the switch. Access policy
   // --require-credits --access dpf=best-effort:2 --access
   // harmony=best-effort:1:1500000 --access onion=best-effort:1:3000000:
   // DPF is free while pir1 has room, HarmonyPIR hints are free up to 1.5M
   // gas per hour, OnionPIR one lookup at a time up to 3M gas per hour.
   binarySha256Hex:
+    '7cf3b8b9caaf8c6a3d44895704c0a8199297184d1a6deb2fd2edcdf50eac978d',
+  transitionBinarySha256Hex:
     '97487ef98dc760c56a632b82be52886fe96e91903343f613a58c46f25a766558',
-  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server ce2c26ef: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR best-effort free up to 3M gas/hour; operator API keys)',
+  description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 0f57b114: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR best-effort free up to 3M gas/hour; operator API keys)',
 };
 
 /**
