@@ -203,15 +203,13 @@ export const PIR1_PIN: ServerAttestPin = {
   // unified_server from the r14 pir1-only Flow D build of 0f57b114
   // (#466: single-pass OnionPIR CHUNK; #467: shared concurrent DPF scans),
   // `--locked --offline --release` + strip --strip-debug, rustc 1.94.1.
-  // The running r12 build remains accepted until the switch. Access policy
+  // Switched on 2026-11-05; public attest matches this build. Access policy
   // --require-credits --access dpf=best-effort:2 --access
   // harmony=best-effort:1:1500000 --access onion=best-effort:1:3000000:
   // DPF is free while pir1 has room, HarmonyPIR hints are free up to 1.5M
   // gas per hour, OnionPIR one lookup at a time up to 3M gas per hour.
   binarySha256Hex:
     '7cf3b8b9caaf8c6a3d44895704c0a8199297184d1a6deb2fd2edcdf50eac978d',
-  transitionBinarySha256Hex:
-    '97487ef98dc760c56a632b82be52886fe96e91903343f613a58c46f25a766558',
   description: 'weikeng1.bitcoinpir.org (Hetzner, no SEV, unified_server 0f57b114: DPF best-effort free, HarmonyPIR hints best-effort free up to 1.5M gas/hour, OnionPIR best-effort free up to 3M gas/hour; operator API keys)',
 };
 
