@@ -54,14 +54,18 @@ install -o bpir-directory-relay -g bpir-directory-relay -m 0400 config.toml /etc
 install -o root -g root -m 0644 deploy/systemd/bpir-directory-relay.service /etc/systemd/system/bpir-directory-relay.service
 ```
 
-Build and install the binary (same pattern as the issuer). The relay's
-checkout is `/home/pir/src/BitcoinPIR-directory` (once: `sudo -u pir -H git
-clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git
-/home/pir/src/BitcoinPIR-directory`):
+Build and install the binary (same pattern as the issuer). Each relay build
+gets its own checkout named after the commit,
+`/home/pir/src/BitcoinPIR-directory-<first 8 of rev>` (pir1 keeps them side by
+side, like the other `/home/pir/src/BitcoinPIR-*` checkouts; the live relay
+was first built from `BitcoinPIR-directory-d815c5c7`). With `REV` set to the
+full commit:
 
 ```sh
-sudo -u pir -H bash -c '. $HOME/.cargo/env && cd /home/pir/src/BitcoinPIR-directory && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
-SRC=/home/pir/src/BitcoinPIR-directory/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
+REV=<rev>; CO=/home/pir/src/BitcoinPIR-directory-${REV:0:8}
+sudo -u pir -H git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git "$CO"
+sudo -u pir -H bash -c ". \$HOME/.cargo/env && cd $CO && git checkout --detach $REV && cargo build --locked --release -p bitcoinpir-directory-relay"
+SRC=$CO/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
 install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/directory-relay/$SHA/bitcoinpir-directory-relay
 ln -sfn /opt/bitcoinpir/directory-relay/$SHA /opt/bitcoinpir/directory-relay/current
 systemctl daemon-reload && systemctl enable --now bpir-directory-relay
@@ -155,9 +159,15 @@ itself after the next successful publish.
 
 ## Upgrade the relay
 
+Build in a new checkout for the new commit, as in the install above, and note
+where `current` points now: that directory is the rollback.
+
 ```sh
-sudo -u pir -H bash -c '. $HOME/.cargo/env && cd /home/pir/src/BitcoinPIR-directory && git fetch origin && git checkout --detach <rev> && cargo build --locked --release -p bitcoinpir-directory-relay'
-SRC=/home/pir/src/BitcoinPIR-directory/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
+readlink /opt/bitcoinpir/directory-relay/current
+REV=<rev>; CO=/home/pir/src/BitcoinPIR-directory-${REV:0:8}
+sudo -u pir -H git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git "$CO"
+sudo -u pir -H bash -c ". \$HOME/.cargo/env && cd $CO && git checkout --detach $REV && cargo build --locked --release -p bitcoinpir-directory-relay"
+SRC=$CO/target/release/bitcoinpir-directory-relay; SHA=$(sha256sum "$SRC" | cut -d" " -f1)
 install -D -o root -g root -m 0755 "$SRC" /opt/bitcoinpir/directory-relay/$SHA/bitcoinpir-directory-relay
 ln -sfn /opt/bitcoinpir/directory-relay/$SHA /opt/bitcoinpir/directory-relay/current && systemctl restart bpir-directory-relay
 ```
