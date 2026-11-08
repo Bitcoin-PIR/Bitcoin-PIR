@@ -115,8 +115,8 @@ and the checkpoint epoch; all strictly increase) and each run's artifacts.
 ```sh
 ssh -N -o UserKnownHostsFile=deploy/known_hosts -o StrictHostKeyChecking=yes \
   -L 8097:127.0.0.1:8097 root@65.21.91.217 &
-scripts/directory-publish.sh .keys/directory --validate-only   # signs and checks; publishes nothing
-scripts/directory-publish.sh .keys/directory                   # signs again, publishes, records, reads back
+scripts/directory-publish.sh "$PWD/.keys/directory" --validate-only   # signs and checks; publishes nothing
+scripts/directory-publish.sh "$PWD/.keys/directory"                   # signs again, publishes, records, reads back
 kill %1
 ```
 
@@ -156,6 +156,13 @@ runs it now. Independently, `.github/workflows/node-monitor.yml` reads the
 live catalog back once a day and opens a `directory-stale` issue when it is
 unreadable, short of 16 shards or within 7 days of expiry; the issue closes
 itself after the next successful publish.
+
+The reference MacBook sends its public assertion on load and daily at 09:30
+local (UTC+8), before the workstation's publish. Its launchd job, logs and
+remaining renewal dependency are described in
+[Project state](../PROJECT_STATE.md#routine-operation-and-remaining-manual-work).
+Re-announcement does not extend the assertion's validity; renewal is the
+operator's separate signing step in [Operator guide §8](../OPERATOR_GUIDE.md#8-get-listed).
 
 ## Upgrade the relay
 

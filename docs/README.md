@@ -6,6 +6,13 @@ Live production state is queried, never inferred from documents:
 Direct ORAM TEE host (VPSBG server 26939), and each operation script's
 status subcommand for the rest.
 
+## Overview and hand-over
+
+- [Architecture](ARCHITECTURE.md): code map, lookup and verification paths,
+  discovery, data production, payments and release boundaries.
+- [Project state and maintenance](PROJECT_STATE.md): reference hosts, data
+  age, daily automation, manual dependencies, cost coverage and deferred work.
+
 ## Runbooks
 
 | Work | Entry |
