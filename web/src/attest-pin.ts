@@ -181,13 +181,11 @@ export const PIR2_MACBOOK_PIN: ServerAttestPin = {
   // No measurementHex — no SEV on this host.
   // unified_server built on the MacBook from the r14 release commit 0f57b114
   // in a clean worktree, `--locked --release`, macOS arm64, rustc 1.94.1,
-  // without strip. The running r12 build remains accepted until the Flow I
-  // switch. Access policy --require-credits --access dpf=best-effort:2 --access
-  // harmony=best-effort:2 (unchanged).
+  // without strip. Switched on 2026-11-08 (85 s to Listening); public attest
+  // matches this build. Access policy --require-credits --access
+  // dpf=best-effort:2 --access harmony=best-effort:2 (unchanged).
   binarySha256Hex:
     'ee7438c85709dd1cebc7c8082346d85470722b14b0adb2395e0bb21c81f7b1b7',
-  transitionBinarySha256Hex:
-    '22149da25de88c726d72f580e79ce5aa06897cf190876cb4bdc68fd09201bf56',
   description: 'bitcoin-pir-weikeng-laptop.chenweikeng.com (MacBook, no TEE: DPF server 1 + HarmonyPIR query, DPF and HarmonyPIR best-effort free; operator API keys)',
 };
 
