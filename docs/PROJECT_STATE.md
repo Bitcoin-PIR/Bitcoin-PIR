@@ -34,6 +34,13 @@ endpoints are reported by the live servers and directory. The reference
 client configuration is in
 [`production-providers.ts`](../web/src/production-providers.ts).
 
+These hosts are a reference deployment, not a requirement to rent servers.
+Operators can run OnionPIR, DPF or HarmonyPIR nodes on their own Linux or
+macOS computers with the resources described in
+[Operator guide §2](OPERATOR_GUIDE.md#2-hardware); the MacBook is one such
+deployment. Direct ORAM's hardware-backed trust tier needs an SEV-SNP guest,
+not an ordinary desktop without that capability.
+
 ## Data age and provenance
 
 The published generation is 948454, anchored at the Bitcoin block mined on
@@ -52,7 +59,7 @@ mixed-provenance lineage and irreplaceable snapshots are mapped in
 No new generation is currently planned. Before the next rebuild, D2 still
 needs a decision on v1 proof transport: the native V2 producer emits no v1
 sidecar, while DPF/HarmonyPIR proof transport and existing staging/runtime
-paths expect one. The other rebuild prerequisites and cost estimates are in
+paths expect one. The other rebuild prerequisites are in
 [Database rebuild §2](DATABASE_REBUILD.md#2-prerequisites). The serving ORAM
 host is not a spare builder.
 
@@ -95,22 +102,6 @@ Key locations, account ownership, backup coverage and the accepted Milan
 residual risk are in [Security posture](SECURITY_POSTURE.md), not an implied
 claim of unattended operation. The pir1 initramfs tooling decision remains
 open before its next kernel change.
-
-## Monthly cost coverage
-
-| Item | Recorded amount / basis |
-| --- | --- |
-| Public data bundle, R2 | About **US$0.70/month** for one 57 GB generation under the pricing assumptions in [Data bundle](runbooks/data-bundle.md#why-r2); free egress. This is an estimate, not an invoice or a promise of zero request charges. |
-| pir1, Hetzner | Recurring host invoice not recorded in this repository; amount needs maintainer confirmation. The issuer/mint/relay share the host, not separate documented rentals. |
-| Direct ORAM host, VPSBG | Recurring host/storage invoice not recorded here; amount needs maintainer confirmation. |
-| MacBook and Mac Studio | Existing operator-owned hardware, not new VPS rentals. Electricity, network and hardware amortization are not recorded. |
-| Domains, Pages, tunnels and CI | Account-plan charges, renewals and usage charges are not inventoried here; no zero-cost assumption. |
-| Future attested database build | No standing builder rental. [Rebuild estimates](DATABASE_REBUILD.md#24-time-and-money-estimates) are historical planning figures, not current monthly serving costs. |
-
-A defensible total is not available until the host invoices and shared
-account costs are supplied. Lightning liquidity, channel funds and paid
-query revenue are separate from the hosting estimate; they are not silently
-netted against it.
 
 ## Deferred scope
 

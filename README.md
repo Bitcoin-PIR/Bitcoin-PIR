@@ -115,7 +115,7 @@ For development, see [`docs/TESTING.md`](docs/TESTING.md).
 - [`docs/README.md`](docs/README.md) — documentation index; start here
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system boundaries and code map
 - [`docs/PROJECT_STATE.md`](docs/PROJECT_STATE.md) — deployment, maintenance,
-  data age, costs and deferred work
+  data age and deferred work
 - [`docs/TESTING.md`](docs/TESTING.md) — which checks to run for which change
 - [`docs/PRODUCTION_OPERATIONS.md`](docs/PRODUCTION_OPERATIONS.md) — operator
   entry point; every production operation routes through this page

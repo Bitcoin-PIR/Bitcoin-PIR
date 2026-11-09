@@ -11,7 +11,7 @@ status subcommand for the rest.
 - [Architecture](ARCHITECTURE.md): code map, lookup and verification paths,
   discovery, data production, payments and release boundaries.
 - [Project state and maintenance](PROJECT_STATE.md): reference hosts, data
-  age, daily automation, manual dependencies, cost coverage and deferred work.
+  age, daily automation, manual dependencies and deferred work.
 
 ## Runbooks
 
