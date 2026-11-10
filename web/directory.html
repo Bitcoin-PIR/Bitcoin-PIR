@@ -54,6 +54,9 @@
         button:hover { background: var(--sunken); }
         main { max-width: 1120px; margin: 28px auto; padding: 0 24px 64px; }
         h1 { font-size: 24px; margin: 0 0 6px; }
+        h2 { font-size: 18px; margin: 0 0 12px; }
+        h3 { font-size: 14px; margin: 18px 0 8px; overflow-wrap: anywhere; }
+        section { margin-top: 28px; }
         .lead { color: var(--ink-soft); margin: 0 0 18px; max-width: 72ch; }
         .status { color: var(--ink-mute); font-size: 13px; margin: 0 0 12px; }
         .table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
@@ -64,6 +67,30 @@
         .health.available { color: var(--ok); }
         .health.degraded, .health.unknown { color: var(--warn); }
         .health.unavailable { color: var(--bad); }
+        .failure { color: var(--bad); }
+        .wrap { white-space: normal; overflow-wrap: anywhere; }
+        td { vertical-align: top; }
+        summary { cursor: pointer; overflow-wrap: anywhere; }
+        button:disabled { cursor: wait; opacity: .6; }
+        :focus-visible { outline: 2px solid var(--ink-soft); outline-offset: 3px; }
+        dl { margin: 12px 0 0; white-space: normal; min-width: 200px; }
+        dt { font-size: 12px; color: var(--ink-mute); }
+        dd { margin: 2px 0 12px; overflow-wrap: anywhere; }
+        .shards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border: 1px solid var(--line); background: var(--line); }
+        .shard { padding: 12px; background: var(--panel); }
+        .shard dl { min-width: 0; }
+        .shard.missing > summary { color: var(--bad); }
+        .events { margin-top: 28px; border-top: 1px solid var(--line); padding-top: 16px; }
+        .events > summary { font-size: 18px; font-weight: 600; }
+        .events > p { color: var(--ink-soft); max-width: 80ch; }
+        .event { padding: 10px 0; border-bottom: 1px solid var(--line); }
+        pre { max-height: 480px; overflow: auto; padding: 14px; background: var(--sunken); font-size: 12px; }
+        @media (max-width: 640px) {
+            main { padding: 0 16px 40px; }
+            .topbar { padding: 12px 16px; gap: 8px; flex-wrap: wrap; }
+            .brand-logo { width: 104px; }
+            .shards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
     </style>
 </head>
 <body>
@@ -79,24 +106,13 @@
     <main>
         <h1>Service directory</h1>
         <p class="lead">
-            The nodes the BitcoinPIR directory lists and what each one offers, read
-            from <span class="mono">wss://directory.bitcoinpir.org</span> and verified
-            against the directory key this site pins. A wallet still checks each node
-            live before it uses it. To list your own node, see the
+            Directory entries and checkpoints verified against this site's pinned key.
+            Listed health and trust are directory claims, not live node checks. A wallet
+            still verifies each node before use. To list your own node, see the
             <a href="https://github.com/Bitcoin-PIR/Bitcoin-PIR/blob/main/docs/OPERATOR_GUIDE.md#8-get-listed" rel="noopener">operator guide</a>.
         </p>
-        <p class="status" id="status">Loading…</p>
-        <div class="table-wrap">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Server</th><th>Role</th><th>Trust</th><th>Backends · access</th>
-                        <th>Endpoint</th><th>Health</th><th>Valid until</th>
-                    </tr>
-                </thead>
-                <tbody id="rows"></tbody>
-            </table>
-        </div>
+        <p class="status" id="status" role="status" aria-live="polite">Loading…</p>
+        <div id="catalog" aria-busy="true"></div>
     </main>
     <script type="module" src="./src/directory-page.ts"></script>
 </body>

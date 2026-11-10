@@ -225,12 +225,14 @@ function refresh(
   config: NostrDirectoryConfigV1,
   relays: Record<string, FakeRelay>,
   storage = memoryStorage(),
+  inspect = false,
 ) {
   return refreshNostrDirectoryV1(config, {
     storage,
     nowUnix: NOW,
     timeoutMs: 50,
     openSocket: (url) => relays[url].socket(),
+    inspect,
   });
 }
 
@@ -264,6 +266,52 @@ describe('refreshNostrDirectoryV1', () => {
       health: 'available',
     });
     expect(storage.map.has(FLOORS_KEY)).toBe(true);
+    expect(result.inspection).toBeUndefined();
+  });
+
+  it('optionally exposes verifier-selected IDs and sequences, separate from raw relay frames', async () => {
+    const events = catalog(3, 9, NOW - 600);
+    const result = await refresh(CENTRAL, { [RELAY_A]: new FakeRelay(events) }, memoryStorage(), true);
+    expect(result.inspection?.shards).toEqual(Array.from({ length: 16 }, (_, shard) => ({
+      shard, epoch: 9, views: 1, eventId: events[shard + 2].id,
+    })));
+    expect(result.inspection?.entries).toEqual(events.slice(0, 2).map((event) => ({
+      providerId: JSON.parse(event.content).provider_id,
+      eventId: event.id,
+      directorySequence: 3,
+    })).sort((a, b) => a.providerId.localeCompare(b.providerId)));
+    expect(result.inspection?.relays).toHaveLength(1);
+    const relay = result.inspection!.relays[0];
+    expect(relay).toMatchObject({ url: RELAY_A, error: null });
+    expect(relay.messages).toHaveLength(18);
+    expect(relay.messages!.map((message) => JSON.parse(message)[2].id).sort())
+      .toEqual(events.map((event) => event.id).sort());
+    const { inspection, ...catalogOnly } = result;
+    expect(catalogOnly).toEqual(await refresh(CENTRAL, { [RELAY_A]: new FakeRelay(events) }));
+  });
+
+  it('reports failed transport reads without confusing them with the remaining verified relay', async () => {
+    const events = catalog(1, 7, NOW - 600);
+    const result = await refresh(STRICT, {
+      [RELAY_A]: new FakeRelay(events, true), [RELAY_B]: new FakeRelay(events),
+    }, memoryStorage(), true);
+    expect(result.inspection?.relays[0]).toEqual({ url: RELAY_A, messages: null, error: expect.stringMatching(/EOSE/) });
+    expect(result.inspection?.relays[1]).toMatchObject({ url: RELAY_B, error: null });
+    expect(result.inspection?.shards).toHaveLength(16);
+    expect(result.inspection?.shards.every((shard) => shard.views === 1)).toBe(true);
+    expect(result.rejected).toEqual([{ relay: RELAY_A, shard: null, reason: expect.stringMatching(/EOSE/) }]);
+  });
+
+  it('retains rejected raw claims for inspection without promoting their IDs to accepted results', async () => {
+    const events = catalog(1, 7, NOW - 600);
+    // Keep the original event id but tamper with the signed content.
+    const tampered = events.map((event) => event.content.includes('"alpha"')
+      ? { ...event, content: event.content.replace('available', 'unavailable') } : event);
+    const result = await refresh(CENTRAL, { [RELAY_A]: new FakeRelay(tampered) }, memoryStorage(), true);
+    expect(result.inspection?.entries.some((entry) => entry.eventId === events[0].id)).toBe(false);
+    expect(result.inspection?.shards.some((shard) => shard.shard === shardOf(ALPHA))).toBe(false);
+    expect(result.inspection?.relays[0].messages?.some((message) => message.includes('unavailable'))).toBe(true);
+    expect(result.rejected).toContainEqual({ relay: RELAY_A, shard: shardOf(ALPHA), reason: expect.stringMatching(/event id/) });
   });
 
   it('flags a centralized catalog, or a strict one short of a relay, as degraded', async () => {
