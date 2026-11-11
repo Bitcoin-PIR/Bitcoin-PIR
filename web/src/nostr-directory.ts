@@ -58,6 +58,8 @@ export interface NostrDirectoryRefreshOptionsV1 {
   timeoutMs?: number;
   /** Opens one relay connection; `new WebSocket(url)` by default. */
   openSocket?: (url: string) => WebSocket;
+  /** Include read-only relay messages and verifier details for the directory inspector. */
+  inspect?: boolean;
 }
 
 export interface DirectoryProviderV1 {
@@ -100,6 +102,21 @@ export interface NostrDirectoryCatalogV1 {
   /** Providers listing each backend, by provider id. */
   candidates: Record<AccessBackend, DirectoryCandidateV1[]>;
   rejected: DirectoryRejectionV1[];
+  inspection?: DirectoryInspectionV1;
+}
+
+export interface DirectoryInspectionV1 {
+  /** Only checkpoints selected by the WASM verifier, not raw relay claims. */
+  shards: Array<{ shard: number; epoch: number; views: number; eventId: string }>;
+  /** Active entries selected by the verifier, including those without backend hints. */
+  entries: Array<{ providerId: string; eventId: string; directorySequence: number }>;
+  relays: Array<{
+    url: string;
+    /** Complete transport read only; individual messages may still fail verification. */
+    messages: string[] | null;
+    /** Failed reads are discarded, just as they are for catalog verification. */
+    error: string | null;
+  }>;
 }
 
 /** What the client verified about one connected server. */
@@ -115,9 +132,11 @@ export interface DirectoryLiveServerV1 {
 /** `verifyDirectoryCatalogV1` output (crates/sdk/wasm/src/directory.rs). */
 interface VerifiedCatalogV1 {
   validUntil: number;
-  shards: Array<{ shard: number; epoch: number; views: number; eventId: string }>;
+  shards: DirectoryInspectionV1['shards'];
   entries: Array<{
     providerId: string;
+    eventId: string;
+    directorySequence: number;
     serverId: string;
     operatorPubkey: string;
     endpoints: string[];
@@ -210,6 +229,18 @@ export async function refreshNostrDirectoryV1(
     validUntil: verified.validUntil,
     candidates,
     rejected,
+    ...(options.inspect ? {
+      inspection: {
+        shards: verified.shards,
+        entries: verified.entries.map(({ providerId, eventId, directorySequence }) =>
+          ({ providerId, eventId, directorySequence })),
+        relays: reads.map((read, index) => ({
+          url: relays[index],
+          messages: read.status === 'fulfilled' ? read.value : null,
+          error: read.status === 'rejected' ? errorMessage(read.reason) : null,
+        })),
+      },
+    } : {}),
   };
 }
 

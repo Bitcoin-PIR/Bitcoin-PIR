@@ -381,6 +381,15 @@ remaining relays, reported degraded; whether to use it is the caller's
 choice. `directoryBindingMismatchV1` closes a candidate against the live
 server (step 6 of the trust model).
 
+The read-only `/directory` page requests `{ inspect: true }` to retain each
+relay's complete raw `EVENT` frames and transport errors, plus the verifier's
+selected checkpoint IDs/epochs/view counts and active entry IDs/sequences.
+It shows all 16 shards, node details, UTC expiry times and rejected views.
+Raw events expand to the exact received frame and decoded content; their
+claims are not individual verification verdicts. Failed transport reads
+contribute no frames. Inspection is opt-in, changes no verification or
+provider selection, and opens no live node connections.
+
 The floors are one `localStorage` value per directory key
 (`bitcoinpir.directory-floors.v1.<key>`) holding the codec's encoded entry
 and checkpoint states, written before the catalog is returned. They are the
