@@ -10,7 +10,8 @@ usage: scripts/build_uki_tier3.sh
 Builds the Tier 3 UKI on the selected Linux build host.
 
 Production release inputs (set explicitly in the operator command):
-  KERNEL, BINARY, ORAMCTL, BHTM_FROM_LEAF_PROOF, OUT
+  KERNEL, BINARY, ORAMCTL, OUT
+  BHTM_FROM_LEAF_PROOF is optional for a snapshot-only runtime.
 
 Archive environment: UKI_ARCHIVE_DIR (see archive_uki_artifact.sh)
 
@@ -32,7 +33,7 @@ case "${1:-}" in
     *) usage >&2; exit 2 ;;
 esac
 
-for input_name in KERNEL BINARY ORAMCTL BHTM_FROM_LEAF_PROOF OUT; do
+for input_name in KERNEL BINARY ORAMCTL OUT; do
     if [ -z "${!input_name:-}" ]; then
         echo "error: $input_name must be set explicitly for a production Tier 3 UKI" >&2
         exit 1
@@ -122,10 +123,11 @@ ORAMCTL_BIN="$ORAMCTL"
 }
 export BPIR_ORAMCTL_BIN="$ORAMCTL_BIN"
 
-[ -r "$BHTM_FROM_LEAF_PROOF" ] || {
+BHTM_FROM_LEAF_PROOF=${BHTM_FROM_LEAF_PROOF:-}
+if [ -n "$BHTM_FROM_LEAF_PROOF" ] && [ ! -r "$BHTM_FROM_LEAF_PROOF" ]; then
     echo "error: BHTM from-leaf proof not readable: $BHTM_FROM_LEAF_PROOF" >&2
     exit 1
-}
+fi
 export BPIR_BHTM_FROM_LEAF_PROOF="$BHTM_FROM_LEAF_PROOF"
 
 # ─── Kernel auto-detection ──────────────────────────────────────────────────
@@ -205,11 +207,13 @@ done
 if command -v sha256sum >/dev/null 2>&1; then
     BIN_HASH=$(sha256sum "$BINARY" | awk '{print $1}')
     ORAMCTL_HASH=$(sha256sum "$ORAMCTL_BIN" | awk '{print $1}')
-    BHTM_PROOF_HASH=$(sha256sum "$BHTM_FROM_LEAF_PROOF" | awk '{print $1}')
 else
     BIN_HASH=$(shasum -a 256 "$BINARY" | awk '{print $1}')
     ORAMCTL_HASH=$(shasum -a 256 "$ORAMCTL_BIN" | awk '{print $1}')
-    BHTM_PROOF_HASH=$(shasum -a 256 "$BHTM_FROM_LEAF_PROOF" | awk '{print $1}')
+fi
+BHTM_PROOF_HASH=none
+if [ -n "$BHTM_FROM_LEAF_PROOF" ]; then
+    BHTM_PROOF_HASH=$(sha256sum "$BHTM_FROM_LEAF_PROOF" | awk '{print $1}')
 fi
 
 echo "kernel:                   $KERNEL"
@@ -332,15 +336,17 @@ REQUIRED_TIER3_ITEMS=(
     'usr/local/bin/direct-oram-supervisor$'
     'etc/sv/unified_server/run$'
     'etc/sv/unified_server/finish$'
-    'usr/share/bitcoinpir/proofs/height-940611\.leaf-proof\.json$'
 )
+if [ -n "$BHTM_FROM_LEAF_PROOF" ]; then
+    REQUIRED_TIER3_ITEMS+=('usr/share/bitcoinpir/proofs/height-940611\.leaf-proof\.json$')
+fi
 for expected in "${REQUIRED_TIER3_ITEMS[@]}"; do
     if ! grep -Eq -- "$expected" <<< "$INITRD_LISTING"; then
         echo "ERROR: required Tier 3 measured item missing: $expected" >&2
         exit 1
     fi
 done
-echo "Direct ORAM supervisor, runit hooks, binaries, and BHTM proof confirmed in initramfs"
+echo "Direct ORAM supervisor, runit hooks, binaries, and requested proof inputs confirmed in initramfs"
 
 # ─── Build the cmdline ─────────────────────────────────────────────────────
 # rdinit=/sbin/bpir-tier3-init  : kernel exec's OUR script as PID 1

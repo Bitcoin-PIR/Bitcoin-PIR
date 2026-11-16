@@ -43,12 +43,10 @@ ORAM_STATUS_HTTPD_PID=
 ORAM_SERVER_RUNTIME_LOG="$ORAM_BUILD_LOG_DIR/unified-server.runtime.log"
 ORAM_STAGING_DIR="$ORAM_BOOT_ROOT/staging.$$"
 ORAM_CURRENT_DIR="$ORAM_BOOT_ROOT/current"
-ORAM_FULL_DIR="$ORAM_CURRENT_DIR/db0-mainnet-948454"
-ORAM_DELTA_DIR="$ORAM_CURRENT_DIR/db1-delta-940611-948454"
+ORAM_FULL_DIR="$ORAM_CURRENT_DIR/db0-mainnet-976083"
 TRUSTED_INPUT_ROOT=/run/bitcoinpir-oram-inputs
 TRUSTED_STATE_ROOT=/run/bitcoinpir-oram-state
-ORAM_FULL_TRUSTED_STATE_DIR="$TRUSTED_STATE_ROOT/db0-mainnet-948454"
-ORAM_DELTA_TRUSTED_STATE_DIR="$TRUSTED_STATE_ROOT/db1-delta-940611-948454"
+ORAM_FULL_TRUSTED_STATE_DIR="$TRUSTED_STATE_ROOT/db0-mainnet-976083"
 
 ORAM_PACK=16
 ORAM_LEAF_DIVISOR=2
@@ -58,7 +56,6 @@ ORAM_CACHE_LEVELS=0
 ORAM_AUTH_TRUSTED_LEVELS=1
 ORAM_AUTH_HASH_PAGE_SIZE=4096
 ORAM_DB0_MAX_SECONDS=480
-ORAM_DB1_MAX_SECONDS=180
 ORAM_TOTAL_MAX_SECONDS=900
 ORAM_HEARTBEAT_INTERVAL_SECONDS=15
 ORAM_HEARTBEAT_DEADLINE_SECONDS=90
@@ -73,17 +70,9 @@ DIRECT_INDEX_HASH_FNS=2
 DIRECT_INDEX_LOAD_FACTOR=0.95
 DIRECT_INDEX_SEED=8030603977422561841
 
-MAINNET_EXPECTED_MUHASH=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
-MAINNET_EXPECTED_INDEX_SHA256=d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c
-MAINNET_EXPECTED_CHUNKS_SHA256=9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521
-DELTA_EXPECTED_FROM_MUHASH=aebb29df12e045ef5279036263aba3b8f8e9e816e05b04a58f57e63b3b25756b
-DELTA_EXPECTED_FROM_HEIGHT=940611
-DELTA_EXPECTED_FROM_BLOCK_HASH=000000000000000000002c41243b3d74d135942031ef15f547bca1ce8f85eb99
-DELTA_EXPECTED_BHTM_TREE_ROOT=babeea635812c3b1a2d5f352ab0a5d1ee8a4e9c668c43c05d6603ef3c3766ba6
-DELTA_BHTM_FROM_LEAF_PROOF=/usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
-DELTA_EXPECTED_MUHASH=cf4fc1f1dd400622a5b6f39eca7f764a30570c30cc668e04f00e8a3356c2a2ee
-DELTA_EXPECTED_INDEX_SHA256=e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16
-DELTA_EXPECTED_CHUNKS_SHA256=536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a
+MAINNET_EXPECTED_MUHASH=0537e033ab26f2b9ad2058fd146d6bc418be890f660ad98f4398b6cbfa2f116f
+MAINNET_EXPECTED_INDEX_SHA256=8c8aedd1e4f8948b9024bc5a979b39d92795e28b0c7dfb33642668d7bb9401d2
+MAINNET_EXPECTED_CHUNKS_SHA256=9c88ed8da75bc9a43f3f3659263fc7995b6f2d27c1d8533c33721887d6af111d
 
 fatal() {
     if [ -n "${ORAM_STATUS_STARTED_AT_EPOCH:-}" ] && [ -d "$ORAM_STATUS_HTTP_ROOT" ]; then
@@ -272,20 +261,11 @@ load_active_database_generation() {
     database_label="$2"
     runtime_raw="$(toml_database_path "$database_index" path)" \
         || fatal "$database_label path missing or non-canonical in $TIER3_DATABASES_CONFIG"
-    proof_v1_raw="$(toml_database_path "$database_index" proof_dir)" \
-        || fatal "$database_label proof_dir missing or non-canonical in $TIER3_DATABASES_CONFIG"
     proof_v2_raw="$(toml_database_path "$database_index" proof_v2_dir)" \
         || fatal "$database_label proof_v2_dir missing or non-canonical in $TIER3_DATABASES_CONFIG"
     ACTIVE_DB_RUNTIME_DIR="$(resolve_tier3_data_path "$runtime_raw")"
-    ACTIVE_DB_PROOF_V1_DIR="$(resolve_tier3_data_path "$proof_v1_raw")"
     ACTIVE_DB_PROOF_V2_DIR="$(resolve_tier3_data_path "$proof_v2_raw")"
     require_file "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/server-db/MANIFEST.toml"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/build-evidence.bin"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/root-bundle-payload.bin"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/build-evidence.sev-snp-report.bin"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/database.manifest.sha256"
-    require_file "$ACTIVE_DB_PROOF_V1_DIR/all-artifacts.manifest.sha256"
     require_file "$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
     cmp -s "$ACTIVE_DB_RUNTIME_DIR/MANIFEST.toml" \
         "$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml" \
@@ -440,11 +420,10 @@ build_direct_oram() {
     db_manifest="$5"
     root_bundle="$6"
     expected_muhash="$7"
-    expected_from_muhash="$8"
-    expected_index_sha="$9"
-    expected_chunks_sha="${10}"
-    trusted_state_dir="${11}"
-    build_timeout_seconds="${12}"
+    expected_index_sha="$8"
+    expected_chunks_sha="$9"
+    trusted_state_dir="${10}"
+    build_timeout_seconds="${11}"
     log_file="$ORAM_BUILD_LOG_DIR/${db_label}.build-direct.log"
     source_index_file="$source_dir/utxo_chunks_index_nodust.bin"
     source_chunks_file="$source_dir/utxo_chunks_nodust.bin"
@@ -487,80 +466,39 @@ build_direct_oram() {
 
     mkdir -p "$out_dir" || fatal "failed to create $out_dir"
     echo "[unified-server-run] regenerating $db_label direct ORAM from in-memory verified sources into $out_dir; trusted state: $trusted_state_dir" >&2
-    if [ -n "$expected_from_muhash" ]; then
-        run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
-            "$out_dir" "$log_file" "$ORAMCTL" build-direct \
-            --index-file "$index_file" \
-            --chunks-file "$chunks_file" \
-            --out-dir "$out_dir" \
-            --trusted-state-dir "$trusted_state_dir" \
-            --level all \
-            --pack "$ORAM_PACK" \
-            --leaf-divisor "$ORAM_LEAF_DIVISOR" \
-            --bucket-size "$ORAM_BUCKET_SIZE" \
-            --stash-capacity "$ORAM_STASH_CAPACITY" \
-            --cache-levels "$ORAM_CACHE_LEVELS" \
-            --index-slots-per-bin "$DIRECT_INDEX_SLOTS_PER_BIN" \
-            --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
-            --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
-            --index-seed "$DIRECT_INDEX_SEED" \
-            --encrypted \
-            --key-hex "$ORAM_PAGE_KEY_HEX" \
-            --auth-store \
-            --auth-layout sidecar \
-            --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
-            --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
-            --db-build-evidence "$db_evidence" \
-            --server-db-manifest "$db_manifest" \
-            --root-bundle-payload "$root_bundle" \
-            --expected-muhash "$expected_muhash" \
-            --expected-from-muhash "$expected_from_muhash" \
-            --from-bhtm-leaf-proof "$DELTA_BHTM_FROM_LEAF_PROOF" \
-            --expected-from-height "$DELTA_EXPECTED_FROM_HEIGHT" \
-            --expected-from-block-hash "$DELTA_EXPECTED_FROM_BLOCK_HASH" \
-            --expected-bhtm-tree-root "$DELTA_EXPECTED_BHTM_TREE_ROOT" \
-            --expected-index-sha256 "$expected_index_sha" \
-            --expected-chunks-sha256 "$expected_chunks_sha" \
-            --strict-source-binding || {
-                tail -80 "$log_file" >&2 || true
-                fatal "$db_label direct ORAM regeneration failed; full log: $log_file" \
-                    "$build_timeout_seconds" build-failed
-            }
-    else
-        run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
-            "$out_dir" "$log_file" "$ORAMCTL" build-direct \
-            --index-file "$index_file" \
-            --chunks-file "$chunks_file" \
-            --out-dir "$out_dir" \
-            --trusted-state-dir "$trusted_state_dir" \
-            --level all \
-            --pack "$ORAM_PACK" \
-            --leaf-divisor "$ORAM_LEAF_DIVISOR" \
-            --bucket-size "$ORAM_BUCKET_SIZE" \
-            --stash-capacity "$ORAM_STASH_CAPACITY" \
-            --cache-levels "$ORAM_CACHE_LEVELS" \
-            --index-slots-per-bin "$DIRECT_INDEX_SLOTS_PER_BIN" \
-            --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
-            --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
-            --index-seed "$DIRECT_INDEX_SEED" \
-            --encrypted \
-            --key-hex "$ORAM_PAGE_KEY_HEX" \
-            --auth-store \
-            --auth-layout sidecar \
-            --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
-            --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
-            --db-build-evidence "$db_evidence" \
-            --server-db-manifest "$db_manifest" \
-            --root-bundle-payload "$root_bundle" \
-            --expected-muhash "$expected_muhash" \
-            --expected-index-sha256 "$expected_index_sha" \
-            --expected-chunks-sha256 "$expected_chunks_sha" \
-            --strict-source-binding || {
-                tail -80 "$log_file" >&2 || true
-                fatal "$db_label direct ORAM regeneration failed; full log: $log_file" \
-                    "$build_timeout_seconds" build-failed
-            }
-    fi
+    run_supervised_direct_build "$db_label" "$build_timeout_seconds" \
+        "$out_dir" "$log_file" "$ORAMCTL" build-direct \
+        --index-file "$index_file" \
+        --chunks-file "$chunks_file" \
+        --out-dir "$out_dir" \
+        --trusted-state-dir "$trusted_state_dir" \
+        --level all \
+        --pack "$ORAM_PACK" \
+        --leaf-divisor "$ORAM_LEAF_DIVISOR" \
+        --bucket-size "$ORAM_BUCKET_SIZE" \
+        --stash-capacity "$ORAM_STASH_CAPACITY" \
+        --cache-levels "$ORAM_CACHE_LEVELS" \
+        --index-slots-per-bin "$DIRECT_INDEX_SLOTS_PER_BIN" \
+        --index-hash-fns "$DIRECT_INDEX_HASH_FNS" \
+        --index-load-factor "$DIRECT_INDEX_LOAD_FACTOR" \
+        --index-seed "$DIRECT_INDEX_SEED" \
+        --encrypted \
+        --key-hex "$ORAM_PAGE_KEY_HEX" \
+        --auth-store \
+        --auth-layout sidecar \
+        --auth-trusted-levels "$ORAM_AUTH_TRUSTED_LEVELS" \
+        --auth-hash-page-size "$ORAM_AUTH_HASH_PAGE_SIZE" \
+        --db-build-evidence "$db_evidence" \
+        --server-db-manifest "$db_manifest" \
+        --root-bundle-payload "$root_bundle" \
+        --expected-muhash "$expected_muhash" \
+        --expected-index-sha256 "$expected_index_sha" \
+        --expected-chunks-sha256 "$expected_chunks_sha" \
+        --strict-source-binding || {
+            tail -80 "$log_file" >&2 || true
+            fatal "$db_label direct ORAM regeneration failed; full log: $log_file" \
+                "$build_timeout_seconds" build-failed
+        }
     safe_remove_runtime_path "$trusted_input_dir"
     echo "[unified-server-run] regenerated $db_label direct ORAM; log: $log_file" >&2
 }
@@ -593,7 +531,6 @@ active_swap_rows=$(awk 'NR > 1 { count++ } END { print count + 0 }' /proc/swaps)
 
 [ -x "$ORAMCTL" ] || fatal "$ORAMCTL missing from UKI"
 [ -x "$ORAM_SUPERVISOR" ] || fatal "$ORAM_SUPERVISOR missing from UKI"
-require_file "$DELTA_BHTM_FROM_LEAF_PROOF"
 wait_for_databases_config
 umask 077
 mkdir -p "$ORAM_BOOT_ROOT" "$ORAM_BUILD_LOG_DIR" || fatal "failed to create ORAM boot directories"
@@ -625,12 +562,6 @@ MAINNET_DB_EVIDENCE="$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
 MAINNET_DB_MANIFEST="$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
 MAINNET_ROOT_BUNDLE="$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
 
-load_active_database_generation 1 db1
-DELTA_SOURCE_DIR="$ACTIVE_DB_PROOF_V2_DIR/oram-direct-inputs"
-DELTA_DB_EVIDENCE="$ACTIVE_DB_PROOF_V2_DIR/build-evidence.bin"
-DELTA_DB_MANIFEST="$ACTIVE_DB_PROOF_V2_DIR/server-db/MANIFEST.toml"
-DELTA_ROOT_BUNDLE="$ACTIVE_DB_PROOF_V2_DIR/root-bundle-payload.bin"
-
 prepare_direct_oram_status_api
 ORAM_STATUS_STARTED_AT_EPOCH=$(date -u +%s)
 write_direct_oram_status_json input-validation "$ORAM_DB0_MAX_SECONDS" none \
@@ -639,22 +570,15 @@ start_direct_oram_status_api
 start_total_watchdog
 write_direct_oram_status_json db0-build "$ORAM_DB0_MAX_SECONDS" none \
     || fatal "failed to publish Direct ORAM db0-build status"
-build_direct_oram mainnet-948454 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-948454" \
-    "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" "" \
+build_direct_oram mainnet-976083 "$MAINNET_SOURCE_DIR" "$ORAM_STAGING_DIR/db0-mainnet-976083" \
+    "$MAINNET_DB_EVIDENCE" "$MAINNET_DB_MANIFEST" "$MAINNET_ROOT_BUNDLE" "$MAINNET_EXPECTED_MUHASH" \
     "$MAINNET_EXPECTED_INDEX_SHA256" "$MAINNET_EXPECTED_CHUNKS_SHA256" \
     "$ORAM_FULL_TRUSTED_STATE_DIR" "$ORAM_DB0_MAX_SECONDS"
-write_direct_oram_status_json db1-build "$ORAM_DB1_MAX_SECONDS" none \
-    || fatal "failed to publish Direct ORAM db1-build status"
-build_direct_oram delta-940611-948454 "$DELTA_SOURCE_DIR" "$ORAM_STAGING_DIR/db1-delta-940611-948454" \
-    "$DELTA_DB_EVIDENCE" "$DELTA_DB_MANIFEST" "$DELTA_ROOT_BUNDLE" "$DELTA_EXPECTED_MUHASH" "$DELTA_EXPECTED_FROM_MUHASH" \
-    "$DELTA_EXPECTED_INDEX_SHA256" "$DELTA_EXPECTED_CHUNKS_SHA256" \
-    "$ORAM_DELTA_TRUSTED_STATE_DIR" "$ORAM_DB1_MAX_SECONDS"
 
 write_direct_oram_status_json publish "$ORAM_TOTAL_MAX_SECONDS" none \
     || fatal "failed to publish Direct ORAM publish status"
 mv "$ORAM_STAGING_DIR" "$ORAM_CURRENT_DIR" || fatal "failed to publish regenerated ORAM image"
-verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-948454
-verify_direct_oram_publish "$ORAM_DELTA_DIR" "$ORAM_DELTA_TRUSTED_STATE_DIR" delta-940611-948454
+verify_direct_oram_publish "$ORAM_FULL_DIR" "$ORAM_FULL_TRUSTED_STATE_DIR" mainnet-976083
 safe_remove_runtime_path "$TRUSTED_INPUT_ROOT"
 write_current_boot_published_marker
 write_watchdog_phase server-readiness
@@ -674,9 +598,7 @@ exec "$UNIFIED_SERVER" \
     --config /home/pir/data/databases.toml \
     --oram-only \
     --direct-oram-db "0=$ORAM_FULL_DIR" \
-    --direct-oram-db "1=$ORAM_DELTA_DIR" \
     --direct-oram-trusted-state-db "0=$ORAM_FULL_TRUSTED_STATE_DIR" \
-    --direct-oram-trusted-state-db "1=$ORAM_DELTA_TRUSTED_STATE_DIR" \
     --direct-oram-drain-per-access 2 \
     --direct-oram-access-budget 75 \
     --direct-oram-cache-levels 0 \
