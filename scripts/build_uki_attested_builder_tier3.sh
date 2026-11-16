@@ -82,15 +82,14 @@ ATTESTED_BUILDER_REPO=${ATTESTED_BUILDER_REPO:-/home/pir/bitcoin-pir/attested-bu
 ATTESTED_BUILDER_BIN=${ATTESTED_BUILDER_BIN:-$ATTESTED_BUILDER_REPO/target/release/pir-attested-builder}
 ATTESTED_BUILDER_ONIONFFI_BIN=${ATTESTED_BUILDER_ONIONFFI_BIN:-$ATTESTED_BUILDER_REPO/target/release/onionffi}
 SKIP_BUILDER_CARGO_BUILD=${SKIP_BUILDER_CARGO_BUILD:-0}
-# Merged attested-builder main containing the native snapshot and delta v2
-# full-build producers. Keep the measured UKI recipe pinned to this exact tree.
-ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-8d9d21a6be560236cb666269cf1f93a3de53bb1f}
+# Native snapshot/delta v2 producer with bounded-memory snapshot construction.
+ATTESTED_BUILDER_REQUIRED_GIT_COMMIT=${ATTESTED_BUILDER_REQUIRED_GIT_COMMIT:-5e9fade73c01b40989204205b494dfc6dfef6efb}
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 DRACUT_MODULE_DIR="$SCRIPT_DIR/dracut"
 ARCHIVE_SCRIPT="$SCRIPT_DIR/archive_uki_artifact.sh"
 
-for tool in ukify dracut sha256sum awk sed find sort grep lsinitrd; do
+for tool in ukify dracut zstd sha256sum awk sed find sort grep lsinitrd; do
     require_tool "$tool"
 done
 
@@ -206,9 +205,11 @@ echo "attested-builder sha256:    $ATTESTED_BUILDER_BIN_SHA256"
 echo "SEV modules:                $REQUIRED_SEV_MODS"
 echo
 
-DRIVER_LIST="virtio_blk $SEV_DRIVER_LIST"
+DRIVER_LIST="virtio_pci virtio_blk $SEV_DRIVER_LIST"
 echo "generating attested-builder Tier 3 initrd..."
 SOURCE_DATE_EPOCH=0 dracut --force --no-hostonly --reproducible --nostrip \
+    --compress zstd --no-early-microcode \
+    --omit "drm bpir-verify bpir-cloudflared bpir-unified-server bpir-tier3-init bpir-pir2-sealed-provisioner bhtm-proof-init" \
     --add "bpir-attested-builder bpir-builder-tier3-init" \
     --add-drivers " $DRIVER_LIST " \
     --kver "$KVER" \

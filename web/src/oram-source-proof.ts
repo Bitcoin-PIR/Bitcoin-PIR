@@ -1,10 +1,9 @@
 import { extractSnpMeasurement, extractSnpReportData } from './bhtm-proof.js';
-import { AMD_TURIN_ARK_FINGERPRINT } from './attest-pin.js';
+import { verifyBuilderSnpReport, type BuilderSnpPolicy } from './builder-snp-proof.js';
 import type { DatabaseProofPin, VerifiedDatabaseProof } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
 import { bytesToHex, hexToBytes, sha256 } from './hash.js';
 import { fetchProofArtifactBytesV1 } from './proof-artifact-fetch.js';
-import { requireSdkWasm } from './sdk-bridge.js';
 
 const DB_EVIDENCE_V1_DOMAIN = new TextEncoder().encode(
   'BitcoinPIR/attested-builder/build-evidence/v1\0',
@@ -42,9 +41,7 @@ export interface OramSourceProofManifest {
   proofType: string;
   id: string;
   description?: string;
-  attestedBuilder: {
-    /** Browser policy pin for the AMD-signed builder image. */
-    measurementHex: string;
+  attestedBuilder: BuilderSnpPolicy & {
     artifacts: Record<string, OramSourceArtifactRef>;
   };
 }
@@ -802,17 +799,7 @@ function verifyStaticSnpReportSignature(
   const arkPem = decodeUtf8(requiredArtifact(artifacts, 'attestedBuilder.arkPem'));
   const askPem = decodeUtf8(requiredArtifact(artifacts, 'attestedBuilder.askPem'));
   const vcekPem = decodeUtf8(requiredArtifact(artifacts, 'attestedBuilder.vcekPem'));
-  const sdk = requireSdkWasm();
-  const policy = new sdk.WasmPolicyRequirements();
-  policy.setExpectedMeasurement(hexToBytes(normalizeHex(manifest.attestedBuilder.measurementHex)));
-  sdk.verifyRawSnpReport(
-    sevSnpReport,
-    arkPem,
-    askPem,
-    vcekPem,
-    AMD_TURIN_ARK_FINGERPRINT,
-    policy,
-  );
+  verifyBuilderSnpReport(sevSnpReport, { arkPem, askPem, vcekPem }, manifest.attestedBuilder);
 }
 
 function compareAttestedDbEvidence(
