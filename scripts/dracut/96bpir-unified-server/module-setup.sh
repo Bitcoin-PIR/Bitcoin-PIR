@@ -40,7 +40,7 @@ depends() {
 install() {
     local bin=${BPIR_UNIFIED_SERVER_BIN:-${BINARY:-/home/pir/BitcoinPIR/target/release/unified_server}}
     local oramctl=${BPIR_ORAMCTL_BIN:-${ORAMCTL:-/home/pir/bitcoin-pir/oram/target/release/oramctl}}
-    local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-/home/pir/BitcoinPIR/web/public/proofs/trust-chain/delta_940611_948454/bhtm/height-940611.leaf-proof.json}
+    local bhtm_from_leaf_proof=${BPIR_BHTM_FROM_LEAF_PROOF:-}
 
     if [ ! -x "$bin" ]; then
         derror "bpir-unified-server: $bin not executable on build host"
@@ -52,7 +52,7 @@ install() {
         derror "  run: cd /home/pir/bitcoin-pir/oram && cargo build --release --bin oramctl"
         return 1
     fi
-    if [ ! -r "$bhtm_from_leaf_proof" ]; then
+    if [ -n "$bhtm_from_leaf_proof" ] && [ ! -r "$bhtm_from_leaf_proof" ]; then
         derror "bpir-unified-server: BHTM from-leaf proof not readable: $bhtm_from_leaf_proof"
         return 1
     fi
@@ -64,6 +64,8 @@ install() {
     # /lib64/ld-linux-x86-64.so.2.
     inst "$bin" /usr/local/bin/unified_server
     inst "$oramctl" /usr/local/bin/oramctl
-    inst_simple "$bhtm_from_leaf_proof" \
-        /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
+    if [ -n "$bhtm_from_leaf_proof" ]; then
+        inst_simple "$bhtm_from_leaf_proof" \
+            /usr/share/bitcoinpir/proofs/height-940611.leaf-proof.json
+    fi
 }

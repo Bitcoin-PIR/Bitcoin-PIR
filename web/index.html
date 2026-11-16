@@ -683,7 +683,7 @@
                 </div>
                 <!-- Update with the database generation (DATABASE_ROOT_ROTATION_RUNBOOK.md §3). -->
                 <p style="margin: 0 0 12px; font-size: 13px; color: var(--ink-mute);">
-                    Data: the Bitcoin UTXO set at block 948,454 (mined 2026-05-08). Transactions after that block are not included.
+                    Data: Direct ORAM uses block 976,083; the other backends use block 948,454. Later transactions are not included.
                 </p>
                 <div class="scheme-list" role="tablist" aria-label="PIR backend">
                     <button type="button" class="scheme tab-btn active" data-tab="oram" role="tab" aria-selected="true" aria-controls="tab-oram">
@@ -4752,7 +4752,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             const preferredDbId = Number.parseInt(select.value, 10);
             select.innerHTML = '';
 
-            if (!catalog || catalog.databases.length <= 1) {
+            if (!catalog || catalog.databases.length === 0) {
                 advancedDetails.style.display = 'none';
                 return;
             }
@@ -4773,7 +4773,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             }
 
             oramRefreshDbInfo();
-            advancedDetails.style.display = 'block';
+            advancedDetails.style.display = catalog.databases.length > 1 ? 'block' : 'none';
         }
 
         async function oramConnect(selection) {
@@ -4786,7 +4786,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 state: 'unavailable',
                 checks: [],
                 mismatches: [],
-                error: 'waiting for latest delta trust-chain proof',
+                error: 'BHTM proof for the current ORAM snapshot is not yet published',
             });
             try {
                 log('ORAM: Connecting to attested server...', 'info');

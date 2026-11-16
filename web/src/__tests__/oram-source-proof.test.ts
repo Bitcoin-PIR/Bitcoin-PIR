@@ -7,6 +7,7 @@ const { requireSdkWasm } = vi.hoisted(() => ({
 
 vi.mock('../sdk-bridge.js', () => ({ requireSdkWasm }));
 import { PRODUCTION_ORAM_DB_PROOF_V2_PINS } from '../attest-pin.js';
+import { HISTORICAL_ORAM_DELTA_PIN } from './fixtures/oram-delta-pin.js';
 import type { VerifiedDatabaseProof } from '../db-proof.js';
 import { bytesToHex, sha256 } from '../hash.js';
 import {
@@ -26,11 +27,11 @@ import {
 
 const publicRoot = new URL('../../public/', import.meta.url);
 const SERVER_MANIFEST_ROOT =
-  '91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6';
+  '2e4c7ac695ad026b7a9bf32cc1ee7dbff863d57763b72f328cfc0f975f3d6d37';
 const DB1_SERVER_MANIFEST_ROOT =
   '047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c';
 const DB0_PIN = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find((pin) => pin.dbId === 0)!;
-const DB1_PIN = PRODUCTION_ORAM_DB_PROOF_V2_PINS.find((pin) => pin.dbId === 1)!;
+const DB1_PIN = HISTORICAL_ORAM_DELTA_PIN;
 const LIVE_DB0_PROOF: VerifiedDatabaseProof = {
   ...DB0_PIN,
   manifestRootHex: SERVER_MANIFEST_ROOT,
@@ -109,10 +110,10 @@ describe('ORAM source input binding', () => {
       buildKind: 'snapshot',
       fromHeight: 0,
       directInputs: {
-        index_sha256: 'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
-        index_records: '53835039',
-        chunk_sha256: '9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521',
-        chunk_records: '80984512',
+        index_sha256: '8c8aedd1e4f8948b9024bc5a979b39d92795e28b0c7dfb33642668d7bb9401d2',
+        index_records: '54772028',
+        chunk_sha256: '9c88ed8da75bc9a43f3f3659263fc7995b6f2d27c1d8533c33721887d6af111d',
+        chunk_records: '82390629',
         index_seed: '8030603977422561841',
       },
     },
@@ -156,9 +157,9 @@ describe('ORAM source input binding', () => {
     expect(status.verified?.buildEvidence.evidenceMode).toBe('full-build');
     expect(status.verified?.buildEvidence.buildKind).toBe(buildKind);
     expect(status.verified?.buildEvidence.fromAnchor.height).toBe(fromHeight);
-    expect(status.verified?.buildEvidence.anchor.height).toBe(948454);
+    expect(status.verified?.buildEvidence.anchor.height).toBe(pin.height);
     expect(status.verified?.buildEvidence.builderGitCommit).toBe(
-      '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
+      pin.builderGitCommit,
     );
     expect(status.verified?.directInputs).toMatchObject(directInputs);
   });
@@ -214,7 +215,7 @@ describe('ORAM source input binding', () => {
     const original = new TextDecoder().decode(await publicArtifactLoader(ref.path));
     const substituted = new TextEncoder().encode(
       original.replace(
-        'd0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c',
+        '8c8aedd1e4f8948b9024bc5a979b39d92795e28b0c7dfb33642668d7bb9401d2',
         '1'.repeat(64),
       ),
     );
@@ -324,8 +325,8 @@ describe('ORAM source input binding', () => {
     const parsed = parseAttestedBuildEvidence(evidence);
 
     expect(parsed.version).toBe(2);
-    expect(parsed.snapshotBytesDecimal).toBe('9422874286');
-    expect(parsed.anchor.height).toBe(948454);
+    expect(parsed.snapshotBytesDecimal).toBe('9314184426');
+    expect(parsed.anchor.height).toBe(976083);
     expect(parsed.serverDbManifestSha256Hex).toBe(SERVER_MANIFEST_ROOT);
     expect(paramsHashV2ForAttestedBuildEvidence(parsed)).toBe(parsed.paramsHashHex);
     expect(bytesToHex(reportDataForBuildEvidence(evidence))).toBe(

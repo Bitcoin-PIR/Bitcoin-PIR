@@ -56,8 +56,6 @@ until attest; do
   sleep 30
 done
 "${admin[@]}" channel-test "$server" --expect-ark-fingerprint "$(pin oram_ark)"
-for db_id in 0 1; do
-  cargo run --locked -q --manifest-path "$root/Cargo.toml" -p pir-sdk-client \
-    --example oram_local_smoke -- --server "$server" --db-id "$db_id" \
-    --padded-slots 25 4242424242424242424242424242424242424242
-done
+cargo run --locked -q --manifest-path "$root/Cargo.toml" -p pir-sdk-client \
+  --example oram_local_smoke -- --server "$server" --db-id 0 \
+  --padded-slots 25 4242424242424242424242424242424242424242
