@@ -1,55 +1,56 @@
 {
   "schemaVersion": 2,
   "proofType": "BitcoinPIR/oram-source-binding/v2",
-  "id": "mainnet-948454-direct-input-binding-v2",
-  "description": "AMD-attested BuildEvidence V2 binding the production Direct ORAM regenerate-on-boot input manifest; this does not claim byte identity for mutable ORAM output files",
+  "id": "mainnet-976083-native-full-build-v2",
+  "description": "Native AMD SEV-SNP full-build evidence for the Direct ORAM regenerate-on-boot inputs at height 976083.",
   "attestedBuilder": {
-    "measurementHex": "ca297ab31ed5077e66f2fbab4c89bf5f34c51fd14a0a6892b51cf5eb267af94904b63e7524a0b5137c44542f4e7b516f",
+    "amdProduct": "Milan",
+    "measurementHex": "8d476f3f44d2cfc8ea3688e6490eaf05185e8265a164a7cc8065a0c58b97ef804c383d16364eb51bfa4b73f80e80a720",
     "artifacts": {
       "allArtifactsManifest": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/all-artifacts.manifest.sha256",
-        "sha256": "7882d7916c1e7b7aa59d3bc0ecf1d7b68d251d08bd7678ffd22fa5e906f39cc7",
-        "size": 3410
+        "path": "/proofs/oram-source/mainnet-976083-v2/all-artifacts.manifest.sha256",
+        "sha256": "9fcefcef1f1aa5b1ab02f14f1ee9607bc47e4c78a49eb4a04a5b54868b46ffff",
+        "size": 3145
       },
       "arkPem": {
-        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/ark.pem",
-        "sha256": "b69c981fe0216c3d8e682eb6f480c6879497103071e52b5e603178638db8f68d",
+        "path": "/proofs/oram-source/mainnet-976083-v2/ark.pem",
+        "sha256": "8c109952166431ffad8cb9a3d54f3d20ffbbb58164f0d54be3457bf0ece9e0d8",
         "size": 2277
       },
       "askPem": {
-        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/ask.pem",
-        "sha256": "c72a54fb75a0a06b0c8dbf68b04893d0891751b94ce4da8231d11fd18a0da944",
+        "path": "/proofs/oram-source/mainnet-976083-v2/ask.pem",
+        "sha256": "8da3a65af1cb7cb90a21fac78431a2431a9ee7811f48c36569c53fb80ad31fee",
         "size": 2325
       },
       "buildEvidence": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/build-evidence.bin",
-        "sha256": "3b9e38d5422e5a3983e5ab356d540f5fcb0ba8bc71992f6ae4f4d2916b9c3394",
+        "path": "/proofs/oram-source/mainnet-976083-v2/build-evidence.bin",
+        "sha256": "5d68c96ee10605f9f1d40cb27d945e4532a47fab971a4374c68856f18329538f",
         "size": 522
       },
       "databaseManifest": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/database.manifest.sha256",
-        "sha256": "d67923e995d061d21efd2892021aed06067323133186626d151cc97d994e14c7",
-        "size": 3320
+        "path": "/proofs/oram-source/mainnet-976083-v2/database.manifest.sha256",
+        "sha256": "8b87595d0454f9b098b62e260649e9a2384abccf03b89c00f6b24484da94daa5",
+        "size": 3055
       },
       "rootBundlePayload": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/root-bundle-payload.bin",
-        "sha256": "a1902bd2173801b6af4a00533d633f8b4e27b48726267ecc4a63ccad4ec8ef78",
+        "path": "/proofs/oram-source/mainnet-976083-v2/root-bundle-payload.bin",
+        "sha256": "5040e1db462e0b2dc154dda6e4884e94b00a2bc3ce7850fcd3aded5cc29d51ce",
         "size": 1976
       },
       "serverDbManifest": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/server-db-MANIFEST.toml",
-        "sha256": "91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6",
+        "path": "/proofs/oram-source/mainnet-976083-v2/server-db-MANIFEST.toml",
+        "sha256": "2e4c7ac695ad026b7a9bf32cc1ee7dbff863d57763b72f328cfc0f975f3d6d37",
         "size": 2760
       },
       "sevSnpReport": {
-        "path": "/proofs/oram-source/mainnet-948454-v2/build-evidence.sev-snp-report.bin",
-        "sha256": "9fd1daa48952e41662630627115e092b0d4ccc758503d0e40e2dc551d83b513d",
+        "path": "/proofs/oram-source/mainnet-976083-v2/build-evidence.sev-snp-report.bin",
+        "sha256": "68c7409becfe6f32a63244729c231bae39396db463ad556f419a10b7ac44ec8d",
         "size": 1184
       },
       "vcekPem": {
-        "path": "/proofs/trust-chain/delta_940611_948454/bhtm/vcek.pem",
-        "sha256": "3d76cabd635ddeccea31610d51c9c008fa74269626e6c1c361c2e0aea1765bf1",
-        "size": 1801
+        "path": "/proofs/oram-source/mainnet-976083-v2/vcek.pem",
+        "sha256": "92c3e34efa7f1af82b46dd9633223fa221c169c58e5152932cb3784c97d97750",
+        "size": 1887
       }
     }
   }

@@ -148,24 +148,23 @@ export function pinAcceptsBinary(
 /**
  * weikeng2.bitcoinpir.org — the Direct ORAM host since 2026-10-02: VPSBG
  * server 26939, an AMD EPYC 7713P (Milan), so its reports chain to the
- * Milan ARK and must meet AMD_MILAN_SEV_SNP_FLOOR. Tier 3 runtime UKI image
- * 415 (r13, source `0ccff370`, kernel 6.17.0-23, built on pir1; 407 was r12
- * from `ce2c26ef`) with no server identity: a fresh channel key every boot, bound by the report. It
+ * Milan ARK and must meet AMD_MILAN_SEV_SNP_FLOOR. The snapshot-only Tier 3
+ * runtime uses kernel 7.0.0-43 and recipe f78f4374, with no server identity:
+ * a fresh channel key every boot, bound by the report. It
  * runs `unified_server --oram-only` (no DPF, HarmonyPIR or OnionPIR tables;
  * the attested root is the tagged ORAM-only root), builds Direct ORAM from
  * hash-checked in-memory inputs, and serves it free on a best-effort lane.
  */
 export const PIR2_TIER3_PIN: ServerAttestPin = {
   // MEASUREMENT is the offline sev-snp-measure prediction for this UKI +
-  // pinned OVMF on 4 Milan vCPUs, equal to the chip-signed report after the
-  // switch; binary_sha256 is the stripped unified_server baked into image 415
-  // (r13, source 0ccff370: the baked cloudflared moves to 2026.10.4, #460;
-  // UKI tier3-20261027T073342Z-c8ad20a29378.efi).
+  // pinned OVMF on 4 Milan vCPUs. The runtime binary remains the stripped
+  // r13 build (source 0ccff370); the measured startup now reconstructs db0
+  // from the native 976083 inputs. UKI tier3-20261116T183614Z-38ad900ede84.efi.
   measurementHex:
-    '8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f',
+    '614e68425905b2ce9199c8b1d1a776f3e65e6dce37c3769578c4673845207fe46dc9d0865459bf023b023c525667cdea',
   binarySha256Hex:
     'eec60270307c9439f97d6d1b57894d52be2df1b0c008c43fccc34e7bfc73c0ac',
-  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, Tier 3 image 415: Direct ORAM only, best-effort free)',
+  description: 'weikeng2.bitcoinpir.org (VPSBG server 26939, AMD Milan SEV-SNP, base 976083: Direct ORAM only, best-effort free)',
 };
 
 /**
@@ -338,13 +337,27 @@ export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
   },
 ];
 
-/** v2 pins for the VPSBG Direct ORAM service. The layout and database
- * roots match the Onion service; the native full-build producer has its own
- * builder identity. */
-export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] =
-  PRODUCTION_ONION_DB_PROOF_V2_PINS.map((pin) => ({
-    ...pin,
-    builderBinarySha256Hex: 'cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f',
-    builderGitCommit: '8d9d21a6be560236cb666269cf1f93a3de53bb1f',
-    description: `${pin.description}; VPSBG native full-build producer`,
-  }));
+/** VPSBG's snapshot-only catalog, built natively under Milan SEV-SNP. */
+export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] = [{
+  dbId: 0,
+  buildKind: 'snapshot',
+  fromHeight: 0,
+  height: 976083,
+  fromBlockHashHex: '0000000000000000000000000000000000000000000000000000000000000000',
+  blockHashHex: '000000000000000000020655834cd975ec2b84b30a0e9c0fc95c93fd189e8161',
+  muhashHex: '0537e033ab26f2b9ad2058fd146d6bc418be890f660ad98f4398b6cbfa2f116f',
+  bucketSuperRootHex: '07ddba5b2d7944232253010ad69ee26860ea80a902dcbae2f10e9748739b7b0e',
+  onionSuperRootHex: '84f60536af4904b77fef108c18d465d97532fbbf4f08d20c4c07240bb1937d21',
+  paramsHashHex: 'f66729f042bcce7c205056b5dc5fcd766f32191fc95db3f442dd74bcbc228dd4',
+  networkMagicHex: 'f9beb4d9',
+  builderBinarySha256Hex: '94143bb8c1d06bc3158e8de4f73b6bd134b827a95de60522742299f2a7ffe95b',
+  builderGitCommit: '5e9fade73c01b40989204205b494dfc6dfef6efb',
+  onionEntrySize: 3_328,
+  proofVersion: 2,
+  onionTotalPackedEntries: 964_962,
+  onionIndexBinsPerTable: 10_452,
+  onionChunkBinsPerTable: 38_572,
+  onionIndexSlotsPerBin: 221,
+  onionIndexSlotSize: 15,
+  description: 'mainnet_976083 native full-build v2 snapshot for VPSBG Direct ORAM',
+}];

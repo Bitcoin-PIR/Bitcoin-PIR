@@ -474,7 +474,7 @@
 
                 <section id="runtime-pins" class="tab-panel" role="tabpanel" aria-labelledby="tab-runtime-pins">
                     <section>
-                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-10-27</span></h2>
+                        <h2>Frontend-expected runtime pins <span class="badge ok">ORAM UKI — 2026-11-16</span></h2>
                         <p>
                             These are the values the browser bundle expects for
                             the Direct ORAM host (<code>PIR2_TIER3_PIN</code>). They
@@ -487,11 +487,11 @@
                             <table class="pin-table">
                                 <tr>
                                     <td>MEASUREMENT</td>
-                                    <td>8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f</td>
+                                    <td>614e68425905b2ce9199c8b1d1a776f3e65e6dce37c3769578c4673845207fe46dc9d0865459bf023b023c525667cdea</td>
                                 </tr>
                                 <tr>
                                     <td>UKI sha256</td>
-                                    <td>c8ad20a293782d106cc44b49fcfa7e2304b24779720edeafc1eddf5cdf194291</td>
+                                    <td>38ad900ede84002212fff4feb0a8ea832bd6fb0a901e552650ed3c68022ae4d1</td>
                                 </tr>
                                 <tr>
                                     <td>binary sha256</td>
@@ -565,10 +565,10 @@
                                 <h3>Get or rebuild the UKI</h3>
                                 <p>
                                     The current operator-archived artifact is
-                                    <code>tier3-20261027T073342Z-c8ad20a29378.efi</code>, the
+                                    <code>tier3-20261116T183614Z-38ad900ede84.efi</code>, the
                                     ORAM-only Tier 3 UKI for the AMD Milan host
                                     (<code>unified_server --oram-only</code>, direct ORAM
-                                    lookups for db_id 0/1).
+                                    lookups for db_id 0 at height 976083).
                                     It is a large runtime artifact, so this page pins the
                                     exact bytes by hash and records the rebuild route
                                     rather than inlining the UKI into the static proof
@@ -576,11 +576,11 @@
                                     is not a public download URL.
                                 </p>
                                 <p class="meta" style="margin-top: 6px;">
-                                    Verify: <code>sha256sum tier3-20261027T073342Z-c8ad20a29378.efi</code> →
-                                    <code>c8ad20a293782d106cc44b49fcfa7e2304b24779720edeafc1eddf5cdf194291</code>
+                                    Verify: <code>sha256sum tier3-20261116T183614Z-38ad900ede84.efi</code> →
+                                    <code>38ad900ede84002212fff4feb0a8ea832bd6fb0a901e552650ed3c68022ae4d1</code>
                                 </p>
 <pre><code># Operator-only shortcut: retrieve the exact deployed bytes.
-scp pir-hetzner:/home/pir/uki-archive/tier3/tier3-20261027T073342Z-c8ad20a29378.efi .</code></pre>
+scp pir-hetzner:/home/pir/build-prep/base-976083-20261116/runtime-uki-archive/tier3-20261116T183614Z-38ad900ede84.efi .</code></pre>
                                 <p class="meta" style="margin-top: 6px;">
                                     Or perform a functional source rebuild. This is not
                                     a byte-identical reproduction of the production artifact:
@@ -597,11 +597,11 @@ strip --strip-debug target/release/unified_server
 cargo build --locked --release --manifest-path vendor/bitcoinpir-oram/Cargo.toml --bin oramctl
 strip --strip-debug vendor/bitcoinpir-oram/target/release/oramctl
 
-# height-940611.leaf-proof.json is an operator-retained input (sha256 2e54cb56…).
-sudo env KERNEL=/boot/vmlinuz-6.17.0-23-generic \
+# Use the snapshot-only startup recipe with the retained runtime binaries.
+git checkout f78f4374818e4970c3863526fccb8c85022bf3c0
+sudo env KERNEL=/boot/vmlinuz-7.0.0-43-generic \
 ORAMCTL="$PWD/vendor/bitcoinpir-oram/target/release/oramctl" \
-BHTM_FROM_LEAF_PROOF=/absolute/height-940611.leaf-proof.json \
-OUT="$PWD/bpir-tier3-functional-rebuild-0ccff370.efi" \
+OUT="$PWD/bpir-tier3-functional-rebuild-976083.efi" \
 BINARY="$PWD/target/release/unified_server" \
 BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 ./scripts/build_uki_tier3.sh</code></pre>
@@ -626,7 +626,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
 	    --vcpus 4 \
 	    --vcpu-sig 0x00A00F11 \
 	    --ovmf OVMF_SEV_MEASUREDBOOT_4M.fd \
-	    --kernel tier3-20261027T073342Z-c8ad20a29378.efi \
+	    --kernel tier3-20261116T183614Z-38ad900ede84.efi \
 	    --guest-features 0x1</code></pre>
                             </li>
 
@@ -634,7 +634,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                 <h3>Verify the live report and AMD chain</h3>
 	<pre><code>cargo build --locked --release --bin bpir-admin -p bpir-admin
 ./target/release/bpir-admin attest wss://weikeng2.bitcoinpir.org \
-    --expect-measurement 8dfd1515889dfd003af45ba277e6131b9582f4fc02b060f36bbf23d2e7715f8285c89488a85c24e939578bd8d4261c1f \
+    --expect-measurement 614e68425905b2ce9199c8b1d1a776f3e65e6dce37c3769578c4673845207fe46dc9d0865459bf023b023c525667cdea \
     --expect-binary      eec60270307c9439f97d6d1b57894d52be2df1b0c008c43fccc34e7bfc73c0ac \
     --expect-ark-fingerprint 69d063b45344d26a2e94e1f4210de49ef555308287d4c174445c95639a540bcd
 ./target/release/bpir-admin channel-test wss://weikeng2.bitcoinpir.org \
@@ -773,47 +773,47 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                                     <td><a href="/proofs/oram-source/current.json" target="_blank" rel="noopener">/proofs/oram-source/current.json</a></td>
                                 </tr>
                                 <tr>
-                                    <td>db1 manifest</td>
+                                    <td>archived db1 manifest</td>
                                     <td><a href="/proofs/oram-source/current-db1.json" target="_blank" rel="noopener">/proofs/oram-source/current-db1.json</a></td>
                                 </tr>
                                 <tr>
                                     <td>builder MEASUREMENT</td>
-                                    <td>ca297ab31ed5077e66f2fbab4c89bf5f34c51fd14a0a6892b51cf5eb267af94904b63e7524a0b5137c44542f4e7b516f</td>
+                                    <td>8d476f3f44d2cfc8ea3688e6490eaf05185e8265a164a7cc8065a0c58b97ef804c383d16364eb51bfa4b73f80e80a720</td>
                                 </tr>
                                 <tr>
                                     <td>builder commit</td>
-                                    <td>8d9d21a6be560236cb666269cf1f93a3de53bb1f</td>
+                                    <td>5e9fade73c01b40989204205b494dfc6dfef6efb</td>
                                 </tr>
                                 <tr>
                                     <td>builder binary</td>
-                                    <td>cf973a833f9b892743e451da4c2937c82865b12d8901c48ac4483b5e0696ba6f</td>
+                                    <td>94143bb8c1d06bc3158e8de4f73b6bd134b827a95de60522742299f2a7ffe95b</td>
                                 </tr>
                                 <tr>
                                     <td>db0 index source</td>
-                                    <td>d0b9573488abdda8e17dc52bb52bf5ff11520b4511683020f5f1a22bc8d8d26c · 1,345,875,975 bytes</td>
+                                    <td>8c8aedd1e4f8948b9024bc5a979b39d92795e28b0c7dfb33642668d7bb9401d2 · 1,369,300,700 bytes</td>
                                 </tr>
                                 <tr>
                                     <td>db0 chunk source</td>
-                                    <td>9a81a02bf82af49414b5f2ae6380c97c1f231fcac6890b605f6cde22b0adc521 · 3,239,380,480 bytes</td>
+                                    <td>9c88ed8da75bc9a43f3f3659263fc7995b6f2d27c1d8533c33721887d6af111d · 3,295,625,160 bytes</td>
                                 </tr>
                                 <tr>
                                     <td>db0 server manifest</td>
-                                    <td>91421138ba94e44665bef2617af296b1c1847dea13c4df29b565012d1e0b74a6</td>
+                                    <td>2e4c7ac695ad026b7a9bf32cc1ee7dbff863d57763b72f328cfc0f975f3d6d37</td>
                                 </tr>
                                 <tr>
-                                    <td>db1 index source</td>
+                                    <td>archived db1 index source</td>
                                     <td>e06fc3dedf30096124888acef3024f21a9c049d59fd8c7d518aaf8a58ac6aa16 · 125,867,300 bytes</td>
                                 </tr>
                                 <tr>
-                                    <td>db1 chunk source</td>
+                                    <td>archived db1 chunk source</td>
                                     <td>536acb605396056118c7c0836988f369c5abbfc3f7e90732ad93e819d5188e0a · 340,230,840 bytes</td>
                                 </tr>
                                 <tr>
-                                    <td>db1 delta anchors</td>
+                                    <td>archived db1 delta anchors</td>
                                     <td>940,611 → 948,454</td>
                                 </tr>
                                 <tr>
-                                    <td>db1 server manifest</td>
+                                    <td>archived db1 server manifest</td>
                                     <td>047a5b6713bf0df29d9de308fb47ff757243e365a9818cf746f399bea457d00c</td>
                                 </tr>
                             </table>
@@ -827,7 +827,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>The report's <code>REPORT_DATA</code> is recomputed from the exact full-build V2 <code>BuildEvidence</code>; V1, reattestation and predecessor hashes are rejected.</li>
                             <li>BuildEvidence binds the root payload, database/all-artifacts manifests and exact server <code>MANIFEST.toml</code>.</li>
                             <li>The narrow typed <code>[direct_oram]</code> table supplies the exact input hashes, lengths, record counts and lookup layout.</li>
-                            <li>The current live proof for the selected db0 or db1 entry and the AMD-verified, production-pinned runtime both bind that same server-manifest root.</li>
+                            <li>The live db0 proof and the AMD-verified, production-pinned runtime both bind that same server-manifest root.</li>
                         </ul>
                     </section>
 
@@ -835,11 +835,11 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                         <h2>Published minimum artifacts</h2>
                         <div class="panel">
                             <p><strong>db0 full snapshot</strong></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/build-evidence.bin" download>BuildEvidence V2</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/build-evidence.sev-snp-report.bin" download>builder SEV-SNP report</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/root-bundle-payload.bin" download>root bundle payload</a></p>
-                            <p><a class="download-link" href="/proofs/oram-source/mainnet-948454-v2/server-db-MANIFEST.toml" target="_blank" rel="noopener">typed server manifest</a></p>
-                            <p><strong>db1 delta 940611 → 948454</strong></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet-976083-v2/build-evidence.bin" download>BuildEvidence V2</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet-976083-v2/build-evidence.sev-snp-report.bin" download>builder SEV-SNP report</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet-976083-v2/root-bundle-payload.bin" download>root bundle payload</a></p>
+                            <p><a class="download-link" href="/proofs/oram-source/mainnet-976083-v2/server-db-MANIFEST.toml" target="_blank" rel="noopener">typed server manifest</a></p>
+                            <p><strong>Archived db1 delta 940611 → 948454</strong></p>
                             <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/build-evidence.bin" download>BuildEvidence V2</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/build-evidence.sev-snp-report.bin" download>builder SEV-SNP report</a></p>
                             <p><a class="download-link" href="/proofs/oram-source/delta-940611-948454-v2/root-bundle-payload.bin" download>root bundle payload</a></p>
@@ -999,7 +999,7 @@ BPIR_UNIFIED_SERVER_BIN="$PWD/target/release/unified_server" \
                             <li>For the Direct ORAM host, AMD signs the loaded confidential-VM runtime and channel binding.</li>
                             <li>For pir1 and pir2 (no TEE), binary-hash pinning plus the operator-signed identity detects drift but does not provide a hardware root of trust.</li>
                             <li>The database proof binds <code>delta_940611_948454</code>'s bucket and OnionPIR Merkle roots to Bitcoin Core's MuHash at block <code>948454</code>.</li>
-                            <li>The ORAM source-binding proof binds the measured regenerate-on-boot path to exact Direct ORAM inputs in AMD-attested BuildEvidence V2 for block <code>948454</code>.</li>
+                            <li>The ORAM source-binding proof binds the measured regenerate-on-boot path to exact Direct ORAM inputs in AMD-attested BuildEvidence V2 for block <code>976083</code>.</li>
                             <li>The Bitcoin anchor proof binds both delta endpoint block hashes and the latest MuHash to one blockhash-to-muhash chunk tree root signed by a separate SEV-SNP BHTM proof run.</li>
                             <li>The web client compares the runtime pins with what the server reports and shows any mismatch.</li>
                             <li>DPF, HarmonyPIR, and standalone OnionPIR verify each database proof in Rust/WASM, compare it with the production pin, install the verified bucket or Onion root, and bind the fetched tree-tops before issuing an address query.</li>
