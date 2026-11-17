@@ -284,61 +284,8 @@ export const PRODUCTION_DB_PROOF_PINS: DatabaseProofPin[] = [
   DELTA_940611_948454_DB_PROOF_PIN,
 ];
 
-/** v2 pins for the Hetzner OnionPIR service. Unlike the v1 pins above
- * (retained for DPF/Harmony compatibility), these bind the complete typed
- * Onion query layout and the reviewed re-attestation producer. */
-export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [
-  {
-    dbId: 0,
-    buildKind: 'snapshot',
-    fromHeight: 0,
-    height: 948454,
-    fromBlockHashHex: MAINNET_948454_DB_PROOF_PIN.fromBlockHashHex,
-    blockHashHex: MAINNET_948454_DB_PROOF_PIN.blockHashHex,
-    muhashHex: MAINNET_948454_DB_PROOF_PIN.muhashHex,
-    bucketSuperRootHex: MAINNET_948454_DB_PROOF_PIN.bucketSuperRootHex,
-    onionSuperRootHex: MAINNET_948454_DB_PROOF_PIN.onionSuperRootHex,
-    paramsHashHex: 'a600f33fa0e644aab533a050eabf9c03882aa00f1b293ddf9d7f4bf7c8142563',
-    networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
-    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
-    onionEntrySize: 3_328,
-    proofVersion: 2,
-    onionTotalPackedEntries: 948_640,
-    onionIndexBinsPerTable: 10_273,
-    onionChunkBinsPerTable: 37_954,
-    onionIndexSlotsPerBin: 221,
-    onionIndexSlotSize: 15,
-    description: 'mainnet_948454 database proof v2 with complete OnionPIR layout binding',
-  },
-  {
-    dbId: 1,
-    buildKind: 'delta',
-    fromHeight: 940611,
-    height: 948454,
-    fromBlockHashHex: DELTA_940611_948454_DB_PROOF_PIN.fromBlockHashHex,
-    fromMuhashHex: DELTA_940611_948454_DB_PROOF_PIN.fromMuhashHex,
-    blockHashHex: DELTA_940611_948454_DB_PROOF_PIN.blockHashHex,
-    muhashHex: DELTA_940611_948454_DB_PROOF_PIN.muhashHex,
-    bucketSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.bucketSuperRootHex,
-    onionSuperRootHex: DELTA_940611_948454_DB_PROOF_PIN.onionSuperRootHex,
-    paramsHashHex: 'fe6f516696bafaa2226cc1bdc7888c7c69dd263a84817dd0f18cf8027123c45d',
-    networkMagicHex: 'f9beb4d9',
-    builderBinarySha256Hex: '1150d6a2d746398d9046e677e1f0d36f4c4ccb3c390265ea8cf14d7c1f23671c',
-    builderGitCommit: 'd49a199e290ccbb05b6481c5ba691cb516aa76bb',
-    onionEntrySize: 3_328,
-    proofVersion: 2,
-    onionTotalPackedEntries: 116_030,
-    onionIndexBinsPerTable: 965,
-    onionChunkBinsPerTable: 4_792,
-    onionIndexSlotsPerBin: 221,
-    onionIndexSlotSize: 15,
-    description: 'delta_940611_948454 database proof v2 with complete OnionPIR layout binding',
-  },
-];
-
-/** VPSBG's snapshot-only catalog, built natively under Milan SEV-SNP. */
-export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] = [{
+/** Native snapshot shared by all production backends. */
+const MAINNET_976083_DB_PROOF_V2_PIN: DatabaseProofPin = {
   dbId: 0,
   buildKind: 'snapshot',
   fromHeight: 0,
@@ -359,5 +306,11 @@ export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] = [{
   onionChunkBinsPerTable: 38_572,
   onionIndexSlotsPerBin: 221,
   onionIndexSlotSize: 15,
-  description: 'mainnet_976083 native full-build v2 snapshot for VPSBG Direct ORAM',
-}];
+  description: 'mainnet_976083 native full-build v2 snapshot',
+};
+
+/** Singleton catalog for OnionPIR, DPF and Harmony. */
+export const PRODUCTION_ONION_DB_PROOF_V2_PINS: DatabaseProofPin[] = [MAINNET_976083_DB_PROOF_V2_PIN];
+
+/** VPSBG's snapshot-only catalog uses the same native generation. */
+export const PRODUCTION_ORAM_DB_PROOF_V2_PINS: DatabaseProofPin[] = [MAINNET_976083_DB_PROOF_V2_PIN];
