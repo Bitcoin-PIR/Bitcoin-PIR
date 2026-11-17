@@ -31,7 +31,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use crate::connection::WsConnection;
 pub(crate) use crate::db_proof::{
-    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 pub(crate) use crate::hint_cache;
 pub(crate) use crate::merkle_verify::{
