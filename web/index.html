@@ -683,7 +683,7 @@
                 </div>
                 <!-- Update with the database generation (DATABASE_ROOT_ROTATION_RUNBOOK.md §3). -->
                 <p style="margin: 0 0 12px; font-size: 13px; color: var(--ink-mute);">
-                    Data: Direct ORAM uses block 976,083; the other backends use block 948,454. Later transactions are not included.
+                    Data: block 976,083. Later transactions are not included. DPF and Harmony require both servers to use this snapshot.
                 </p>
                 <div class="scheme-list" role="tablist" aria-label="PIR backend">
                     <button type="button" class="scheme tab-btn active" data-tab="oram" role="tab" aria-selected="true" aria-controls="tab-oram">
@@ -1508,7 +1508,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
     </section>
 
     <script type="module">
-        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PRODUCTION_DB_PROOF_PINS, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, trustChainManifestPathForDatabase, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
+        import { BatchPirClientAdapter, OnionPirWebClient, HarmonyPirClientAdapter, OramPirClientAdapter, hexToBytes, bytesToHex, scriptHash, scriptPubKeyToAddress, addressToScriptPubKey, decompileScript, decodeDeltaData, mergeDeltaIntoSnapshot, mergeDeltaIntoHarmonySnapshot, SyncController, describeStep, initSdkWasm, isSdkWasmReady, AMD_TURIN_ARK_FINGERPRINT, PRODUCTION_ONION_DB_PROOF_V2_PINS, PRODUCTION_ORAM_DB_PROOF_V2_PINS, databaseProofAnchorLabel, databaseProofAnchorPoints, mempoolSpaceBlockUrl, verifyProductionTrustChain, trustChainManifestPathForDatabase, oramSourceProofManifestPathForDbId, verifyOramSourceProof, renderSecurityBadgeTextRowsV1 } from './src/index.ts';
         import { ORAM_PAUSED_MESSAGE, ORAM_PROVIDER, PIR1_PROVIDER, PIR2_PROVIDER, PRODUCTION_DIRECTORY, PRODUCTION_ORAM_BATCH_PLANNER } from './src/production-providers.js';
         import { DIRECTORY_SLOTS_V1, describeDirectoryCatalogV1, describeDirectoryTrustV1, directoryBindingMismatchV1, directoryProviderChoicesV1, fetchLiveServerInfoV1, refreshNostrDirectoryV1 } from './src/index.ts';
         import { PRODUCTION_ISSUER_URL } from './src/index.ts';
@@ -2399,10 +2399,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 error: 'checking static proof artifacts...',
             });
 
-            const expectedPinSet = dbInfo.proof.proofVersion === 2
-                ? v2PinSet
-                : PRODUCTION_DB_PROOF_PINS;
-            const expectedPin = expectedPinSet.find(pin => pin.dbId === dbInfo.proof.dbId);
+            const expectedPin = v2PinSet.find(pin => pin.dbId === dbInfo.proof.dbId && pin.proofVersion === dbInfo.proof.proofVersion);
             if (!expectedPin) {
                 const error = `no production v${dbInfo.proof.proofVersion || 1} pin for db ${dbInfo.proof.dbId}`;
                 renderBitcoinAnchorBadge(idElem, label, {
@@ -2993,7 +2990,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 state: 'unavailable',
                 checks: [],
                 mismatches: [],
-                error: 'waiting for latest delta trust-chain proof',
+                error: 'waiting for snapshot trust-chain proof',
             });
             log('Connecting to the DPF servers...');
             const candidate = new BatchPirClientAdapter({
@@ -3604,7 +3601,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         }
 
         function opUpdateDataIntegritySummary() {
-            const statuses = PRODUCTION_DB_PROOF_PINS.map(pin => opDatabaseProofs.get(pin.dbId));
+            const statuses = PRODUCTION_ONION_DB_PROOF_V2_PINS.map(pin => opDatabaseProofs.get(pin.dbId));
             if (statuses.some(status => status && status.state !== 'verified')) {
                 opSetDataIntegrity('no', 'Database proof or trusted tree-top binding failed');
             } else if (
@@ -4243,7 +4240,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 state: 'unavailable',
                 checks: [],
                 mismatches: [],
-                error: 'waiting for latest delta trust-chain proof',
+                error: 'waiting for snapshot trust-chain proof',
             });
             log('HarmonyPIR: connecting to the hint and query servers...');
             const candidate = new HarmonyPirClientAdapter({
