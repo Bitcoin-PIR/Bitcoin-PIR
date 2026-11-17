@@ -6,7 +6,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsConnection;
 use crate::db_proof::{
-    fetch_database_proof, verify_database_proof, DatabaseProofPolicy, VerifiedDatabaseRoots,
+    fetch_database_proof_v2, verify_database_proof_v2, DatabaseProofPolicy, VerifiedDatabaseRoots,
 };
 use crate::merkle_verify::{
     fetch_tree_tops, verify_bucket_merkle_batch_dpf, verify_tree_tops_super_root, BucketMerkleItem,
@@ -518,7 +518,7 @@ impl DpfClient {
         self.preflight_bucket_tree_tops(&db).await
     }
 
-    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    /// Fetch and verify the V2 attested-builder proof bundle for `db_id`.
     ///
     /// The proof is checked against the cached database catalog, fetching the
     /// catalog first if needed. The returned roots are the attested builder
@@ -543,8 +543,8 @@ impl DpfClient {
             .cloned()
             .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
         let conn0 = self.conn0.as_mut().ok_or(PirError::NotConnected)?;
-        let bundle = fetch_database_proof(conn0.as_mut(), db_id).await?;
-        verify_database_proof(&db_info, &bundle, policy)
+        let bundle = fetch_database_proof_v2(conn0.as_mut(), db_id).await?;
+        verify_database_proof_v2(&db_info, &bundle, policy)
     }
 
     /// Install (or replace) a metrics recorder.

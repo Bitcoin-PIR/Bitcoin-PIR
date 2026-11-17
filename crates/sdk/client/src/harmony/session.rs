@@ -150,7 +150,7 @@ impl HarmonyClient {
         self.preflight_bucket_tree_tops(&db).await
     }
 
-    /// Fetch and verify the attested-builder proof bundle for `db_id`.
+    /// Fetch and verify the V2 attested-builder proof bundle for `db_id`.
     ///
     /// The proof is checked against the cached database catalog, fetching the
     /// catalog first if needed. Harmony servers answer the catalog/proof
@@ -176,8 +176,8 @@ impl HarmonyClient {
             .cloned()
             .ok_or_else(|| PirError::Protocol(format!("db_id {} not present in catalog", db_id)))?;
         let conn = self.hint_conn.as_mut().ok_or(PirError::NotConnected)?;
-        let bundle = fetch_database_proof(conn.as_mut(), db_id).await?;
-        verify_database_proof(&db_info, &bundle, policy)
+        let bundle = fetch_database_proof_v2(conn.as_mut(), db_id).await?;
+        verify_database_proof_v2(&db_info, &bundle, policy)
     }
 
     // ─── Metrics recorder ──────────────────────────────────────────────────

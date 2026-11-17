@@ -175,7 +175,7 @@ pub fn verify_database_proof_v2(
     let roots = verify_database_proof(db_info, bundle, policy)?;
     if roots.onion_layout_v2.is_none() {
         return Err(PirError::VerificationFailed(
-            "strict OnionPIR requires database proof v2".into(),
+            "database proof v2 required".into(),
         ));
     }
     Ok(roots)
@@ -923,11 +923,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_catalog_and_proof_over_transport() {
-        let (bundle, db_info) = sample_bundle();
+    async fn fetch_catalog_and_v2_proof_over_transport() {
+        let (bundle, db_info) = sample_bundle_v2();
         let mut transport = CannedTransport::new(vec![
             encode_catalog_response(&db_info),
-            encode_proof_response(&bundle),
+            encode_proof_response_version(
+                &bundle,
+                DATABASE_PROOF_BUNDLE_VERSION_V2,
+                RESP_DB_PROOF_V2,
+            ),
         ]);
 
         let catalog = fetch_database_catalog(&mut transport).await.unwrap();
@@ -943,20 +947,29 @@ mod tests {
         assert_eq!(catalog_db.chunk_k, db_info.chunk_k);
         assert_eq!(catalog_db.has_bucket_merkle, db_info.has_bucket_merkle);
 
-        let fetched = fetch_database_proof(&mut transport, 1).await.unwrap();
+        let fetched = fetch_database_proof_v2(&mut transport, 1).await.unwrap();
         assert_eq!(fetched, bundle);
-        let verified = verify_database_proof(
+        let verified = verify_database_proof_v2(
             &catalog.databases[0],
             &fetched,
             &DatabaseProofPolicy::mainnet(),
         )
         .unwrap();
         assert_eq!(verified.muhash, [5u8; 32]);
+        assert_eq!(verified.bucket_super_root, [7u8; 32]);
 
         assert_eq!(transport.requests.len(), 2);
         assert_eq!(transport.requests[0][4], REQ_GET_DB_CATALOG);
-        assert_eq!(transport.requests[1][4], REQ_GET_DB_PROOF);
+        assert_eq!(transport.requests[1][4], REQ_GET_DB_PROOF_V2);
         assert_eq!(transport.requests[1][5], 1);
+
+        let (legacy, _) = sample_bundle();
+        let mut legacy_transport = CannedTransport::new(vec![encode_proof_response(&legacy)]);
+        let error = fetch_database_proof_v2(&mut legacy_transport, 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, PirError::UnexpectedResponse { .. }));
+        assert_eq!(legacy_transport.requests.len(), 1);
     }
 
     #[test]
