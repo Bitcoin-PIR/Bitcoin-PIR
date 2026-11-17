@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 1,
+  "proofType": "BitcoinPIR/database-authenticity/trust-chain/v1",
+  "id": "snapshot_976083",
+  "description": "Native full-build snapshot anchor bound to a BHTM Merkle leaf under a Milan SEV-SNP-attested root.",
+  "anchor": {
+    "network": "mainnet",
+    "dbId": 0,
+    "buildKind": "snapshot",
+    "fromHeight": 0,
+    "fromBlockHashHex": "0000000000000000000000000000000000000000000000000000000000000000",
+    "height": 976083,
+    "blockHashHex": "000000000000000000020655834cd975ec2b84b30a0e9c0fc95c93fd189e8161",
+    "muhashHex": "0537e033ab26f2b9ad2058fd146d6bc418be890f660ad98f4398b6cbfa2f116f",
+    "bucketSuperRootHex": "07ddba5b2d7944232253010ad69ee26860ea80a902dcbae2f10e9748739b7b0e",
+    "onionSuperRootHex": "84f60536af4904b77fef108c18d465d97532fbbf4f08d20c4c07240bb1937d21"
+  },
+  "databaseProof": {
+    "builderBinarySha256Hex": "94143bb8c1d06bc3158e8de4f73b6bd134b827a95de60522742299f2a7ffe95b",
+    "builderGitCommit": "5e9fade73c01b40989204205b494dfc6dfef6efb",
+    "paramsHashHex": "f66729f042bcce7c205056b5dc5fcd766f32191fc95db3f442dd74bcbc228dd4",
+    "networkMagicHex": "f9beb4d9",
+    "artifacts": {
+      "allArtifactsManifest": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/all-artifacts.manifest.sha256",
+        "sha256": "9fcefcef1f1aa5b1ab02f14f1ee9607bc47e4c78a49eb4a04a5b54868b46ffff",
+        "size": 3145
+      },
+      "arkPem": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/ark.pem",
+        "sha256": "8c109952166431ffad8cb9a3d54f3d20ffbbb58164f0d54be3457bf0ece9e0d8",
+        "size": 2277
+      },
+      "askPem": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/ask.pem",
+        "sha256": "8da3a65af1cb7cb90a21fac78431a2431a9ee7811f48c36569c53fb80ad31fee",
+        "size": 2325
+      },
+      "buildEvidence": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/build-evidence.bin",
+        "sha256": "5d68c96ee10605f9f1d40cb27d945e4532a47fab971a4374c68856f18329538f",
+        "size": 522
+      },
+      "databaseManifest": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/database.manifest.sha256",
+        "sha256": "8b87595d0454f9b098b62e260649e9a2384abccf03b89c00f6b24484da94daa5",
+        "size": 3055
+      },
+      "rootBundlePayload": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/root-bundle-payload.bin",
+        "sha256": "5040e1db462e0b2dc154dda6e4884e94b00a2bc3ce7850fcd3aded5cc29d51ce",
+        "size": 1976
+      },
+      "serverDbManifest": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/server-db-MANIFEST.toml",
+        "sha256": "2e4c7ac695ad026b7a9bf32cc1ee7dbff863d57763b72f328cfc0f975f3d6d37",
+        "size": 2760
+      },
+      "sevSnpReport": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/build-evidence.sev-snp-report.bin",
+        "sha256": "68c7409becfe6f32a63244729c231bae39396db463ad556f419a10b7ac44ec8d",
+        "size": 1184
+      },
+      "vcekPem": {
+        "path": "/proofs/oram-source/mainnet-976083-v2/vcek.pem",
+        "sha256": "92c3e34efa7f1af82b46dd9633223fa221c169c58e5152932cb3784c97d97750",
+        "size": 1887
+      }
+    }
+  },
+  "bhtmProof": {
+    "amdProduct": "Milan",
+    "chunk": "mainnet-954921-976083",
+    "leafIndex": 21162,
+    "treeSize": 21163,
+    "leafHashHex": "cf40da502f0fb5729c85eb6f305c17923e9963676f6e3c40e6c55a1281ecd6c2",
+    "treeRootHex": "e9850aaa9df7bfc31a85822fc359e73c75523143a391fe5f38e2d1c0e117bfe8",
+    "attestationVersion": 2,
+    "jobVersion": 1,
+    "jobSha256Hex": "9ab7217a3b4cd770c988849f75bb8b03b2f9e8369c65a0f0f334597c99fbcff4",
+    "streamingUkiMeasurementHex": "133962711534e59d0c55b7b1998f74a58d61f051f1d5a5e3a01353e42600b344f3ca804d10b0a9629d429d6bd3572ee3",
+    "reportDataDomain": "BitcoinPIR/blockhash-to-muhash/report-data/v2",
+    "reportDataScheme": "sha512(domain || attestation)",
+    "artifacts": {
+      "leafProof": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/height-976083.leaf-proof.json",
+        "sha256": "5b852bb7b2968421868e0d8a05e94d1e4033fa244e517ac1649c308809782f7a",
+        "size": 3074
+      },
+      "attestation": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/attestation.bin",
+        "sha256": "5fd63cc2a1432145396f7e3554ab8995482e46777f2c6bf5ed0c88d557fc76f3",
+        "size": 916
+      },
+      "reportData": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/report-data.bin",
+        "sha256": "ea0004535bddabbfe8babc796dc1c9674a578e7e21c18076a164c4f9e5a6a7bc",
+        "size": 64
+      },
+      "sevSnpReport": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/sev-snp-report.bin",
+        "sha256": "a09bbe3a7fc724e2dc034c27d416a17df284698fcf932b359bd52560790e6c01",
+        "size": 1184
+      },
+      "stats": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/stats.json",
+        "sha256": "53c46649a162be514d9c01bb21a4c33b33389b5526fcc57dcd597968286536c3",
+        "size": 3474
+      },
+      "job": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/job.json",
+        "sha256": "9ab7217a3b4cd770c988849f75bb8b03b2f9e8369c65a0f0f334597c99fbcff4",
+        "size": 1321
+      },
+      "verifyBhtmQuote": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/verify-bhtm-quote.txt",
+        "sha256": "8db4b17c8b37e97591aa399fb58f80c9b86f055f09503b8e0bca1971dcdcf964",
+        "size": 1310
+      },
+      "amdSnpVerify": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/amd-snp-verify.txt",
+        "sha256": "91f91722dcd6804dbcb24a90bad02e2ec3071cf619fe32d292c158a31c5d6abd",
+        "size": 401
+      },
+      "arkPem": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/ark.pem",
+        "sha256": "8c109952166431ffad8cb9a3d54f3d20ffbbb58164f0d54be3457bf0ece9e0d8",
+        "size": 2277
+      },
+      "askPem": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/ask.pem",
+        "sha256": "8da3a65af1cb7cb90a21fac78431a2431a9ee7811f48c36569c53fb80ad31fee",
+        "size": 2325
+      },
+      "vcekPem": {
+        "path": "/proofs/trust-chain/snapshot_976083/bhtm/vcek.pem",
+        "sha256": "92c3e34efa7f1af82b46dd9633223fa221c169c58e5152932cb3784c97d97750",
+        "size": 1887
+      }
+    }
+  }
+}

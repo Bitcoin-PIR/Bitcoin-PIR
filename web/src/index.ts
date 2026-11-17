@@ -135,6 +135,7 @@ export {
 export {
   DEFAULT_TRUST_CHAIN_MANIFEST_PATH,
   verifyProductionTrustChain,
+  trustChainManifestPathForDatabase,
   trustChainPinFromManifest,
   type DatabaseTrustChainStatus,
   type TrustChainManifest,
