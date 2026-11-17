@@ -1,4 +1,4 @@
-import { AMD_TURIN_ARK_FINGERPRINT } from './attest-pin.js';
+import { verifyBuilderSnpReport } from './builder-snp-proof.js';
 import {
   BHTM_REPORT_DATA_DOMAIN_V2,
   computeBhtmReportData,
@@ -11,11 +11,22 @@ import {
 } from './bhtm-proof.js';
 import type { DatabaseProofPin, VerifiedDatabaseProof } from './db-proof.js';
 import { verifyDatabaseProofAgainstPin } from './db-proof.js';
-import { bytesToHex, hexToBytes, sha256 } from './hash.js';
+import { bytesToHex, sha256 } from './hash.js';
 import { fetchProofArtifactBytesV1 } from './proof-artifact-fetch.js';
-import { requireSdkWasm } from './sdk-bridge.js';
 
 export const DEFAULT_TRUST_CHAIN_MANIFEST_PATH = '/proofs/trust-chain/delta_940611_948454.json';
+
+export function trustChainManifestPathForDatabase(
+  proof: Pick<VerifiedDatabaseProof, 'dbId' | 'buildKind' | 'fromHeight' | 'height'>,
+): string | undefined {
+  if (proof.dbId === 0 && proof.buildKind === 'snapshot' && proof.fromHeight === 0 && proof.height === 976083) {
+    return '/proofs/trust-chain/snapshot_976083.json';
+  }
+  if (proof.dbId === 1 && proof.buildKind === 'delta' && proof.fromHeight === 940611 && proof.height === 948454) {
+    return DEFAULT_TRUST_CHAIN_MANIFEST_PATH;
+  }
+  return undefined;
+}
 
 export interface TrustChainArtifactRef {
   path: string;
@@ -49,6 +60,8 @@ export interface TrustChainManifest {
     artifacts: Record<string, TrustChainArtifactRef>;
   };
   bhtmProof: {
+    /** Omitted by historical Turin proofs. */
+    amdProduct?: 'Turin' | 'Milan';
     chunk: string;
     fromLeafIndex?: number;
     fromLeafHashHex?: string;
@@ -81,6 +94,7 @@ export interface VerifiedTrustChain {
 
 export interface DatabaseTrustChainStatus {
   state: 'not-checked' | 'verified' | 'unverified' | 'unavailable';
+  manifestPath?: string;
   manifest?: TrustChainManifest;
   verified?: VerifiedTrustChain;
   checks: TrustChainCheck[];
@@ -216,6 +230,7 @@ export async function verifyProductionTrustChain(
     const state = mismatches.length === 0 ? 'verified' : 'unverified';
     return {
       state,
+      manifestPath,
       manifest,
       verified: state === 'verified' ? { manifest, fromLeaf, leaf, attestation } : undefined,
       checks,
@@ -231,6 +246,7 @@ export async function verifyProductionTrustChain(
     });
     return {
       state: unavailable ? 'unavailable' : 'unverified',
+      manifestPath,
       checks,
       mismatches,
       error: message,
@@ -288,16 +304,17 @@ function verifyStaticSnpReportSignature(
   sevSnpReport: Uint8Array,
   manifest: TrustChainManifest,
 ): void {
-  const sdk = requireSdkWasm();
-  const policy = new sdk.WasmPolicyRequirements();
-  policy.setExpectedMeasurement(hexToBytes(normalizeHex(manifest.bhtmProof.streamingUkiMeasurementHex)));
-  sdk.verifyRawSnpReport(
+  verifyBuilderSnpReport(
     sevSnpReport,
-    decodeUtf8(requiredArtifact(artifacts, 'arkPem')),
-    decodeUtf8(requiredArtifact(artifacts, 'askPem')),
-    decodeUtf8(requiredArtifact(artifacts, 'vcekPem')),
-    AMD_TURIN_ARK_FINGERPRINT,
-    policy,
+    {
+      arkPem: decodeUtf8(requiredArtifact(artifacts, 'arkPem')),
+      askPem: decodeUtf8(requiredArtifact(artifacts, 'askPem')),
+      vcekPem: decodeUtf8(requiredArtifact(artifacts, 'vcekPem')),
+    },
+    {
+      measurementHex: manifest.bhtmProof.streamingUkiMeasurementHex,
+      amdProduct: manifest.bhtmProof.amdProduct,
+    },
   );
 }
 
