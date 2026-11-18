@@ -184,7 +184,7 @@ impl<T: PirTransport + ?Sized> PirTransport for Box<T> {
 /// `cfg(not(target_arch = "wasm32"))`. The WASM equivalent is
 /// [`crate::wasm_transport::WasmWebSocketTransport`].
 #[cfg(not(target_arch = "wasm32"))]
-use crate::connection::WsConnection;
+use crate::connection::WsTransport;
 
 /// Implemented as a thin delegation to `WsConnection`'s inherent methods.
 /// The inherent methods stay the primary API surface (they own retry /
@@ -193,25 +193,28 @@ use crate::connection::WsConnection;
 /// client code.
 #[cfg(not(target_arch = "wasm32"))]
 #[async_trait]
-impl PirTransport for WsConnection {
+impl<S> PirTransport for WsTransport<S>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Sync + Unpin,
+{
     async fn send(&mut self, data: Vec<u8>) -> PirResult<()> {
-        WsConnection::send(self, data).await
+        WsTransport::send(self, data).await
     }
 
     async fn recv(&mut self) -> PirResult<Vec<u8>> {
-        WsConnection::recv(self).await
+        WsTransport::recv(self).await
     }
 
     async fn roundtrip(&mut self, request: &[u8]) -> PirResult<Vec<u8>> {
-        WsConnection::roundtrip(self, request).await
+        WsTransport::roundtrip(self, request).await
     }
 
     async fn close(&mut self) -> PirResult<()> {
-        WsConnection::close(self).await
+        WsTransport::close(self).await
     }
 
     fn url(&self) -> &str {
-        WsConnection::url(self)
+        WsTransport::url(self)
     }
 
     fn set_metrics_recorder(
@@ -219,7 +222,7 @@ impl PirTransport for WsConnection {
         recorder: Option<Arc<dyn PirMetrics>>,
         backend: &'static str,
     ) {
-        WsConnection::set_metrics_recorder(self, recorder, backend);
+        WsTransport::set_metrics_recorder(self, recorder, backend);
     }
 }
 

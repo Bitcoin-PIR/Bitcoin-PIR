@@ -436,6 +436,22 @@ at `wss://HOST`.
   (runs as user `cloudflared`) with `TUNNEL_TOKEN=…` in
   `/etc/cloudflared/tunnel.env` (mode 0600). Connectors of one tunnel share its
   traffic: one tunnel per node.
+- [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel)
+  also exposes a loopback node without buying a domain or opening a router
+  port. With Tailscale signed in and Funnel enabled for this machine:
+
+  ```sh
+  tailscale funnel --bg --https=443 http://127.0.0.1:8091
+  tailscale funnel status
+  ```
+
+  Use the reported public hostname as `wss://machine.tailnet-name.ts.net`
+  in the operator assertion (§8). Callers need no Tailscale account.
+  `tailscale serve` alone is tailnet-only. Check the endpoint from outside
+  the tailnet (§9), including a padded query: Funnel limits bandwidth.
+  To remove this root mapping: `tailscale funnel --https=443 off`.
+  On macOS use a Tailscale distribution that supports Funnel (see linked
+  requirements). Changing a listed hostname needs a new assertion epoch.
 - The endpoint accepts WebSocket upgrades only; a plain HTTPS `GET` through
   the tunnel gets 502. Probe with an upgrade (§9).
 - A directory endpoint is a canonical `wss://` URL: lowercase DNS name with a

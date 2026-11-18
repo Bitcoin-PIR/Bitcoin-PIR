@@ -35,6 +35,7 @@ use futures_util::{SinkExt, StreamExt};
 use pir_sdk::{Instant, PirError, PirMetrics, PirResult};
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
@@ -166,9 +167,12 @@ impl RetryPolicy {
 }
 
 /// A WebSocket connection to a PIR server.
-pub struct WsConnection {
-    sink: SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    stream: SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+pub type WsConnection = WsTransport<MaybeTlsStream<TcpStream>>;
+
+/// WebSocket framing over an established byte stream.
+pub struct WsTransport<S> {
+    sink: SplitSink<WebSocketStream<S>, Message>,
+    stream: SplitStream<WebSocketStream<S>>,
     url: String,
     request_timeout: Duration,
     retry_policy: RetryPolicy,
@@ -227,11 +231,7 @@ async fn raw_connect(
     SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
 )> {
     install_default_crypto_provider();
-    let config = WebSocketConfig {
-        max_message_size: Some(MAX_WS_MESSAGE_SIZE),
-        max_frame_size: Some(MAX_WS_FRAME_SIZE),
-        ..Default::default()
-    };
+    let config = ws_config();
     let handshake = tokio_tungstenite::connect_async_with_config(url, Some(config), false);
     let (ws, _) = match tokio::time::timeout(connect_timeout, handshake).await {
         Ok(Ok(ok)) => ok,
@@ -246,6 +246,51 @@ async fn raw_connect(
         }
     };
     Ok(ws.split())
+}
+
+fn ws_config() -> WebSocketConfig {
+    WebSocketConfig {
+        max_message_size: Some(MAX_WS_MESSAGE_SIZE),
+        max_frame_size: Some(MAX_WS_FRAME_SIZE),
+        ..Default::default()
+    }
+}
+
+/// ALPN for one PIR WebSocket session over the first bidirectional Iroh stream.
+pub const IROH_WS_ALPN: &[u8] = b"bitcoinpir/ws/1";
+
+/// Upgrade an already authenticated Iroh stream to the native SDK transport.
+/// `peer` labels the connection for metrics/logs; it is not a dial target or pin.
+/// The caller owns endpoint selection and opens a fresh stream on reconnect.
+pub async fn transport_over_iroh<R, W>(
+    peer: &str,
+    recv: R,
+    send: W,
+) -> PirResult<impl crate::transport::PirTransport>
+where
+    R: AsyncRead + Unpin + Send + Sync + 'static,
+    W: AsyncWrite + Unpin + Send + Sync + 'static,
+{
+    let handshake = tokio_tungstenite::client_async_with_config(
+        "ws://localhost/",
+        tokio::io::join(recv, send),
+        Some(ws_config()),
+    );
+    let (ws, _) = tokio::time::timeout(DEFAULT_CONNECT_TIMEOUT, handshake)
+        .await
+        .map_err(|_| PirError::Timeout(format!("Iroh WebSocket upgrade timed out: {peer}")))?
+        .map_err(|e| PirError::ConnectionFailed(format!("{peer}: {e}")))?;
+    let (sink, stream) = ws.split();
+    Ok(WsTransport {
+        sink,
+        stream,
+        url: format!("iroh:{peer}"),
+        request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        retry_policy: RetryPolicy::single_attempt(),
+        metrics_recorder: None,
+        metrics_backend: "",
+        recv_buf: Vec::new(),
+    })
 }
 
 impl WsConnection {
@@ -337,11 +382,6 @@ impl WsConnection {
         self.request_timeout
     }
 
-    /// Get the URL this connection is connected to.
-    pub fn url(&self) -> &str {
-        &self.url
-    }
-
     /// The retry policy in effect for [`reconnect`](Self::reconnect).
     pub fn retry_policy(&self) -> RetryPolicy {
         self.retry_policy
@@ -401,6 +441,13 @@ impl WsConnection {
                 self.url, max_attempts,
             ))
         }))
+    }
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> WsTransport<S> {
+    /// Get the URL or peer label for this connection.
+    pub fn url(&self) -> &str {
+        &self.url
     }
 
     /// Install (or replace) a metrics recorder. Once installed, every
