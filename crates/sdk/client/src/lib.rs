@@ -90,8 +90,9 @@ mod wasm_transport;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use connection::{
-    RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT, DEFAULT_INITIAL_BACKOFF_DELAY,
-    DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT,
+    transport_over_iroh, RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT,
+    DEFAULT_INITIAL_BACKOFF_DELAY, DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS,
+    DEFAULT_REQUEST_TIMEOUT, IROH_WS_ALPN,
 };
 pub use db_proof::{
     fetch_database_proof, fetch_database_proof_v2, verify_database_proof, verify_database_proof_v2,
