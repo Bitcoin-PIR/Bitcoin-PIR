@@ -235,11 +235,11 @@ impl Connection {
                 table.as_ptr(),
                 column.as_ptr(),
                 row_id,
-                !read_only as std::ffi::c_int,
-                &mut blob,
+                std::ffi::c_int::from(!read_only),
+                &raw mut blob,
             )
         };
-        c.decode_result(rc).map(|_| Blob {
+        c.decode_result(rc).map(|()| Blob {
             conn: self,
             blob,
             pos: 0,
@@ -323,7 +323,7 @@ impl io::Read for Blob<'_> {
         let rc = unsafe { ffi::sqlite3_blob_read(self.blob, buf.as_mut_ptr().cast(), n, self.pos) };
         self.conn
             .decode_result(rc)
-            .map(|_| {
+            .map(|()| {
                 self.pos += n;
                 n as usize
             })
@@ -353,7 +353,7 @@ impl io::Write for Blob<'_> {
         let rc = unsafe { ffi::sqlite3_blob_write(self.blob, buf.as_ptr() as *mut _, n, self.pos) };
         self.conn
             .decode_result(rc)
-            .map(|_| {
+            .map(|()| {
                 self.pos += n;
                 n as usize
             })
@@ -408,7 +408,7 @@ impl Drop for Blob<'_> {
 ///
 /// A negative value for the zeroblob results in a zero-length BLOB.
 #[derive(Copy, Clone)]
-pub struct ZeroBlob(pub i32);
+pub struct ZeroBlob(pub u64);
 
 impl ToSql for ZeroBlob {
     #[inline]
@@ -418,13 +418,13 @@ impl ToSql for ZeroBlob {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod test {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
-    use crate::{Connection, Result, MAIN_DB};
-    use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+    use crate::{Connection, MAIN_DB, Result};
+    use std::io::{BufRead as _, BufReader, BufWriter, Read as _, Seek as _, SeekFrom, Write as _};
 
     fn db_with_test_blob() -> Result<(Connection, i64)> {
         let db = Connection::open_in_memory()?;
@@ -503,11 +503,11 @@ mod test {
         assert_eq!(4, reader.read_line(&mut line).unwrap());
         assert_eq!("one\n", line);
 
-        line.truncate(0);
+        line.clear();
         assert_eq!(4, reader.read_line(&mut line).unwrap());
         assert_eq!("two\n", line);
 
-        line.truncate(0);
+        line.clear();
         assert_eq!(2, reader.read_line(&mut line).unwrap());
         assert_eq!("\0\0", line);
         Ok(())
@@ -556,7 +556,7 @@ mod test {
 
     #[test]
     fn zero_blob() -> Result<()> {
-        use crate::types::ToSql;
+        use crate::types::ToSql as _;
         let zb = super::ZeroBlob(1);
         assert!(zb.to_sql().is_ok());
         Ok(())

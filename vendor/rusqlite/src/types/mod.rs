@@ -37,7 +37,7 @@
 //! want different storage for datetimes, you can use a newtype.
 #![cfg_attr(
     feature = "time",
-    doc = r##"
+    doc = r"
 For example, to store datetimes as `i64`s counting the number of seconds since
 the Unix epoch:
 
@@ -64,7 +64,7 @@ impl ToSql for DateTimeSql {
 }
 ```
 
-"##
+"
 )]
 //! [`ToSql`] and [`FromSql`] are also implemented for `Option<T>` where `T`
 //! implements [`ToSql`] or [`FromSql`] for the cases where you want to know if
@@ -135,13 +135,13 @@ impl fmt::Display for Type {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod test {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     use super::Value;
-    use crate::{params, Connection, Error, Result, Statement};
+    use crate::{Connection, Error, Result, Statement, params};
     use std::ffi::{c_double, c_int};
 
     fn checked_memory_handle() -> Result<Connection> {
@@ -386,7 +386,6 @@ mod test {
     }
 
     #[test]
-    #[expect(clippy::float_cmp)]
     fn test_numeric_conversions() -> Result<()> {
         // Test what happens when we store a f32 and retrieve an i32 etc.
         let db = Connection::open_in_memory()?;

@@ -10,9 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
+edition = "2024"
+rust-version = "1.89.0"
 name = "rusqlite"
-version = "0.39.0"
+version = "0.41.1"
 authors = ["The rusqlite developers"]
 build = false
 exclude = [
@@ -75,11 +76,11 @@ array = [
 backup = []
 blob = []
 buildtime_bindgen = [
-    "libsqlite3-sys/buildtime_bindgen",
-    "sqlite-wasm-rs/bindgen",
+    "libsqlite3-sys?/buildtime_bindgen",
+    "sqlite-wasm-rs?/bindgen",
 ]
 bundled = [
-    "libsqlite3-sys/bundled",
+    "libsqlite3-sys?/bundled",
     "modern_sqlite",
 ]
 bundled-full = [
@@ -87,35 +88,39 @@ bundled-full = [
     "bundled",
 ]
 bundled-sqlcipher = [
-    "libsqlite3-sys/bundled-sqlcipher",
+    "libsqlite3-sys?/bundled-sqlcipher",
     "bundled",
 ]
 bundled-sqlcipher-vendored-openssl = [
-    "libsqlite3-sys/bundled-sqlcipher-vendored-openssl",
+    "libsqlite3-sys?/bundled-sqlcipher-vendored-openssl",
     "bundled-sqlcipher",
 ]
-bundled-windows = ["libsqlite3-sys/bundled-windows"]
+bundled-windows = ["libsqlite3-sys?/bundled-windows"]
 cache = ["hashlink"]
 collation = []
 column_decltype = []
-column_metadata = ["libsqlite3-sys/column_metadata"]
+column_metadata = ["libsqlite3-sys?/column_metadata"]
 csvtab = [
     "csv",
     "vtab",
 ]
-default = ["cache"]
+default = [
+    "cache",
+    "ffi-sqlite-wasm-rs",
+]
 extra_check = []
 fallible_uint = []
+ffi-sqlite-wasm-rs = ["dep:sqlite-wasm-rs"]
 functions = []
-hooks = []
+hooks = ["wal"]
 i128_blob = []
 in_gecko = [
     "modern_sqlite",
-    "libsqlite3-sys/in_gecko",
+    "libsqlite3-sys?/in_gecko",
 ]
 limits = []
 load_extension = []
-loadable_extension = ["libsqlite3-sys/loadable_extension"]
+loadable_extension = ["libsqlite3-sys?/loadable_extension"]
 modern-full = [
     "array",
     "backup",
@@ -142,27 +147,29 @@ modern-full = [
     "url",
     "uuid",
     "vtab",
+    "wal",
     "window",
 ]
-modern_sqlite = ["libsqlite3-sys/bundled_bindings"]
+modern_sqlite = ["libsqlite3-sys?/bundled_bindings"]
 pointer = []
 preupdate_hook = [
-    "libsqlite3-sys/preupdate_hook",
+    "libsqlite3-sys?/preupdate_hook",
     "hooks",
 ]
 serialize = []
 series = ["vtab"]
 session = [
-    "libsqlite3-sys/session",
+    "libsqlite3-sys?/session",
     "hooks",
 ]
-sqlcipher = ["libsqlite3-sys/sqlcipher"]
+sqlcipher = ["libsqlite3-sys?/sqlcipher"]
 trace = []
-unlock_notify = ["libsqlite3-sys/unlock_notify"]
+unlock_notify = ["libsqlite3-sys?/unlock_notify"]
 vtab = []
-wasm32-wasi-vfs = ["libsqlite3-sys/wasm32-wasi-vfs"]
+wal = []
+wasm32-wasi-vfs = ["libsqlite3-sys?/wasm32-wasi-vfs"]
 window = ["functions"]
-with-asan = ["libsqlite3-sys/with-asan"]
+with-asan = ["libsqlite3-sys?/with-asan"]
 
 [lib]
 name = "rusqlite"
@@ -247,7 +254,7 @@ version = "0.3"
 version = "0.1"
 
 [dependencies.hashlink]
-version = "0.11"
+version = "0.12"
 optional = true
 
 [dependencies.jiff]
@@ -257,7 +264,7 @@ optional = true
 default-features = false
 
 [dependencies.rusqlite-macros]
-version = "0.4.2"
+version = "0.4.4"
 optional = true
 
 [dependencies.serde_json]
@@ -281,7 +288,7 @@ version = "2.1"
 optional = true
 
 [dependencies.uuid]
-version = "1.0"
+version = "1.28"
 optional = true
 
 [dev-dependencies.bencher]
@@ -303,7 +310,7 @@ version = "3.1.0"
 version = "2.6.0"
 
 [dev-dependencies.uuid]
-version = "1.0"
+version = "1.28"
 features = ["v4"]
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.chrono]
@@ -318,8 +325,13 @@ features = ["js"]
 optional = true
 default-features = false
 
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.libsqlite3-sys]
+version = "0.39.0"
+optional = true
+
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.sqlite-wasm-rs]
-version = "0.5.1"
+version = ">=0.5.1, <0.7.0"
+optional = true
 default-features = false
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.time]
@@ -328,7 +340,7 @@ features = ["wasm-bindgen"]
 optional = true
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.uuid]
-version = "1.0"
+version = "1.28"
 features = ["js"]
 optional = true
 
@@ -336,8 +348,12 @@ optional = true
 version = "0.4"
 features = ["wasm_js"]
 
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.sqlite-wasm-rs]
+version = ">=0.5.1, <0.7.0"
+default-features = false
+
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.uuid]
-version = "1.0"
+version = "1.28"
 features = ["js"]
 
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dev-dependencies.wasm-bindgen]
@@ -347,4 +363,10 @@ version = "0.2.104"
 version = "0.3.54"
 
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.libsqlite3-sys]
-version = "0.37.0"
+version = "0.39.0"
+
+[lints.clippy]
+ref_option = "warn"
+semicolon_if_nothing_returned = "warn"
+unnecessary_semicolon = "warn"
+unused_trait_names = "warn"

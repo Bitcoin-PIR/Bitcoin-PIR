@@ -261,7 +261,7 @@ impl DirectoryStore {
         if archive_count >= self.limits.max_archive_events as i64
             || archive_bytes
                 .checked_add(candidate_bytes)
-                .map_or(true, |total| total > self.limits.max_archive_bytes as i64)
+                .is_none_or(|total| total > self.limits.max_archive_bytes as i64)
         {
             commit(transaction)
                 .map_err(|error| format!("commit archive-capacity decision failed: {error}"))?;
@@ -373,8 +373,7 @@ impl DirectoryStore {
         if ids.is_empty() {
             return Err("ID readback snapshot cannot be empty".to_owned());
         }
-        let placeholders = std::iter::repeat("?")
-            .take(ids.len())
+        let placeholders = std::iter::repeat_n("?", ids.len())
             .collect::<Vec<_>>()
             .join(",");
         let mut statement = self

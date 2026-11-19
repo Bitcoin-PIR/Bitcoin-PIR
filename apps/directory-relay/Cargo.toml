@@ -2,7 +2,7 @@
 name = "bitcoinpir-directory-relay"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.81"
+rust-version = "1.89"
 publish = false
 description = "Minimal BitcoinPIR directory-profile NIP-01 relay"
 license = "MIT OR Apache-2.0"
@@ -19,7 +19,7 @@ hex = "0.4"
 log = "0.4"
 env_logger = "0.11"
 pir-directory-nostr = { path = "../../crates/directory/nostr" }
-rusqlite = { version = "=0.39.0", default-features = false, features = ["bundled"] }
+rusqlite = { version = "=0.41.1", default-features = false, features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "signal", "time"] }

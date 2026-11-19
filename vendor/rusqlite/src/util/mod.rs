@@ -6,16 +6,24 @@ pub(crate) use small_cstr::SmallCString;
 
 // Doesn't use any modern features or vtab stuff, but is only used by them.
 mod sqlite_string;
-pub(crate) use sqlite_string::{alloc, SqliteMallocString};
+pub(crate) use sqlite_string::{SqliteMallocString, alloc};
 
-#[cfg(any(
-    feature = "collation",
-    feature = "functions",
-    feature = "vtab",
-    feature = "pointer"
-))]
 pub(crate) unsafe extern "C" fn free_boxed_value<T>(p: *mut std::ffi::c_void) {
-    drop(Box::from_raw(p.cast::<T>()));
+    drop(unsafe { Box::from_raw(p.cast::<T>()) });
+}
+
+pub(crate) unsafe fn from_raw_parts<'a, T>(data: *const T, len: std::ffi::c_int) -> &'a [T] {
+    if len > 0 {
+        return unsafe { std::slice::from_raw_parts(data, len as usize) };
+    }
+    &[]
+}
+#[cfg(any(feature = "session", feature = "vtab"))]
+pub(crate) unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: std::ffi::c_int) -> &'a mut [T] {
+    if len > 0 {
+        return unsafe { std::slice::from_raw_parts_mut(data, len as usize) };
+    }
+    &mut []
 }
 
 use crate::Result;
@@ -27,6 +35,7 @@ pub enum Named<'a> {
 }
 impl std::ops::Deref for Named<'_> {
     type Target = CStr;
+
     #[inline]
     fn deref(&self) -> &CStr {
         match self {
@@ -37,7 +46,7 @@ impl std::ops::Deref for Named<'_> {
 }
 
 /// Database, table, column, collation, function, module, vfs name
-pub trait Name: std::fmt::Debug {
+pub trait Name: std::fmt::Debug + Copy {
     /// As C string
     fn as_cstr(&self) -> Result<Named<'_>>;
 }
