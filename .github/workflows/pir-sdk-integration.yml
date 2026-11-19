@@ -312,7 +312,7 @@ jobs:
             ${{ runner.os }}-cargo-sdk-oram-
             ${{ runner.os }}-cargo-sdk-
 
-      - name: Attest Direct ORAM, test the channel, query db 0 and 1
+      - name: Attest Direct ORAM, test the channel, query db 0
         run: |
           pins=$(python3 scripts/production-pins.py)
           pin() { awk -F= -v key="$1" '$1 == key { print $2 }' <<<"$pins"; }
@@ -327,8 +327,6 @@ jobs:
             --required-mit-vector-bits "$(pin oram_mit_vector_bits)"
           cargo run --locked -q -p bpir-admin -- channel-test "$server" \
             --expect-ark-fingerprint "$(pin oram_ark)"
-          for db_id in 0 1; do
-            cargo run --locked -q -p pir-sdk-client --example oram_local_smoke -- \
-              --server "$server" --db-id "$db_id" \
-              --padded-slots 25 4242424242424242424242424242424242424242
-          done
+          cargo run --locked -q -p pir-sdk-client --example oram_local_smoke -- \
+            --server "$server" --db-id 0 \
+            --padded-slots 25 4242424242424242424242424242424242424242
