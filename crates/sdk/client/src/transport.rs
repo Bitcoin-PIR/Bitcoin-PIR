@@ -6,9 +6,8 @@
 //! * The default native impl, [`WsConnection`](crate::connection::WsConnection),
 //!   which uses `tokio-tungstenite` over `tokio::net::TcpStream`.
 //! * A WASM impl, `WasmWebSocketTransport` (in the `wasm_transport` module,
-//!   cfg-gated to `target_arch = "wasm32"`), backed by `web-sys::WebSocket`
-//!   and `wasm-bindgen-futures::spawn_local`, since the tokio stack doesn't
-//!   compile to `wasm32-unknown-unknown`.
+//!   cfg-gated to `target_arch = "wasm32"`), backed by `web-sys::WebSocket`.
+//!   Browser Iroh streams instead reuse the generic `WsTransport` framing.
 //! * An in-memory [`MockTransport`] for testing client state-machines
 //!   without a live server (see `#[cfg(test)]` below).
 //!
@@ -177,21 +176,13 @@ impl<T: PirTransport + ?Sized> PirTransport for Box<T> {
     }
 }
 
-// ─── WsConnection delegates to the trait (native only) ─────────────────────
+// ─── Established-stream WebSocket delegates to the trait ───────────────────
 
-/// The tokio-tungstenite-backed native transport lives in
-/// [`crate::connection`] and is only available on
-/// `cfg(not(target_arch = "wasm32"))`. The WASM equivalent is
-/// [`crate::wasm_transport::WasmWebSocketTransport`].
-#[cfg(not(target_arch = "wasm32"))]
 use crate::connection::WsTransport;
 
-/// Implemented as a thin delegation to `WsConnection`'s inherent methods.
 /// The inherent methods stay the primary API surface (they own retry /
-/// backoff / connect / reconnect, which don't generalize); the trait impl
-/// is there so a caller can swap in a different transport without changing
-/// client code.
-#[cfg(not(target_arch = "wasm32"))]
+/// backoff / connect / reconnect on native); the trait impl lets every client
+/// accept the same framing over native TCP/TLS or a browser Iroh stream.
 #[async_trait]
 impl<S> PirTransport for WsTransport<S>
 where

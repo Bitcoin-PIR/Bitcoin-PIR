@@ -1,19 +1,11 @@
 #![no_std]
-#![cfg_attr(docsrs, feature(doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 #![doc = include_str!("../README.md")]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/RustCrypto/media/6ee8e381/logo.svg",
     html_favicon_url = "https://raw.githubusercontent.com/RustCrypto/media/6ee8e381/logo.svg"
 )]
 #![forbid(unsafe_code)]
-#![warn(
-    clippy::mod_module_files,
-    clippy::unwrap_used,
-    missing_docs,
-    rust_2018_idioms,
-    unused_lifetimes,
-    unused_qualifications
-)]
 
 //! ## About this crate
 //! This library provides generalized PKCS#8 support designed to work with a
@@ -51,18 +43,19 @@
 //!  
 //! ## Legacy DES-CBC and DES-EDE3-CBC (3DES) support (optional)
 //! When the `des-insecure` and/or `3des` features are enabled this crate provides support for
-//! private keys encrypted with with DES-CBC and DES-EDE3-CBC (3DES or Triple DES) symmetric
+//! private keys encrypted with DES-CBC and DES-EDE3-CBC (3DES or Triple DES) symmetric
 //! encryption, respectively.
 //!
-//! ⚠️ WARNING ⚠️
+//! <div class="warning">
+//! <b>Security Warning</b>
 //!
-//! DES support (gated behind the `des-insecure` feature) is implemented to
-//! allow for decryption of legacy PKCS#8 files only.
+//! DES support (gated behind the `des-insecure` feature) is implemented to allow for decryption of
+//! legacy PKCS#8 files only.
 //!
-//! Such PKCS#8 documents should be considered *INSECURE* due to the short
-//! 56-bit key size of DES.
+//! Such PKCS#8 documents should be considered *INSECURE* due to the short 56-bit key size of DES.
 //!
 //! New keys should use AES instead.
+//! </div>
 //!
 //! [RFC 5208]: https://tools.ietf.org/html/rfc5208
 //! [RFC 5958]: https://tools.ietf.org/html/rfc5958
@@ -70,7 +63,7 @@
 //! [PKCS#5v2 Password Based Encryption Scheme 2 (RFC 8018)]: https://tools.ietf.org/html/rfc8018#section-6.2
 //! [scrypt]: https://en.wikipedia.org/wiki/Scrypt
 
-#[cfg(feature = "pem")]
+#[cfg(feature = "alloc")]
 extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
@@ -84,8 +77,8 @@ mod version;
 pub(crate) mod encrypted_private_key_info;
 
 pub use crate::{
-    error::{Error, Result},
-    private_key_info::PrivateKeyInfo,
+    error::{Error, KeyError, Result},
+    private_key_info::{PrivateKeyInfo, PrivateKeyInfoRef},
     traits::DecodePrivateKey,
     version::Version,
 };
@@ -94,18 +87,20 @@ pub use spki::{
     self, AlgorithmIdentifierRef, DecodePublicKey, SubjectPublicKeyInfo, SubjectPublicKeyInfoRef,
 };
 
+#[cfg(feature = "pem")]
+pub use der::pem::LineEnding;
+#[cfg(all(feature = "alloc", feature = "pkcs5"))]
+pub use encrypted_private_key_info::EncryptedPrivateKeyInfoOwned;
+#[cfg(feature = "encryption")]
+pub use rand_core;
 #[cfg(feature = "alloc")]
 pub use {
-    crate::traits::EncodePrivateKey,
+    crate::{private_key_info::allocating::PrivateKeyInfoOwned, traits::EncodePrivateKey},
     der::{Document, SecretDocument},
     spki::EncodePublicKey,
 };
-
-#[cfg(feature = "pem")]
-pub use der::pem::LineEnding;
-
 #[cfg(feature = "pkcs5")]
-pub use {encrypted_private_key_info::EncryptedPrivateKeyInfo, pkcs5};
-
-#[cfg(feature = "rand_core")]
-pub use rand_core;
+pub use {
+    encrypted_private_key_info::{EncryptedPrivateKeyInfo, EncryptedPrivateKeyInfoRef},
+    pkcs5,
+};

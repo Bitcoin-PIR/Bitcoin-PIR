@@ -1,10 +1,8 @@
 # toml_edit
 
-[![Build Status](https://github.com/toml-rs/toml/workflows/Continuous%20integration/badge.svg)](https://github.com/toml-rs/toml/actions)
-[![codecov](https://codecov.io/gh/toml-rs/toml/branch/master/graph/badge.svg)](https://codecov.io/gh/toml-rs/toml)
-[![crates.io](https://img.shields.io/crates/v/toml_edit.svg)](https://crates.io/crates/toml_edit)
-[![docs](https://docs.rs/toml_edit/badge.svg)](https://docs.rs/toml_edit)
-[![Join the chat at https://gitter.im/toml_edit/Lobby](https://badges.gitter.im/a.svg)](https://gitter.im/toml_edit/Lobby)
+[![Documentation](https://img.shields.io/badge/docs-main-blue.svg)](https://docs.rs/toml_edit)
+![License](https://img.shields.io/crates/l/toml_edit.svg)
+[![Crates Status](https://img.shields.io/crates/v/toml_edit.svg)](https://crates.io/crates/toml_edit)
 
 
 This crate allows you to parse and modify toml
@@ -43,13 +41,14 @@ c = { d = "hello" }
 Things it does not preserve:
 
 * Order of dotted keys, see [issue](https://github.com/toml-rs/toml/issues/163).
+* Lack of trailing newline, see [issue](https://github.com/toml-rs/toml/issues/1158).
 
 ## License
 
 Licensed under either of
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
+* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <https://www.apache.org/licenses/LICENSE-2.0>)
+* MIT license ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/license/mit>)
 
 at your option.
 

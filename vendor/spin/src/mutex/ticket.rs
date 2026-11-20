@@ -159,7 +159,7 @@ impl<T: ?Sized + fmt::Debug, R> fmt::Debug for TicketMutex<T, R> {
         match self.try_lock() {
             Some(guard) => write!(f, "Mutex {{ data: ")
                 .and_then(|()| (&*guard).fmt(f))
-                .and_then(|()| write!(f, "}}")),
+                .and_then(|()| write!(f, " }}")),
             None => write!(f, "Mutex {{ <locked> }}"),
         }
     }
@@ -243,17 +243,27 @@ impl<T: ?Sized, R> TicketMutex<T, R> {
     /// ```
     #[inline(always)]
     pub fn try_lock(&self) -> Option<TicketMutexGuard<T>> {
-        let ticket = self
-            .next_ticket
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |ticket| {
-                if self.next_serving.load(Ordering::Acquire) == ticket {
-                    Some(ticket + 1)
+        // TODO: Replace with `fetch_update` to avoid manual CAS when upgrading MSRV
+        let ticket = {
+            let mut prev = self.next_ticket.load(Ordering::SeqCst);
+            loop {
+                if self.next_serving.load(Ordering::Acquire) == prev {
+                    match self.next_ticket.compare_exchange_weak(
+                        prev,
+                        prev + 1,
+                        Ordering::SeqCst,
+                        Ordering::SeqCst,
+                    ) {
+                        Ok(x) => break Some(x),
+                        Err(next_prev) => prev = next_prev,
+                    }
                 } else {
-                    None
+                    break None;
                 }
-            });
+            }
+        };
 
-        ticket.ok().map(|ticket| TicketMutexGuard {
+        ticket.map(|ticket| TicketMutexGuard {
             next_serving: &self.next_serving,
             ticket,
             // Safety

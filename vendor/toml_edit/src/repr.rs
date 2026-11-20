@@ -56,14 +56,12 @@ where
         self.as_repr()
             .and_then(|r| r.as_raw().as_str())
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| {
-                Cow::Owned(self.default_repr().as_raw().as_str().unwrap().to_owned())
-            })
+            .unwrap_or_else(|| Cow::Owned(self.default_repr().into_raw().into_string().unwrap()))
     }
 
     /// The location within the original document
     ///
-    /// This generally requires an [`ImDocument`][crate::ImDocument].
+    /// This generally requires a [`Document`][crate::Document].
     pub fn span(&self) -> Option<std::ops::Range<usize>> {
         self.repr.as_ref().and_then(|r| r.span())
     }
@@ -143,7 +141,7 @@ pub struct Repr {
 
 impl Repr {
     pub(crate) fn new_unchecked(raw: impl Into<RawString>) -> Self {
-        Repr {
+        Self {
             raw_value: raw.into(),
         }
     }
@@ -153,9 +151,14 @@ impl Repr {
         &self.raw_value
     }
 
+    #[cfg(feature = "display")]
+    pub(crate) fn into_raw(self) -> RawString {
+        self.raw_value
+    }
+
     /// The location within the original document
     ///
-    /// This generally requires an [`ImDocument`][crate::ImDocument].
+    /// This generally requires a [`Document`][crate::Document].
     pub fn span(&self) -> Option<std::ops::Range<usize>> {
         self.raw_value.span()
     }
@@ -187,6 +190,11 @@ pub struct Decor {
 }
 
 impl Decor {
+    pub(crate) const EMPTY: Self = Self {
+        prefix: None,
+        suffix: None,
+    };
+
     /// Creates a new decor from the given prefix and suffix.
     pub fn new(prefix: impl Into<RawString>, suffix: impl Into<RawString>) -> Self {
         Self {
@@ -216,7 +224,7 @@ impl Decor {
         if let Some(prefix) = self.prefix() {
             prefix.encode_with_default(buf, input, default)
         } else {
-            write!(buf, "{default}")
+            buf.write_str(default)
         }
     }
 
@@ -240,7 +248,7 @@ impl Decor {
         if let Some(suffix) = self.suffix() {
             suffix.encode_with_default(buf, input, default)
         } else {
-            write!(buf, "{default}")
+            buf.write_str(default)
         }
     }
 

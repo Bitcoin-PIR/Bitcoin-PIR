@@ -25,7 +25,8 @@ jobs:
       run: rustup update ${{ matrix.rust }} && rustup default ${{ matrix.rust }}
     - name: Run Tests
       run: cargo test --verbose
-    - run: cargo build --all --all-features --all-targets
+    - name: Build crate
+      run: cargo build --all --all-features --all-targets
     - name: Catch missing feature flags
       if: startsWith(matrix.rust, 'nightly')
       run: cargo check -Z features=dev_dep
@@ -35,16 +36,25 @@ jobs:
     - name: Ensure we don't depend on libstd
       run: cargo hack build --target thumbv7m-none-eabi --no-dev-deps --no-default-features
 
+  semver:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    - name: Check semver
+      uses: obi1kenobi/cargo-semver-checks-action@v2
+
   msrv:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        version: [1.38.0]
+        version: [1.60.0]
     steps:
     - uses: actions/checkout@v3
     - name: Install Rust
       run: rustup update ${{ matrix.version }} && rustup default ${{ matrix.version }}
-    - run: cargo check --all --all-features
+    - name: Check MSRV
+      run: cargo check --all --all-features
 
   miri:
     runs-on: ubuntu-latest

@@ -2,10 +2,9 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 #[cfg(feature = "display")]
-use toml_write::ToTomlKey as _;
+use toml_writer::ToTomlKey as _;
 
 use crate::repr::{Decor, Repr};
-use crate::InternalString;
 
 /// For Key/[`Value`][crate::Value] pairs under a [`Table`][crate::Table] header or inside an
 /// [`InlineTable`][crate::InlineTable]
@@ -32,7 +31,7 @@ use crate::InternalString;
 /// To parse a key use `FromStr` trait implementation: `"string".parse::<Key>()`.
 #[derive(Debug)]
 pub struct Key {
-    key: InternalString,
+    key: String,
     pub(crate) repr: Option<Repr>,
     pub(crate) leaf_decor: Decor,
     pub(crate) dotted_decor: Decor,
@@ -40,7 +39,7 @@ pub struct Key {
 
 impl Key {
     /// Create a new table key
-    pub fn new(key: impl Into<InternalString>) -> Self {
+    pub fn new(key: impl Into<String>) -> Self {
         Self {
             key: key.into(),
             repr: None,
@@ -60,12 +59,6 @@ impl Key {
     pub(crate) fn with_repr_unchecked(mut self, repr: Repr) -> Self {
         self.repr = Some(repr);
         self
-    }
-
-    /// While creating the `Key`, add `Decor` to it
-    #[deprecated(since = "0.21.1", note = "Replaced with `with_leaf_decor`")]
-    pub fn with_decor(self, decor: Decor) -> Self {
-        self.with_leaf_decor(decor)
     }
 
     /// While creating the `Key`, add `Decor` to it for the line entry
@@ -98,7 +91,7 @@ impl Key {
     /// Returns the default raw representation.
     #[cfg(feature = "display")]
     pub fn default_repr(&self) -> Repr {
-        let output = toml_write::TomlKeyBuilder::new(&self.key)
+        let output = toml_writer::TomlKeyBuilder::new(&self.key)
             .as_default()
             .to_toml_key();
         Repr::new_unchecked(output)
@@ -110,18 +103,7 @@ impl Key {
         self.as_repr()
             .and_then(|r| r.as_raw().as_str())
             .map(Cow::Borrowed)
-            .unwrap_or_else(|| {
-                Cow::Owned(self.default_repr().as_raw().as_str().unwrap().to_owned())
-            })
-    }
-
-    /// Returns the surrounding whitespace
-    #[deprecated(
-        since = "0.21.1",
-        note = "Replaced with `dotted_decor_mut`, `leaf_decor_mut"
-    )]
-    pub fn decor_mut(&mut self) -> &mut Decor {
-        self.leaf_decor_mut()
+            .unwrap_or_else(|| Cow::Owned(self.default_repr().into_raw().into_string().unwrap()))
     }
 
     /// Returns the surrounding whitespace for the line entry
@@ -132,12 +114,6 @@ impl Key {
     /// Returns the surrounding whitespace for between dots
     pub fn dotted_decor_mut(&mut self) -> &mut Decor {
         &mut self.dotted_decor
-    }
-
-    /// Returns the surrounding whitespace
-    #[deprecated(since = "0.21.1", note = "Replaced with `dotted_decor`, `leaf_decor")]
-    pub fn decor(&self) -> &Decor {
-        self.leaf_decor()
     }
 
     /// Returns the surrounding whitespace for the line entry
@@ -152,7 +128,7 @@ impl Key {
 
     /// The location within the original document
     ///
-    /// This generally requires an [`ImDocument`][crate::ImDocument].
+    /// This generally requires a [`Document`][crate::Document].
     pub fn span(&self) -> Option<std::ops::Range<usize>> {
         self.repr.as_ref().and_then(|r| r.span())
     }
@@ -173,19 +149,31 @@ impl Key {
     }
 
     #[cfg(feature = "parse")]
-    fn try_parse_simple(s: &str) -> Result<Key, crate::TomlError> {
-        let mut key = crate::parser::parse_key(s)?;
-        key.despan(s);
-        Ok(key)
+    fn try_parse_simple(s: &str) -> Result<Self, crate::TomlError> {
+        let source = toml_parser::Source::new(s);
+        let mut sink = crate::error::TomlSink::<Option<_>>::new(source);
+        let mut key = crate::parser::parse_key(source, &mut sink);
+        if let Some(err) = sink.into_inner() {
+            Err(err)
+        } else {
+            key.despan(s);
+            Ok(key)
+        }
     }
 
     #[cfg(feature = "parse")]
-    fn try_parse_path(s: &str) -> Result<Vec<Key>, crate::TomlError> {
-        let mut keys = crate::parser::parse_key_path(s)?;
-        for key in &mut keys {
-            key.despan(s);
+    fn try_parse_path(s: &str) -> Result<Vec<Self>, crate::TomlError> {
+        let source = toml_parser::Source::new(s);
+        let mut sink = crate::error::TomlSink::<Option<_>>::new(source);
+        let mut keys = crate::parser::parse_key_path(source, &mut sink);
+        if let Some(err) = sink.into_inner() {
+            Err(err)
+        } else {
+            for key in &mut keys {
+                key.despan(s);
+            }
+            Ok(keys)
         }
-        Ok(keys)
     }
 }
 
@@ -238,7 +226,7 @@ impl Eq for Key {}
 
 impl PartialEq for Key {
     #[inline]
-    fn eq(&self, other: &Key) -> bool {
+    fn eq(&self, other: &Self) -> bool {
         PartialEq::eq(self.get(), other.get())
     }
 }
@@ -279,37 +267,31 @@ impl FromStr for Key {
     /// if fails, tries as basic quoted key (surrounds with "")
     /// and then literal quoted key (surrounds with '')
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Key::try_parse_simple(s)
+        Self::try_parse_simple(s)
     }
 }
 
 impl<'b> From<&'b str> for Key {
     fn from(s: &'b str) -> Self {
-        Key::new(s)
+        Self::new(s)
     }
 }
 
 impl<'b> From<&'b String> for Key {
     fn from(s: &'b String) -> Self {
-        Key::new(s)
+        Self::new(s)
     }
 }
 
 impl From<String> for Key {
     fn from(s: String) -> Self {
-        Key::new(s)
-    }
-}
-
-impl From<InternalString> for Key {
-    fn from(s: InternalString) -> Self {
-        Key::new(s)
+        Self::new(s)
     }
 }
 
 #[doc(hidden)]
-impl From<Key> for InternalString {
-    fn from(key: Key) -> InternalString {
+impl From<Key> for String {
+    fn from(key: Key) -> Self {
         key.key
     }
 }
@@ -343,16 +325,6 @@ impl KeyMut<'_> {
         self.key.display_repr()
     }
 
-    /// Returns the surrounding whitespace
-    #[deprecated(
-        since = "0.21.1",
-        note = "Replaced with `dotted_decor_mut`, `leaf_decor_mut"
-    )]
-    pub fn decor_mut(&mut self) -> &mut Decor {
-        #![allow(deprecated)]
-        self.key.decor_mut()
-    }
-
     /// Returns the surrounding whitespace for the line entry
     pub fn leaf_decor_mut(&mut self) -> &mut Decor {
         self.key.leaf_decor_mut()
@@ -361,13 +333,6 @@ impl KeyMut<'_> {
     /// Returns the surrounding whitespace for between dots
     pub fn dotted_decor_mut(&mut self) -> &mut Decor {
         self.key.dotted_decor_mut()
-    }
-
-    /// Returns the surrounding whitespace
-    #[deprecated(since = "0.21.1", note = "Replaced with `dotted_decor`, `leaf_decor")]
-    pub fn decor(&self) -> &Decor {
-        #![allow(deprecated)]
-        self.key.decor()
     }
 
     /// Returns the surrounding whitespace for the line entry

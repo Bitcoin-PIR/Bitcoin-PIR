@@ -1,45 +1,52 @@
-use std::error::Error as StdError;
-use std::fmt::{Display, Formatter, Result};
-
 /// A TOML parse error
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct TomlError {
     message: String,
-    raw: Option<String>,
+    input: Option<std::sync::Arc<str>>,
     keys: Vec<String>,
     span: Option<std::ops::Range<usize>>,
 }
 
 impl TomlError {
     #[cfg(feature = "parse")]
-    pub(crate) fn new(
-        error: winnow::error::ParseError<
-            crate::parser::prelude::Input<'_>,
-            winnow::error::ContextError,
-        >,
-        mut raw: crate::parser::prelude::Input<'_>,
-    ) -> Self {
-        use winnow::stream::Stream;
+    pub(crate) fn new(input: std::sync::Arc<str>, error: toml_parser::ParseError) -> Self {
+        let mut message = String::new();
+        message.push_str(error.description());
+        if let Some(expected) = error.expected() {
+            message.push_str(", expected ");
+            if expected.is_empty() {
+                message.push_str("nothing");
+            } else {
+                for (i, expected) in expected.iter().enumerate() {
+                    if i != 0 {
+                        message.push_str(", ");
+                    }
+                    match expected {
+                        toml_parser::Expected::Literal(desc) => {
+                            message.push_str(&render_literal(desc));
+                        }
+                        toml_parser::Expected::Description(desc) => message.push_str(desc),
+                        _ => message.push_str("etc"),
+                    }
+                }
+            }
+        }
 
-        let message = error.inner().to_string();
-        let raw = raw.finish();
-        let raw = String::from_utf8(raw.to_owned()).expect("original document was utf8");
-
-        let span = error.char_span();
+        let span = error.unexpected().map(|span| span.start()..span.end());
 
         Self {
             message,
-            raw: Some(raw),
+            input: Some(input),
             keys: Vec::new(),
-            span: Some(span),
+            span,
         }
     }
 
-    #[cfg(any(feature = "serde", feature = "parse"))]
+    #[cfg(feature = "serde")]
     pub(crate) fn custom(message: String, span: Option<std::ops::Range<usize>>) -> Self {
         Self {
             message,
-            raw: None,
+            input: None,
             keys: Vec::new(),
             span,
         }
@@ -66,8 +73,19 @@ impl TomlError {
     }
 
     #[cfg(feature = "serde")]
-    pub(crate) fn set_raw(&mut self, raw: Option<String>) {
-        self.raw = raw;
+    pub(crate) fn set_input(&mut self, input: Option<&str>) {
+        self.input = input.map(|s| s.into());
+    }
+}
+
+fn render_literal(literal: &str) -> String {
+    match literal {
+        "\n" => "newline".to_owned(),
+        "`" => "'`'".to_owned(),
+        s if s.chars().all(|c| c.is_ascii_control()) => {
+            format!("`{}`", s.escape_debug())
+        }
+        s => format!("`{s}`"),
     }
 }
 
@@ -83,17 +101,17 @@ impl TomlError {
 /// Expected `digit`
 /// While parsing a Time
 /// While parsing a Date-Time
-impl Display for TomlError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+impl std::fmt::Display for TomlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut context = false;
-        if let (Some(raw), Some(span)) = (&self.raw, self.span()) {
+        if let (Some(input), Some(span)) = (&self.input, self.span()) {
             context = true;
 
-            let (line, column) = translate_position(raw.as_bytes(), span.start);
+            let (line, column) = translate_position(input.as_bytes(), span.start);
             let line_num = line + 1;
             let col_num = column + 1;
             let gutter = line_num.to_string().len();
-            let content = raw.split('\n').nth(line).expect("valid line number");
+            let content = input.split('\n').nth(line).expect("valid line number");
             let highlight_len = span.end - span.start;
             // Allow highlight to go one past the line
             let highlight_len = highlight_len.min(content.len().saturating_sub(column));
@@ -134,11 +152,7 @@ impl Display for TomlError {
     }
 }
 
-impl StdError for TomlError {
-    fn description(&self) -> &'static str {
-        "TOML parse error"
-    }
-}
+impl std::error::Error for TomlError {}
 
 fn translate_position(input: &[u8], index: usize) -> (usize, usize) {
     if input.is_empty() {
@@ -167,6 +181,52 @@ fn translate_position(input: &[u8], index: usize) -> (usize, usize) {
     let column = column + column_offset;
 
     (line, column)
+}
+
+#[cfg(feature = "parse")]
+pub(crate) struct TomlSink<'i, S> {
+    source: toml_parser::Source<'i>,
+    input: Option<std::sync::Arc<str>>,
+    sink: S,
+}
+
+#[cfg(feature = "parse")]
+impl<'i, S: Default> TomlSink<'i, S> {
+    pub(crate) fn new(source: toml_parser::Source<'i>) -> Self {
+        Self {
+            source,
+            input: None,
+            sink: Default::default(),
+        }
+    }
+
+    pub(crate) fn into_inner(self) -> S {
+        self.sink
+    }
+}
+
+#[cfg(feature = "parse")]
+impl<'i> toml_parser::ErrorSink for TomlSink<'i, Option<TomlError>> {
+    fn report_error(&mut self, error: toml_parser::ParseError) {
+        if self.sink.is_none() {
+            let input = self
+                .input
+                .get_or_insert_with(|| std::sync::Arc::from(self.source.input()));
+            let error = TomlError::new(input.clone(), error);
+            self.sink = Some(error);
+        }
+    }
+}
+
+#[cfg(feature = "parse")]
+impl<'i> toml_parser::ErrorSink for TomlSink<'i, Vec<TomlError>> {
+    fn report_error(&mut self, error: toml_parser::ParseError) {
+        let input = self
+            .input
+            .get_or_insert_with(|| std::sync::Arc::from(self.source.input()));
+        let error = TomlError::new(input.clone(), error);
+        self.sink.push(error);
+    }
 }
 
 #[cfg(test)]

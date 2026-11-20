@@ -3,19 +3,16 @@
 use crate::{Error, Result};
 use core::fmt;
 use der::{
-    asn1::OctetStringRef, Decode, DecodeValue, Encode, EncodeValue, Header, Length, Reader,
-    Sequence, Writer,
+    Decode, DecodeValue, Encode, EncodeValue, FixedTag, Header, Length, Reader, Sequence, Writer,
+    asn1::OctetStringRef,
 };
 use pkcs5::EncryptionScheme;
 
 #[cfg(feature = "alloc")]
-use der::SecretDocument;
+use der::{SecretDocument, asn1::OctetString};
 
 #[cfg(feature = "encryption")]
-use {
-    pkcs5::pbes2,
-    rand_core::{CryptoRng, RngCore},
-};
+use {pkcs5::pbes2, rand_core::TryCryptoRng};
 
 #[cfg(feature = "pem")]
 use der::pem::PemLabel;
@@ -40,92 +37,110 @@ use der::pem::PemLabel;
 ///
 /// [RFC 5208 Section 6]: https://tools.ietf.org/html/rfc5208#section-6
 #[derive(Clone, Eq, PartialEq)]
-pub struct EncryptedPrivateKeyInfo<'a> {
+pub struct EncryptedPrivateKeyInfo<Data> {
     /// Algorithm identifier describing a password-based symmetric encryption
     /// scheme used to encrypt the `encrypted_data` field.
-    pub encryption_algorithm: EncryptionScheme<'a>,
+    pub encryption_algorithm: EncryptionScheme,
 
     /// Private key data
-    pub encrypted_data: &'a [u8],
+    pub encrypted_data: Data,
 }
 
-impl<'a> EncryptedPrivateKeyInfo<'a> {
+impl<'a, Data> EncryptedPrivateKeyInfo<Data>
+where
+    Data: DecodeValue<'a, Error = der::Error> + EncodeValue + FixedTag + 'a,
+    Data: AsRef<[u8]>,
+{
     /// Attempt to decrypt this encrypted private key using the provided
     /// password to derive an encryption key.
+    ///
+    /// # Errors
+    /// - Returns errors in the event the file could not be decrypted successfully.
+    /// - Returns errors if the file decrypted but the resulting plaintext failed to decode.
     #[cfg(feature = "encryption")]
     pub fn decrypt(&self, password: impl AsRef<[u8]>) -> Result<SecretDocument> {
         Ok(self
             .encryption_algorithm
-            .decrypt(password, self.encrypted_data)?
+            .decrypt(password, self.encrypted_data.as_ref())?
             .try_into()?)
     }
 
     /// Encrypt the given ASN.1 DER document using a symmetric encryption key
     /// derived from the provided password.
+    #[cfg(feature = "getrandom")]
+    pub(crate) fn encrypt(password: impl AsRef<[u8]>, doc: &[u8]) -> Result<SecretDocument> {
+        Self::encrypt_with_rng(&mut getrandom::SysRng, password, doc)
+    }
+
+    /// Encrypt the given ASN.1 DER document using a symmetric encryption key
+    /// derived from the provided password.
     #[cfg(feature = "encryption")]
-    pub(crate) fn encrypt(
-        mut rng: impl CryptoRng + RngCore,
+    pub(crate) fn encrypt_with_rng<R: TryCryptoRng>(
+        rng: &mut R,
         password: impl AsRef<[u8]>,
         doc: &[u8],
     ) -> Result<SecretDocument> {
-        let mut salt = [0u8; 16];
-        rng.fill_bytes(&mut salt);
-
-        let mut iv = [0u8; 16];
-        rng.fill_bytes(&mut iv);
-
-        let pbes2_params = pbes2::Parameters::scrypt_aes256cbc(Default::default(), &salt, &iv)?;
-        EncryptedPrivateKeyInfo::encrypt_with(pbes2_params, password, doc)
+        let pbes2_params = pbes2::Parameters::generate_recommended(rng)?;
+        EncryptedPrivateKeyInfoOwned::encrypt_with_params(pbes2_params, password, doc)
     }
 
     /// Encrypt this private key using a symmetric encryption key derived
     /// from the provided password and [`pbes2::Parameters`].
     #[cfg(feature = "encryption")]
-    pub(crate) fn encrypt_with(
-        pbes2_params: pbes2::Parameters<'a>,
+    pub(crate) fn encrypt_with_params(
+        pbes2_params: pbes2::Parameters,
         password: impl AsRef<[u8]>,
         doc: &[u8],
     ) -> Result<SecretDocument> {
         let encrypted_data = pbes2_params.encrypt(password, doc)?;
+        let encrypted_data = OctetStringRef::new(&encrypted_data)?;
 
         EncryptedPrivateKeyInfo {
             encryption_algorithm: pbes2_params.into(),
-            encrypted_data: &encrypted_data,
+            encrypted_data,
         }
         .try_into()
     }
 }
 
-impl<'a> DecodeValue<'a> for EncryptedPrivateKeyInfo<'a> {
-    fn decode_value<R: Reader<'a>>(
-        reader: &mut R,
-        header: Header,
-    ) -> der::Result<EncryptedPrivateKeyInfo<'a>> {
-        reader.read_nested(header.length, |reader| {
-            Ok(Self {
-                encryption_algorithm: reader.decode()?,
-                encrypted_data: OctetStringRef::decode(reader)?.as_bytes(),
-            })
+impl<'a, Data> DecodeValue<'a> for EncryptedPrivateKeyInfo<Data>
+where
+    Data: DecodeValue<'a, Error = der::Error> + FixedTag + 'a,
+{
+    type Error = der::Error;
+
+    fn decode_value<R: Reader<'a>>(reader: &mut R, _header: Header) -> der::Result<Self> {
+        Ok(Self {
+            encryption_algorithm: reader.decode()?,
+            encrypted_data: reader.decode()?,
         })
     }
 }
 
-impl EncodeValue for EncryptedPrivateKeyInfo<'_> {
+impl<Data> EncodeValue for EncryptedPrivateKeyInfo<Data>
+where
+    Data: EncodeValue + FixedTag,
+{
     fn value_len(&self) -> der::Result<Length> {
-        self.encryption_algorithm.encoded_len()?
-            + OctetStringRef::new(self.encrypted_data)?.encoded_len()?
+        self.encryption_algorithm.encoded_len()? + self.encrypted_data.encoded_len()?
     }
 
     fn encode_value(&self, writer: &mut impl Writer) -> der::Result<()> {
         self.encryption_algorithm.encode(writer)?;
-        OctetStringRef::new(self.encrypted_data)?.encode(writer)?;
+        self.encrypted_data.encode(writer)?;
         Ok(())
     }
 }
 
-impl<'a> Sequence<'a> for EncryptedPrivateKeyInfo<'a> {}
+impl<'a, Data> Sequence<'a> for EncryptedPrivateKeyInfo<Data> where
+    Data: DecodeValue<'a, Error = der::Error> + EncodeValue + FixedTag + 'a
+{
+}
 
-impl<'a> TryFrom<&'a [u8]> for EncryptedPrivateKeyInfo<'a> {
+impl<'a, Data> TryFrom<&'a [u8]> for EncryptedPrivateKeyInfo<Data>
+where
+    Data: DecodeValue<'a, Error = der::Error> + EncodeValue + FixedTag + 'a,
+{
     type Error = Error;
 
     fn try_from(bytes: &'a [u8]) -> Result<Self> {
@@ -133,7 +148,7 @@ impl<'a> TryFrom<&'a [u8]> for EncryptedPrivateKeyInfo<'a> {
     }
 }
 
-impl<'a> fmt::Debug for EncryptedPrivateKeyInfo<'a> {
+impl<Data> fmt::Debug for EncryptedPrivateKeyInfo<Data> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptedPrivateKeyInfo")
             .field("encryption_algorithm", &self.encryption_algorithm)
@@ -142,24 +157,37 @@ impl<'a> fmt::Debug for EncryptedPrivateKeyInfo<'a> {
 }
 
 #[cfg(feature = "alloc")]
-impl TryFrom<EncryptedPrivateKeyInfo<'_>> for SecretDocument {
+impl<'a, Data> TryFrom<EncryptedPrivateKeyInfo<Data>> for SecretDocument
+where
+    Data: DecodeValue<'a, Error = der::Error> + EncodeValue + FixedTag + 'a,
+{
     type Error = Error;
 
-    fn try_from(encrypted_private_key: EncryptedPrivateKeyInfo<'_>) -> Result<SecretDocument> {
+    fn try_from(encrypted_private_key: EncryptedPrivateKeyInfo<Data>) -> Result<SecretDocument> {
         SecretDocument::try_from(&encrypted_private_key)
     }
 }
 
 #[cfg(feature = "alloc")]
-impl TryFrom<&EncryptedPrivateKeyInfo<'_>> for SecretDocument {
+impl<'a, Data> TryFrom<&EncryptedPrivateKeyInfo<Data>> for SecretDocument
+where
+    Data: DecodeValue<'a, Error = der::Error> + EncodeValue + FixedTag + 'a,
+{
     type Error = Error;
 
-    fn try_from(encrypted_private_key: &EncryptedPrivateKeyInfo<'_>) -> Result<SecretDocument> {
+    fn try_from(encrypted_private_key: &EncryptedPrivateKeyInfo<Data>) -> Result<SecretDocument> {
         Ok(Self::encode_msg(encrypted_private_key)?)
     }
 }
 
 #[cfg(feature = "pem")]
-impl PemLabel for EncryptedPrivateKeyInfo<'_> {
+impl<Data> PemLabel for EncryptedPrivateKeyInfo<Data> {
     const PEM_LABEL: &'static str = "ENCRYPTED PRIVATE KEY";
 }
+
+/// [`EncryptedPrivateKeyInfo`] with [`OctetStringRef`] encrypted data.
+pub type EncryptedPrivateKeyInfoRef<'a> = EncryptedPrivateKeyInfo<&'a OctetStringRef>;
+
+#[cfg(feature = "alloc")]
+/// [`EncryptedPrivateKeyInfo`] with [`OctetString`] encrypted data.
+pub type EncryptedPrivateKeyInfoOwned = EncryptedPrivateKeyInfo<OctetString>;

@@ -1,0 +1,48 @@
+# Changelog
+
+All notable changes to iroh-base will be documented in this file.
+
+<!-- git-cliff: end of header -->
+## [1.5.0](https://github.com/n0-computer/iroh/compare/v1.4.2..1.5.0) - 2026-11-19
+
+### ⛰️  Features
+
+- *(iroh-relay)* Keep the relay URL's path prefix ([#4617](https://github.com/n0-computer/iroh/issues/4617)) - ([5b98ddb](https://github.com/n0-computer/iroh/commit/5b98ddbaeb5fadea6ec8652e25b9fd1ef207e8e2))
+
+
+## [1.4.2](https://github.com/n0-computer/iroh/compare/v1.4.1..1.4.2) - 2026-11-19
+
+
+## [1.4.1](https://github.com/n0-computer/iroh/compare/v1.4.0..1.4.1) - 2026-10-21
+
+### ⚙️ Miscellaneous Tasks
+
+- Fix changelog ([#4628](https://github.com/n0-computer/iroh/issues/4628)) - ([efcb1c3](https://github.com/n0-computer/iroh/commit/efcb1c3f987127529458f2734a076acacf0254e3))
+
+
+
+## [1.4.0](https://github.com/n0-computer/iroh/compare/v1.3.0..1.4.0) - 2026-10-20
+
+## [1.3.0](https://github.com/n0-computer/iroh/compare/v1.2.0..1.3.0) - 2026-09-28
+
+## [1.2.0](https://github.com/n0-computer/iroh/compare/v1.1.0..1.2.0) - 2026-09-09
+
+## [1.1.0](https://github.com/n0-computer/iroh/compare/v1.0.3..1.1.0) - 2026-08-25
+
+### 🐛 Bug Fixes
+
+- [**breaking**] Fix serialization of CustomAddr so that the data serializes the same  as a Vec<u8> ([#4465](https://github.com/n0-computer/iroh/issues/4465)) - ([4706ec9](https://github.com/n0-computer/iroh/commit/4706ec97e991eb7150b4b98de6bbecdc3534adfd))
+
+## [1.0.3](https://github.com/n0-computer/iroh/compare/v1.0.2..1.0.3) - 2026-07-20
+
+### ⚙️ Miscellaneous Tasks
+
+- Allow GA releases of curve25519-dalek and ed25519-dalek ([#4416](https://github.com/n0-computer/iroh/issues/4416)) - ([57fb5c2](https://github.com/n0-computer/iroh/commit/57fb5c2805d6c64b12765f8ef6efe43efbd03a2a))
+
+## [1.0.2](https://github.com/n0-computer/iroh/compare/v1.0.1..1.0.2) - 2026-07-06
+
+### ⚙️ Miscellaneous Tasks
+
+- *(*)* Add release configuration for generating the changelog - ([ead46e5](https://github.com/n0-computer/iroh/commit/ead46e50823e7ddcc4d142ea71511ed38a37260e))
+
+

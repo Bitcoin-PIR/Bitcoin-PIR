@@ -1,0 +1,64 @@
+error[E0365]: `DProj` is only public within the crate, and cannot be re-exported outside
+  --> tests/ui/pin_project/visibility.rs:19:13
+   |
+19 |     pub use crate::pub_::DProj; //~ ERROR E0365
+   |             ^^^^^^^^^^^^^^^^^^ re-export of crate public `DProj`
+   |
+note: consider declaring struct `DProj` with `pub`
+  --> tests/ui/pin_project/visibility.rs:11:5
+   |
+11 |     #[pin_project(project = DProj, project_ref = DProjRef)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `::pin_project::__private::__PinProjectInternalDerive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0365]: `DProjRef` is only public within the crate, and cannot be re-exported outside
+  --> tests/ui/pin_project/visibility.rs:21:13
+   |
+21 |     pub use crate::pub_::DProjRef; //~ ERROR E0365
+   |             ^^^^^^^^^^^^^^^^^^^^^ re-export of crate public `DProjRef`
+   |
+note: consider declaring struct `DProjRef` with `pub`
+  --> tests/ui/pin_project/visibility.rs:11:5
+   |
+11 |     #[pin_project(project = DProj, project_ref = DProjRef)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `::pin_project::__private::__PinProjectInternalDerive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0365]: `RProj` is only public within the crate, and cannot be re-exported outside
+  --> tests/ui/pin_project/visibility.rs:23:13
+   |
+23 |     pub use crate::pub_::RProj; //~ ERROR E0365
+   |             ^^^^^^^^^^^^^^^^^^ re-export of crate public `RProj`
+   |
+note: consider declaring struct `RProj` with `pub`
+  --> tests/ui/pin_project/visibility.rs:14:5
+   |
+14 |     #[pin_project(project = RProj, project_ref = RProjRef, project_replace = RProjOwn)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `::pin_project::__private::__PinProjectInternalDerive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0365]: `RProjOwn` is only public within the crate, and cannot be re-exported outside
+  --> tests/ui/pin_project/visibility.rs:25:13
+   |
+25 |     pub use crate::pub_::RProjOwn; //~ ERROR E0365
+   |             ^^^^^^^^^^^^^^^^^^^^^ re-export of crate public `RProjOwn`
+   |
+note: consider declaring struct `RProjOwn` with `pub`
+  --> tests/ui/pin_project/visibility.rs:14:5
+   |
+14 |     #[pin_project(project = RProj, project_ref = RProjRef, project_replace = RProjOwn)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `::pin_project::__private::__PinProjectInternalDerive` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0365]: `RProjRef` is only public within the crate, and cannot be re-exported outside
+  --> tests/ui/pin_project/visibility.rs:27:13
+   |
+27 |     pub use crate::pub_::RProjRef; //~ ERROR E0365
+   |             ^^^^^^^^^^^^^^^^^^^^^ re-export of crate public `RProjRef`
+   |
+note: consider declaring struct `RProjRef` with `pub`
+  --> tests/ui/pin_project/visibility.rs:14:5
+   |
+14 |     #[pin_project(project = RProj, project_ref = RProjRef, project_replace = RProjOwn)]
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: this error originates in the derive macro `::pin_project::__private::__PinProjectInternalDerive` (in Nightly builds, run with -Z macro-backtrace for more info)

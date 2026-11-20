@@ -15,7 +15,7 @@ pub struct Handle {
 }
 
 use crate::runtime::task::JoinHandle;
-use crate::runtime::BOX_FUTURE_THRESHOLD;
+use crate::runtime::AutoBox;
 use crate::util::error::{CONTEXT_MISSING_ERROR, THREAD_LOCAL_DESTROYED_ERROR};
 use crate::util::trace::SpawnMeta;
 
@@ -200,7 +200,7 @@ impl Handle {
         F::Output: Send + 'static,
     {
         let fut_size = mem::size_of::<F>();
-        if fut_size > BOX_FUTURE_THRESHOLD {
+        if AutoBox::<F>::SHOULD_BOX {
             self.spawn_named(Box::pin(future), SpawnMeta::new_unnamed(fut_size))
         } else {
             self.spawn_named(future, SpawnMeta::new_unnamed(fut_size))
@@ -341,7 +341,7 @@ impl Handle {
     #[track_caller]
     pub fn block_on<F: Future>(&self, future: F) -> F::Output {
         let fut_size = mem::size_of::<F>();
-        if fut_size > BOX_FUTURE_THRESHOLD {
+        if AutoBox::<F>::SHOULD_BOX {
             self.block_on_inner(Box::pin(future), SpawnMeta::new_unnamed(fut_size))
         } else {
             self.block_on_inner(future, SpawnMeta::new_unnamed(fut_size))
@@ -355,7 +355,12 @@ impl Handle {
             feature = "taskdump",
             feature = "rt",
             target_os = "linux",
-            any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+            any(
+                target_arch = "aarch64",
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "s390x"
+            )
         ))]
         let future = super::task::trace::Trace::root(future);
 
@@ -382,7 +387,12 @@ impl Handle {
             feature = "taskdump",
             feature = "rt",
             target_os = "linux",
-            any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+            any(
+                target_arch = "aarch64",
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "s390x"
+            )
         ))]
         let future = super::task::trace::Trace::root(future);
         #[cfg(all(tokio_unstable, feature = "tracing"))]
@@ -411,7 +421,12 @@ impl Handle {
             feature = "taskdump",
             feature = "rt",
             target_os = "linux",
-            any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
+            any(
+                target_arch = "aarch64",
+                target_arch = "x86",
+                target_arch = "x86_64",
+                target_arch = "s390x"
+            )
         ))]
         let future = super::task::trace::Trace::root(future);
         #[cfg(all(tokio_unstable, feature = "tracing"))]
@@ -472,6 +487,27 @@ impl Handle {
             scheduler::Handle::MultiThread(handle) => handle.owned_id(),
         };
         runtime::Id::new(owned_id)
+    }
+
+    /// Returns the name of the current `Runtime`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use tokio::runtime::Handle;
+    ///
+    /// #[tokio::main(flavor = "current_thread", name = "my-runtime")]
+    /// async fn main() {
+    ///   println!("Current runtime name: {}", Handle::current().name().unwrap());
+    /// }
+    /// ```
+    ///
+    pub fn name(&self) -> Option<&str> {
+        match &self.inner {
+            scheduler::Handle::CurrentThread(handle) => handle.name(),
+            #[cfg(feature = "rt-multi-thread")]
+            scheduler::Handle::MultiThread(handle) => handle.name(),
+        }
     }
 
     /// Returns a view that lets you get information about how the runtime
@@ -576,7 +612,7 @@ cfg_taskdump! {
         ///
         /// ## Platform Requirements
         ///
-        /// Task dumps are supported on Linux atop `aarch64`, `x86` and `x86_64`.
+        /// Task dumps are supported on Linux atop `aarch64`, `x86`, `x86_64` and `s390x`.
         ///
         /// ## Current Thread Runtime Requirements
         ///

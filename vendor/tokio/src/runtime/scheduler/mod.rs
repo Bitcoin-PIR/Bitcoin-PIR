@@ -17,9 +17,6 @@ cfg_rt_multi_thread! {
     mod block_in_place;
     pub(crate) use block_in_place::block_in_place;
 
-    mod lock;
-    use lock::Lock;
-
     pub(crate) mod multi_thread;
     pub(crate) use multi_thread::MultiThread;
 }
@@ -120,18 +117,6 @@ cfg_rt! {
         }
 
         #[cfg(all(tokio_unstable, feature = "rt-multi-thread", feature = "time"))]
-        /// Returns true if both handles belong to the same runtime instance.
-        pub(crate) fn is_same_runtime(&self, other: &Handle) -> bool {
-            match (self, other) {
-                (Handle::CurrentThread(a), Handle::CurrentThread(b)) => Arc::ptr_eq(a, b),
-                #[cfg(feature = "rt-multi-thread")]
-                (Handle::MultiThread(a), Handle::MultiThread(b)) => Arc::ptr_eq(a, b),
-                #[cfg(feature = "rt-multi-thread")]
-                _ => false, // different runtime types
-            }
-        }
-
-        #[cfg(all(tokio_unstable, feature = "rt-multi-thread", feature = "time"))]
         /// Returns true if the runtime is shutting down.
         pub(crate) fn is_shutdown(&self) -> bool {
             match self {
@@ -154,7 +139,7 @@ cfg_rt! {
         /// Returns true if this is a local runtime and the runtime is owned by the current thread.
         pub(crate) fn can_spawn_local_on_local_runtime(&self) -> bool {
             match self {
-                Handle::CurrentThread(h) => h.local_tid.map(|x| std::thread::current().id() == x).unwrap_or(false),
+                Handle::CurrentThread(h) => h.local_tid.is_some_and(|x| std::thread::current().id() == x),
 
                 #[cfg(feature = "rt-multi-thread")]
                 Handle::MultiThread(_) => false,
@@ -293,14 +278,11 @@ cfg_rt! {
             match_flavor!(self, Context(context) => context.defer(waker));
         }
 
-        #[cfg(all(tokio_unstable, feature = "time", feature = "rt-multi-thread"))]
-        pub(crate) fn with_time_temp_local_context<F, R>(&self, f: F) -> R
-        where
-            F: FnOnce(Option<crate::runtime::time_alt::TempLocalContext<'_>>) -> R,
-        {
+        pub(crate) fn worker_index(&self) -> Option<usize> {
             match self {
-                Context::CurrentThread(_) => panic!("the alternative timer implementation is not supported on CurrentThread runtime"),
-                Context::MultiThread(context) => context.with_time_temp_local_context(f),
+                Context::CurrentThread(_) => Some(0),
+                #[cfg(feature = "rt-multi-thread")]
+                Context::MultiThread(context) => Some(context.worker_index()),
             }
         }
 

@@ -1,0 +1,32 @@
+error: expected item after attributes
+ --> tests/ui/pin_project/packed_sneaky-3.rs:6:1
+  |
+6 | hidden_repr_macro! {} //~ ERROR expected item after attributes
+  | ^^^^^^^^^^^^^^^^^^^^^ expected an item after this
+  |
+  = note: this error originates in the macro `hidden_repr_macro` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: expected item after attributes
+  --> tests/ui/pin_project/packed_sneaky-3.rs:15:9
+   |
+13 | macro_rules! hidden_repr_macro2 {
+14 |     () => {
+15 |         #[repr(packed)] //~ ERROR expected item after attributes
+   |         ^^^^^^^^^^^^^^^ expected an item after this
+...
+19 | hidden_repr_macro2! {}
+   | ---------------------- in this macro invocation
+
+error: expected item after attributes
+  --> tests/ui/pin_project/packed_sneaky-3.rs:26:10
+   |
+26 | #[derive(HiddenRepr)] //~ ERROR expected item after attributes
+   |          ^^^^^^^^^^ expected an item after this
+   |
+   = note: this error originates in the derive macro `HiddenRepr` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error: proc-macro derive produced unparsable tokens
+  --> tests/ui/pin_project/packed_sneaky-3.rs:26:10
+   |
+26 | #[derive(HiddenRepr)] //~ ERROR expected item after attributes
+   |          ^^^^^^^^^^

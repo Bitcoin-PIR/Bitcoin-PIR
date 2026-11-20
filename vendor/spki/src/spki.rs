@@ -3,27 +3,35 @@
 use crate::{AlgorithmIdentifier, Error, Result};
 use core::cmp::Ordering;
 use der::{
-    asn1::{AnyRef, BitStringRef},
     Choice, Decode, DecodeValue, DerOrd, Encode, EncodeValue, FixedTag, Header, Length, Reader,
     Sequence, ValueOrd, Writer,
+    asn1::{AnyRef, BitStringRef},
 };
 
 #[cfg(feature = "alloc")]
 use der::{
-    asn1::{Any, BitString},
     Document,
+    asn1::{Any, BitString},
 };
 
 #[cfg(feature = "fingerprint")]
-use crate::{fingerprint, FingerprintBytes};
+use {
+    crate::{DigestWriter, FingerprintBytes},
+    digest::Digest,
+    sha2::Sha256,
+};
 
 #[cfg(feature = "pem")]
 use der::pem::PemLabel;
 
 /// [`SubjectPublicKeyInfo`] with [`AnyRef`] algorithm parameters, and [`BitStringRef`] params.
+///
+/// This is the borrowing-pendant to [`SubjectPublicKeyInfoOwned`].
 pub type SubjectPublicKeyInfoRef<'a> = SubjectPublicKeyInfo<AnyRef<'a>, BitStringRef<'a>>;
 
 /// [`SubjectPublicKeyInfo`] with [`Any`] algorithm parameters, and [`BitString`] params.
+///
+/// This is the owning-pendant to [`SubjectPublicKeyInfoRef`].
 #[cfg(feature = "alloc")]
 pub type SubjectPublicKeyInfoOwned = SubjectPublicKeyInfo<Any, BitString>;
 
@@ -51,15 +59,18 @@ pub struct SubjectPublicKeyInfo<Params, Key> {
 
 impl<'a, Params, Key> SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + Encode,
+    Params: Choice<'a, Error = der::Error> + Encode,
     // TODO: replace FixedTag with FixedTag<TAG = { Tag::BitString }> once
     // https://github.com/rust-lang/rust/issues/92827 is fixed
-    Key: Decode<'a> + Encode + FixedTag,
+    Key: Decode<'a, Error = der::Error> + Encode + FixedTag,
 {
     /// Calculate the SHA-256 fingerprint of this [`SubjectPublicKeyInfo`] and
     /// encode it as a Base64 string.
     ///
     /// See [RFC7469 § 2.1.1] for more information.
+    ///
+    /// # Errors
+    /// Propagates errors that occur during encoding.
     ///
     /// [RFC7469 § 2.1.1]: https://datatracker.ietf.org/doc/html/rfc7469#section-2.1.1
     #[cfg(all(feature = "fingerprint", feature = "alloc", feature = "base64"))]
@@ -73,33 +84,36 @@ where
     ///
     /// See [RFC7469 § 2.1.1] for more information.
     ///
+    /// # Errors
+    /// Propagates errors that occur during encoding.
+    ///
     /// [RFC7469 § 2.1.1]: https://datatracker.ietf.org/doc/html/rfc7469#section-2.1.1
     #[cfg(feature = "fingerprint")]
     pub fn fingerprint_bytes(&self) -> Result<FingerprintBytes> {
-        let mut builder = fingerprint::Builder::new();
-        self.encode(&mut builder)?;
-        Ok(builder.finish())
+        let mut hash = Sha256::new();
+        self.encode(&mut DigestWriter(&mut hash))?;
+        Ok(hash.finalize().into())
     }
 }
 
-impl<'a: 'k, 'k, Params, Key: 'k> DecodeValue<'a> for SubjectPublicKeyInfo<Params, Key>
+impl<'a, Params, Key> DecodeValue<'a> for SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + Encode,
-    Key: Decode<'a>,
+    Params: Choice<'a, Error = der::Error> + Encode,
+    Key: Decode<'a, Error = der::Error>,
 {
-    fn decode_value<R: Reader<'a>>(reader: &mut R, header: Header) -> der::Result<Self> {
-        reader.read_nested(header.length, |reader| {
-            Ok(Self {
-                algorithm: reader.decode()?,
-                subject_public_key: Key::decode(reader)?,
-            })
+    type Error = der::Error;
+
+    fn decode_value<R: Reader<'a>>(reader: &mut R, _header: Header) -> der::Result<Self> {
+        Ok(Self {
+            algorithm: reader.decode()?,
+            subject_public_key: Key::decode(reader)?,
         })
     }
 }
 
 impl<'a, Params, Key> EncodeValue for SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + Encode,
+    Params: Choice<'a, Error = der::Error> + Encode,
     Key: Encode,
 {
     fn value_len(&self) -> der::Result<Length> {
@@ -115,15 +129,15 @@ where
 
 impl<'a, Params, Key> Sequence<'a> for SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + Encode,
-    Key: Decode<'a> + Encode + FixedTag,
+    Params: Choice<'a, Error = der::Error> + Encode,
+    Key: Decode<'a, Error = der::Error> + Encode + FixedTag,
 {
 }
 
 impl<'a, Params, Key> TryFrom<&'a [u8]> for SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + Encode,
-    Key: Decode<'a> + Encode + FixedTag,
+    Params: Choice<'a, Error = der::Error> + Encode,
+    Key: Decode<'a, Error = der::Error> + Encode + FixedTag,
 {
     type Error = Error;
 
@@ -134,7 +148,7 @@ where
 
 impl<'a, Params, Key> ValueOrd for SubjectPublicKeyInfo<Params, Key>
 where
-    Params: Choice<'a> + DerOrd + Encode,
+    Params: Choice<'a, Error = der::Error> + DerOrd + Encode,
     Key: ValueOrd,
 {
     fn value_cmp(&self, other: &Self) -> der::Result<Ordering> {
@@ -148,8 +162,8 @@ where
 #[cfg(feature = "alloc")]
 impl<'a: 'k, 'k, Params, Key: 'k> TryFrom<SubjectPublicKeyInfo<Params, Key>> for Document
 where
-    Params: Choice<'a> + Encode,
-    Key: Decode<'a> + Encode + FixedTag,
+    Params: Choice<'a, Error = der::Error> + Encode,
+    Key: Decode<'a, Error = der::Error> + Encode + FixedTag,
     BitStringRef<'a>: From<&'k Key>,
 {
     type Error = Error;
@@ -162,8 +176,8 @@ where
 #[cfg(feature = "alloc")]
 impl<'a: 'k, 'k, Params, Key: 'k> TryFrom<&SubjectPublicKeyInfo<Params, Key>> for Document
 where
-    Params: Choice<'a> + Encode,
-    Key: Decode<'a> + Encode + FixedTag,
+    Params: Choice<'a, Error = der::Error> + Encode,
+    Key: Decode<'a, Error = der::Error> + Encode + FixedTag,
     BitStringRef<'a>: From<&'k Key>,
 {
     type Error = Error;
@@ -207,10 +221,10 @@ mod allocating {
     impl SubjectPublicKeyInfoOwned {
         /// Create a [`SubjectPublicKeyInfoOwned`] from any object that implements
         /// [`EncodePublicKey`].
-        pub fn from_key<T>(source: T) -> Result<Self>
-        where
-            T: EncodePublicKey,
-        {
+        ///
+        /// # Errors
+        /// Propagates encoding and decoding errors.
+        pub fn from_key<T: EncodePublicKey>(source: &T) -> Result<Self> {
             Ok(source.to_public_key_der()?.decode_msg::<Self>()?)
         }
     }

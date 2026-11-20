@@ -178,10 +178,7 @@ impl<T> Block<T> {
     ///
     /// Always returns false when given an index from a different block.
     pub(crate) fn has_value(&self, slot_index: usize) -> bool {
-        if slot_index < self.header.start_index {
-            return false;
-        }
-        if slot_index >= self.header.start_index + super::BLOCK_CAP {
+        if start_index(slot_index) != self.header.start_index {
             return false;
         }
 
@@ -218,11 +215,6 @@ impl<T> Block<T> {
     /// Signal to the receiver that the sender half of the list is closed.
     pub(crate) unsafe fn tx_close(&self) {
         self.header.ready_slots.fetch_or(TX_CLOSED, Release);
-    }
-
-    pub(crate) unsafe fn is_closed(&self) -> bool {
-        let ready_bits = self.header.ready_slots.load(Acquire);
-        is_tx_closed(ready_bits)
     }
 
     /// Resets the block to a blank state. This enables reusing blocks in the
@@ -299,7 +291,7 @@ impl<T> Block<T> {
         let ret = NonNull::new(self.header.next.load(ordering));
 
         debug_assert!(unsafe {
-            ret.map_or(true, |block| {
+            ret.is_none_or(|block| {
                 block.as_ref().header.start_index == self.header.start_index.wrapping_add(BLOCK_CAP)
             })
         });
@@ -363,7 +355,7 @@ impl<T> Block<T> {
         // Create the new block. It is assumed that the block will become the
         // next one after `&self`. If this turns out to not be the case,
         // `start_index` is updated accordingly.
-        let new_block = Block::new(self.header.start_index + BLOCK_CAP);
+        let new_block = Block::new(self.header.start_index.wrapping_add(BLOCK_CAP));
 
         let mut new_block = unsafe { NonNull::new_unchecked(Box::into_raw(new_block)) };
 

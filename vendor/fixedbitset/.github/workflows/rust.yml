@@ -1,0 +1,168 @@
+name: Continuous integration
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # Ensure the crate builds on x86
+  build_x86_64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [stable, nightly]
+        features: ["+avx2", "+avx", "+sse2,+sse4.1", "+sse2"]
+    env:
+      RUSTFLAGS: "-C target-feature=${{matrix.features}} -D warnings"
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        target: x86_64-unknown-linux-gnu
+        toolchain: ${{ matrix.rust }}
+        components: clippy
+    - name: Tests (x86_64)
+      run: |
+        cargo clippy --all-features &&
+        cargo test -v --no-default-features --tests --lib &&
+        cargo build --verbose --all-features &&
+        cargo test --verbose --all-features &&
+        cargo test --verbose --release --all-features
+
+  # Ensure the crate builds on x86
+  build_MSRV:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [1.56.0]
+        features: ["+avx2", "+sse2"]
+    env:
+      RUSTFLAGS: "-C target-feature=${{matrix.features}}"
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        target: x86_64-unknown-linux-gnu
+        toolchain: ${{ matrix.rust }}
+        components: clippy
+    # Keep test dependencies compatible with Rust 1.56 without restricting library users.
+    - run: cp .github/Cargo.lock.msrv Cargo.lock
+    - name: Tests (x86_64)
+      run: |
+        cargo clippy --locked --all-features &&
+        cargo test --locked -v --no-default-features --tests --lib &&
+        cargo build --locked --verbose --all-features &&
+        cargo test --locked --verbose --all-features &&
+        cargo test --locked --verbose --release --all-features
+
+  # Ensure the crate builds on ARM
+  build_aarch64:
+    runs-on: macos-15
+    strategy:
+      matrix:
+        rust: [stable, nightly]
+        # NEON is required by the aarch64 Apple ABI and cannot be disabled.
+        features: ["+neon"]
+    env:
+      RUSTFLAGS: "-C target-feature=${{matrix.features}} -D warnings"
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        target: aarch64-apple-darwin
+        toolchain: ${{ matrix.rust }}
+        components: clippy
+    - name: Tests (aarch64)
+      run: |
+        cargo clippy --all-features &&
+        cargo test -v --no-default-features --tests --lib &&
+        cargo build --verbose --all-features &&
+        cargo test --verbose --all-features &&
+        cargo test --verbose --release --all-features
+
+  # Enforce rustfmt formatting
+  formatting:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Run formatting checks only on stable
+        rust: [stable]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: rustfmt
+    - name: Run Clippy
+      run: |
+        cargo fmt --all --check
+
+  # Ensure the benchmarks compile
+  benchmark_compiles:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Check builds only on stable
+        rust: [stable]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: clippy
+    - name: Run Clippy
+      run: |
+        cd benches
+        cargo bench --bench benches --no-run
+
+  build-wasm:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["+simd128", "-simd128"]
+    env:
+      RUSTFLAGS: "-C target-feature=${{matrix.features}} -D warnings"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+      - run: cat .github/Cargo.toml.wasm_ci >> Cargo.toml
+      - run: wasm-pack test --headless --chrome
+      - run: wasm-pack test --headless --firefox
+
+  check-wasm64:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features: ["+simd128", "-simd128"]
+    env:
+      # No -D warnings: it would also apply to the std built from source.
+      RUSTFLAGS: "-C target-feature=${{matrix.features}}"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: nightly
+          components: rust-src
+      - run: cargo check -Zbuild-std=std,panic_abort --target wasm64-unknown-unknown
+
+  miri:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Check builds only on nightly
+        rust: [nightly]
+    steps:
+    - uses: actions/checkout@v4
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: ${{ matrix.rust }}
+        components: miri
+    - name: Run miri
+      run: cargo miri test

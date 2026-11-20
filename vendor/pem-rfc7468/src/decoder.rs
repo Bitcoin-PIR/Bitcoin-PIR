@@ -11,8 +11,8 @@
 //! [RFC 4648]: https://datatracker.ietf.org/doc/html/rfc4648
 
 use crate::{
-    grammar, Base64Decoder, Error, Result, BASE64_WRAP_WIDTH, POST_ENCAPSULATION_BOUNDARY,
-    PRE_ENCAPSULATION_BOUNDARY,
+    BASE64_WRAP_WIDTH, Base64Decoder, Error, POST_ENCAPSULATION_BOUNDARY,
+    PRE_ENCAPSULATION_BOUNDARY, Result, grammar,
 };
 use core::str;
 
@@ -62,6 +62,13 @@ pub fn decode_label(pem: &[u8]) -> Result<&str> {
     Ok(Encapsulation::try_from(pem)?.label())
 }
 
+/// Attempt to detect the Base64 line width for the given PEM document.
+///
+/// NOTE: not constant time with respect to the input.
+pub fn detect_base64_line_width(pem: &[u8]) -> Result<usize> {
+    Ok(Encapsulation::try_from(pem)?.encapsulated_text_line_width())
+}
+
 /// Buffered PEM decoder.
 ///
 /// Stateful buffered decoder type which decodes an input PEM document according
@@ -88,7 +95,17 @@ impl<'i> Decoder<'i> {
         let encapsulation = Encapsulation::try_from(pem)?;
         let type_label = encapsulation.label();
         let base64 = Base64Decoder::new_wrapped(encapsulation.encapsulated_text, line_width)?;
+
         Ok(Self { type_label, base64 })
+    }
+
+    /// Create a new PEM [`Decoder`] which automatically detects the line width the input is wrapped
+    /// at and flexibly handles widths other than the default 64-characters.
+    ///
+    /// Note: unlike `new` and `new_wrapped`, this method is not constant-time.
+    pub fn new_detect_wrap(pem: &'i [u8]) -> Result<Self> {
+        let line_width = detect_base64_line_width(pem)?;
+        Self::new_wrapped(pem, line_width)
     }
 
     /// Get the PEM type label for the input document.
@@ -128,7 +145,7 @@ impl<'i> From<Decoder<'i>> for Base64Decoder<'i> {
 }
 
 #[cfg(feature = "std")]
-impl<'i> io::Read for Decoder<'i> {
+impl io::Read for Decoder<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.base64.read(buf)
     }
@@ -224,6 +241,16 @@ impl<'a> Encapsulation<'a> {
     pub fn label(self) -> &'a str {
         self.label
     }
+
+    /// Detect the line width of the encapsulated text by looking for the position of the first EOL.
+    pub fn encapsulated_text_line_width(self) -> usize {
+        // TODO(tarcieri): handle empty space between the pre-encapsulation boundary and Base64
+        self.encapsulated_text
+            .iter()
+            .copied()
+            .position(|c| matches!(c, grammar::CHAR_CR | grammar::CHAR_LF))
+            .unwrap_or(self.encapsulated_text.len())
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for Encapsulation<'a> {
@@ -238,8 +265,7 @@ impl<'a> TryFrom<&'a [u8]> for Encapsulation<'a> {
 ///
 /// Returns `Error::HeaderDisallowed` if headers are encountered.
 fn check_for_headers(pem: &[u8], err: Error) -> Error {
-    if err == Error::Base64(base64ct::Error::InvalidEncoding)
-        && pem.iter().any(|&b| b == grammar::CHAR_COLON)
+    if err == Error::Base64(base64ct::Error::InvalidEncoding) && pem.contains(&grammar::CHAR_COLON)
     {
         Error::HeaderDisallowed
     } else {
@@ -248,6 +274,7 @@ fn check_for_headers(pem: &[u8], err: Error) -> Error {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::Encapsulation;
 
