@@ -10,9 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
+edition = "2024"
+rust-version = "1.88.0"
 name = "libsqlite3-sys"
-version = "0.37.0"
+version = "0.39.1"
 authors = ["The rusqlite developers"]
 build = "build.rs"
 links = "sqlite3"
@@ -43,7 +44,10 @@ bundled = [
     "cc",
     "bundled_bindings",
 ]
-bundled-sqlcipher = ["bundled"]
+bundled-sqlcipher = [
+    "bundled",
+    "dep:sqlcipher-src",
+]
 bundled-sqlcipher-vendored-openssl = [
     "bundled-sqlcipher",
     "openssl-sys/vendored",
@@ -54,14 +58,14 @@ bundled-windows = [
 ]
 bundled_bindings = []
 column_metadata = []
-default = ["min_sqlite_version_3_34_1"]
+default = ["min_sqlite_version_3_45_3"]
 in_gecko = []
 loadable_extension = [
     "prettyplease",
     "quote",
     "syn",
 ]
-min_sqlite_version_3_34_1 = [
+min_sqlite_version_3_45_3 = [
     "pkg-config",
     "vcpkg",
 ]
@@ -84,7 +88,7 @@ version = "0.9.103"
 optional = true
 
 [build-dependencies.bindgen]
-version = "0.72"
+version = "0.73"
 features = ["runtime"]
 optional = true
 default-features = false
@@ -98,7 +102,7 @@ version = "0.3.19"
 optional = true
 
 [build-dependencies.prettyplease]
-version = "0.2.20"
+version = "0.3.0"
 optional = true
 
 [build-dependencies.quote]
@@ -106,8 +110,12 @@ version = "1.0.36"
 optional = true
 default-features = false
 
+[build-dependencies.sqlcipher-src]
+version = "=419.0.6"
+optional = true
+
 [build-dependencies.syn]
-version = "2.0.89"
+version = "3.0.1"
 features = [
     "full",
     "extra-traits",
@@ -118,3 +126,9 @@ optional = true
 [build-dependencies.vcpkg]
 version = "0.2.15"
 optional = true
+
+[lints.clippy]
+ref_option = "warn"
+semicolon_if_nothing_returned = "warn"
+unnecessary_semicolon = "warn"
+unused_trait_names = "warn"

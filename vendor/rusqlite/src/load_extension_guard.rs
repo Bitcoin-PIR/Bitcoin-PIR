@@ -5,12 +5,12 @@ use crate::{Connection, Result};
 /// ## Example
 ///
 /// ```rust,no_run
-/// # use rusqlite::{Connection, Result, LoadExtensionGuard};
+/// # use rusqlite::{Connection, DEFAULT_NAME, Result, LoadExtensionGuard};
 /// # use std::path::{Path};
 /// fn load_my_extension(conn: &Connection) -> Result<()> {
 ///     unsafe {
 ///         let _guard = LoadExtensionGuard::new(conn)?;
-///         conn.load_extension("trusted/sqlite/extension", None::<&str>)
+///         conn.load_extension("trusted/sqlite/extension", DEFAULT_NAME)
 ///     }
 /// }
 /// ```
@@ -31,8 +31,10 @@ impl LoadExtensionGuard<'_> {
     /// details.
     #[inline]
     pub unsafe fn new(conn: &Connection) -> Result<LoadExtensionGuard<'_>> {
-        conn.load_extension_enable()
-            .map(|_| LoadExtensionGuard { conn })
+        unsafe {
+            conn.load_extension_enable()
+                .map(|()| LoadExtensionGuard { conn })
+        }
     }
 }
 

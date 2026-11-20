@@ -1,14 +1,14 @@
 use std::ffi::{c_int, c_void};
-use std::slice::from_raw_parts;
 use std::{fmt, mem, ptr, str};
 
-use super::ffi;
+use super::ffi::{self, sqlite3_stmt};
 use super::str_for_sqlite;
 use super::{
     AndThenRows, Connection, Error, MappedRows, Params, RawStatement, Result, Row, Rows, ValueRef,
 };
 use crate::bind::BindIndex;
-use crate::types::{ToSql, ToSqlOutput};
+use crate::types::{ToSql, ToSqlOutput, Value};
+use crate::util::from_raw_parts;
 
 /// A prepared statement.
 pub struct Statement<'conn> {
@@ -485,20 +485,20 @@ impl Statement<'_> {
             }
             self.bind_parameter(&p, index)?;
         }
-        if index != expected {
-            Err(Error::InvalidParameterCount(index, expected))
-        } else {
+        if index == expected {
             Ok(())
+        } else {
+            Err(Error::InvalidParameterCount(index, expected))
         }
     }
 
     #[inline]
     pub(crate) fn ensure_parameter_count(&self, n: usize) -> Result<()> {
         let count = self.parameter_count();
-        if count != n {
-            Err(Error::InvalidParameterCount(n, count))
-        } else {
+        if count == n {
             Ok(())
+        } else {
+            Err(Error::InvalidParameterCount(n, count))
         }
     }
 
@@ -615,16 +615,33 @@ impl Statement<'_> {
         let value = param.to_sql()?;
 
         let ptr = unsafe { self.stmt.ptr() };
-        let value = match value {
-            ToSqlOutput::Borrowed(v) => v,
-            ToSqlOutput::Owned(ref v) => ValueRef::from(v),
-
+        self.conn.decode_result(match value {
+            ToSqlOutput::Borrowed(ValueRef::Null) | ToSqlOutput::Owned(Value::Null) => {
+                unsafe { ffi::sqlite3_bind_null(ptr, ndx as c_int) }
+            },
+            ToSqlOutput::Borrowed(ValueRef::Integer(i)) | ToSqlOutput::Owned(Value::Integer(i)) => {
+                unsafe { ffi::sqlite3_bind_int64(ptr, ndx as c_int, i) }
+            },
+            ToSqlOutput::Borrowed(ValueRef::Real(r)) | ToSqlOutput::Owned(Value::Real(r)) => {
+                unsafe { ffi::sqlite3_bind_double(ptr, ndx as c_int, r) }
+            },
+            ToSqlOutput::Borrowed(ValueRef::Text(s)) => {
+                Self::bind_text(ptr, ndx, s)
+            },
+             ToSqlOutput::Owned(Value::Text(s)) => {
+                Self::bind_text(ptr, ndx, s.as_bytes())
+            },
+            ToSqlOutput::Borrowed(ValueRef::Blob(b)) => {
+                Self::bind_blob(ptr, ndx, b)
+            },
+            ToSqlOutput::Owned(Value::Blob(b)) => {
+                Self::bind_blob(ptr, ndx, b.as_slice())
+            },
             #[cfg(feature = "blob")]
             ToSqlOutput::ZeroBlob(len) => {
-                // TODO sqlite3_bind_zeroblob64 // 3.8.11
-                return self
-                    .conn
-                    .decode_result(unsafe { ffi::sqlite3_bind_zeroblob(ptr, ndx as c_int, len) });
+                unsafe {
+                    ffi::sqlite3_bind_zeroblob64(ptr, ndx as c_int, len)
+                }
             }
             #[cfg(feature = "functions")]
             ToSqlOutput::Arg(_) => {
@@ -632,41 +649,42 @@ impl Statement<'_> {
             }
             #[cfg(feature = "pointer")]
             ToSqlOutput::Pointer(p) => {
-                return self.conn.decode_result(unsafe {
-                    ffi::sqlite3_bind_pointer(ptr, ndx as c_int, p.0 as _, p.1.as_ptr(), p.2)
-                });
-            }
-        };
-        self.conn.decode_result(match value {
-            ValueRef::Null => unsafe { ffi::sqlite3_bind_null(ptr, ndx as c_int) },
-            ValueRef::Integer(i) => unsafe { ffi::sqlite3_bind_int64(ptr, ndx as c_int, i) },
-            ValueRef::Real(r) => unsafe { ffi::sqlite3_bind_double(ptr, ndx as c_int, r) },
-            ValueRef::Text(s) => unsafe {
-                let (c_str, len, destructor) = str_for_sqlite(s);
-                ffi::sqlite3_bind_text64(
-                    ptr,
-                    ndx as c_int,
-                    c_str,
-                    len,
-                    destructor,
-                    ffi::SQLITE_UTF8 as _,
-                )
-            },
-            ValueRef::Blob(b) => unsafe {
-                let length = b.len();
-                if length == 0 {
-                    ffi::sqlite3_bind_zeroblob(ptr, ndx as c_int, 0)
-                } else {
-                    ffi::sqlite3_bind_blob64(
-                        ptr,
-                        ndx as c_int,
-                        b.as_ptr().cast::<c_void>(),
-                        length as ffi::sqlite3_uint64,
-                        ffi::SQLITE_TRANSIENT(),
-                    )
+                unsafe {
+                    ffi::sqlite3_bind_pointer(ptr, ndx as c_int, p.0.cast_mut(), p.1.as_ptr(), p.2)
                 }
-            },
+            }
         })
+    }
+
+    fn bind_text(stmt: *mut sqlite3_stmt, ndx: usize, s: &[u8]) -> c_int {
+        unsafe {
+            let (c_str, len, destructor) = str_for_sqlite(s);
+            ffi::sqlite3_bind_text64(
+                stmt,
+                ndx as c_int,
+                c_str,
+                len,
+                destructor,
+                ffi::SQLITE_UTF8 as _, // TODO SQLITE_UTF8_ZT
+            )
+        }
+    }
+
+    fn bind_blob(stmt: *mut sqlite3_stmt, ndx: usize, b: &[u8]) -> c_int {
+        unsafe {
+            let length = b.len();
+            if length == 0 {
+                ffi::sqlite3_bind_zeroblob64(stmt, ndx as c_int, 0)
+            } else {
+                ffi::sqlite3_bind_blob64(
+                    stmt,
+                    ndx as c_int,
+                    b.as_ptr().cast::<c_void>(),
+                    length as ffi::sqlite3_uint64,
+                    ffi::SQLITE_TRANSIENT(),
+                )
+            }
+        }
     }
 
     #[inline]
@@ -691,19 +709,17 @@ impl Statement<'_> {
         self.conn.decode_result(stmt.finalize())
     }
 
-    #[cfg(feature = "extra_check")]
     #[inline]
+    #[allow(clippy::unnecessary_wraps)]
     fn check_update(&self) -> Result<()> {
-        if self.column_count() > 0 && self.stmt.readonly() {
-            return Err(Error::ExecuteReturnedResults);
+        cfg_select! {
+            feature = "extra_check" => {
+                if self.column_count() > 0 && self.stmt.readonly() {
+                    return Err(Error::ExecuteReturnedResults);
+                }
+            }
+            _ => {}
         }
-        Ok(())
-    }
-
-    #[cfg(not(feature = "extra_check"))]
-    #[inline]
-    #[expect(clippy::unnecessary_wraps)]
-    fn check_update(&self) -> Result<()> {
         Ok(())
     }
 
@@ -748,9 +764,11 @@ impl Statement<'_> {
     #[inline]
     #[cfg(feature = "cache")]
     pub(crate) unsafe fn into_raw(mut self) -> RawStatement {
-        let mut stmt = RawStatement::new(ptr::null_mut());
-        mem::swap(&mut stmt, &mut self.stmt);
-        stmt
+        unsafe {
+            let mut stmt = RawStatement::new(ptr::null_mut());
+            mem::swap(&mut stmt, &mut self.stmt);
+            stmt
+        }
     }
 
     /// Reset all bindings
@@ -759,7 +777,7 @@ impl Statement<'_> {
     }
 
     pub(crate) unsafe fn ptr(&self) -> *mut ffi::sqlite3_stmt {
-        self.stmt.ptr()
+        unsafe { self.stmt.ptr() }
     }
 }
 
@@ -815,7 +833,7 @@ impl Statement<'_> {
                         !text.is_null(),
                         "unexpected SQLITE_TEXT column type with NULL data"
                     );
-                    from_raw_parts(text.cast::<u8>(), len as usize)
+                    from_raw_parts(text.cast::<u8>(), len)
                 };
 
                 ValueRef::Text(s)
@@ -837,7 +855,7 @@ impl Statement<'_> {
                         !blob.is_null(),
                         "unexpected SQLITE_BLOB column type with NULL data"
                     );
-                    ValueRef::Blob(unsafe { from_raw_parts(blob.cast::<u8>(), len as usize) })
+                    ValueRef::Blob(unsafe { from_raw_parts(blob.cast::<u8>(), len) })
                 } else {
                     // The return value from sqlite3_column_blob() for a zero-length BLOB
                     // is a NULL pointer.
@@ -897,13 +915,13 @@ pub enum StatementStatus {
     MemUsed = 99,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod test {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
     use crate::types::ToSql;
-    use crate::{params_from_iter, Connection, Error, Result};
+    use crate::{Connection, Error, Result, params_from_iter};
 
     #[test]
     fn test_execute_named() -> Result<()> {
@@ -1309,6 +1327,10 @@ mod test {
         stmt.parameter_index("test")?;
         let err = stmt.step().unwrap_err();
         assert_eq!(err.sqlite_error_code(), Some(crate::ErrorCode::ApiMisuse));
+        assert_eq!(
+            err.sqlite_extended_error_code(),
+            Some(crate::ffi::SQLITE_MISUSE)
+        );
         // error msg is different with sqlcipher, so we use assert_ne:
         assert_ne!(err.to_string(), "not an error".to_owned());
         stmt.reset()?; // SQLITE_OMIT_AUTORESET = false
@@ -1343,7 +1365,7 @@ mod test {
     fn test_utf16_conversion() -> Result<()> {
         let db = Connection::open_in_memory()?;
         db.pragma_update(None, "encoding", "UTF-16le")?;
-        let encoding: String = db.pragma_query_value(None, "encoding", |row| row.get(0))?;
+        let encoding: String = db.pragma_query_one(None, "encoding")?;
         assert_eq!("UTF-16le", encoding);
         db.execute_batch("CREATE TABLE foo(x TEXT)")?;
         let expected = "テスト";
@@ -1379,7 +1401,6 @@ mod test {
     }
 
     #[test]
-    #[cfg(feature = "modern_sqlite")] // SQLite >= 3.38.0
     fn test_error_offset() -> Result<()> {
         use crate::ffi::ErrorCode;
         let db = Connection::open_in_memory()?;

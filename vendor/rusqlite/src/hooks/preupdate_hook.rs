@@ -3,14 +3,14 @@ use std::fmt::Debug;
 use std::panic::catch_unwind;
 use std::ptr;
 
-use super::expect_utf8;
 use super::Action;
+use super::expect_utf8;
+use crate::Connection;
+use crate::Result;
 use crate::error::check;
 use crate::ffi;
 use crate::inner_connection::InnerConnection;
 use crate::types::ValueRef;
-use crate::Connection;
-use crate::Result;
 
 /// The possible cases for when a PreUpdateHook gets triggered. Allows access to the relevant
 /// functions for each case through the contained values.
@@ -129,22 +129,16 @@ impl Connection {
     /// - a variant of the PreUpdateCase enum which allows access to extra functions depending
     ///   on whether it's an update, delete or insert.
     #[inline]
-    pub fn preupdate_hook<F>(&self, hook: Option<F>) -> Result<()>
+    pub fn preupdate_hook<F>(&mut self, hook: Option<F>) -> Result<()>
     where
         F: FnMut(Action, &str, &str, &PreUpdateCase) + Send + 'static,
     {
-        self.db.borrow().check_owned()?;
-        self.db.borrow_mut().preupdate_hook(hook);
+        self.db.borrow_mut().preupdate_hook(hook)?;
         Ok(())
     }
 }
 
 impl InnerConnection {
-    #[inline]
-    pub fn remove_preupdate_hook(&mut self) {
-        self.preupdate_hook(None::<fn(Action, &str, &str, &PreUpdateCase)>);
-    }
-
     /// ```compile_fail
     /// use rusqlite::{Connection, Result, hooks::PreUpdateCase};
     /// fn main() -> Result<()> {
@@ -158,7 +152,7 @@ impl InnerConnection {
     ///     db.execute_batch("CREATE TABLE foo AS SELECT 1 AS bar;")
     /// }
     /// ```
-    fn preupdate_hook<F>(&mut self, hook: Option<F>)
+    fn preupdate_hook<F>(&mut self, hook: Option<F>) -> Result<()>
     where
         F: FnMut(Action, &str, &str, &PreUpdateCase) + Send + 'static,
     {
@@ -196,33 +190,29 @@ impl InnerConnection {
                 },
                 Action::UNKNOWN => PreUpdateCase::Unknown,
             };
-
-            drop(catch_unwind(|| {
-                let boxed_hook: *mut F = p_arg.cast::<F>();
-                (*boxed_hook)(
-                    action,
-                    expect_utf8(db_name, "database name"),
-                    expect_utf8(tbl_name, "table name"),
-                    &preupdate_case,
-                );
-            }));
+            unsafe {
+                drop(catch_unwind(|| {
+                    let boxed_hook: *mut F = p_arg.cast::<F>();
+                    (*boxed_hook)(
+                        action,
+                        expect_utf8(db_name, "database name"),
+                        expect_utf8(tbl_name, "table name"),
+                        &preupdate_case,
+                    );
+                }));
+            }
         }
 
-        let boxed_hook = hook.map(Box::new);
-        unsafe {
-            ffi::sqlite3_preupdate_hook(
-                self.db(),
-                boxed_hook.as_ref().map(|_| call_boxed_closure::<F> as _),
-                boxed_hook
-                    .as_ref()
-                    .map_or_else(ptr::null_mut, |h| &**h as *const F as *mut _),
-            )
-        };
-        self.preupdate_hook = boxed_hook.map(|bh| bh as _);
+        let x_pre_update = hook.as_ref().map(|_| call_boxed_closure::<F> as _);
+        self.set_clientdata(c"sqlite3_preupdate_hook", hook, |db, bh| unsafe {
+            ffi::sqlite3_preupdate_hook(db, x_pre_update, bh);
+            ffi::SQLITE_OK
+        })?;
+        Ok(())
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod test {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -235,7 +225,7 @@ mod test {
 
     #[test]
     fn test_preupdate_hook_insert() -> Result<()> {
-        let db = Connection::open_in_memory()?;
+        let mut db = Connection::open_in_memory()?;
 
         static CALLED: AtomicBool = AtomicBool::new(false);
 
@@ -268,7 +258,7 @@ mod test {
 
     #[test]
     fn test_preupdate_hook_delete() -> Result<()> {
-        let db = Connection::open_in_memory()?;
+        let mut db = Connection::open_in_memory()?;
 
         static CALLED: AtomicBool = AtomicBool::new(false);
 
@@ -304,7 +294,7 @@ mod test {
 
     #[test]
     fn test_preupdate_hook_update() -> Result<()> {
-        let db = Connection::open_in_memory()?;
+        let mut db = Connection::open_in_memory()?;
 
         static CALLED: AtomicBool = AtomicBool::new(false);
 

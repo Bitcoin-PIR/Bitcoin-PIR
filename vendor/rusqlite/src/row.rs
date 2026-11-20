@@ -126,8 +126,8 @@ impl<F, B> FallibleIterator for Map<'_, F>
 where
     F: FnMut(&Row<'_>) -> Result<B>,
 {
-    type Item = B;
     type Error = Error;
+    type Item = B;
 
     #[inline]
     fn next(&mut self) -> Result<Option<B>> {
@@ -208,8 +208,8 @@ where
 /// }
 /// ```
 impl<'stmt> FallibleStreamingIterator for Rows<'stmt> {
-    type Item = Row<'stmt>;
     type Error = Error;
+    type Item = Row<'stmt>;
 
     #[inline]
     fn advance(&mut self) -> Result<()> {
@@ -357,14 +357,16 @@ impl Row<'_> {
     ) -> Result<Option<&T>> {
         let idx = idx.idx(self.stmt)?;
         debug_assert_eq!(self.stmt.stmt.column_type(idx), super::ffi::SQLITE_NULL);
-        let sv = super::ffi::sqlite3_column_value(self.stmt.stmt.ptr(), idx as std::ffi::c_int);
-        Ok(if sv.is_null() {
-            None
-        } else {
-            super::ffi::sqlite3_value_pointer(sv, ptr_type.as_ptr())
-                .cast::<T>()
-                .as_ref()
-        })
+        unsafe {
+            let sv = super::ffi::sqlite3_column_value(self.stmt.stmt.ptr(), idx as std::ffi::c_int);
+            Ok(if sv.is_null() {
+                None
+            } else {
+                super::ffi::sqlite3_value_pointer(sv, ptr_type.as_ptr())
+                    .cast::<T>()
+                    .as_ref()
+            })
+        }
     }
 }
 
@@ -425,7 +427,7 @@ mod sealed {
 /// A trait implemented by types that can index into columns of a row.
 ///
 /// It is only implemented for `usize` and `&str`.
-pub trait RowIndex: sealed::Sealed {
+pub trait RowIndex: sealed::Sealed + Copy {
     /// Returns the index of the appropriate column, or `Error` if no such
     /// column exists.
     fn idx(&self, stmt: &Statement<'_>) -> Result<usize>;
@@ -483,7 +485,7 @@ macro_rules! tuples_try_from_row {
 
 tuples_try_from_row!(A, B, C, D, E, F, G, H, I, J, K, L, M, N, O, P);
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod tests {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
@@ -493,7 +495,7 @@ mod tests {
     #[test]
     fn test_try_from_row_for_tuple_1() -> Result<()> {
         use crate::ToSql;
-        use std::convert::TryFrom;
+        use std::convert::TryFrom as _;
 
         let conn = Connection::open_in_memory()?;
         conn.execute(
@@ -510,7 +512,7 @@ mod tests {
 
     #[test]
     fn test_try_from_row_for_tuple_2() -> Result<()> {
-        use std::convert::TryFrom;
+        use std::convert::TryFrom as _;
 
         let conn = Connection::open_in_memory()?;
         conn.execute("CREATE TABLE test (a INTEGER, b INTEGER)", [])?;
@@ -528,7 +530,7 @@ mod tests {
 
     #[test]
     fn test_try_from_row_for_tuple_16() -> Result<()> {
-        use std::convert::TryFrom;
+        use std::convert::TryFrom as _;
 
         let create_table = "CREATE TABLE test (
             a INTEGER,
@@ -625,14 +627,14 @@ mod tests {
         {
             let iterator_count = stmt.query_map([], |_| Ok(()))?.count();
             assert_eq!(1, iterator_count); // should be 0
-            use fallible_streaming_iterator::FallibleStreamingIterator;
+            use fallible_streaming_iterator::FallibleStreamingIterator as _;
             let fallible_iterator_count = stmt.query([])?.count().unwrap_or(0);
             assert_eq!(0, fallible_iterator_count);
         }
         {
             let iterator_last = stmt.query_map([], |_| Ok(()))?.last();
             assert!(iterator_last.is_some()); // should be none
-            use fallible_iterator::FallibleIterator;
+            use fallible_iterator::FallibleIterator as _;
             let fallible_iterator_last = stmt.query([])?.map(|_| Ok(())).last();
             assert!(fallible_iterator_last.is_err());
         }

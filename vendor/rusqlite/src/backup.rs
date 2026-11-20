@@ -44,13 +44,13 @@ use std::time::Duration;
 use crate::ffi;
 
 use crate::error::error_from_handle;
-use crate::{Connection, Name, Result, MAIN_DB};
+use crate::{Connection, MAIN_DB, Name, Result};
 
 impl Connection {
     /// Back up the `name` database to the given
     /// destination path.
     ///
-    /// If `progress` is not `None`, it will be called periodically
+    /// If `progress` is not `None` / [`NO_PROGRESS`], it will be called periodically
     /// until the backup completes.
     ///
     /// For more fine-grained control over the backup process (e.g.,
@@ -61,11 +61,11 @@ impl Connection {
     ///
     /// Will return `Err` if the destination path cannot be opened
     /// or if the backup fails.
-    pub fn backup<N: Name, P: AsRef<Path>>(
+    pub fn backup<N: Name, P: AsRef<Path>, F: Fn(Progress)>(
         &self,
         name: N,
         dst_path: P,
-        progress: Option<fn(Progress)>,
+        progress: Option<F>,
     ) -> Result<()> {
         use self::StepResult::{Busy, Done, Locked, More};
         let mut dst = Self::open(dst_path)?;
@@ -74,7 +74,7 @@ impl Connection {
         let mut r = More;
         while r == More {
             r = backup.step(100)?;
-            if let Some(f) = progress {
+            if let Some(ref f) = progress {
                 f(backup.progress());
             }
         }
@@ -88,7 +88,7 @@ impl Connection {
     }
 
     /// Restore the given source path into the
-    /// `name` database. If `progress` is not `None`, it will be
+    /// `name` database. If `progress` is not `None` / [`NO_PROGRESS`], it will be
     /// called periodically until the restore completes.
     ///
     /// For more fine-grained control over the restore process (e.g.,
@@ -133,6 +133,9 @@ impl Connection {
         }
     }
 }
+
+/// Ignore backup / restore progress
+pub const NO_PROGRESS: Option<fn(_: Progress)> = None;
 
 /// Possible successful results of calling
 /// [`Backup::step`].
@@ -268,7 +271,7 @@ impl Backup<'_, '_> {
             ffi::SQLITE_OK => Ok(More),
             ffi::SQLITE_BUSY => Ok(Busy),
             ffi::SQLITE_LOCKED => Ok(Locked),
-            _ => self.to.decode_result(rc).map(|_| More),
+            _ => self.to.decode_result(rc).map(|()| More),
         }
     }
 
@@ -318,13 +321,13 @@ impl Drop for Backup<'_, '_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(miri)))]
 mod test {
     #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     use wasm_bindgen_test::wasm_bindgen_test as test;
 
-    use super::{Backup, Progress};
-    use crate::{Connection, Result, MAIN_DB, TEMP_DB};
+    use super::{Backup, NO_PROGRESS, Progress};
+    use crate::{Connection, MAIN_DB, Result, TEMP_DB};
     use std::time::Duration;
 
     #[cfg_attr(
@@ -342,9 +345,11 @@ mod test {
         fn progress(_: Progress) {}
 
         src.backup(MAIN_DB, path.as_path(), Some(progress))?;
+        src.backup(MAIN_DB, path.as_path(), NO_PROGRESS)?;
 
         let mut dst = Connection::open_in_memory()?;
-        dst.restore(MAIN_DB, path, Some(progress))?;
+        dst.restore(MAIN_DB, path.as_path(), Some(progress))?;
+        dst.restore(MAIN_DB, path, NO_PROGRESS)?;
 
         Ok(())
     }

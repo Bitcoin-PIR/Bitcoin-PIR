@@ -88,10 +88,17 @@ impl fmt::Display for FromSqlError {
 impl Error for FromSqlError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Utf8Error(ref err) => Some(err),
-            Self::Other(ref err) => Some(&**err),
+            Self::Utf8Error(err) => Some(err),
+            Self::Other(err) => Some(&**err),
             _ => None,
         }
+    }
+}
+
+impl From<Utf8Error> for FromSqlError {
+    #[cold]
+    fn from(err: Utf8Error) -> Self {
+        Self::Utf8Error(err)
     }
 }
 
@@ -316,6 +323,7 @@ mod test {
     use std::sync::Arc;
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_integral_ranges() -> Result<()> {
         let db = Connection::open_in_memory()?;
 
@@ -356,6 +364,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_nonzero_ranges() -> Result<()> {
         let db = Connection::open_in_memory()?;
 
@@ -424,6 +433,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_cow() -> Result<()> {
         let db = Connection::open_in_memory()?;
 
@@ -446,6 +456,7 @@ mod test {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn test_heap_slice() -> Result<()> {
         let db = Connection::open_in_memory()?;
 
