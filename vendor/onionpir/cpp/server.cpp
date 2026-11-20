@@ -531,39 +531,30 @@ PirServer::evaluate_first_dim(std::vector<RlweCt> &fst_dim_query) {
   vector of size coeff_val_cnt. In OnionPIRv1, the first dimension is doing the
   component wise matrix multiplication. Further details can be found in the "matrix.h" file.
   */
-  // prepare the matrices. db_ptr_ aliases either db_aligned_ (owned) or a
-  // caller-borrowed buffer; matmul is read-only so the const_cast is safe.
-  // Indirect mode (shared_store_ set) gathers via index_table_ into a
-  // transient buffer before invoking the matmul kernel — keeps the kernel
-  // (including its AVX-512 fast path) unchanged.
-  std::vector<db_coeff_t> gathered;
-  const db_coeff_t *matmul_src = db_ptr_;
+  // db_ptr_ aliases either db_aligned_ (owned) or a caller-borrowed buffer;
+  // matmul is read-only so the const_cast is safe. Indirect mode
+  // (shared_store_ set) gathers one level row at a time via index_table_, so
+  // the scratch stays num_pt values instead of the whole per-server DB.
   if (shared_store_) {
-    gathered.resize(coeff_val_cnt * num_pt_);
-    // shared_store_ layout: [level * shared_num_entries + entry_id]
-    // gathered layout:      [level * num_pt + pt_id]
+    std::vector<db_coeff_t> row(num_pt_);
     for (size_t level = 0; level < coeff_val_cnt; ++level) {
-      const db_coeff_t *level_src = shared_store_ + level * shared_num_entries_;
-      db_coeff_t *level_dst = gathered.data() + level * num_pt_;
-      for (size_t pt = 0; pt < num_pt_; ++pt) {
-        level_dst[pt] = level_src[index_table_[pt]];
-      }
+      shared_first_dim_level(query_data.data(), level, row.data());
     }
-    matmul_src = gathered.data();
-  }
-  db_matrix_t db_mat { const_cast<db_coeff_t *>(matmul_src),
-                       other_dim_sz, fst_dim_sz, coeff_val_cnt };
-  db_matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
-  inter_matrix_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
+  } else {
+    db_matrix_t db_mat { const_cast<db_coeff_t *>(db_ptr_),
+                         other_dim_sz, fst_dim_sz, coeff_val_cnt };
+    db_matrix_t query_mat { query_data.data(), fst_dim_sz, 2, coeff_val_cnt };
+    inter_matrix_t inter_res_mat { inter_res_.data(), other_dim_sz, 2, coeff_val_cnt };
 
-  // Per-level modulus: level lvl spans coefficients of limb (lvl / N).
-  std::vector<uint64_t> level_qs(coeff_val_cnt);
-  for (size_t k = 0; k < K; ++k) {
-    std::fill(level_qs.begin() + k * N, level_qs.begin() + (k + 1) * N, rns_mods[k]);
+    // Per-level modulus: level lvl spans coefficients of limb (lvl / N).
+    std::vector<uint64_t> level_qs(coeff_val_cnt);
+    for (size_t k = 0; k < K; ++k) {
+      std::fill(level_qs.begin() + k * N, level_qs.begin() + (k + 1) * N, rns_mods[k]);
+    }
+    TIME_START(CORE_TIME);
+    level_mat_mat(&db_mat, &query_mat, &inter_res_mat, level_qs.data());
+    TIME_END(CORE_TIME);
   }
-  TIME_START(CORE_TIME);
-  level_mat_mat(&db_mat, &query_mat, &inter_res_mat, level_qs.data());
-  TIME_END(CORE_TIME);
 
   // ========== transform the intermediate to coefficient form. Delay the modulus operation ==========
   TIME_START(FST_INTER_TO_CTS_TIME);
@@ -575,6 +566,45 @@ PirServer::evaluate_first_dim(std::vector<RlweCt> &fst_dim_query) {
   return result;
 }
 
+
+// One level of the first dimension in shared-store mode: gather this server's
+// num_pt values of store row `level`, multiply by the query's level slice and
+// write the level's slice of inter_res_. Levels are independent (NTT form is
+// pointwise), so this equals the corresponding slice of level_mat_mat.
+void PirServer::shared_first_dim_level(const db_coeff_t *query_data,
+                                       size_t level, db_coeff_t *row) {
+  const size_t fst_dim_sz = pir_params_.get_fst_dim_sz();
+  const size_t other_dim_sz = pir_params_.get_other_dim_sz();
+  const db_coeff_t *src = shared_store_ + level * shared_num_entries_;
+  for (size_t pt = 0; pt < num_pt_; ++pt) {
+    row[pt] = src[index_table_[pt]];
+  }
+  uint64_t q = pir_params_.get_rns_mods()[level / DBConsts::PolyDegree];
+  db_matrix_t db_mat { row, other_dim_sz, fst_dim_sz, 1 };
+  db_matrix_t query_mat { const_cast<db_coeff_t *>(query_data) + level * fst_dim_sz * 2,
+                          fst_dim_sz, 2, 1 };
+  inter_matrix_t inter_res_mat { inter_res_.data() + level * other_dim_sz * 2,
+                                 other_dim_sz, 2, 1 };
+  level_mat_mat(&db_mat, &query_mat, &inter_res_mat, &q);
+}
+
+void PirServer::shared_first_dim_levels(PirServer *const *servers,
+                                        const PreparedQuery *const *queries,
+                                        size_t count, size_t l0, size_t l1) {
+  size_t max_pt = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (!servers[i]->shared_store_) {
+      throw std::invalid_argument("shared_first_dim_levels: server has no shared store");
+    }
+    max_pt = std::max(max_pt, servers[i]->num_pt_);
+  }
+  std::vector<db_coeff_t> row(max_pt);
+  for (size_t level = l0; level < l1; ++level) {
+    for (size_t i = 0; i < count; ++i) {
+      servers[i]->shared_first_dim_level(queries[i]->query_data.data(), level, row.data());
+    }
+  }
+}
 
 void PirServer::inter_to_cts(std::vector<RlweCt> &result, const inter_coeff_t *__restrict inter_res) {
   const size_t other_dim_sz = pir_params_.get_other_dim_sz();
@@ -970,8 +1000,21 @@ RlwePt PirServer::direct_get_original_plaintext(const size_t plaintext_idx) cons
 
 
 RlweCt PirServer::make_query(const size_t client_id, RlweCt &query) {
-  // receive the query from the client
+  std::vector<GSWCt> gsw_vec;
+  std::vector<RlweCt> query_vector = expand_query(client_id, query, gsw_vec);
 
+  // Evaluate the first dimension
+  TIME_START(FST_DIM_TIME);
+  std::vector<RlweCt> mid_db = evaluate_first_dim(query_vector);
+  TIME_END(FST_DIM_TIME);
+
+  return finish_other_dims(mid_db, gsw_vec);
+}
+
+// Expansion and RGSW conversion. Returns the first-dimension selection
+// ciphertexts; the RGSW selectors of the other dimensions go to gsw_vec.
+std::vector<RlweCt> PirServer::expand_query(size_t client_id, RlweCt &query,
+                                            std::vector<GSWCt> &gsw_vec) {
   // ========================== Expansion & conversion ==========================
   TIME_START(EXPAND_TIME);
   std::vector<RlweCt> query_vector = fast_expand_qry(client_id, query);
@@ -980,7 +1023,7 @@ RlweCt PirServer::make_query(const size_t client_id, RlweCt &query) {
   // Reconstruct RGSW queries
   TIME_START(CONVERT_TIME);
   const size_t l_ep = pir_params_.get_l();
-  std::vector<GSWCt> gsw_vec(pir_params_.get_num_dims() - 1); // GSW ciphertexts
+  gsw_vec.assign(pir_params_.get_num_dims() - 1, GSWCt()); // GSW ciphertexts
   if (pir_params_.get_num_dims() != 1) {  // if we do need futher dimensions
     for (size_t i = 1; i < pir_params_.get_num_dims(); i++) {
       // l_ep RLWE ciphertexts per dim (one per gadget power).
@@ -1000,13 +1043,12 @@ RlweCt PirServer::make_query(const size_t client_id, RlweCt &query) {
   }
   TIME_END(CONVERT_TIME);
 
-  // ========================== Evaluations ==========================
-  // Evaluate the first dimension
-  TIME_START(FST_DIM_TIME);
   query_vector.resize(pir_params_.get_fst_dim_sz());
-  std::vector<RlweCt> mid_db = evaluate_first_dim(query_vector);
-  TIME_END(FST_DIM_TIME);
+  return query_vector;
+}
 
+RlweCt PirServer::finish_other_dims(std::vector<RlweCt> &mid_db,
+                                    std::vector<GSWCt> &gsw_vec) {
   // Evaluate the other dimensions
   TIME_START(OTHER_DIM_TIME);
   RlweCt result = evaluate_other_dim(mid_db, gsw_vec);
@@ -1025,6 +1067,20 @@ RlweCt PirServer::make_query(const size_t client_id, RlweCt &query) {
   DEBUG_PRINT("Modulus switching done.");
 
   return result;
+}
+
+void PirServer::prepare_query(size_t client_id, RlweCt &query, PreparedQuery &out) {
+  out.client_id = client_id;
+  std::vector<RlweCt> fst_dim_query = expand_query(client_id, query, out.gsw_vec);
+  out.query_data.assign(pir_params_.get_fst_dim_sz() * 2 * pir_params_.get_coeff_val_cnt(), 0);
+  prep_query(fst_dim_query, out.query_data);
+}
+
+RlweCt PirServer::finish_query(PreparedQuery &pq) {
+  std::vector<RlweCt> mid_db;
+  mid_db.reserve(pir_params_.get_other_dim_sz());
+  inter_to_cts(mid_db, inter_res_.data());
+  return finish_other_dims(mid_db, pq.gsw_vec);
 }
 
 

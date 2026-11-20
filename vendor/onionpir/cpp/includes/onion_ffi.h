@@ -152,6 +152,25 @@ void onion_server_set_gsw_key(OnionServerHandle h, uint64_t client_id,
 OnionBuf onion_server_answer_query(OnionServerHandle h, uint64_t client_id,
                                    const uint8_t *query, size_t query_len);
 
+// Shared-store batch path: make_query split in three so one pass over the
+// shared store answers the first dimension of many servers. Call
+// onion_server_prepare_query on each server, then
+// onion_server_shared_first_dim_levels over levels [0, coeff_val_cnt) (calls
+// on disjoint level ranges may run concurrently), then
+// onion_server_finish_query on each. Responses equal answer_query's.
+typedef void *OnionPreparedHandle;
+// NULL on failure. Free with onion_prepared_free.
+OnionPreparedHandle onion_server_prepare_query(OnionServerHandle h, uint64_t client_id,
+                                               const uint8_t *query, size_t query_len);
+void onion_prepared_free(OnionPreparedHandle p);
+// Returns 1 on success, 0 if a server is not in shared-store mode.
+int onion_server_shared_first_dim_levels(const OnionServerHandle *servers,
+                                         const OnionPreparedHandle *prepared,
+                                         size_t count, size_t level_begin,
+                                         size_t level_end);
+// Caller frees. Empty buffer on failure.
+OnionBuf onion_server_finish_query(OnionServerHandle h, OnionPreparedHandle p);
+
 // ─── Preprocessed-DB persistence ───────────────────────────────────────────
 // Save the post-NTT, realigned database (populated by onion_server_gen_data,
 // later also by push_chunk) to a file. Returns 1 on success, 0 on failure.

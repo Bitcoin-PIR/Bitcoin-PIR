@@ -631,6 +631,63 @@ extern "C" void onion_server_set_key_store(OnionServerHandle server_h,
 
 // ─── Indirect DB mode ──────────────────────────────────────────────────────
 
+extern "C" OnionPreparedHandle onion_server_prepare_query(OnionServerHandle h,
+                                                          uint64_t client_id,
+                                                          const uint8_t *query,
+                                                          size_t query_len) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    if (!s) return nullptr;
+    try {
+        RlweCt q = deserialize_rlwe_ct(query, query_len);
+        auto pq = std::make_unique<PirServer::PreparedQuery>();
+        s->inner.prepare_query(static_cast<size_t>(client_id), q, *pq);
+        return pq.release();
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+extern "C" void onion_prepared_free(OnionPreparedHandle p) {
+    delete static_cast<PirServer::PreparedQuery *>(p);
+}
+
+extern "C" int onion_server_shared_first_dim_levels(const OnionServerHandle *servers,
+                                                    const OnionPreparedHandle *prepared,
+                                                    size_t count, size_t level_begin,
+                                                    size_t level_end) {
+    try {
+        std::vector<PirServer *> ss(count);
+        std::vector<const PirServer::PreparedQuery *> qs(count);
+        for (size_t i = 0; i < count; ++i) {
+            auto *s = static_cast<OnionPirServer_t *>(servers[i]);
+            if (!s || !prepared[i]) return 0;
+            ss[i] = &s->inner;
+            qs[i] = static_cast<const PirServer::PreparedQuery *>(prepared[i]);
+        }
+        PirServer::shared_first_dim_levels(ss.data(), qs.data(), count,
+                                           level_begin, level_end);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+extern "C" OnionBuf onion_server_finish_query(OnionServerHandle h, OnionPreparedHandle p) {
+    auto *s = static_cast<OnionPirServer_t *>(h);
+    auto *pq = static_cast<PirServer::PreparedQuery *>(p);
+    if (!s || !pq) return OnionBuf{nullptr, 0};
+    try {
+        RlweCt response = s->inner.finish_query(*pq);
+        std::stringstream ss;
+        s->inner.save_resp_to_stream(response, ss);
+        const std::string str = ss.str();
+        std::vector<uint8_t> bytes(str.begin(), str.end());
+        return vec_to_buf(bytes);
+    } catch (...) {
+        return OnionBuf{nullptr, 0};
+    }
+}
+
 extern "C" int onion_server_set_shared_database(OnionServerHandle h,
                                                 const uint64_t *store,
                                                 uint64_t shared_num_entries,

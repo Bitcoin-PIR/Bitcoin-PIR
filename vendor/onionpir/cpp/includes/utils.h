@@ -1,8 +1,9 @@
 #pragma once
 #include "pir.h"
 #include "rlwe.h"
-#include <iostream>
+#include <algorithm>
 #include <fstream>
+#include <iostream>
 #include <random>
 
 
@@ -45,7 +46,7 @@ template <typename T> std::string to_string(T x) {
     ret += (x % 10) + '0';
     x /= 10;
   }
-  reverse(ret.begin(), ret.end());
+  std::reverse(ret.begin(), ret.end());
   return ret;
 }
 
