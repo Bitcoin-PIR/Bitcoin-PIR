@@ -34,13 +34,13 @@
 use js_sys::{Array, Uint8Array};
 use pir_sdk::{PirClient, QueryResult, ScriptHash, SyncResult};
 use pir_sdk_client::attest::{AttestVerification, SevStatus};
-#[cfg(target_arch = "wasm32")]
-use pir_sdk_client::HintProgress;
 use pir_sdk_client::{
     verify_database_proof_v2_response as verify_database_proof_v2_response_payload,
     DatabaseProofPolicy, DpfClient, HarmonyClient, OramClient, VerifiedDatabaseRoots, PRP_FASTPRP,
     PRP_HMR12,
 };
+#[cfg(target_arch = "wasm32")]
+use pir_sdk_client::{HintProgress, WasmIrohTransport};
 use wasm_bindgen::prelude::*;
 
 use crate::{to_js_object, WasmAtomicMetrics, WasmDatabaseCatalog, WasmQueryResult};
@@ -1359,6 +1359,21 @@ impl WasmDpfClient {
     #[wasm_bindgen(js_name = connect)]
     pub async fn connect(&mut self) -> Result<(), JsError> {
         self.inner.connect().await.map_err(err_to_js)
+    }
+
+    /// Connect both DPF legs through Iroh's public relay preset. Tickets are
+    /// used only for this session and are not retained by the transport.
+    #[cfg(target_arch = "wasm32")]
+    #[wasm_bindgen(js_name = connectIroh)]
+    pub async fn connect_iroh(&mut self, ticket0: String, ticket1: String) -> Result<(), JsError> {
+        self.inner.disconnect().await.map_err(err_to_js)?;
+        self.attest_eph_seeds = [None, None];
+        let (conn0, conn1) = WasmIrohTransport::connect_pair(&ticket0, &ticket1)
+            .await
+            .map_err(err_to_js)?;
+        self.inner
+            .connect_with_transport(Box::new(conn0), Box::new(conn1));
+        Ok(())
     }
 
     /// Close both WebSocket connections. After this the client returns

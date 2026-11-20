@@ -291,6 +291,8 @@ export interface WasmDpfClient {
   free(): void;
   readonly isConnected: boolean;
   connect(): Promise<void>;
+  /** Connect both DPF legs through Iroh's public relay preset. */
+  connectIroh(ticket0: string, ticket1: string): Promise<void>;
   disconnect(): Promise<void>;
   /** Send REQ_ATTEST to one of the connected servers (`serverIndex`
    *  ∈ {0, 1}) and return a verification result. The 32-byte nonce

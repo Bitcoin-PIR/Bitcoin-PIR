@@ -39,6 +39,8 @@ export { gateOperatorIdentity, type OperatorIdentity, type ServerAttestation } f
 export interface BatchPirClientConfig {
   server0Url: string;
   server1Url: string;
+  /** Manual, in-memory tickets for an Iroh session through public relays. */
+  irohTickets?: readonly [string, string];
   onConnectionStateChange?: (state: ConnectionState, message?: string) => void;
   onLog?: (msg: string, level: 'info' | 'success' | 'error') => void;
   /** Upgrade both connections to the encrypted channel after attesting
@@ -92,9 +94,10 @@ export class BatchPirClientAdapter {
       if (!isSdkWasmReady() && !(await initSdkWasm())) {
         throw new Error('PIR SDK WASM failed to load');
       }
+      const tickets = this.config.irohTickets;
       const client = new (requireSdkWasm().WasmDpfClient)(
-        this.config.server0Url,
-        this.config.server1Url,
+        tickets ? 'iroh:server0' : this.config.server0Url,
+        tickets ? 'iroh:server1' : this.config.server1Url,
       );
       this.wasmClient = client;
       client.onStateChange((state: string) => {
@@ -103,7 +106,8 @@ export class BatchPirClientAdapter {
           this.setState(state);
         }
       });
-      await client.connect();
+      if (tickets) await client.connectIroh(tickets[0], tickets[1]);
+      else await client.connect();
       if (this.config.useSecureChannel !== false) await this.attestAndUpgrade(client);
 
       const catalog = await client.fetchCatalog();
