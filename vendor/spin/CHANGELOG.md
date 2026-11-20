@@ -13,12 +13,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-# [0.9.9] - 2026-07-13
+# [0.10.1] - 2026-07-13
 
 ### Fixed
 
 - Unsoundness in `Once::force_into_inner`, `Once::try_into_inner`, and
   `Once::into_inner_unchecked`. Thanks to `@Poseidon` for catching this.
+
+# [0.10.0] - 2025-03-26
+
+### Added
+
+- `Mutex::try_lock_weak`
+- `RwLock::try_write_weak`
+- `RwLock::try_upgrade_weak`
+
+### Changed
+
+- Updated MSRV to 1.60
+- Use `dep:` syntax in Cargo.toml
+- `portable_atomic` feature has been renamed to `portable-atomic`, for consistency.
+
+### Fixed
 
 # [0.9.8] - 2023-04-03
 

@@ -20,8 +20,8 @@ fn binary_example() {
 }
 
 #[test]
-fn pkcs1_example_with_preceeding_junk() {
-    let pem = include_bytes!("examples/pkcs1_with_preceeding_junk.pem");
+fn pkcs1_example_with_preceding_junk() {
+    let pem = include_bytes!("examples/pkcs1_with_preceding_junk.pem");
     let mut buf = [0u8; 2048];
     let (label, decoded) = pem_rfc7468::decode(pem, &mut buf).unwrap();
     assert_eq!(label, "RSA PRIVATE KEY");
@@ -64,7 +64,7 @@ fn header_of_length_64_with_vec() {
     let pem = include_bytes!("examples/chosen_header.pem");
     match pem_rfc7468::decode_vec(pem) {
         Err(pem_rfc7468::Error::HeaderDisallowed) => (),
-        res => panic!("Expected HeaderDisallowed error; Found {:?}", res),
+        res => panic!("Expected HeaderDisallowed error; Found {res:?}"),
     }
 }
 
@@ -109,4 +109,19 @@ fn ed25519_example() {
     let pem = include_bytes!("examples/ed25519_id.pem");
     let label = pem_rfc7468::decode_label(pem).unwrap();
     assert_eq!(label, "ED25519 CERT");
+}
+
+#[test]
+fn line_width_detection() {
+    let pem_64cols = include_bytes!("examples/pkcs1.pem");
+    assert_eq!(
+        pem_rfc7468::detect_base64_line_width(pem_64cols).unwrap(),
+        64
+    );
+
+    let pem_70cols = include_bytes!("examples/ssh-id_ed25519.pem");
+    assert_eq!(
+        pem_rfc7468::detect_base64_line_width(pem_70cols).unwrap(),
+        70
+    );
 }

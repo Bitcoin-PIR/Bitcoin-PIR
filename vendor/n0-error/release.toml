@@ -1,0 +1,4 @@
+# cargo-release configuration
+# n0-error and n0-error-macros are always released together with the same version.
+shared-version = true
+consolidate-commits = true

@@ -1,7 +1,7 @@
 //! PKCS#8 version identifier.
 
 use crate::Error;
-use der::{Decode, Encode, FixedTag, Reader, Tag, Writer};
+use der::{Decode, Encode, FixedTag, Reader, Tag, Tagged, Writer};
 
 /// Version identifier for PKCS#8 documents.
 ///
@@ -17,6 +17,7 @@ pub enum Version {
 
 impl Version {
     /// Is this version expected to have a public key?
+    #[must_use]
     pub fn has_public_key(self) -> bool {
         match self {
             Version::V1 => false,
@@ -26,14 +27,16 @@ impl Version {
 }
 
 impl<'a> Decode<'a> for Version {
-    fn decode<R: Reader<'a>>(decoder: &mut R) -> der::Result<Self> {
-        Version::try_from(u8::decode(decoder)?).map_err(|_| Self::TAG.value_error())
+    type Error = der::Error;
+
+    fn decode<R: Reader<'a>>(reader: &mut R) -> der::Result<Self> {
+        Version::try_from(u8::decode(reader)?).map_err(|_| reader.error(Self::TAG.value_error()))
     }
 }
 
 impl Encode for Version {
     fn encoded_len(&self) -> der::Result<der::Length> {
-        der::Length::from(1u8).for_tlv()
+        der::Length::from(1u8).for_tlv(self.tag())
     }
 
     fn encode(&self, writer: &mut impl Writer) -> der::Result<()> {

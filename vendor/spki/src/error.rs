@@ -32,16 +32,25 @@ pub enum Error {
     },
 }
 
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Error::Asn1(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::AlgorithmParametersMissing => {
                 f.write_str("AlgorithmIdentifier parameters missing")
             }
-            Error::Asn1(err) => write!(f, "ASN.1 error: {}", err),
+            Error::Asn1(err) => write!(f, "ASN.1 error: {err}"),
             Error::KeyMalformed => f.write_str("SPKI cryptographic key data malformed"),
             Error::OidUnknown { oid } => {
-                write!(f, "unknown/unsupported algorithm OID: {}", oid)
+                write!(f, "unknown/unsupported algorithm OID: {oid}")
             }
         }
     }
@@ -63,6 +72,3 @@ impl From<pem::Error> for Error {
         der::Error::from(err).into()
     }
 }
-
-#[cfg(feature = "std")]
-impl std::error::Error for Error {}

@@ -1,5 +1,25 @@
 # Releases
 
+## 2.14.2 (2026-09-04)
+
+- Fix item hygiene in map and set macros. Previously, an internal `const CAP`
+  could shadow the same name in the caller's namespace.
+- Allow `const` initialization of empty `indexmap_with_default!` and
+  `indexset_with_default!`. The hasher may also be omitted if it's inferrable.
+
+## 2.14.1 (2026-08-28)
+
+- Simplify comparisons where `Equivalent` isn't needed (`Q = K`).
+- Unify index assertions for bounds checks.
+- Fix (or `expect`) clippy lints.
+
+## 2.14.0 (2026-04-09)
+
+- **MSRV**: Rust 1.85.0 or later is now required.
+- Updated the `hashbrown` dependency to 0.17.
+- Made more `map::Slice` methods `const`: `new_mut`, `first_mut`, `last_mut`,
+  `split_at_mut`, `split_at_mut_checked`, `split_first_mut`, `split_last_mut`
+
 ## 2.13.1 (2026-04-02)
 
 - Made some `Slice` methods `const`:

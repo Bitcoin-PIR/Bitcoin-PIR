@@ -10,10 +10,10 @@
 # See Cargo.toml.orig for the original contents.
 
 [package]
-edition = "2021"
-rust-version = "1.71"
+edition = "2024"
+rust-version = "1.85"
 name = "windows-link"
-version = "0.2.1"
+version = "0.100.0"
 build = false
 autolib = false
 autobins = false
@@ -30,10 +30,28 @@ repository = "https://github.com/microsoft/windows-rs"
 name = "windows_link"
 path = "src/lib.rs"
 
+[lints.clippy]
+assigning_clones = "warn"
+cloned_instead_of_copied = "warn"
+explicit_iter_loop = "warn"
+implicit_clone = "warn"
+manual_assert = "warn"
+manual_c_str_literals = "allow"
+manual_let_else = "warn"
+manual_string_new = "warn"
+map_unwrap_or = "warn"
+redundant_clone = "warn"
+semicolon_if_nothing_returned = "warn"
+single_match_else = "warn"
+type_complexity = "allow"
+uninlined_format_args = "warn"
+use_self = "warn"
+
 [lints.rust]
 missing_unsafe_on_extern = "warn"
+unused_qualifications = "warn"
 
 [lints.rust.unexpected_cfgs]
 level = "warn"
 priority = 0
-check-cfg = ["cfg(windows_raw_dylib, windows_slim_errors)"]
+check-cfg = ["cfg(windows_slim_errors, windows_cast_diagnostics)"]

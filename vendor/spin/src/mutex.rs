@@ -6,12 +6,12 @@
 //!
 //! `ticket_mutex` is disabled by default.
 //!
-//! [`Mutex`]: ../struct.Mutex.html
-//! [`MutexGuard`]: ../struct.MutexGuard.html
-//! [`TicketMutex`]: ./struct.TicketMutex.html
-//! [`TicketMutexGuard`]: ./struct.TicketMutexGuard.html
-//! [`SpinMutex`]: ./struct.SpinMutex.html
-//! [`SpinMutexGuard`]: ./struct.SpinMutexGuard.html
+//! [`Mutex`]: ./struct.Mutex.html
+//! [`MutexGuard`]: ./struct.MutexGuard.html
+//! [`TicketMutex`]: ./ticket/struct.TicketMutex.html
+//! [`TicketMutexGuard`]: ./ticket/struct.TicketMutexGuard.html
+//! [`SpinMutex`]: ./spin/struct.SpinMutex.html
+//! [`SpinMutexGuard`]: ./spin/struct.SpinMutexGuard.html
 
 #[cfg(feature = "spin_mutex")]
 #[cfg_attr(docsrs, doc(cfg(feature = "spin_mutex")))]
@@ -86,7 +86,7 @@ type InnerMutexGuard<'a, T> = self::ticket::TicketMutexGuard<'a, T>;
 /// let barrier = Arc::new(Barrier::new(thread_count + 1));
 ///
 /// # let mut ts = Vec::new();
-/// for _ in (0..thread_count) {
+/// for _ in 0..thread_count {
 ///     let my_barrier = barrier.clone();
 ///     let my_lock = spin_mutex.clone();
 /// # let t =

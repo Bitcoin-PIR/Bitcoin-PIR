@@ -221,10 +221,13 @@ use crate::future::Future;
 use crate::util::linked_list;
 use crate::util::sharded_list;
 
+use crate::runtime::metrics::ScheduleLatencyInstant;
 use crate::runtime::TaskCallback;
 use std::marker::PhantomData;
 use std::panic::Location;
 use std::ptr::NonNull;
+#[cfg(tokio_unstable)]
+use std::time::Duration;
 use std::{fmt, mem};
 
 /// An owned handle to the task, tracked by ref count.
@@ -242,10 +245,13 @@ unsafe impl<S> Sync for Task<S> {}
 pub(crate) struct Notified<S: 'static>(Task<S>);
 
 impl<S> Notified<S> {
-    #[cfg(all(tokio_unstable, feature = "rt-multi-thread"))]
-    #[inline]
-    pub(crate) fn task_meta<'meta>(&self) -> crate::runtime::TaskMeta<'meta> {
-        self.0.task_meta()
+    pub(crate) fn set_scheduled_at(&self, scheduled_at: ScheduleLatencyInstant) {
+        // SAFETY: There are no concurrent writes because there is only ever one `Notified`
+        // reference per task. There are no concurrent reads because this field is only read
+        // when polling the task, which can only happen after it's scheduled.
+        unsafe {
+            self.0.header().set_scheduled_at(scheduled_at);
+        }
     }
 }
 
@@ -265,8 +271,15 @@ pub(crate) struct LocalNotified<S: 'static> {
 impl<S> LocalNotified<S> {
     #[cfg(tokio_unstable)]
     #[inline]
-    pub(crate) fn task_meta<'meta>(&self) -> crate::runtime::TaskMeta<'meta> {
-        self.task.task_meta()
+    pub(crate) fn task_meta<'meta>(
+        &self,
+        schedule_latency: Option<Duration>,
+    ) -> crate::runtime::TaskMeta<'meta> {
+        self.task.task_meta(schedule_latency)
+    }
+
+    pub(crate) fn get_scheduled_at(&self) -> ScheduleLatencyInstant {
+        self.task.header().get_scheduled_at()
     }
 }
 
@@ -400,15 +413,10 @@ impl<S: 'static> Task<S> {
         unsafe { Task::new(RawTask::from_raw(ptr)) }
     }
 
-    #[cfg(all(
-        tokio_unstable,
-        feature = "taskdump",
-        feature = "rt",
-        target_os = "linux",
-        any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
-    ))]
-    pub(super) fn as_raw(&self) -> RawTask {
-        self.raw
+    cfg_taskdump! {
+        pub(super) fn as_raw(&self) -> RawTask {
+            self.raw
+        }
     }
 
     fn header(&self) -> &Header {
@@ -439,10 +447,15 @@ impl<S: 'static> Task<S> {
     // the compiler infers the lifetimes to be the same, and considers the task
     // to be borrowed for the lifetime of the returned `TaskMeta`.
     #[cfg(tokio_unstable)]
-    pub(crate) fn task_meta<'meta>(&self) -> crate::runtime::TaskMeta<'meta> {
+    pub(crate) fn task_meta<'meta>(
+        &self,
+        _schedule_latency: Option<Duration>,
+    ) -> crate::runtime::TaskMeta<'meta> {
         crate::runtime::TaskMeta {
             id: self.id(),
             spawned_at: self.spawned_at().into(),
+            #[cfg(all(tokio_unstable, feature = "schedule-latency"))]
+            schedule_latency: _schedule_latency,
             _phantom: PhantomData,
         }
     }
@@ -450,7 +463,7 @@ impl<S: 'static> Task<S> {
     cfg_taskdump! {
         /// Notify the task for task dumping.
         ///
-        /// Returns `None` if the task has already been notified.
+        /// Returns `None` if the task has already been notified or is not idle.
         pub(super) fn notify_for_tracing(&self) -> Option<Notified<S>> {
             if self.as_raw().state().transition_to_notified_for_tracing() {
                 // SAFETY: `transition_to_notified_for_tracing` increments the

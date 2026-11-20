@@ -915,6 +915,20 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                                 <div id="attestBadge1" class="attest-badge attest-badge-unattested" data-server="1" style="display: none;"></div>
                                 <div id="operatorBadge1" class="attest-badge attest-badge-op-verified" data-server="1" style="display: none;"></div>
                                 <div id="directoryBadge1" class="attest-badge attest-badge-dir-pending" style="display: none;"></div>
+                                <details style="margin-top: 12px;">
+                                    <summary style="cursor: pointer; font-size: 11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color: var(--ink-mute);">Manual · Iroh tickets</summary>
+                                    <div style="margin-top: 8px; font-size: 11.5px; color: var(--ink-mute);">
+                                        Connect both manual DPF servers through Iroh public relays. Tickets are kept only in this page and are not stored.
+                                    </div>
+                                    <div class="status-row">
+                                        <label for="server0IrohTicket">Server 0 ticket</label>
+                                        <input type="text" id="server0IrohTicket" class="input" autocomplete="off" spellcheck="false">
+                                    </div>
+                                    <div class="status-row">
+                                        <label for="server1IrohTicket">Server 1 ticket</label>
+                                        <input type="text" id="server1IrohTicket" class="input" autocomplete="off" spellcheck="false">
+                                    </div>
+                                </details>
                                 <div id="dbProofBadge" class="attest-badge attest-badge-db-unavailable" style="display: none;"></div>
                                 <div id="bitcoinAnchorBadge" class="attest-badge attest-badge-chain-unavailable" style="display: none;"></div>
 
@@ -1554,6 +1568,15 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
             return { choice: null, connection: { ...slot.builtIn, endpoint } };
         }
 
+        function manualIrohTickets() {
+            const bothManual = ['server0', 'server1'].every(key =>
+                document.getElementById(PROVIDER_SLOTS[key].select).value === 'manual');
+            if (!bothManual) return null;
+            const tickets = ['server0IrohTicket', 'server1IrohTicket']
+                .map(id => document.getElementById(id).value.trim());
+            return tickets.every(Boolean) ? tickets : null;
+        }
+
         function renderProviderSelect(key) {
             const slot = PROVIDER_SLOTS[key];
             const select = document.getElementById(slot.select);
@@ -1679,6 +1702,9 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 applyProviderSelection(key);
             });
             renderProviderSelect(key);
+        }
+        for (const id of ['server0IrohTicket', 'server1IrohTicket']) {
+            document.getElementById(id).addEventListener('input', () => dropDpfClient());
         }
 
         function dropDpfClient() {
@@ -2983,6 +3009,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
         async function connectDpf() {
             const server0 = slotSelection('server0').connection;
             const server1 = slotSelection('server1').connection;
+            const irohTickets = manualIrohTickets();
             document.getElementById('server0Url').value = server0.endpoint;
             document.getElementById('server1Url').value = server1.endpoint;
             resetBasicVerification(['dpf0', 'dpf1']);
@@ -2999,6 +3026,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 onCredits: (idx, status) => noteCredits(`DPF server${idx}`, status),
                 server0Url: server0.endpoint,
                 server1Url: server1.endpoint,
+                irohTickets: irohTickets ?? undefined,
                 expectedServer0Pin: server0.serverPin,
                 expectedServer1Pin: server1.serverPin,
                 pinnedOperatorPubkey0: server0.operatorPubkey,
@@ -3062,6 +3090,7 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
                 checkDirectoryBinding('server1', client.operatorIdentity.server1, client.attestation.server1),
             ]);
             populateDbSelector();
+            if (irohTickets) dpfSync.reset();
             refreshSyncStateUI();
         }
 
@@ -3102,10 +3131,11 @@ bc1q2292d7mz8txc7462hjy4prs2gtx727ut8mcanr</textarea>
 
         // ─── Sync state (per server-pair, persisted in localStorage) ─────
         // The DPF SyncController owns the in-memory snapshot cache and the
-        // lastSyncedHeight key. Built once on script load; connect() just
-        // triggers refreshSyncStateUI() to reflect any persisted state.
+        // lastSyncedHeight key. Manual Iroh sessions reset on every connect
+        // so state from a different ticket pair is never reused.
         const dpfSync = new SyncController({
             storageKey: () => {
+                if (manualIrohTickets()) return 'bitcoinpir.dpf.lastSync:iroh-manual';
                 const s0 = (document.getElementById('server0Url').value || '').trim();
                 const s1 = (document.getElementById('server1Url').value || '').trim();
                 return `bitcoinpir.dpf.lastSync:${s0}|${s1}`;

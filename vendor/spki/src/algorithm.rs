@@ -3,9 +3,9 @@
 use crate::{Error, Result};
 use core::cmp::Ordering;
 use der::{
-    asn1::{AnyRef, Choice, ObjectIdentifier},
     Decode, DecodeValue, DerOrd, Encode, EncodeValue, Header, Length, Reader, Sequence, ValueOrd,
     Writer,
+    asn1::{AnyRef, Choice, ObjectIdentifier},
 };
 
 #[cfg(feature = "alloc")]
@@ -21,7 +21,7 @@ use der::asn1::Any;
 ///
 /// [RFC 5280 Section 4.1.1.2]: https://tools.ietf.org/html/rfc5280#section-4.1.1.2
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
 pub struct AlgorithmIdentifier<Params> {
     /// Algorithm OID, i.e. the `algorithm` field in the `AlgorithmIdentifier`
     /// ASN.1 schema.
@@ -33,14 +33,14 @@ pub struct AlgorithmIdentifier<Params> {
 
 impl<'a, Params> DecodeValue<'a> for AlgorithmIdentifier<Params>
 where
-    Params: Choice<'a>,
+    Params: Choice<'a, Error = der::Error>,
 {
-    fn decode_value<R: Reader<'a>>(reader: &mut R, header: Header) -> der::Result<Self> {
-        reader.read_nested(header.length, |reader| {
-            Ok(Self {
-                oid: reader.decode()?,
-                parameters: reader.decode()?,
-            })
+    type Error = der::Error;
+
+    fn decode_value<R: Reader<'a>>(reader: &mut R, _header: Header) -> der::Result<Self> {
+        Ok(Self {
+            oid: reader.decode()?,
+            parameters: reader.decode()?,
         })
     }
 }
@@ -60,11 +60,14 @@ where
     }
 }
 
-impl<'a, Params> Sequence<'a> for AlgorithmIdentifier<Params> where Params: Choice<'a> + Encode {}
+impl<'a, Params> Sequence<'a> for AlgorithmIdentifier<Params> where
+    Params: Choice<'a, Error = der::Error> + Encode
+{
+}
 
 impl<'a, Params> TryFrom<&'a [u8]> for AlgorithmIdentifier<Params>
 where
-    Params: Choice<'a> + Encode,
+    Params: Choice<'a, Error = der::Error> + Encode,
 {
     type Error = Error;
 
@@ -97,17 +100,23 @@ pub type AlgorithmIdentifierOwned = AlgorithmIdentifier<Any>;
 
 impl<Params> AlgorithmIdentifier<Params> {
     /// Assert the `algorithm` OID is an expected value.
+    ///
+    /// # Errors
+    /// Returns [`Error::OidUnknown`] if `self` does not match `expected_oid`.
     pub fn assert_algorithm_oid(&self, expected_oid: ObjectIdentifier) -> Result<ObjectIdentifier> {
         if self.oid == expected_oid {
             Ok(expected_oid)
         } else {
-            Err(Error::OidUnknown { oid: expected_oid })
+            Err(Error::OidUnknown { oid: self.oid })
         }
     }
 }
 
 impl<'a> AlgorithmIdentifierRef<'a> {
     /// Assert `parameters` is an OID and has the expected value.
+    ///
+    /// # Errors
+    /// Returns [`Error::OidUnknown`] if `self.parameters_oid()` doesn't match `expected_oid`.
     pub fn assert_parameters_oid(
         &self,
         expected_oid: ObjectIdentifier,
@@ -117,11 +126,14 @@ impl<'a> AlgorithmIdentifierRef<'a> {
         if actual_oid == expected_oid {
             Ok(actual_oid)
         } else {
-            Err(Error::OidUnknown { oid: expected_oid })
+            Err(Error::OidUnknown { oid: actual_oid })
         }
     }
 
     /// Assert the values of the `algorithm` and `parameters` OIDs.
+    ///
+    /// # Errors
+    /// Returns [`Error::OidUnknown`] if `algorithm` and/or `parameters` aren't the expected values.
     pub fn assert_oids(
         &self,
         algorithm: ObjectIdentifier,
@@ -134,14 +146,17 @@ impl<'a> AlgorithmIdentifierRef<'a> {
 
     /// Get the `parameters` field as an [`AnyRef`].
     ///
-    /// Returns an error if `parameters` are `None`.
+    /// # Errors
+    /// Returns [`Error::AlgorithmParametersMissing`] error if `self.parameters` are `None`.
     pub fn parameters_any(&self) -> Result<AnyRef<'a>> {
         self.parameters.ok_or(Error::AlgorithmParametersMissing)
     }
 
     /// Get the `parameters` field as an [`ObjectIdentifier`].
     ///
-    /// Returns an error if it is absent or not an OID.
+    /// # Errors
+    /// - Returns [`Error::AlgorithmParametersMissing`] error if `self.parameters` are `None`.
+    /// - Returns [`Error::Asn1`] if `self.parameters` is not an OID.
     pub fn parameters_oid(&self) -> Result<ObjectIdentifier> {
         Ok(ObjectIdentifier::try_from(self.parameters_any()?)?)
     }
@@ -152,18 +167,34 @@ impl<'a> AlgorithmIdentifierRef<'a> {
     /// particular that `NULL` parameters are treated the same as missing
     /// parameters.
     ///
+    /// # Errors
     /// Returns an error if parameters are present but not an OID.
     pub fn oids(&self) -> der::Result<(ObjectIdentifier, Option<ObjectIdentifier>)> {
         Ok((
             self.oid,
             match self.parameters {
                 None => None,
-                Some(p) => match p {
-                    AnyRef::NULL => None,
-                    _ => Some(p.decode_as::<ObjectIdentifier>()?),
-                },
+                Some(p) => {
+                    if p.is_null() {
+                        None
+                    } else {
+                        Some(p.decode_as::<ObjectIdentifier>()?)
+                    }
+                }
             },
         ))
+    }
+}
+
+/// Borrow the owned or ref `AlgorithmIdentifier` as [`AlgorithmIdentifierRef`].
+pub trait AsAlgorithmIdentifierRef {
+    /// Borrow the owned or ref `AlgorithmIdentifier` as [`AlgorithmIdentifierRef`].
+    fn as_algo_ref<'a>(&'a self) -> AlgorithmIdentifierRef<'a>;
+}
+
+impl<'a> AsAlgorithmIdentifierRef for AlgorithmIdentifierRef<'a> {
+    fn as_algo_ref(&self) -> AlgorithmIdentifierRef<'a> {
+        *self
     }
 }
 
@@ -188,6 +219,33 @@ mod allocating {
             AlgorithmIdentifier {
                 oid: self.oid,
                 parameters: self.parameters.owned_to_ref(),
+            }
+        }
+    }
+
+    impl AsAlgorithmIdentifierRef for AlgorithmIdentifierOwned {
+        fn as_algo_ref<'a>(&'a self) -> AlgorithmIdentifierRef<'a> {
+            AlgorithmIdentifier {
+                oid: self.oid,
+                parameters: self.parameters.owned_to_ref(),
+            }
+        }
+    }
+
+    impl<'a> From<AlgorithmIdentifierRef<'a>> for AlgorithmIdentifierOwned {
+        fn from(value: AlgorithmIdentifierRef) -> Self {
+            Self {
+                oid: value.oid,
+                parameters: value.parameters.map(Into::into),
+            }
+        }
+    }
+
+    impl<'a> From<&'a AlgorithmIdentifierOwned> for AlgorithmIdentifierRef<'a> {
+        fn from(value: &'a AlgorithmIdentifierOwned) -> Self {
+            Self {
+                oid: value.oid,
+                parameters: value.parameters.as_ref().map(|p| p.to_ref()),
             }
         }
     }

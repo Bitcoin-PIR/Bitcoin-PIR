@@ -60,7 +60,7 @@ pir-sdk-client = { version = "0.1", features = ["onion"] }
 
 ## Quick start
 
-### Iroh (native Rust, manually selected endpoint)
+### Iroh (manually selected endpoint)
 
 Keep `unified_server` on `127.0.0.1:8091`. An Iroh byte-stream forwarder
 can serve its WebSocket listener without a public hostname. For example,
@@ -89,8 +89,10 @@ roots); the ticket authenticates an Iroh peer, not the PIR operator or data.
 DPF and Harmony take two boxed transports, one per role, which can use
 different transports. The SDK upgrades the stream and uses its normal PIR
 framing and padding. Iroh dialing, discovery and relay selection belong to
-the calling app; no Iroh dependency is required for ordinary WSS clients.
-The browser and signed directory still take `wss://` endpoints.
+the calling app; no Iroh dependency is required for ordinary native WSS clients.
+The signed directory still takes `wss://` endpoints. The browser DPF client
+also accepts two manual tickets through `WasmDpfClient.connectIroh`, using
+Iroh's public N0 relay preset; its other backends keep their WSS transport.
 
 ### DPF (two-server, recommended)
 

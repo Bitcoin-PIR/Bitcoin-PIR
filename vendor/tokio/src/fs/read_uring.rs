@@ -19,8 +19,25 @@ const MAX_READ_SIZE: usize = 64 * 1024 * 1024;
 pub(crate) async fn read_uring(path: &Path) -> io::Result<Vec<u8>> {
     let file = OpenOptions::new().read(true).open(path).await?;
 
-    // TODO: use io uring in the future to obtain metadata
+    #[cfg(not(any(target_env = "gnu", target_os = "android")))]
     let size_hint: Option<usize> = file.metadata().await.map(|m| m.len() as usize).ok();
+
+    #[cfg(
+        // libc::statx is only supported on these platforms
+        // FIXME: Add musl target env when our minimum supported
+        // rust version is 1.93. To clarify, statx support is
+        // introduced to musl in 1.25 as mentioned officially here:
+        // https://musl.libc.org/releases.html.
+        // However, rustup target_env building for *-linux-musl
+        // uses 1.25 musl on all *-linux-musl platforms starting
+        // in 1.93 stable rust version.
+        // https://blog.rust-lang.org/2025/12/05/Updating-musl-1.2.5/
+        any(target_env = "gnu", target_os = "android")
+    )]
+    let size_hint = Op::file_metadata(&file)?
+        .await
+        .map(|m| m.len() as usize)
+        .ok();
 
     let fd: OwnedFd = file
         .try_into_std()
@@ -116,19 +133,22 @@ async fn op_read(
     read_len: u32,
 ) -> io::Result<(OwnedFd, Vec<u8>, bool)> {
     loop {
-        let (res, r_fd, r_buf) = Op::read(fd, buf, read_len, *offset).await;
+        let (res, r_fd, r_buf) = Op::read_at(fd, buf, read_len as usize, *offset).await;
 
-        match res {
-            Err(e) if e.kind() == ErrorKind::Interrupted => {
+        match (res, r_fd, r_buf) {
+            // Retry an interrupted read with the buffer the op handed back. A
+            // cancelled op returns no buffer, so it falls through as terminal.
+            (Err(e), Some(r_fd), Some(r_buf)) if e.kind() == ErrorKind::Interrupted => {
                 buf = r_buf;
                 fd = r_fd;
             }
-            Err(e) => return Err(e),
-            Ok(size_read) => {
+            (Err(e), ..) => return Err(e),
+            (Ok(size_read), Some(r_fd), Some(r_buf)) => {
                 *offset += size_read as u64;
 
                 return Ok((r_fd, r_buf, size_read == 0));
             }
+            (Ok(_), ..) => unreachable!("a successful read returns its fd and buffer"),
         }
     }
 }

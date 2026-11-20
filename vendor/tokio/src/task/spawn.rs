@@ -1,4 +1,4 @@
-use crate::runtime::BOX_FUTURE_THRESHOLD;
+use crate::runtime::AutoBox;
 use crate::task::JoinHandle;
 use crate::util::trace::SpawnMeta;
 
@@ -177,7 +177,7 @@ cfg_rt! {
         F::Output: Send + 'static,
     {
         let fut_size = std::mem::size_of::<F>();
-        if fut_size > BOX_FUTURE_THRESHOLD {
+        if AutoBox::<F>::SHOULD_BOX {
             spawn_inner(Box::pin(future), SpawnMeta::new_unnamed(fut_size))
         } else {
             spawn_inner(future, SpawnMeta::new_unnamed(fut_size))
@@ -200,7 +200,8 @@ cfg_rt! {
             any(
                 target_arch = "aarch64",
                 target_arch = "x86",
-                target_arch = "x86_64"
+                target_arch = "x86_64",
+                target_arch = "s390x"
             )
         ))]
         let future = task::trace::Trace::root(future);

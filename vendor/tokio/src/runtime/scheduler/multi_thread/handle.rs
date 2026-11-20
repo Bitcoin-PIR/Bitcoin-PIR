@@ -23,6 +23,9 @@ use crate::loom::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
 /// Handle to the multi thread scheduler
 pub(crate) struct Handle {
+    /// The name of the runtime
+    pub(super) name: Option<String>,
+
     /// Task spawner
     pub(super) shared: worker::Shared,
 
@@ -90,6 +93,8 @@ impl Handle {
         me.task_hooks.spawn(&TaskMeta {
             id,
             spawned_at,
+            #[cfg(all(tokio_unstable, feature = "schedule-latency"))]
+            schedule_latency: None,
             _phantom: Default::default(),
         });
 
@@ -122,6 +127,10 @@ impl task::Schedule for Arc<Handle> {
 impl Handle {
     pub(crate) fn owned_id(&self) -> NonZeroU64 {
         self.shared.owned.id
+    }
+
+    pub(crate) fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 }
 

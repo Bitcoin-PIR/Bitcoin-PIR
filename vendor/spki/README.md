@@ -8,18 +8,19 @@
 [![Project Chat][chat-image]][chat-link]
 
 [X.509] Subject Public Key Info types describing public keys as well as their
-associated AlgorithmIdentifiers (i.e. OIDs).
+associated `AlgorithmIdentifier`s (i.e. OIDs).
 
 Specified in [RFC 5280 § 4.1].
 
 [Documentation][docs-link]
 
-## Minimum Supported Rust Version
+## Minimum Supported Rust Version (MSRV) Policy
 
-This crate requires **Rust 1.65** at a minimum.
+MSRV increases are not considered breaking changes and can happen in patch
+releases.
 
-We may change the MSRV in the future, but it will be accompanied by a minor
-version bump.
+The crate MSRV accounts for all supported targets and crate feature
+combinations, excluding explicitly unstable features.
 
 ## License
 
@@ -38,14 +39,14 @@ dual licensed as above, without any additional terms or conditions.
 
 [//]: # (badges)
 
-[crate-image]: https://buildstats.info/crate/spki
+[crate-image]: https://img.shields.io/crates/v/spki
 [crate-link]: https://crates.io/crates/spki
 [docs-image]: https://docs.rs/spki/badge.svg
 [docs-link]: https://docs.rs/spki/
 [build-image]: https://github.com/RustCrypto/formats/actions/workflows/spki.yml/badge.svg
 [build-link]: https://github.com/RustCrypto/formats/actions/workflows/spki.yml
 [license-image]: https://img.shields.io/badge/license-Apache2.0/MIT-blue.svg
-[rustc-image]: https://img.shields.io/badge/rustc-1.65+-blue.svg
+[rustc-image]: https://img.shields.io/badge/rustc-1.85+-blue.svg
 [chat-image]: https://img.shields.io/badge/zulip-join_chat-blue.svg
 [chat-link]: https://rustcrypto.zulipchat.com/#narrow/stream/300570-formats
 

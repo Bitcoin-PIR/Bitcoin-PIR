@@ -36,10 +36,13 @@ use pir_sdk::{Instant, PirError, PirMetrics, PirResult};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+#[cfg(not(target_arch = "wasm32"))]
+use tokio_tungstenite::MaybeTlsStream;
+use tokio_tungstenite::WebSocketStream;
 
 /// PIR responses can be very large — a fresh-sync chunk batch against the
 /// live `main` database returns ~32 MiB in a single WebSocket frame, which
@@ -93,10 +96,12 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(240);
 
 /// Default starting delay between reconnect attempts. Doubles each try
 /// (up to `DEFAULT_MAX_BACKOFF_DELAY`).
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_INITIAL_BACKOFF_DELAY: Duration = Duration::from_millis(250);
 
 /// Cap on how long a single backoff sleep can get, to keep total
 /// worst-case reconnect time bounded.
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_MAX_BACKOFF_DELAY: Duration = Duration::from_secs(5);
 
 /// Default maximum number of connect attempts for
@@ -105,6 +110,7 @@ pub const DEFAULT_MAX_BACKOFF_DELAY: Duration = Duration::from_secs(5);
 /// 0.5 + 1.0 + 2.0 = ~3.75s of backoff plus up to 5 × connect_timeout
 /// of work. Enough to ride out a brief server restart; short enough
 /// that a truly-down server fails fast.
+#[cfg(not(target_arch = "wasm32"))]
 pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
 
 /// Retry policy for connect + reconnect.
@@ -112,6 +118,7 @@ pub const DEFAULT_MAX_CONNECT_ATTEMPTS: u32 = 5;
 /// All four knobs are independent so callers can dial a gentle local-test
 /// policy (one attempt, short timeout) or an aggressive production one
 /// (many attempts, longer timeout) without reaching into the internals.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Maximum number of connect attempts (including the first one).
@@ -128,6 +135,7 @@ pub struct RetryPolicy {
     pub connect_timeout: Duration,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Default for RetryPolicy {
     fn default() -> Self {
         Self {
@@ -139,6 +147,7 @@ impl Default for RetryPolicy {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl RetryPolicy {
     /// A single-attempt policy: no backoff, no retry, just one shot.
     /// Useful when the caller wants to implement its own retry loop
@@ -166,7 +175,8 @@ impl RetryPolicy {
     }
 }
 
-/// A WebSocket connection to a PIR server.
+/// A native TCP/TLS WebSocket connection to a PIR server.
+#[cfg(not(target_arch = "wasm32"))]
 pub type WsConnection = WsTransport<MaybeTlsStream<TcpStream>>;
 
 /// WebSocket framing over an established byte stream.
@@ -175,6 +185,7 @@ pub struct WsTransport<S> {
     stream: SplitStream<WebSocketStream<S>>,
     url: String,
     request_timeout: Duration,
+    #[cfg(not(target_arch = "wasm32"))]
     retry_policy: RetryPolicy,
     /// Optional metrics recorder. Fires per-frame `on_bytes_sent` /
     /// `on_bytes_received` callbacks from `send` / `recv` / `roundtrip` once
@@ -209,6 +220,7 @@ pub struct WsTransport<S> {
 /// TLS handshake. We install `ring` (pure-Rust, no C toolchain). Multiple
 /// threads calling `connect()` concurrently are serialized by `OnceLock`;
 /// a pre-installed provider (e.g. by a consumer application) is left alone.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn install_default_crypto_provider() {
     use std::sync::OnceLock;
     static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -220,9 +232,25 @@ pub(crate) fn install_default_crypto_provider() {
     });
 }
 
+/// Apply the native operation deadline. Browser transports use the existing
+/// WASM behavior and await directly because Tokio's timer reactor is absent.
+async fn with_timeout<F>(duration: Duration, future: F) -> Result<F::Output, ()>
+where
+    F: std::future::Future,
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    return tokio::time::timeout(duration, future).await.map_err(|_| ());
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = duration;
+        Ok(future.await)
+    }
+}
+
 /// Perform the raw WebSocket handshake against `url`, subject to
 /// `connect_timeout`. Split out so `connect`, `connect_with_backoff`, and
 /// `reconnect` share the same transport setup.
+#[cfg(not(target_arch = "wasm32"))]
 async fn raw_connect(
     url: &str,
     connect_timeout: Duration,
@@ -233,7 +261,7 @@ async fn raw_connect(
     install_default_crypto_provider();
     let config = ws_config();
     let handshake = tokio_tungstenite::connect_async_with_config(url, Some(config), false);
-    let (ws, _) = match tokio::time::timeout(connect_timeout, handshake).await {
+    let (ws, _) = match with_timeout(connect_timeout, handshake).await {
         Ok(Ok(ok)) => ok,
         Ok(Err(e)) => {
             return Err(PirError::ConnectionFailed(format!("{}: {}", url, e)));
@@ -276,7 +304,7 @@ where
         tokio::io::join(recv, send),
         Some(ws_config()),
     );
-    let (ws, _) = tokio::time::timeout(DEFAULT_CONNECT_TIMEOUT, handshake)
+    let (ws, _) = with_timeout(DEFAULT_CONNECT_TIMEOUT, handshake)
         .await
         .map_err(|_| PirError::Timeout(format!("Iroh WebSocket upgrade timed out: {peer}")))?
         .map_err(|e| PirError::ConnectionFailed(format!("{peer}: {e}")))?;
@@ -286,6 +314,7 @@ where
         stream,
         url: format!("iroh:{peer}"),
         request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        #[cfg(not(target_arch = "wasm32"))]
         retry_policy: RetryPolicy::single_attempt(),
         metrics_recorder: None,
         metrics_backend: "",
@@ -293,6 +322,7 @@ where
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl WsConnection {
     /// Connect to a WebSocket URL using the default retry policy.
     ///
@@ -510,7 +540,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsTransport<S> {
         let url = self.url.clone();
         let bytes_out = data.len();
         let send_fut = self.send_chunked(&data);
-        match tokio::time::timeout(request_timeout, send_fut).await {
+        match with_timeout(request_timeout, send_fut).await {
             Ok(Ok(())) => {
                 // Only fire after a confirmed successful send — a failed
                 // send didn't put bytes on the wire from the caller's
@@ -585,7 +615,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsTransport<S> {
         let request_timeout = self.request_timeout;
         let url = self.url.clone();
         let recv_fut = self.recv_inner();
-        match tokio::time::timeout(request_timeout, recv_fut).await {
+        match with_timeout(request_timeout, recv_fut).await {
             Ok(Ok(ws_msg)) => {
                 // Report the size of the raw WS message (or reassembled
                 // chunked message) — matches what a wire-level observer
@@ -772,7 +802,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsTransport<S> {
             bytes_in = Some(response.len());
             Ok(response[4..].to_vec())
         };
-        let result = match tokio::time::timeout(request_timeout, fut).await {
+        let result = match with_timeout(request_timeout, fut).await {
             Ok(result) => result,
             Err(_) => Err(PirError::Timeout(format!(
                 "roundtrip to {} took longer than {:?}",
@@ -812,7 +842,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsTransport<S> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

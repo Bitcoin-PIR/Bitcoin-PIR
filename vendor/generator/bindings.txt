@@ -1,0 +1,10 @@
+--out src/stack/windows_bindings.rs
+
+--filter
+    AddVectoredExceptionHandler
+    GetStdHandle
+    VirtualAlloc
+    VirtualFree
+    VirtualProtect
+    GetSystemInfo
+    WriteFile

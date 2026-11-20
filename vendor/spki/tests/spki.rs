@@ -5,10 +5,13 @@ use hex_literal::hex;
 use spki::SubjectPublicKeyInfoRef;
 
 #[cfg(feature = "alloc")]
-use der::Encode;
+use {
+    der::Encode,
+    spki::{AlgorithmIdentifier, AlgorithmIdentifierOwned},
+};
 
 #[cfg(feature = "pem")]
-use der::{pem::LineEnding, EncodePem};
+use der::{EncodePem, pem::LineEnding};
 
 /// Elliptic Curve (P-256) `SubjectPublicKeyInfo` encoded as ASN.1 DER
 const EC_P256_DER_EXAMPLE: &[u8] = include_bytes!("examples/p256-pub.der");
@@ -60,7 +63,12 @@ fn decode_ec_p256_der() {
         "1.2.840.10045.3.1.7".parse().unwrap()
     );
 
-    assert_eq!(spki.subject_public_key.raw_bytes(), &hex!("041CACFFB55F2F2CEFD89D89EB374B2681152452802DEEA09916068137D839CF7FC481A44492304D7EF66AC117BEFE83A8D08F155F2B52F9F618DD447029048E0F")[..]);
+    assert_eq!(
+        spki.subject_public_key.raw_bytes(),
+        &hex!(
+            "041CACFFB55F2F2CEFD89D89EB374B2681152452802DEEA09916068137D839CF7FC481A44492304D7EF66AC117BEFE83A8D08F155F2B52F9F618DD447029048E0F"
+        )[..]
+    );
 }
 
 #[test]
@@ -109,7 +117,12 @@ fn decode_rsa_2048_der() {
 
     assert_eq!(spki.algorithm.oid, "1.2.840.113549.1.1.1".parse().unwrap());
     assert!(spki.algorithm.parameters.unwrap().is_null());
-    assert_eq!(spki.subject_public_key.raw_bytes(), &hex!("3082010A0282010100B6C42C515F10A6AAF282C63EDBE24243A170F3FA2633BD4833637F47CA4F6F36E03A5D29EFC3191AC80F390D874B39E30F414FCEC1FCA0ED81E547EDC2CD382C76F61C9018973DB9FA537972A7C701F6B77E0982DFC15FC01927EE5E7CD94B4F599FF07013A7C8281BDF22DCBC9AD7CABB7C4311C982F58EDB7213AD4558B332266D743AED8192D1884CADB8B14739A8DADA66DC970806D9C7AC450CB13D0D7C575FB198534FC61BC41BC0F0574E0E0130C7BBBFBDFDC9F6A6E2E3E2AFF1CBEAC89BA57884528D55CFB08327A1E8C89F4E003CF2888E933241D9D695BCBBACDC90B44E3E095FA37058EA25B13F5E295CBEAC6DE838AB8C50AF61E298975B872F0203010001")[..]);
+    assert_eq!(
+        spki.subject_public_key.raw_bytes(),
+        &hex!(
+            "3082010A0282010100B6C42C515F10A6AAF282C63EDBE24243A170F3FA2633BD4833637F47CA4F6F36E03A5D29EFC3191AC80F390D874B39E30F414FCEC1FCA0ED81E547EDC2CD382C76F61C9018973DB9FA537972A7C701F6B77E0982DFC15FC01927EE5E7CD94B4F599FF07013A7C8281BDF22DCBC9AD7CABB7C4311C982F58EDB7213AD4558B332266D743AED8192D1884CADB8B14739A8DADA66DC970806D9C7AC450CB13D0D7C575FB198534FC61BC41BC0F0574E0E0130C7BBBFBDFDC9F6A6E2E3E2AFF1CBEAC89BA57884528D55CFB08327A1E8C89F4E003CF2888E933241D9D695BCBBACDC90B44E3E095FA37058EA25B13F5E295CBEAC6DE838AB8C50AF61E298975B872F0203010001"
+        )[..]
+    );
 }
 
 #[test]
@@ -158,4 +171,21 @@ fn encode_rsa_2048_pem() {
     let pk = SubjectPublicKeyInfoRef::try_from(RSA_2048_DER_EXAMPLE).unwrap();
     let pk_encoded = pk.to_pem(LineEnding::LF).unwrap();
     assert_eq!(RSA_2048_PEM_EXAMPLE, pk_encoded);
+}
+
+#[test]
+#[cfg(feature = "alloc")]
+fn build_hashset_of_digests() {
+    const SHA1: AlgorithmIdentifierOwned = AlgorithmIdentifier {
+        oid: ObjectIdentifier::new_unwrap("1.3.14.3.2.26"),
+        parameters: None,
+    };
+    const SHA256: AlgorithmIdentifierOwned = AlgorithmIdentifier {
+        oid: ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1"),
+        parameters: None,
+    };
+
+    let mut hashes = std::collections::HashSet::new();
+    hashes.insert(SHA1);
+    hashes.insert(SHA256);
 }

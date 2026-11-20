@@ -1,7 +1,10 @@
 cfg_not_wasi! {
+    use std::time::Duration;
+}
+
+cfg_not_wasip1! {
     use crate::net::{to_socket_addrs, ToSocketAddrs};
     use std::future::poll_fn;
-    use std::time::Duration;
 }
 
 use crate::io::{AsyncRead, AsyncWrite, Interest, PollEvented, ReadBuf, Ready};
@@ -73,7 +76,7 @@ cfg_net! {
 }
 
 impl TcpStream {
-    cfg_not_wasi! {
+    cfg_not_wasip1! {
         /// Opens a TCP connection to a remote host.
         ///
         /// `addr` is an address of the remote host. Anything which implements the
@@ -83,6 +86,9 @@ impl TcpStream {
         /// result in a successful connection, the error returned from the last
         /// connection attempt (the last address) is returned.
         ///
+        /// For example, on a host without IPv6 connectivity, the
+        /// `AddrNotAvailable` error of a later IPv6 attempt can hide an earlier
+        /// IPv4 failure such as connection refused.
         /// To configure the socket before connecting, you can use the [`TcpSocket`]
         /// type.
         ///
@@ -162,6 +168,18 @@ impl TcpStream {
         Ok(TcpStream { io })
     }
 
+    /// A stream returned by `accept`: assumed readable and writable, so that
+    /// its first read and write try the socket instead of waiting for the
+    /// driver's first event (see `Registration::assume_ready`).
+    pub(crate) fn new_accepted(connected: mio::net::TcpStream) -> io::Result<TcpStream> {
+        let stream = TcpStream::new(connected)?;
+        stream
+            .io
+            .registration()
+            .assume_ready(Ready::READABLE | Ready::WRITABLE);
+        Ok(stream)
+    }
+
     /// Creates new `TcpStream` from a `std::net::TcpStream`.
     ///
     /// This function is intended to be used to wrap a TCP stream from the
@@ -228,7 +246,6 @@ impl TcpStream {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<(), Box<dyn Error>> {
-    /// #   if cfg!(miri) { return Ok(()); } // No `socket` in miri.
     ///     let mut data = [0u8; 12];
     /// #   if false {
     ///     let listener = TcpListener::bind("127.0.0.1:34254").await?;
@@ -272,7 +289,7 @@ impl TcpStream {
 
         #[cfg(target_os = "wasi")]
         {
-            use std::os::wasi::io::{FromRawFd, IntoRawFd};
+            use std::os::fd::{FromRawFd, IntoRawFd};
             self.io
                 .into_inner()
                 .map(|io| io.into_raw_fd())
@@ -1072,8 +1089,8 @@ impl TcpStream {
     ///
     /// # Cancel safety
     ///
-    /// This method is cancel safe. If the method is used as the event in a
-    /// [`tokio::select!`](crate::select) statement and some other branch
+    /// This method is cancel safe. If the method is used as a branch in
+    /// [`tokio::select!`](crate::select) and another branch
     /// completes first, then it is guaranteed that no peek was performed, and
     /// that `buf` has not been modified.
     ///
@@ -1564,7 +1581,7 @@ cfg_windows! {
 #[cfg(all(tokio_unstable, target_os = "wasi"))]
 mod sys {
     use super::TcpStream;
-    use std::os::wasi::prelude::*;
+    use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 
     impl AsRawFd for TcpStream {
         fn as_raw_fd(&self) -> RawFd {

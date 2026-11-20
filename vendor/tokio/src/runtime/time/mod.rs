@@ -8,7 +8,7 @@
 
 mod entry;
 pub(crate) use entry::TimerEntry;
-use entry::{EntryList, TimerHandle, TimerShared, MAX_SAFE_MILLIS_DURATION};
+use entry::{TimerHandle, TimerShared, MAX_SAFE_MILLIS_DURATION};
 
 mod handle;
 pub(crate) use self::handle::Handle;
@@ -385,7 +385,9 @@ impl Handle {
                 lock.wheel.remove(entry);
             }
 
-            entry.as_ref().handle().fire(Ok(()));
+            let waker = entry.as_ref().handle().fire(Ok(()));
+            drop(lock);
+            drop(waker);
         }
     }
 
@@ -425,8 +427,7 @@ impl Handle {
                     Ok(when) => {
                         if lock
                             .next_wake
-                            .map(|next_wake| when < next_wake.get())
-                            .unwrap_or(true)
+                            .is_none_or(|next_wake| when < next_wake.get())
                         {
                             unpark.unpark();
                         }

@@ -1,0 +1,2 @@
+# Released in lockstep with n0-error; only the root crate gets a git tag (vX.Y.Z).
+tag = false

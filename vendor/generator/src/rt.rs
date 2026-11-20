@@ -1,0 +1,413 @@
+//! # generator run time support
+//!
+//! generator run time context management
+//!
+use std::any::Any;
+use std::cell::Cell;
+use std::mem::MaybeUninit;
+use std::ptr;
+#[cfg(all(not(debug_assertions), any(windows, target_os = "macos")))]
+use std::sync::atomic::{compiler_fence, Ordering};
+
+use crate::reg_context::RegContext;
+
+// Run-state values stored in the low bits of `Context::_ref`.
+//
+// `resume` adds one before switching in and a yield subtracts one, so a
+// suspended generator is `REF_IDLE`. If the body returns without yielding,
+// the outstanding resume remains and the generator is done. `raw_cancel`
+// records `REF_CANCELLED`, which also makes the resumed body panic at its
+// yield point.
+pub(crate) const REF_IDLE: usize = 0;
+pub(crate) const REF_ACTIVE: usize = 1;
+pub(crate) const REF_CANCELLED: usize = 2;
+pub(crate) const REF_STATE_MASK: usize = 0x3;
+
+thread_local! {
+    // each thread has it's own generator context stack
+    static ROOT_CONTEXT_P: Cell<*mut Context> = const { Cell::new(ptr::null_mut()) };
+    // frees the root context pointed to by `ROOT_CONTEXT_P` when the thread
+    // exits. Kept separate from `ROOT_CONTEXT_P` so that the pointer itself
+    // (which has no destructor) remains accessible during TLS teardown.
+    static ROOT_CONTEXT_OWNER: RootContextOwner = const { RootContextOwner };
+}
+
+struct RootContextOwner;
+
+impl Drop for RootContextOwner {
+    fn drop(&mut self) {
+        let root = ROOT_CONTEXT_P.get();
+        if root.is_null() {
+            return;
+        }
+        // Only free the root if no generator is currently running on this
+        // thread (i.e. the root is the top of the context stack). Otherwise
+        // leak it, since running generators may still reference it.
+        if !std::ptr::eq(unsafe { (*root).parent }, root) {
+            return;
+        }
+        ROOT_CONTEXT_P.set(ptr::null_mut());
+        drop(unsafe { Box::from_raw(root) });
+    }
+}
+
+/// yield panic error types
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum Error {
+    /// Done panic
+    Done,
+    /// Cancel panic
+    Cancel,
+    /// Type mismatch panic
+    TypeErr,
+    /// Stack overflow panic
+    StackErr,
+    /// Wrong Context panic
+    ContextErr,
+}
+
+/// generator context
+#[repr(C)]
+#[repr(align(128))]
+pub struct Context {
+    /// generator regs context
+    pub regs: RegContext,
+    /// child context
+    child: *mut Context,
+    /// parent context
+    pub parent: *mut Context,
+    /// passed in para for send
+    pub para: MaybeUninit<*mut dyn Any>,
+    /// this is just a buffer for the return value
+    pub ret: MaybeUninit<*mut dyn Any>,
+    /// track generator ref, yield will -1, send will +1
+    ///
+    /// The low bits hold the run state, see `REF_IDLE`/`REF_ACTIVE`/
+    /// `REF_CANCELLED`.
+    pub _ref: usize,
+    /// context local storage
+    pub local_data: *mut u8,
+    /// propagate panic
+    pub err: Option<Box<dyn Any + Send>>,
+    /// cached stack guard for fast path
+    pub stack_guard: (usize, usize),
+    /// the overflow handler already reported an overflow for this stack
+    ///
+    /// The bottom-of-stack sentinel used by the drop-time usage check is
+    /// destroyed by an overflow, so that check can no longer tell a full
+    /// stack from an overflowed one. This flag stays set once the handler
+    /// has delivered `Error::StackErr` for this context.
+    pub overflowed: bool,
+}
+
+impl Context {
+    /// return a default generator context
+    pub fn new() -> Context {
+        Context {
+            regs: RegContext::empty(),
+            para: MaybeUninit::zeroed(),
+            ret: MaybeUninit::zeroed(),
+            _ref: REF_ACTIVE, // not idle: nothing has been installed yet
+            err: None,
+            child: ptr::null_mut(),
+            parent: ptr::null_mut(),
+            local_data: ptr::null_mut(),
+            stack_guard: (0, 0),
+            overflowed: false,
+        }
+    }
+
+    /// judge it's generator context
+    #[inline]
+    pub fn is_generator(&self) -> bool {
+        !std::ptr::eq(self.parent, self)
+    }
+
+    /// get current generator send para
+    #[inline]
+    pub fn get_para<A>(&mut self) -> Option<A>
+    where
+        A: Any,
+    {
+        let para = unsafe {
+            let para_ptr = *self.para.as_mut_ptr();
+            assert!(!para_ptr.is_null());
+            &mut *para_ptr
+        };
+        match para.downcast_mut::<Option<A>>() {
+            Some(v) => v.take(),
+            None => type_error::<A>("get yield type mismatch error detected"),
+        }
+    }
+
+    /// set current generator send para
+    #[inline]
+    pub fn set_para<A: Any>(&mut self, data: A) {
+        let para = unsafe {
+            let para_ptr = *self.para.as_mut_ptr();
+            assert!(!para_ptr.is_null());
+            &mut *para_ptr
+        };
+        match para.downcast_mut::<Option<A>>() {
+            Some(para) => *para = Some(data),
+            None => type_error::<A>("set yield type mismatch error detected"),
+        }
+    }
+
+    /// set current generator return value
+    #[inline]
+    pub fn set_ret<T>(&mut self, v: T)
+    where
+        T: Any,
+    {
+        let ret = unsafe {
+            let ret_ptr = *self.ret.as_mut_ptr();
+            assert!(!ret_ptr.is_null());
+            &mut *ret_ptr
+        };
+        match ret.downcast_mut::<Option<T>>() {
+            Some(r) => *r = Some(v),
+            None => type_error::<T>("set return type mismatch error detected"),
+        }
+    }
+}
+
+/// Coroutine managing environment
+pub struct ContextStack {
+    pub(crate) root: *mut Context,
+}
+
+impl ContextStack {
+    #[cold]
+    fn init_root() -> *mut Context {
+        let root = Box::leak(Box::new(Context::new()));
+        root.parent = root; // init top to current
+        ROOT_CONTEXT_P.set(root);
+        // Touch the owner so its destructor is registered and frees `root` at
+        // thread exit. If the owner was already destroyed (we're being called
+        // during TLS teardown), the root is simply leaked.
+        let _ = ROOT_CONTEXT_OWNER.try_with(|_| ());
+        root
+    }
+
+    /// get the current context stack
+    ///
+    /// WORKAROUND for Rust 1.89+ compiler optimization bug on macOS/Windows
+    /// The thread-local access can be incorrectly optimized in release builds,
+    /// causing ROOT_CONTEXT_P.get() to return stale or incorrect values.
+    #[inline(never)] // Prevent inlining to ensure TLS access is correct
+    pub fn current() -> ContextStack {
+        cfg_select! {
+            all(not(debug_assertions), any(windows, target_os = "macos")) => {
+                // Use a volatile-style read for the TLS value.
+                compiler_fence(Ordering::SeqCst);
+                let r = std::hint::black_box(ROOT_CONTEXT_P.get());
+                compiler_fence(Ordering::SeqCst);
+
+                let root = if r.is_null() {
+                    std::hint::black_box(Self::init_root())
+                } else {
+                    r
+                };
+            }
+            _ => {
+                let r = ROOT_CONTEXT_P.get();
+                let root = if r.is_null() { Self::init_root() } else { r };
+            }
+        }
+
+        ContextStack { root }
+    }
+
+    /// get the top context
+    #[inline]
+    pub fn top(&self) -> &'static mut Context {
+        unsafe {
+            let root = &*self.root;
+            &mut *root.parent
+        }
+    }
+
+    /// get the coroutine context
+    #[cfg_attr(
+        all(not(debug_assertions), any(windows, target_os = "macos")),
+        inline(never)
+    )]
+    #[cfg_attr(
+        not(all(not(debug_assertions), any(windows, target_os = "macos"))),
+        inline
+    )]
+    pub fn co_ctx(&self) -> Option<&'static mut Context> {
+        cfg_select! {
+            all(not(debug_assertions), any(windows, target_os = "macos")) => {
+                // Ensure the root pointer is valid before searching.
+                compiler_fence(Ordering::SeqCst);
+                // Prevent optimization issues when reading the top context.
+                let mut ctx = std::hint::black_box(self.top());
+            }
+            _ => {
+                let mut ctx = self.top();
+            }
+        }
+
+        while !std::ptr::eq(ctx, self.root) {
+            if !ctx.local_data.is_null() {
+                return Some(ctx);
+            }
+            ctx = unsafe { &mut *ctx.parent };
+        }
+        // not find any coroutine
+        None
+    }
+
+    /// push the context to the thread context list
+    #[inline]
+    pub fn push_context(&self, ctx: *mut Context) {
+        let root = unsafe { &mut *self.root };
+        let ctx = unsafe { &mut *ctx };
+        let top = unsafe { &mut *root.parent };
+        let new_top = ctx.parent;
+
+        // link top and new ctx
+        top.child = ctx;
+        ctx.parent = top;
+
+        // save the new top
+        root.parent = new_top;
+    }
+
+    /// pop the context from the thread context list and return it's parent context
+    #[inline]
+    pub fn pop_context(&self, ctx: *mut Context) -> &'static mut Context {
+        let root = unsafe { &mut *self.root };
+        let ctx = unsafe { &mut *ctx };
+        let parent = unsafe { &mut *ctx.parent };
+
+        // save the old top in ctx's parent
+        ctx.parent = root.parent;
+        // unlink ctx and it's parent
+        parent.child = ptr::null_mut();
+
+        // save the new top
+        root.parent = parent;
+
+        parent
+    }
+}
+
+#[inline]
+#[cold]
+fn type_error<A>(msg: &str) -> ! {
+    eprintln!("{msg}, expected type: {}", std::any::type_name::<A>());
+    std::panic::panic_any(Error::TypeErr)
+}
+
+/// check the current context if it's generator
+#[cfg_attr(
+    all(not(debug_assertions), any(windows, target_os = "macos")),
+    inline(never)
+)]
+#[cfg_attr(
+    not(all(not(debug_assertions), any(windows, target_os = "macos"))),
+    inline
+)]
+pub fn is_generator() -> bool {
+    let env = ContextStack::current();
+
+    #[cfg(all(not(debug_assertions), any(windows, target_os = "macos")))]
+    {
+        compiler_fence(Ordering::SeqCst);
+    }
+
+    let root = unsafe { &mut *env.root };
+    !root.child.is_null()
+}
+
+/// get the current context local data
+/// only coroutine support local data
+#[cfg_attr(
+    all(not(debug_assertions), any(windows, target_os = "macos")),
+    inline(never)
+)]
+#[cfg_attr(
+    not(all(not(debug_assertions), any(windows, target_os = "macos"))),
+    inline
+)]
+pub fn get_local_data() -> *mut u8 {
+    let env = ContextStack::current();
+
+    #[cfg(all(not(debug_assertions), any(windows, target_os = "macos")))]
+    {
+        compiler_fence(Ordering::SeqCst);
+    }
+
+    env.co_ctx().map_or(ptr::null_mut(), |ctx| ctx.local_data)
+}
+
+#[cfg(not(target_os = "fuchsia"))]
+pub mod guard {
+    use crate::rt::ContextStack;
+    use crate::stack::sys::page_size;
+    use std::ops::Range;
+
+    pub type Guard = Range<usize>;
+
+    pub fn current() -> Guard {
+        // The guard belongs to the stack that is currently executing, which is
+        // the top context. `root.child` is only the outermost generator: a
+        // nested generator (or a coroutine resumed from another generator)
+        // runs on a different mapping, so its overflow would be checked
+        // against the wrong guard.
+        let (start, end) = ContextStack::current().top().stack_guard;
+
+        // This runs from the signal/exception handler, so it must not panic.
+        // The root context (and anything that was never initialized) has a
+        // zero guard; an empty range makes the caller fall through to the
+        // previously installed handler.
+        if start == 0 {
+            return 0..0;
+        }
+
+        start - page_size()..end
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::is_generator;
+
+    #[test]
+    fn test_is_context() {
+        // this is the root context
+        assert!(!is_generator());
+    }
+
+    #[test]
+    #[cfg(not(target_os = "fuchsia"))]
+    fn test_overflow() {
+        use crate::*;
+        use std::panic::catch_unwind;
+
+        // test signal mask
+        for _ in 0..2 {
+            let result = catch_unwind(|| {
+                let mut g = Gn::new_scoped(move |_s: Scope<(), ()>| {
+                    let guard = super::guard::current();
+
+                    // make sure the compiler does not apply any optimization on it
+                    std::hint::black_box(unsafe { *(guard.start as *const usize) });
+
+                    eprintln!("entered unreachable code");
+                    std::process::abort();
+                });
+
+                g.next();
+            });
+
+            assert!(matches!(
+                result.map_err(|err| *err.downcast::<Error>().unwrap()),
+                Err(Error::StackErr)
+            ));
+        }
+    }
+}

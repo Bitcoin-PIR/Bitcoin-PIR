@@ -1,6 +1,6 @@
 [package]
 name = "pem-rfc7468"
-version = "0.7.0"
+version = "1.0.0"
 description = """
 PEM Encoding (RFC 7468) for PKIX, PKCS, and CMS Structures, implementing a
 strict subset of the original Privacy-Enhanced Mail encoding intended
@@ -10,15 +10,16 @@ cryptographic private keys.
 """
 authors = ["RustCrypto Developers"]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/RustCrypto/formats/tree/master/pem-rfc7468"
+homepage = "https://github.com/RustCrypto/formats/tree/master/pem-rfc7468"
+repository = "https://github.com/RustCrypto/formats"
 categories = ["cryptography", "data-structures", "encoding", "no-std", "parser-implementations"]
 keywords = ["crypto", "key", "pem", "pkcs", "rsa"]
 readme = "README.md"
-edition = "2021"
-rust-version = "1.60"
+edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
-base64ct = { version = "1.4", path = "../base64ct" }
+base64ct = { version = "1.4" }
 
 [features]
 alloc = ["base64ct/alloc"]
