@@ -12,24 +12,6 @@
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
 
-# ─── Dependency sources ────────────────────────────────────────────────────
-# crates.io dependencies come from the registry and fastprp, harmonypir and
-# libdpf from their git revs: Cargo.lock pins each registry crate's version
-# and SHA-256 and each git dependency's commit, and `--locked` keeps a build
-# on exactly that set.
-#
-# onionpir alone still builds from ./vendor/onionpir, which carries engine
-# changes (the shared-store batch path of #466) that rev 3f815ba does not
-# have. Re-running `cargo vendor` for it drops them.
-
-[source."git+https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git?rev=3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b"]
-git = "https://github.com/Bitcoin-PIR/OnionPIRv2-fork.git"
-rev = "3f815ba86bc8cb2db5d892a006c1ee7fcbaf7e4b"
-replace-with = "vendored-sources"
-
-[source.vendored-sources]
-directory = "vendor"
-
 # ─── Reproducible-build env ────────────────────────────────────────────────
 # SOURCE_DATE_EPOCH=0 makes any timestamp-embedding build.rs scripts use
 # 1970-01-01 instead of the current wall clock. force=true overrides any

@@ -99,9 +99,8 @@
           # evaluation. Re-capture whenever a git rev or the dep set
           # changes: set the entry to the all-A fake hash, run
           # `nix build`, substitute the hash from the mismatch error.
-          # Note: the onionpir crate is SEAL-free and submodule-free —
-          # its hash covers just the rust/onionpir/ crate tree (Rust src
-          # + the bundled cpp/ C++ engine + CMakeLists.txt).
+          # Each hash is the NAR hash of the whole repository checkout at
+          # the pinned rev (fetchgit), not of the consumed subcrate.
           #
           # 2026-05-18 re-sync: dropped `alf-nt` (HarmonyPIR's PRP
           # backend no longer depends on the ALF crate); added `arc`
@@ -115,11 +114,19 @@
           # safe), so the flake postPatch HEXL-link sed below is dropped.
           # New rev → new content hash (fake-hash cycle).
           # 2026-10-11: dropped `arc` (ARC credits retired).
+          # 2026-11-24 re-pin: onionpir 3f815ba → 06f87df (the fork now
+          # carries the shared-store batch path the server calls, which
+          # until then lived only in the in-tree vendored copy).
+          # harmonypir re-captured for 9728865: the entry was still the
+          # hash of 60635d8, the rev pinned before the 2026-07 bump. Both
+          # were computed outside Nix, by NAR-serialising the checkout
+          # (the same computation reproduces the fastprp and libdpf
+          # entries), and have not been through a `nix build`.
           outputHashes = {
             "fastprp-0.1.0"    = "sha256-GVTeA1yBdpOj0GHcKTqQZz+1+AvV+tBkvUewTnNSlAo=";
-            "harmonypir-0.1.0" = "sha256-E7moHaQUhR4NUIdKsOluOGHFOkZE6bJrj26tc0f3IGQ=";
+            "harmonypir-0.1.0" = "sha256-f3IMAESCQf1iSBBgiztCImjL/QdkZjbxCiaKxyKI57Y=";
             "libdpf-0.1.0"     = "sha256-Hu4yEsxiNugk0dZe02Fz70DzOGKf9v52fhRgXtV8Vnw=";
-            "onionpir-0.2.0"   = "sha256-0xqftjQya0180F+xSOhcTnKKqj4nMHzEiSwQTtlZpJQ=";
+            "onionpir-0.2.0"   = "sha256-8mlg5YZgTxvhAWqH9xfD+lcCUWKiM9EwlchVFv5qMW8=";
           };
         };
 
@@ -129,22 +136,7 @@
         # "argument can't be used with `--release`" conflict.
         cargoBuildFlags = [ "-p" "runtime" "--bin" "unified_server" ];
 
-        # The repo's .cargo/config.toml replaces its git sources with
-        # ./vendor ([source."git+..."] replace-with = "vendored-sources").
-        # rustPlatform.buildRustPackage ALSO writes its own
-        # [source.crates-io] / git source overrides into the sandbox
-        # config, which collides with ours ("Sources are not allowed to be
-        # defined multiple times"). Strip the in-repo source replacements
-        # during patchPhase so only the Nix-managed vendor dir is visible
-        # to cargo inside the sandbox.
         postPatch = ''
-          # Remove every line from the first [source.*] header to end of
-          # file (the source-replacement block is the last thing in
-          # .cargo/config.toml but the [env] table). rustPlatform.
-          # buildRustPackage writes its own [source.*] entries, and cargo
-          # errors on duplicate source definitions.
-          sed -i '/^\[source\./,$d' .cargo/config.toml
-
           # Point the onionpir C++ build's CMake at the HEXL + cpu_features
           # CMake-config packages. Since rev 7ea020a the onionpir CMakeLists
           # defaults USE_HEXL=ON on x86_64 and does `find_package(HEXL

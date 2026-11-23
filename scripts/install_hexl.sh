@@ -22,7 +22,7 @@
 #   PREFIX=$HOME/.local ./scripts/install_hexl.sh        # user-local, no sudo
 #   PREFIX=/opt/homebrew ./scripts/install_hexl.sh       # Apple Silicon brew prefix
 #
-# After install, the OnionPIR CMake build (vendor/onionpir/build.rs)
+# After install, the OnionPIR CMake build (the onionpir crate's build.rs)
 # finds the HEXL package and links it.
 #
 # Pin rationale: HEXL v1.2.6 is what flake.nix pins (line 43). The Nix

@@ -83,17 +83,13 @@ deploy/launchd/*
 !deploy/launchd/org.bitcoinpir.directory-publish.plist.example
 !deploy/data-bundles/
 
-# vendor/ holds `cargo vendor` output. Each crate ships a
-# `.cargo-checksum.json` listing every file with its hash; dropping any
-# referenced file (Cargo.lock, build/*.rs, src/target/*.rs, .DS_Store,
-# .claude/*) breaks fresh-clone offline builds with
-# "failed to calculate checksum of: vendor/<crate>/<file>".
-# Keep vendor/ verbatim — un-ignore everything inside it so the broader
-# rules above (target/, build/, .DS_Store, .claude/, Cargo.lock) don't
-# bite vendored crates.
+# vendor/ holds two in-tree crates, bitcoinpir-oram and rootbundle. Keep
+# them verbatim — un-ignore everything inside so the broader rules above
+# don't hide their files (Cargo.lock in particular: bitcoinpir-oram builds
+# with its own lockfile).
 !vendor/**
 # The vendor re-include above also re-opens files matched by the global
-# macOS metadata rule. Keep local Finder state out of vendored sources.
+# macOS metadata rule. Keep local Finder state out of vendor/.
 /vendor/**/.DS_Store
 # retired issuer key files that may remain on disk (never commit)
 arc_key.bin
