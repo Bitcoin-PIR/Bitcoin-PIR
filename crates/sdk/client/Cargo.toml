@@ -169,6 +169,12 @@ web-sys = { version = "0.3", features = [
 # `tokio::try_join!` on the WASM single-threaded event loop.
 futures = "0.3"
 futures-channel = "0.3"
+# Browser Iroh uses the public N0 relays and opens a WebSocket session over
+# an established QUIC stream. Disable native networking and TLS features.
+iroh = { version = "1.5.0", default-features = false, features = ["tls-ring"] }
+iroh-tickets = "1.0.0"
+tokio = { version = "1", default-features = false, features = ["io-util"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
 # `web_sys::WebSocket` and `Rc<RefCell<_>>` are `!Send + !Sync`, but
 # `PirTransport: Send + Sync` is required so the trait object satisfies
 # `PirClient: Send + Sync` on the native side of the codebase (and because

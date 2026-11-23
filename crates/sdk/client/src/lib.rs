@@ -54,16 +54,12 @@
 //!     .await?;
 //! ```
 
-// `connection` hosts the tokio-tungstenite + rustls native WebSocket client.
-// It is native-only: its deps (`tokio::net::TcpStream`, `rustls`,
-// `tokio_tungstenite::connect_async`) don't compile to
-// `wasm32-unknown-unknown`. On wasm32 the equivalent role is played by
-// [`wasm_transport::WasmWebSocketTransport`], which wraps `web_sys::WebSocket`
-// and bridges its callback-driven API to `async/.await` via an mpsc channel.
+// `connection` hosts WebSocket framing over established byte streams on all
+// targets. Native TCP/TLS dialing is cfg-gated; the browser's DOM WebSocket
+// transport remains in `wasm_transport`, while Iroh streams reuse `connection`.
 pub mod announce;
 pub mod attest;
 pub mod channel;
-#[cfg(not(target_arch = "wasm32"))]
 mod connection;
 pub mod credit_frames;
 pub mod credit_transport;
@@ -86,13 +82,15 @@ mod verified_roots;
 #[cfg(any(target_arch = "wasm32", test))]
 mod wasm_chunk;
 #[cfg(target_arch = "wasm32")]
+mod wasm_iroh_transport;
+#[cfg(target_arch = "wasm32")]
 mod wasm_transport;
 
+pub use connection::{transport_over_iroh, IROH_WS_ALPN};
 #[cfg(not(target_arch = "wasm32"))]
 pub use connection::{
-    transport_over_iroh, RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT,
-    DEFAULT_INITIAL_BACKOFF_DELAY, DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS,
-    DEFAULT_REQUEST_TIMEOUT, IROH_WS_ALPN,
+    RetryPolicy, WsConnection, DEFAULT_CONNECT_TIMEOUT, DEFAULT_INITIAL_BACKOFF_DELAY,
+    DEFAULT_MAX_BACKOFF_DELAY, DEFAULT_MAX_CONNECT_ATTEMPTS, DEFAULT_REQUEST_TIMEOUT,
 };
 pub use db_proof::{
     fetch_database_proof, fetch_database_proof_v2, verify_database_proof, verify_database_proof_v2,
@@ -104,6 +102,8 @@ pub use harmony::{HarmonyClient, HintProgress, PRP_FASTPRP, PRP_HMR12};
 pub use onion::OnionClient;
 pub use oram::{OramClient, OramLookupItem, OramLookupResult, OramLookupSlot};
 pub use transport::PirTransport;
+#[cfg(target_arch = "wasm32")]
+pub use wasm_iroh_transport::WasmIrohTransport;
 #[cfg(target_arch = "wasm32")]
 pub use wasm_transport::WasmWebSocketTransport;
 
