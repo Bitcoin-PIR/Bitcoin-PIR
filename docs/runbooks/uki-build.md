@@ -8,19 +8,42 @@ attested-builder producer UKI is Flow H
 not substitute it here. It keeps four different concerns separate so a
 historical experiment cannot silently become the release recipe.
 
-## 1. Source and runtime binary
+## 1. Source and runtime binaries
 
-Use a clean checkout at the exact reviewed release commit. Build the pir2
-runtime with its production feature profile, then strip only debug data:
+Use a clean checkout at the exact reviewed release commit, with nothing
+uncommitted: the `unified_server` build compiles `git rev-parse HEAD` into
+the binary and appends `-dirty` when `git status --porcelain` prints
+anything. Point `CARGO_HOME` at a new, empty directory outside the checkout:
+cargo then downloads every dependency for this build and checks each
+registry crate against the SHA-256 in `Cargo.lock`, which it does not repeat
+for a crate already in its cache. Leave `RUSTFLAGS` unset: the variable
+replaces the `target-feature` flags of `.cargo/config.toml` instead of
+adding to them. Build the pir2 runtime with its production feature profile
+and `oramctl` from its own lockfile, then strip only debug data:
 
 ```sh
+export CARGO_HOME=/absolute/new-empty-directory
 cargo build --locked --release -p runtime \
   --features cuckoo-oram --bin unified_server
 strip --strip-debug target/release/unified_server
+cargo build --locked --release \
+  --manifest-path vendor/bitcoinpir-oram/Cargo.toml --bin oramctl
+strip --strip-debug vendor/bitcoinpir-oram/target/release/oramctl
 ```
 
-Record the commit and binary SHA-256. `nix build .#unified-server` is a
-development harness, not the production binary authority.
+Record the commit and both binaries' SHA-256, together with what their bytes
+depend on besides the source:
+
+- the absolute paths of the checkout and of `CARGO_HOME`: the binary
+  contains the source paths of its dependencies, which are under
+  `CARGO_HOME`;
+- `rustc -vV`, `c++ --version`, `cmake --version` and `ld --version`;
+- whether the OnionPIR build found Intel HEXL: `grep HEXL_DIR
+  target/release/build/onionpir-*/out/build/CMakeCache.txt` names a directory
+  when it did.
+
+`nix build .#unified-server` is a development harness, not the production
+binary authority.
 
 ## 2. UKI assembly inputs
 
@@ -94,9 +117,9 @@ These are distinct claims:
 | Nix harness | `flake.nix` / historical reproducibility plan | development reproducibility only; not a production pir2 UKI |
 | Attested-builder UKI | `build_uki_attested_builder_tier3.sh` | one-shot database producer; never the runtime server UKI |
 
-Full cross-host byte reproduction requires the same declared kernel/modules
-and toolchain inputs. A matching binary hash or predicted measurement alone
-does not authorize upload, switch, reboot, or activation.
+Full cross-host byte reproduction requires the same declared kernel/modules,
+toolchain inputs and build paths. A matching binary hash or predicted
+measurement alone does not authorize upload, switch, reboot, or activation.
 
 Record the EFI, SHA-256, metadata and both archive locations, then continue
 with the [VPSBG image runbook](vpsbg-image.md).
