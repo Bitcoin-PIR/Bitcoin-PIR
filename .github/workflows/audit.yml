@@ -5,13 +5,10 @@ name: Security audit
 # known RustSec advisory (vulnerabilities, unmaintained / yanked crates).
 #
 # This job is advisory-only by design — do NOT add it to the branch-
-# protection required checks:
-#   1. It needs network access to fetch the RustSec advisory DB, unlike
-#      the hermetic vendored/offline build everything else uses.
-#   2. New advisories appear without any code change, so a previously
-#      green commit can turn red overnight. The weekly scheduled run is
-#      the primary signal; the push/PR runs only catch Cargo.lock
-#      changes that introduce an already-known-vulnerable version.
+# protection required checks: new advisories appear without any code
+# change, so a previously green commit can turn red overnight. The weekly
+# scheduled run is the primary signal; the push/PR runs only catch
+# Cargo.lock changes that introduce an already-known-vulnerable version.
 #
 # Git dependencies (libdpf, harmonypir, onionpir fork, fastprp) are
 # not indexed by the advisory DB and are skipped — coverage here is for
@@ -64,7 +61,7 @@ jobs:
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
 
-      # Reads Cargo.lock directly (no build, no vendor/ access) and
+      # Reads Cargo.lock directly (no build) and
       # fetches the advisory DB from github.com/rustsec/advisory-db.
       - name: Run cargo audit
         run: cargo audit

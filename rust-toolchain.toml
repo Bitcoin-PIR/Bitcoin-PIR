@@ -6,8 +6,8 @@
 #
 # 1.94.1 = current stable on the production build host (Ubuntu 24.04 +
 # rustup default-stable as of 2026-04). Bump deliberately when crossing
-# a stable cycle, and re-run `cargo vendor` + capture the new binary
-# sha for the operator-published MEASUREMENT pin.
+# a stable cycle, and capture the new binary sha for the
+# operator-published MEASUREMENT pin.
 
 [toolchain]
 channel = "1.94.1"

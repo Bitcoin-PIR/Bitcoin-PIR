@@ -12,14 +12,15 @@
 [target.'cfg(target_arch = "x86_64")']
 rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
 
-# ─── Vendored deps ─────────────────────────────────────────────────────────
-# All crates.io + git deps are mirrored in ./vendor/ via `cargo vendor`.
-# This pins exact source bytes for reproducibility and lets
-# `cargo build --offline` succeed without network access. Re-run
-# `cargo vendor` whenever Cargo.lock changes.
-
-[source.crates-io]
-replace-with = "vendored-sources"
+# ─── Dependency sources ────────────────────────────────────────────────────
+# crates.io dependencies come from the registry: Cargo.lock pins each version
+# and its SHA-256, and `--locked` keeps a build on exactly that set.
+#
+# The four git dependencies below still build from the copies in ./vendor/.
+# fastprp, harmonypir and libdpf are byte-identical to their pinned revs.
+# onionpir is not: vendor/onionpir carries engine changes (the shared-store
+# batch path of #466) that rev 3f815ba does not have, so re-running
+# `cargo vendor` for it drops them.
 
 # OnionPIRv2-fork — vendored as of 2026-05-19. The fork's "self-contained
 # crate" restructure (rev c7ed905) moved its CMake project + C++ engine

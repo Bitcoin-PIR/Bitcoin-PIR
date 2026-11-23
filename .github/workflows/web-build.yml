@@ -107,9 +107,9 @@ jobs:
       # directory, and payment adapters) and could silently drift from Cargo.
       - name: Build pir-sdk-wasm (wasm32 target validation)
         run: >-
-          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
+          wasm-pack build crates/sdk/wasm
           --target web --out-dir pkg --mode no-install --no-opt
-          -- --locked --offline
+          -- --locked
 
       # `npm run build` = `tsc --noEmit`: strict typecheck of every .ts
       # file under web/src/, including the test files.

@@ -129,21 +129,21 @@
         # "argument can't be used with `--release`" conflict.
         cargoBuildFlags = [ "-p" "runtime" "--bin" "unified_server" ];
 
-        # The repo's .cargo/config.toml declares [source."git+..."] +
-        # [source.crates-io] replace-with = "vendored-sources" entries
-        # for sub-task 4's offline-build path. rustPlatform.buildRustPackage
-        # ALSO writes its own [source.crates-io] / git source overrides
-        # into the sandbox config, which collides with ours ("Sources are
-        # not allowed to be defined multiple times"). Strip the in-repo
-        # source replacements during patchPhase so only the Nix-managed
-        # vendor dir is visible to cargo inside the sandbox.
+        # The repo's .cargo/config.toml replaces its git sources with
+        # ./vendor ([source."git+..."] replace-with = "vendored-sources").
+        # rustPlatform.buildRustPackage ALSO writes its own
+        # [source.crates-io] / git source overrides into the sandbox
+        # config, which collides with ours ("Sources are not allowed to be
+        # defined multiple times"). Strip the in-repo source replacements
+        # during patchPhase so only the Nix-managed vendor dir is visible
+        # to cargo inside the sandbox.
         postPatch = ''
-          # Remove every line from the first [source.crates-io] header to
-          # end of file (the source-replacement block lives at the bottom
-          # of .cargo/config.toml after the AES-NI rustflags + vendor doc).
-          # rustPlatform.buildRustPackage writes its own [source.*]
-          # entries, and cargo errors on duplicate source definitions.
-          sed -i '/^\[source\.crates-io\]/,$d' .cargo/config.toml
+          # Remove every line from the first [source.*] header to end of
+          # file (the source-replacement block is the last thing in
+          # .cargo/config.toml but the [env] table). rustPlatform.
+          # buildRustPackage writes its own [source.*] entries, and cargo
+          # errors on duplicate source definitions.
+          sed -i '/^\[source\./,$d' .cargo/config.toml
 
           # Point the onionpir C++ build's CMake at the HEXL + cpu_features
           # CMake-config packages. Since rev 7ea020a the onionpir CMakeLists

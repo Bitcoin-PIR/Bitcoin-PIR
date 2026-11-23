@@ -21,17 +21,12 @@ How they are watched:
   [`audit.yml`](../.github/workflows/audit.yml), weekly and on every
   `Cargo.lock` change. It reports and never blocks. `.cargo/audit.toml`
   ignores RUSTSEC-2023-0071 and RUSTSEC-2026-0381 and says why.
-- **Bumping a vendored crate by hand:** `.cargo/config.toml` replaces
-  crates.io with `vendor/`, so Dependabot cannot bump Rust crates and
-  `cargo update` sees only vendored versions.
-  1. Work in a copy of the workspace whose `.cargo/config.toml` has no
-     `[source]` tables. Keep the copy outside any checkout, because cargo
-     also reads the config files of parent directories.
-  2. Run `cargo update -p CRATE@OLD --precise NEW` there.
-  3. Vendor the new version and replace its directory in `vendor/`.
-  4. Update `vendor/bitcoinpir-oram/Cargo.lock` as well: that crate is
-     excluded from the workspace and keeps its own lockfile, which the
-     `runtime-features` CI lane tests with `--locked --offline`.
+- **Bumping a Rust crate by hand:**
+  `cargo update -p CRATE@OLD --precise NEW`, then commit `Cargo.lock`.
+  Dependabot does not bump Rust crates. `vendor/bitcoinpir-oram` is excluded
+  from the workspace and keeps its own lockfile, which the
+  `runtime-features` CI lane tests with `--locked`; bump it there too
+  (`--manifest-path vendor/bitcoinpir-oram/Cargo.toml`).
 - **npm (`web/`) and GitHub Actions:** Dependabot, weekly.
 - **No advisory database covers:** the git dependencies (libdpf,
   harmonypir, OnionPIRv2-fork with SEAL, fastprp). They are our own forks.
