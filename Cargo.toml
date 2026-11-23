@@ -20,6 +20,29 @@ members = [
     "apps/server",
     "apps/desktop/src-tauri",
 ]
+# Everything but the desktop app (vendor/rootbundle is a member through
+# pir-db-attest's path dependency). The desktop app shares the workspace
+# Cargo.lock, but a root `cargo build` / `cargo test` without `-p` leaves
+# Tauri and the system libraries it needs alone. Build it with
+# `-p bpir-desktop`.
+default-members = [
+    "crates/protocol/core",
+    "crates/protocol/channel",
+    "crates/trust/identity",
+    "crates/trust/attest-verify",
+    "crates/trust/db-attest",
+    "crates/trust/pir-credit",
+    "crates/directory/nostr",
+    "crates/sdk/core",
+    "crates/protocol/runtime",
+    "crates/sdk/client",
+    "crates/sdk/wasm",
+    "apps/admin",
+    "apps/directory-relay",
+    "tools/db-builder",
+    "apps/server",
+    "vendor/rootbundle",
+]
 exclude = ["vendor/bitcoinpir-oram"]
 
 [profile.release]
