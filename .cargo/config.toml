@@ -18,8 +18,9 @@ rustflags = ["-C", "target-feature=+aes,+ssse3,+sse4.1,+pclmulqdq"]
 # operator-set SDE so the value is consistent regardless of shell
 # environment.
 #
-# --remap-path-prefix is NOT in this file — it depends on $PWD/$HOME at
-# build time and TOML can't interpolate; pass it through RUSTFLAGS.
+# --remap-path-prefix is not set: production builds are bare Cargo
+# (docs/runbooks/uki-build.md). A RUSTFLAGS environment variable replaces
+# the target rustflags above instead of adding to them.
 
 [env]
 SOURCE_DATE_EPOCH = { value = "0", force = true }

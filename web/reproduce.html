@@ -591,8 +591,7 @@ scp pir-hetzner:/home/pir/build-prep/base-976083-20261116/runtime-uki-archive/ti
 <pre><code>git clone https://github.com/Bitcoin-PIR/Bitcoin-PIR.git BitcoinPIR-runtime-repro
 cd BitcoinPIR-runtime-repro
 git checkout 0ccff37005838c111b3c1198a65d3366cb95b13b
-RUSTFLAGS="--remap-path-prefix=$PWD=/build/repo --remap-path-prefix=$HOME=/build" \
-SOURCE_DATE_EPOCH=0 cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
+cargo build --locked --release -p runtime --features cuckoo-oram --bin unified_server
 strip --strip-debug target/release/unified_server
 cargo build --locked --release --manifest-path vendor/bitcoinpir-oram/Cargo.toml --bin oramctl
 strip --strip-debug vendor/bitcoinpir-oram/target/release/oramctl
