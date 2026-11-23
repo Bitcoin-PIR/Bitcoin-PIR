@@ -16,6 +16,7 @@
 
 use pir_core::merkle::{sha256, Hash256};
 use std::io;
+#[cfg(target_os = "linux")]
 use std::os::unix::io::AsRawFd;
 use std::sync::OnceLock;
 
@@ -30,6 +31,7 @@ pub use pir_core::attest::{
 pub const GIT_REV: &str = env!("BPIR_GIT_REV");
 
 /// Path the kernel exposes the SEV-SNP guest interface at.
+#[cfg(target_os = "linux")]
 const SEV_GUEST_DEVICE: &str = "/dev/sev-guest";
 
 // Linux uapi: include/uapi/linux/sev-guest.h (kernel 5.19+):
@@ -46,8 +48,10 @@ const SEV_GUEST_DEVICE: &str = "/dev/sev-guest";
 // _IOWR encodes: dir=3 (R|W), size=32, type='S' (0x53), nr=0
 //   = (3 << 30) | (32 << 16) | (0x53 << 8) | 0
 //   = 0xc020_5300
+#[cfg(target_os = "linux")]
 const SNP_GET_REPORT_IOCTL: libc::c_ulong = 0xc020_5300;
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct SnpGuestRequestIoctl {
     msg_version: u8,
@@ -57,6 +61,7 @@ struct SnpGuestRequestIoctl {
     exitinfo2: u64,
 }
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct SnpReportReq {
     user_data: [u8; 64],
@@ -67,6 +72,7 @@ struct SnpReportReq {
 /// 4000-byte response buffer per kernel uapi (SEV_SNP_REPORT_SIZE_MAX).
 /// The actual report is ~1184 bytes; the rest is reserved for
 /// future-proofing and chaining.
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct SnpReportResp {
     data: [u8; 4000],
@@ -84,6 +90,7 @@ struct SnpReportResp {
 /// - `Ok(None)` — `/dev/sev-guest` doesn't exist (host isn't a SEV-SNP
 ///   guest). Caller emits unsigned attestation data.
 /// - `Err(_)` — unexpected I/O error (permissions, kernel bug).
+#[cfg(target_os = "linux")]
 pub fn fetch_report(user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
@@ -136,6 +143,11 @@ pub fn fetch_report(user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(
         resp.data[KERNEL_HEADER_LEN..KERNEL_HEADER_LEN + REPORT_LEN].to_vec(),
     ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn fetch_report(_user_data: [u8; 64]) -> io::Result<Option<Vec<u8>>> {
+    Ok(None)
 }
 
 /// SHA-256 of the running binary, computed once and cached for the

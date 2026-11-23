@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BitcoinPIR Node</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">BP</span><div><strong>BitcoinPIR</strong><span>Node Desktop</span></div></div>
+        <nav aria-label="Node management">
+          <button class="nav-item active" data-page="overview">Overview</button>
+          <button class="nav-item" data-page="serve">Serve</button>
+          <button class="nav-item" data-page="diagnostics">Diagnostics</button>
+          <button class="nav-item" data-page="settings">Settings</button>
+          <button class="nav-item" data-page="advanced">Advanced</button>
+        </nav>
+        <div class="sidebar-foot">Local control. Existing PIR protocol.</div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div><h1 id="page-title">Overview</h1><p id="page-subtitle">Your node at a glance</p></div>
+          <span id="status-pill" class="status-pill stopped">Stopped</span>
+        </header>
+        <div id="notice" class="notice hidden" role="status"></div>
+
+        <section id="page-overview" class="page active">
+          <div class="stats-grid">
+            <article class="stat"><span>Process</span><strong id="overview-status">Stopped</strong><small id="overview-pid">No child process</small></article>
+            <article class="stat"><span>Local endpoint</span><strong id="overview-endpoint" class="mono small-value">—</strong><small>WebSocket PIR service</small></article>
+            <article class="stat"><span>Active generation</span><strong id="overview-generation" class="small-value">None</strong><small id="overview-databases">Import a bundle to begin</small></article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Node controls</h2><p>Configuration changes are applied when you restart.</p></div></div>
+            <div class="button-row">
+              <button id="start-node" class="primary">Start node</button>
+              <button id="stop-node">Stop</button>
+              <button id="restart-node">Restart</button>
+            </div>
+            <div id="process-error" class="inline-error hidden"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Import a local database bundle</h2><p>Select a directory containing databases.toml. Large files stay where they are.</p></div></div>
+            <div class="path-row">
+              <input id="bundle-path" type="text" placeholder="/path/to/generation" spellcheck="false" />
+              <button id="browse-bundle">Browse</button>
+              <button id="import-bundle" class="primary">Import</button>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Protocol health</h2><p>Checks GET_INFO_JSON rather than only checking the child process.</p></div><button id="probe-health">Probe</button></div>
+            <input id="health-endpoint" class="full-width mono" type="text" spellcheck="false" aria-label="Health endpoint" />
+            <pre id="health-result" class="output compact">No probe yet.</pre>
+          </article>
+        </section>
+
+        <section id="page-serve" class="page">
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Server configuration</h2><p>Maps directly to unified_server flags.</p></div></div>
+            <div class="form-grid">
+              <label>Role<select id="serve-role"><option value="primary">Primary — load OnionPIR</option><option value="secondary">Secondary — no OnionPIR</option></select></label>
+              <label>Bind address<input id="serve-bind" type="text" spellcheck="false" /></label>
+              <label>Port<input id="serve-port" type="number" min="1" max="65535" /></label>
+              <div class="checkbox-stack"><label><input id="serve-queries" type="checkbox" /> Serve PIR queries</label><label><input id="serve-hints" type="checkbox" /> Serve HarmonyPIR hints</label></div>
+            </div>
+            <label>Additional arguments <span class="label-hint">one argv item per line; no shell parsing</span><textarea id="extra-args" rows="5" class="mono" spellcheck="false"></textarea></label>
+          </article>
+
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Databases to serve</h2><p>Selected rows are written in this order. The first row is db_id 0.</p></div></div>
+            <div id="database-list" class="database-list"></div>
+          </article>
+          <div class="sticky-actions"><button id="save-serve" class="primary">Save node configuration</button></div>
+          <article class="panel"><div class="panel-heading"><div><h2>Final argv</h2><p>The exact arguments passed to the sidecar.</p></div></div><pre id="argv-preview" class="output mono"></pre></article>
+        </section>
+
+        <section id="page-diagnostics" class="page">
+          <article class="panel grow-panel">
+            <div class="panel-heading"><div><h2>Sidecar logs</h2><p>Startup, manifest verification, listener and aggregate output.</p></div><button id="refresh-logs">Refresh</button></div>
+            <pre id="logs-output" class="output logs">No logs yet.</pre>
+          </article>
+        </section>
+
+        <section id="page-settings" class="page">
+          <article class="panel">
+            <div class="panel-heading"><div><h2>Application settings</h2><p>Small configuration and large database directories remain separate.</p></div></div>
+            <label>Data directory<input id="settings-data-dir" type="text" class="mono" spellcheck="false" /></label>
+            <label>unified_server path <span class="label-hint">leave empty to use the packaged sidecar</span><input id="settings-server-binary" type="text" class="mono" spellcheck="false" /></label>
+            <label class="checkbox-line"><input id="settings-close-tray" type="checkbox" /> Closing the window keeps the node running in the tray</label>
+            <div class="button-row"><button id="save-settings" class="primary">Save settings</button></div>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><h2>Paths</h2><p>Current files used by this instance.</p></div></div><dl class="path-list"><dt>Active catalog</dt><dd id="settings-active-catalog" class="mono">—</dd><dt>Sidecar resolution</dt><dd>Packaged target-triple binary, environment override, then workspace development build.</dd></dl></article>
+        </section>
+
+        <section id="page-advanced" class="page">
+          <article class="panel">
+            <div class="panel-heading"><div><h2>node.toml</h2><p>Edit the actual desktop and server settings.</p></div><button id="save-raw-settings" class="primary">Save node.toml</button></div>
+            <textarea id="raw-settings" class="raw-editor mono" rows="20" spellcheck="false"></textarea>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><h2>databases.toml</h2><p>Edit the active catalog directly. Save is validated as TOML.</p></div><button id="save-raw-catalog" class="primary">Save databases.toml</button></div>
+            <textarea id="raw-catalog" class="raw-editor mono" rows="20" spellcheck="false"></textarea>
+          </article>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

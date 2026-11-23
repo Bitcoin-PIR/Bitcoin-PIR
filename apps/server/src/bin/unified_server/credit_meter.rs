@@ -167,6 +167,7 @@ pub(crate) fn metered_op_for_frame(variant: u8, payload: &[u8]) -> Option<(Meter
 
 /// Process CPU time (all threads) from the OS clock; zero where the clock
 /// is unavailable so the meter degrades to wall time only.
+#[cfg(unix)]
 pub(crate) fn process_cpu_time() -> Duration {
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -178,6 +179,11 @@ pub(crate) fn process_cpu_time() -> Duration {
         return Duration::ZERO;
     }
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn process_cpu_time() -> Duration {
+    Duration::ZERO
 }
 
 /// A request in flight: what [`CreditMeterV1::begin`] captured.
