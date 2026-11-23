@@ -1,0 +1,25 @@
+{
+  "name": "bitcoinpir-node-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/prepare-sidecar.mjs && tauri dev",
+    "dev:vite": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "tauri": "tauri",
+    "desktop:build": "node scripts/prepare-sidecar.mjs --release && tauri build --config src-tauri/tauri.bundle.json",
+    "desktop:build-debug": "node scripts/prepare-sidecar.mjs && tauri build --config src-tauri/tauri.bundle.json --debug"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.1.1"
+  }
+}

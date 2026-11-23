@@ -31,6 +31,10 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Desktop-generated sidecars and permission schemas
+apps/desktop/src-tauri/binaries/
+apps/desktop/src-tauri/gen/
+
 # Python
 __pycache__/
 *.pyc

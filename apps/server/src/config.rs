@@ -1,11 +1,11 @@
 //! TOML-based server configuration: `databases.toml` declares every database,
 //! its type, heights, and path.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Configuration for a single database (full checkpoint or delta).
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct DatabaseConfig {
     /// Human-readable name (e.g. "main", "delta_940611_944000").
     pub name: String,
@@ -27,7 +27,7 @@ pub struct DatabaseConfig {
 }
 
 /// Top-level server configuration loaded from a TOML file.
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ServerConfig {
     /// Ordered list of databases. The first entry becomes db_id=0.
     #[serde(rename = "database")]

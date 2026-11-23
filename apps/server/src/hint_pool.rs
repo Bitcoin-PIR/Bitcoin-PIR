@@ -21,6 +21,7 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -609,12 +610,19 @@ fn pool_file_name(prp_key: &[u8; 16]) -> String {
 
 /// Pool files hold PRP keys, so they are owner-only, like the directory.
 fn create_owner_only(path: &Path) -> io::Result<File> {
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
+}
+
+fn create_pool_directory(path: &Path) -> io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(path)
 }
 
 /// Create or reuse `pool_dir` for `binding`: write the binding marker, drop
@@ -625,10 +633,7 @@ fn open_pool_directory(
     binding: &PoolFileBinding,
     pool_size: usize,
 ) -> io::Result<Vec<PoolEntry>> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(pool_dir)?;
+    create_pool_directory(pool_dir)?;
     write_binding_marker(pool_dir, binding)?;
 
     let mut candidates = Vec::new();
@@ -1122,6 +1127,7 @@ fn load_pool_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     fn test_binding(fingerprint: u8) -> PoolFileBinding {
@@ -1216,6 +1222,7 @@ mod tests {
 
     // Earlier releases only load owner-only, single-link files from a 0700
     // directory, so a rollback keeps these.
+    #[cfg(unix)]
     #[test]
     fn pool_directory_and_files_are_owner_only() {
         let parent = tempfile::tempdir().unwrap();
