@@ -61,7 +61,7 @@ goes no further than that.
 
 - Pick checks by change class from [`docs/TESTING.md`](docs/TESTING.md).
   Run the narrowest matching check, not the whole world.
-- Start with `cargo check --locked --offline -p <crate>`. On failure, rerun
+- Start with `cargo check --locked -p <crate>`. On failure, rerun
   one test with `-- --exact <name> --nocapture`. Do not escalate to a wider
   suite, a second crate, or a CI lane.
 - Forbidden unless the user names them: `gh run watch`, polling `gh run list`,

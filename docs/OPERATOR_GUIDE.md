@@ -173,7 +173,7 @@ Verify a copy:
 
 Prerequisites: git, a C/C++ compiler and CMake (the OnionPIR engine is C++),
 rustup. `rust-toolchain.toml` pins the toolchain, which rustup installs on
-first use; dependencies are vendored.
+first use; the first build downloads the crates `Cargo.lock` pins.
 
 ```sh
 # Debian/Ubuntu: sudo apt install build-essential cmake git curl

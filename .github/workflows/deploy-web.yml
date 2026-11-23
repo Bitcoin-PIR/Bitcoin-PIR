@@ -69,9 +69,9 @@ jobs:
 
       - name: Build pir-sdk-wasm
         run: >-
-          CARGO_NET_OFFLINE=true wasm-pack build crates/sdk/wasm
+          wasm-pack build crates/sdk/wasm
           --target web --out-dir pkg --mode no-install --no-opt
-          -- --locked --offline
+          -- --locked
 
       - name: Install dependencies
         working-directory: web
