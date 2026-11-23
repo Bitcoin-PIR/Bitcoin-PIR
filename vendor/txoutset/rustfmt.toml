@@ -1,4 +1,0 @@
-comment_width = 80
-imports_granularity = "Module"
-group_imports = "StdExternalCrate"
-wrap_comments = true
