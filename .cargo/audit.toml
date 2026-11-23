@@ -42,8 +42,8 @@ ignore = [
     #     runs as a local batch job on the operator's own machine, not as
     #     a service an outsider can query and time, so the leak needs a
     #     co-located attacker. k256 0.14 (crypto-bigint 0.7) is the fix
-    #     for this path; it is a breaking API + vendor/ change, deferred
-    #     until the open directory PRs land.
+    #     for this path; it is a breaking API change, deferred until the
+    #     open directory PRs land.
     # Re-check: move k256 to 0.14 when convenient, and drop this entry once
     # sev ships on p384 0.14 and `cargo tree -i crypto-bigint@0.5.5` is
     # empty.
